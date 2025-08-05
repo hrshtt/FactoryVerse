@@ -53,34 +53,36 @@ def _detect_mods_path(os_name: str) -> str:
 class DockerConfig(BaseSettings):
     """Configuration knobs for Factorio headless servers managed by fle.services.docker."""
 
+    # Core system configuration
     arch: str = Field(default_factory=platform.machine)
-    address: str = "localhost"
     os_name: str = Field(default_factory=platform.system)
+    address: str = "localhost"
 
-    fv_factorio_path: Path = Field(default_factory=lambda: ROOT_DIR / "factorio")
+    # Runtime mode and behavior
+    mode: str = Mode.SAVE_BASED.value
+    dry_run: bool = False
 
-    saves_path: Path = Field(default_factory=lambda: ROOT_DIR / ".fv" / "saves")
-    mods_path: str = Field(default_factory=lambda: _detect_mods_path(platform.system()))
-
+    # Docker and networking
     image_name: str = "factoriotools/factorio:1.1.110"
     rcon_port: int = 27015
     udp_port: int = 34197
 
+    # Game configuration
     scenario_name: str = Scenario.FACTORY_VERSE.value
-
-    mode: str = Mode.SAVE_BASED.value
-    dry_run: bool = False
-    temp_playing_dir: str = "/opt/factorio/temp/currently-playing"
     name_prefix: str = "factorio_"
-    model_config = {"extra": "forbid", "frozen": True}
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # Paths and directories
+    fv_factorio_path: Path = Field(default_factory=lambda: ROOT_DIR / "factorio")
+    saves_path: Path = Field(default_factory=lambda: ROOT_DIR / ".fv" / "saves")
+    mods_path: str = Field(default_factory=lambda: _detect_mods_path(platform.system()))
+    temp_playing_dir: str = "/opt/factorio/temp/currently-playing"
 
+    # Optional fields (set by validator)
     server_config_dir: Optional[Path] = None
     scenario_dir: Optional[Path] = None
     factorio_password: Optional[str] = None
 
-
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @model_validator(mode="after")
     def load_configs(self):
@@ -88,10 +90,8 @@ class DockerConfig(BaseSettings):
             self.server_config_dir = self.fv_factorio_path / "config"
             if (self.server_config_dir / "rconpw").exists():
                 self.factorio_password = (
-                    self.server_config_dir / "rconpw"
-                ).read_text().strip()
+                    (self.server_config_dir / "rconpw").read_text().strip()
+                )
         if (self.fv_factorio_path / "scenarios").exists():
             self.scenario_dir = self.fv_factorio_path / "scenarios"
         return self
-
-
