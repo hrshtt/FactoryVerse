@@ -21,6 +21,8 @@ function ValidationContext.create_action_context(action_type, parameters, agent_
     }
 end
 
+---@class Validator
+---@field _registry table
 local Validator = {
     _registry = {}, -- [ action_type ] = { fn1, fn2, … }
 }

@@ -1,5 +1,12 @@
 local Errors = {}
 
+--- Error message
+---@param ok boolean
+---@param code string
+---@param category string
+---@param msg string
+---@param data table
+---@return string
 local function _emit(ok, code, category, msg, data)
   return helpers.table_to_json {
     ok = ok,

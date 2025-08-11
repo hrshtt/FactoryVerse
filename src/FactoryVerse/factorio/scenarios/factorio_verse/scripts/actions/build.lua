@@ -15,6 +15,7 @@ A.params = {
 ---@param entity_name string “prototype name, e.g. 'stone-furnace'”
 ---@param position table {x:number, y:number}
 ---@param direction string (“north”|“east”|“south”|“west”)
+---@return string json
 ---@action: build
 function A.run(agent_index, entity_name, position, direction)
     local player = game.players[agent_index]
@@ -33,18 +34,22 @@ function A.run(agent_index, entity_name, position, direction)
 
     if entity and inventory then
         inventory.remove({name = entity_name, count = 1})
-        return { entity_id = entity.unit_number }
+        return helpers.table_to_json({ entity_id = entity.unit_number })
     end
 
     return errors.engine({}, "Entity creation failed", { entity_name = entity_name, position = position, direction = direction })
 end
 
+-- Add the action to the remote interface
+-- TODO: Add the action to the remote interface
 remote.add_interface("actions", {
     build = A.run,
 })
 
 A.recorder = {}
 
+-- add the event handler to the event dispatcher
+-- @param event_dispatcher EventDispatcher
 function A.recorder.register_events(event_dispatcher)
     event_dispatcher.register_handler(defines.events.on_built_entity, function(e)
         local rec = {
