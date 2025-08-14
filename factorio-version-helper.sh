@@ -81,8 +81,9 @@ backup_version() {
     
     print_info "Backing up current version as: $version_name"
     
-    # Create backup directory
-    mkdir -p "$backup_dir"
+	# Create backup directory
+	mkdir -p "$backup_dir"
+	mkdir -p "$backup_dir/game" "$backup_dir/data"
     
     # Check if Steam is running and warn user
     if pgrep -x "Steam" > /dev/null; then
@@ -90,19 +91,19 @@ backup_version() {
         read -p "Press Enter to continue after closing Steam, or Ctrl+C to cancel..."
     fi
     
-    # Backup game files
-    print_info "Backing up game files..."
-    if ! cp -R "$FACTORIO_GAME_DIR" "$backup_dir/game" 2>/dev/null; then
-        print_error "Failed to backup game files"
-        exit 1
-    fi
-    
-    # Backup data directory (saves, mods, etc.)
-    print_info "Backing up data directory..."
-    if ! cp -R "$FACTORIO_DATA_DIR" "$backup_dir/data" 2>/dev/null; then
-        print_error "Failed to backup data directory"
-        exit 1
-    fi
+	# Backup game files
+	print_info "Backing up game files..."
+	if ! rsync -aE --delete "$FACTORIO_GAME_DIR/" "$backup_dir/game/" 2>/dev/null; then
+		print_error "Failed to backup game files"
+		exit 1
+	fi
+	
+	# Backup data directory (saves, mods, etc.)
+	print_info "Backing up data directory..."
+	if ! rsync -aE --delete "$FACTORIO_DATA_DIR/" "$backup_dir/data/" 2>/dev/null; then
+		print_error "Failed to backup data directory"
+		exit 1
+	fi
     
     # Store version info
     local current_version=$(get_current_version)
@@ -135,26 +136,35 @@ restore_version() {
         read -p "Press Enter to continue after closing Steam, or Ctrl+C to cancel..."
     fi
     
-    # Backup current state before restoring (safety measure)
-    local current_version_name="pre-restore-$(date +%Y%m%d_%H%M%S)"
-    print_info "Creating safety backup of current state..."
-    backup_version "$current_version_name"
+    # Offer safety backup before restoring (optional)
+    local do_backup="Y"
+    read -p "Create a safety backup of the current install before restoring? (Y/n): " -n 1 -r do_backup
+    echo
+    if [[ ! $do_backup =~ ^[Nn]$ ]]; then
+        if [ -d "$FACTORIO_GAME_DIR" ] || [ -d "$FACTORIO_DATA_DIR" ]; then
+            local current_version_name="pre-restore-$(date +%Y%m%d_%H%M%S)"
+            print_info "Creating safety backup of current state..."
+            backup_version "$current_version_name"
+        else
+            print_warning "No current installation found to back up. Skipping safety backup."
+        fi
+    else
+        print_info "Skipping safety backup as requested."
+    fi
     
-    # Remove current installation
-    print_info "Removing current game installation..."
-    rm -rf "$FACTORIO_GAME_DIR"
-    rm -rf "$FACTORIO_DATA_DIR"
-    
-    # Restore game files
+    # Ensure destination directories exist
+    mkdir -p "$FACTORIO_GAME_DIR" "$FACTORIO_DATA_DIR"
+
+    # Restore game files (mirror and remove extraneous files)
     print_info "Restoring game files..."
-    if ! cp -R "$backup_dir/game" "$FACTORIO_GAME_DIR" 2>/dev/null; then
+    if ! rsync -aE --delete "$backup_dir/game/" "$FACTORIO_GAME_DIR/" 2>/dev/null; then
         print_error "Failed to restore game files"
         exit 1
     fi
-    
-    # Restore data directory
+
+    # Restore data directory (mirror and remove extraneous files)
     print_info "Restoring data directory..."
-    if ! cp -R "$backup_dir/data" "$FACTORIO_DATA_DIR" 2>/dev/null; then
+    if ! rsync -aE --delete "$backup_dir/data/" "$FACTORIO_DATA_DIR/" 2>/dev/null; then
         print_error "Failed to restore data directory"
         exit 1
     fi
@@ -291,7 +301,7 @@ show_help() {
     echo "Notes:"
     echo "  - Close Steam before backing up or restoring"
     echo "  - Backups include both game files and data (saves, mods, etc.)"
-    echo "  - A safety backup is created before each restore"
+    echo "  - You can create a safety backup before restore (recommended)"
     echo "  - Use descriptive names for your backups"
 }
 
@@ -314,7 +324,6 @@ main() {
                 echo "Usage: $0 restore <name>"
                 exit 1
             fi
-            check_directories
             setup_backup_dir
             restore_version "$2"
             ;;
