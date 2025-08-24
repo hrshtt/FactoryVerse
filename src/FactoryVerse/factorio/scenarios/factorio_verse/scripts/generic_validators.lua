@@ -1,8 +1,12 @@
+---@type Validator
 local Validator = require("scripts.validator")
 local errors    = require("scripts.errors")
 
 -- run on every action that has a .parameters.position
-for _, action_type in ipairs({ "build", "mine", "move_to", "transfer" }) do
+---@type ActionKind[]
+local _position_actions = { "build", "mine", "move_to", "transfer" }
+
+for _, action_type in ipairs(_position_actions) do
     Validator.register(action_type, function(ctx)
         local p   = ctx.action.parameters
         local pos = p.position
@@ -31,7 +35,7 @@ Validator.register("build", function(ctx)
         table.insert(errors_list, errors.engine({}, "No inventory found for player", { player = player }))
     end
 
-    local prototypes = defines.prototypes["entity"]
+    local es = defines.prototypes["entity"]
     if not prototypes[entity_name] then
         table.insert(errors_list, errors.agent({}, "Invalid entity name", { entity_name = entity_name }))
     end

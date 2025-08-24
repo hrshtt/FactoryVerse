@@ -4,6 +4,10 @@ local errors = require("scripts.errors")
 
 local A = {}
 
+---@class BuildActionModule: BaseAction
+---@field params table
+---@field recorder table
+
 A.params = {
     name      = { type = "string", required = true },
     position  = { type = "position", required = true },
@@ -11,12 +15,11 @@ A.params = {
 }
 
 ---Action to build an entity on the map.
----@param agent_index number
----@param entity_name string “prototype name, e.g. 'stone-furnace'”
----@param position table {x:number, y:number}
----@param direction string (“north”|“east”|“south”|“west”)
+---@param agent_index integer
+---@param entity_name string Prototype name, e.g. 'stone-furnace'
+---@param position { x: number, y: number }
+---@param direction '"north"'|'"east"'|'"south"'|'"west"'
 ---@return string json
----@action: build
 function A.run(agent_index, entity_name, position, direction)
     local player = game.players[agent_index]
     if not player then
@@ -43,15 +46,19 @@ end
 -- Add the action to the remote interface
 -- TODO: Add the action to the remote interface
 remote.add_interface("actions", {
-    build = A.run,
+    build = function(agent_index, entity_name, position, direction)
+        return A.run(agent_index, entity_name, position, direction)
+    end,
 })
 
 A.recorder = {}
 
 -- add the event handler to the event dispatcher
--- @param event_dispatcher EventDispatcher
+---@class EventDispatcher
+---@field register_handler fun(event_id: any, cb: fun(e: table): table|nil)
+---@param event_dispatcher EventDispatcher
 function A.recorder.register_events(event_dispatcher)
-    event_dispatcher.register_handler(defines.events.on_built_entity, function(e)
+    event_dispatcher:register_handler(defines.events.on_built_entity, function(e)
         local rec = {
             action_type = "build",
             parameters = {
