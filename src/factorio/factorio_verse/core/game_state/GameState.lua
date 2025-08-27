@@ -3,6 +3,7 @@
 
 local GameStateError = require("factorio_verse.core.Error")
 local AgentGameState = require("factorio_verse.core.game_state.AgentGameState")
+local InventoryGameState = require("factorio_verse.core.game_state.InventoryGameState")
 local EntitiesGameState = require("factorio_verse.core.game_state.EntitiesGameState")
 local PowerGameState = require("factorio_verse.core.game_state.PowerGameState")
 
@@ -10,6 +11,7 @@ local PowerGameState = require("factorio_verse.core.game_state.PowerGameState")
 --- @field game table
 --- @field surface table
 --- @field agent AgentGameState
+--- @field inventory InventoryGameState
 --- @field entities EntitiesGameState
 --- @field power PowerGameState
 local GameState = {}
@@ -28,6 +30,7 @@ function GameState:new()
     -- Initialize sub-modules
     instance.agent = AgentGameState:new()
     instance.entities = EntitiesGameState:new(instance)
+    instance.inventory = InventoryGameState:new(instance)
     instance.power = PowerGameState:new(instance)
 
     return instance
@@ -44,6 +47,8 @@ function GameState:to_json(agent_id)
     }
 end
 
+--- @class GameState.aliases
+--- @field direction table
 GameState.aliases = {
     direction = {
         n = defines.direction.north,

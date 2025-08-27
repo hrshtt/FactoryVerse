@@ -5,6 +5,8 @@ local GameState = require("factorio_verse.core.game_state.GameState")
 
 local validators = validator_registry:get_validations("entity.place")
 
+local gs = GameState:new()
+
 --- @class PlaceEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
 --- @field name string Prototype name of the entity to place (e.g., "assembling-machine-1")
@@ -35,7 +37,10 @@ local PlaceEntityAction = Action:new("entity.place", PlaceEntityParams, validato
 --- @param params PlaceEntityParams
 --- @return table result Data about the placed entity
 function PlaceEntityAction:run(params)
-    local gs = GameState:new()
+    -- Call super to perform base Action logic (validation, normalization) and get validated params
+    if Action.run then
+        params = Action.run(self, params)
+    end
 
     local agent = gs.agent:get_agent(params.agent_id)
     if not agent then

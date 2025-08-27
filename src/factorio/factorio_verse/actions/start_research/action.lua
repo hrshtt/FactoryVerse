@@ -8,6 +8,7 @@ local game_state = require("factorio_verse.core.game_state.GameState")
 --- @class StartResearchParams : ParamSpec
 --- @field agent_id number
 --- @field technology_name string
+--- @field cancel_current_research boolean
 local StartResearchParams = ParamSpec:new({
     agent_id = {
         type = "number",
@@ -16,6 +17,11 @@ local StartResearchParams = ParamSpec:new({
     technology_name = {
         type = "string",
         required = true
+    },
+    cancel_current_research = {
+        type = "boolean",
+        required = false,
+        default = false
     }
 })
 
@@ -23,8 +29,11 @@ local StartResearchParams = ParamSpec:new({
 local StartResearchAction = Action:new("start_research", StartResearchParams, validators)
 
 --- @param params StartResearchParams
---- @return boolean
+--- @return table
 function StartResearchAction:run(params)
+    if Action.run then
+        params = Action.run(self, params)
+    end
     local technology_name = params.technology_name
     local agent = game_state.agent:get_agent(params.agent_id)
     local force = agent.force
@@ -33,7 +42,9 @@ function StartResearchAction:run(params)
         force.set_saved_technology_progress(force.current_research.name, force.research_progress)
     end
     -- Cancel current research if any
-    --force.cancel_current_research()
+    if params.cancel_current_research then
+        force.cancel_current_research()
+    end
 
     -- Set new research using add_research
     local success = force.add_research(technology_name)
