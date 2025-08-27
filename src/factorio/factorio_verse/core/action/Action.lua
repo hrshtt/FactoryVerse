@@ -4,24 +4,29 @@
 
 --- @class Action
 --- @field name string
---- @field params table
+--- @field params ParamSpec
 --- @field validators table
 --- @field validate function
 --- @field run function
 local Action = {}
 Action.__index = Action
 
-function Action.new(name, params)
+--- @param name string
+--- @param params ParamSpec
+--- @return Action
+function Action:new(name, params, validators)
   return setmetatable({
     name = name,
     params = params,
-    validators = {},
+    validators = validators or {},
   }, Action)
 end
 
-function Action:validate(params, gs, ctx)
+--- @param params ParamSpec
+--- @return boolean
+function Action:validate(params)
   for _, validator in ipairs(self.validators) do
-    local result = validator(params, gs, ctx)
+    local result = validator(params)
     if not result then
       return false
     end
@@ -29,7 +34,9 @@ function Action:validate(params, gs, ctx)
   return true
 end
 
-function Action:run(params, gs, ctx)
+--- @param params ParamSpec
+--- @return boolean
+function Action:run(params)
   return true
 end
 
