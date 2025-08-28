@@ -1,5 +1,5 @@
-local ValidatorRegistry = require("factorio_verse.core.action.ValidatorRegistry")
-local StartResearchParams = require("factorio_verse.actions.start_research.action").StartResearchParams
+local ValidatorRegistry = require("core.action.ValidatorRegistry")
+local StartResearchParams = require("actions.start_research.action").StartResearchParams
 
 local validator_registry = ValidatorRegistry:new()
 

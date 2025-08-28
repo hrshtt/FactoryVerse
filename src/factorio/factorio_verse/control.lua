@@ -1,6 +1,15 @@
 -- control.lua: registers action run methods on a remote interface and hooks events
 
-local action_registry = require("factorio_verse.core.action.ActionRegistry")
+local action_registry = require("core.action.ActionRegistry")
+
+local ok, mod = pcall(require, "actions.agent.walk.action")
+if ok then
+  log("Yeah even the action was loaded")
+else
+  log("Wait, what? The action was not loaded?")
+  log(mod)
+end
+
 
 -- Register remote interface containing all actions' run methods
 local function register_remote_interface()
@@ -16,18 +25,18 @@ local function register_events()
   end
 end
 
+register_remote_interface()
+register_events()
+
 -- Perform registrations at different lifecycle points to be safe on reloads
 script.on_init(function()
-  register_remote_interface()
-  register_events()
+  log("hello from on_init")
 end)
 
 script.on_load(function()
-  register_remote_interface()
-  register_events()
+  log("hello from on_load")
 end)
 
 script.on_configuration_changed(function()
-  register_remote_interface()
-  register_events()
+  log("hello from on_configuration_changed")
 end)

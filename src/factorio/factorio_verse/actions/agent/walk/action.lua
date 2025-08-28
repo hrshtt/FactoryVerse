@@ -1,9 +1,6 @@
-local Action = require("factorio_verse.core.action.Action")
-local ParamSpec = require("factorio_verse.core.action.ParamSpec")
-local validator_registry = require("factorio_verse.core.validator.validator_registry")
-
-local validators = validator_registry:get_validations("agent.walk")
-local game_state = require("factorio_verse.core.game_state.GameState")
+local Action = require("core.action.Action")
+local ParamSpec = require("core.action.ParamSpec")
+local game_state = require("core.game_state.GameState")
 
 --- @class WalkParams : ParamSpec
 --- @field agent_id number
@@ -31,7 +28,8 @@ local function normalize_direction(dir)
 end
 
 --- @class WalkAction : Action
-local WalkAction = Action:new("agent.walk", WalkParams, validators)
+--- @field validators table<function>
+local WalkAction = Action:new("agent.walk", WalkParams)
 
 --- @param params WalkParams
 --- @return boolean

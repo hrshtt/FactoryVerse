@@ -1,7 +1,7 @@
 --- factorio_verse/core/game_state/AgentGameState.lua
 --- AgentGameState sub-module for managing agent-related functionality.
 
-local GameStateError = require("factorio_verse.core.Error")
+local GameStateError = require("core.Error")
 
 --- @class AgentGameState
 --- @field game_state GameState

@@ -1,6 +1,8 @@
 -- factorio_verse/core/action/ActionRegistry.lua
 -- Simple utilities to load action modules and expose their run methods for remote interface
 
+local ValidatorRegistry = require("core.action.ValidatorRegistry")
+
 local ActionRegistry = {}
 ActionRegistry.__index = ActionRegistry
 
@@ -8,23 +10,23 @@ ActionRegistry.__index = ActionRegistry
 -- Note: Factorio runtime cannot list files, so we keep a static list here.
 local ACTION_MODULES = {
   -- agent
-  "factorio_verse.actions.agent.walk.action",
-  "factorio_verse.actions.agent.send_message.action",
+  "actions.agent.walk.action",
+  -- "actions.agent.send_message.action",
 
   -- entity
-  "factorio_verse.actions.entity.place.action",
-  "factorio_verse.actions.entity.move.action",
-  "factorio_verse.actions.entity.remove.action",
-  "factorio_verse.actions.entity.set_recipe.action",
-  "factorio_verse.actions.entity.connect.action",
+  -- "actions.entity.place.action",
+  -- "actions.entity.move.action",
+  -- "actions.entity.remove.action",
+  -- "actions.entity.set_recipe.action",
+  -- "actions.entity.connect.action",
 
   -- item
-  "factorio_verse.actions.item.craft.action",
-  "factorio_verse.actions.item.transfer.action",
+  -- "actions.item.craft.action",
+  -- "actions.item.transfer.action",
 
   -- resources / research
-  "factorio_verse.actions.mine_resource.action",
-  "factorio_verse.actions.start_research.action",
+  -- "actions.mine_resource.action",
+  "actions.start_research.action",
 }
 
 --- Create a new registry instance
@@ -44,10 +46,24 @@ end
 function ActionRegistry:load()
   if self.loaded then return end
 
+  local validator_registry = ValidatorRegistry:new()
+
+  validator_registry:build_registry()
+
+
   for _, module_name in ipairs(ACTION_MODULES) do
     local ok, action_or_err = pcall(require, module_name)
     if ok and type(action_or_err) == "table" then
       local action = action_or_err
+      local ok2, err = pcall(function()
+        action:attach_validators(validator_registry:get_validations(action.name))
+      end)
+      if ok2 then
+        log("Attached validator to action: " .. tostring(action.name))
+      else
+        log("Error attaching validator to action: " .. tostring(action.name))
+        log(err)
+      end
       if type(action.name) == "string" and type(action.run) == "function" then
         table.insert(self.actions, action)
         self.actions_by_name[action.name] = action
@@ -63,7 +79,8 @@ function ActionRegistry:load()
         end
       end
     else
-      -- Silently ignore missing/invalid modules to keep registry resilient
+      log("Error loading action: " .. module_name)
+      log(action_or_err)
     end
   end
 

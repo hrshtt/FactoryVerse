@@ -54,9 +54,14 @@ function ParamSpec:_set_values(table)
     if not table then
         return self
     end
+    if type(table) ~= "table" then
+        error("Invalid table type: " .. type(table))
+    end
     for k, v in pairs(table) do
         if k ~= "_spec" and k ~= "_validated" then
+            log("Setting parameter: " .. k .. " = " .. tostring(v))
             rawset(self, k, v)
+            log("Value set: " .. tostring(self[k]))
         end
     end
     self._validated = false
@@ -129,8 +134,8 @@ end
 --- @param table table Parameter values
 --- @return ParamSpec
 function ParamSpec:from_table(table)
-    self:_set_values(table)
-    self:validate()
+    self = self:_set_values(table)
+    self = self:validate()
     return self
 end
 

@@ -1,7 +1,7 @@
 --- factorio_verse/core/game_state/EntitiesGameState.lua
 --- EntitiesGameState sub-module for managing entity-related functionality.
 
-local GameStateError = require("factorio_verse.core.Error")
+local GameStateError = require("core.Error")
 
 --- @class EntitiesGameState
 --- @field game_state GameState

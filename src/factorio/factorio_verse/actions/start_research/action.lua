@@ -1,9 +1,9 @@
-local Action = require("factorio_verse.core.action.Action")
-local ParamSpec = require("factorio_verse.core.action.ParamSpec")
-local validator_registry = require("factorio_verse.core.action.ValidatorRegistry")
+local Action = require("core.action.Action")
+local ParamSpec = require("core.action.ParamSpec")
+local validator_registry = require("core.action.ValidatorRegistry"):new()
 
 local validators = validator_registry:get_validations("start_research")
-local game_state = require("factorio_verse.core.game_state.GameState")
+local game_state = require("core.game_state.GameState")
 
 --- @class StartResearchParams : ParamSpec
 --- @field agent_id number

@@ -35,6 +35,12 @@ function Action:new(name, params, validators)
   }, Action)
 end
 
+--- Attach validators to the action
+--- @param validators table<function>
+function Action:attach_validators(validators)
+  self.validators = validators
+end
+
 --- Validate parameters using external validators
 --- @param params ParamSpec|table Parameter instance or raw params (for backward compatibility)
 --- @return boolean
@@ -97,14 +103,15 @@ function Action:_pre_run(game_state, params)
   if ok == false then
     error("Validation failed for action '" .. tostring(self.name) .. "'")
   end
-
+ 
   self.params = instance
 
   -- Run external validators
   for _, validator in ipairs(self.validators) do
-    local result = validator(game_state, instance)
-    if not result then
-      error("Validation failed for action '" .. tostring(self.name) .. "'")
+    local ok2, result = pcall(validator, instance)
+    if not ok2 then
+      log("Validation failed for action '" .. tostring(self.name) .. "': " .. tostring(result))
+      error("Validation failed for action '" .. tostring(self.name) .. "': " .. tostring(result))
     end
   end
   return instance
@@ -121,8 +128,6 @@ end
 --- Run the action with validated parameters
 --- @param params ParamSpec|table|string Parameter instance, raw params, or JSON string
 --- @return any Action result
-function Action:run(params)
-  return self:_pre_run(params)
-end
+function Action:run(params, ...) end
 
 return Action

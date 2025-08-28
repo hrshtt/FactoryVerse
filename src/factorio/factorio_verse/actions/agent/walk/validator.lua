@@ -1,14 +1,18 @@
-local ValidatorRegistry = require("factorio_verse.core.action.ValidatorRegistry")
+local ValidatorRegistry = require("core.action.ValidatorRegistry")
+local game_state = require("core.game_state.GameState")
 
 local validator_registry = ValidatorRegistry:new()
 
+--- @param params WalkParams
+--- @return boolean
 local function validate_direction(params)
-    if params.direction == nil then return false end
+    local dir = string.lower(tostring(params.direction))
+    if not game_state.aliases.direction[dir] then
+        error("Direction '" .. tostring(params.direction) .. "' is not allowed")
+    end
     return true
 end
 
-validator_registry:register("agent.walk", function(params)
-    return validate_direction(params)
-end)
+validator_registry:register("agent.walk", validate_direction)
 
 return validator_registry

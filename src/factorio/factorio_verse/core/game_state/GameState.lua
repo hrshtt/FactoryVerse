@@ -1,11 +1,11 @@
 --- factorio_verse/core/game_state/GameState.lua
 --- GameState class for managing game state with composable sub-modules.
 
-local GameStateError = require("factorio_verse.core.Error")
-local AgentGameState = require("factorio_verse.core.game_state.AgentGameState")
-local InventoryGameState = require("factorio_verse.core.game_state.InventoryGameState")
-local EntitiesGameState = require("factorio_verse.core.game_state.EntitiesGameState")
-local PowerGameState = require("factorio_verse.core.game_state.PowerGameState")
+local GameStateError = require("core.Error")
+local AgentGameState = require("core.game_state.AgentGameState")
+local InventoryGameState = require("core.game_state.InventoryGameState")
+local EntitiesGameState = require("core.game_state.EntitiesGameState")
+local PowerGameState = require("core.game_state.PowerGameState")
 
 --- @class GameState
 --- @field game table

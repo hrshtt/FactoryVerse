@@ -1,7 +1,7 @@
-local Action = require("factorio_verse.core.action.Action")
-local ParamSpec = require("factorio_verse.core.action.ParamSpec")
-local validator_registry = require("factorio_verse.core.validator.validator_registry")
-local GameState = require("factorio_verse.core.game_state.GameState")
+local Action = require("core.action.Action")
+local ParamSpec = require("core.action.ParamSpec")
+local validator_registry = require("core.action.ValidatorRegistry"):new()
+local GameState = require("core.game_state.GameState")
 
 local validators = validator_registry:get_validations("entity.place")
 

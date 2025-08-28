@@ -1,7 +1,7 @@
 --- factorio_verse/core/game_state/PowerGameState.lua
 --- PowerGameState sub-module for managing power-related functionality.
 
-local GameStateError = require("factorio_verse.core.Error")
+local GameStateError = require("core.Error")
 
 --- @class PowerGameState
 --- @field parent GameState

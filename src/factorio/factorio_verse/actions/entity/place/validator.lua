@@ -1,5 +1,5 @@
-local ValidatorRegistry = require("factorio_verse.core.action.ValidatorRegistry")
-local GameState = require("factorio_verse.core.game_state.GameState")
+local ValidatorRegistry = require("core.action.ValidatorRegistry")
+local GameState = require("core.game_state.GameState")
 
 local validator_registry = ValidatorRegistry:new()
 

@@ -1,7 +1,7 @@
 --- factorio_verse/core/game_state/InventoryGameState.lua
 --- InventoryGameState sub-module for managing inventory-related functionality.
 
-local GameStateError = require("factorio_verse.core.Error")
+local GameStateError = require("core.Error")
 
 --- @class InventoryGameState
 --- @field game_state GameState
