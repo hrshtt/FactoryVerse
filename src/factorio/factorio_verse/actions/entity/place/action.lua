@@ -37,12 +37,10 @@ local PlaceEntityAction = Action:new("entity.place", PlaceEntityParams, validato
 --- @param params PlaceEntityParams
 --- @return table result Data about the placed entity
 function PlaceEntityAction:run(params)
-    -- Call super to perform base Action logic (validation, normalization) and get validated params
-    if Action.run then
-        params = Action.run(self, params)
-    end
+    local p = self:_pre_run(params)
+    ---@cast p PlaceEntityParams
 
-    local agent = gs.agent:get_agent(params.agent_id)
+    local agent = gs.agent:get_agent(p.agent_id)
     if not agent then
         error("Agent not found for id " .. tostring(params.agent_id))
     end
@@ -53,9 +51,9 @@ function PlaceEntityAction:run(params)
     end
 
     local placement = {
-        name = params.name,
-        position = params.position,
-        force = params.force or agent.force,
+        name = p.name,
+        position = p.position,
+        force = p.force or agent.force,
     }
 
     local function normalize_direction(dir)
@@ -70,33 +68,33 @@ function PlaceEntityAction:run(params)
         return nil
     end
 
-    local dir = normalize_direction(params.direction)
+    local dir = normalize_direction(p.direction)
     if type(dir) == "number" then
         placement.direction = dir
     end
 
-    if params.fast_replace ~= nil then
-        placement.fast_replace = params.fast_replace
+    if p.fast_replace ~= nil then
+        placement.fast_replace = p.fast_replace
     end
-    if params.raise_built ~= nil then
-        placement.raise_built = params.raise_built
+    if p.raise_built ~= nil then
+        placement.raise_built = p.raise_built
     end
-    if params.create_build_effect_smoke ~= nil then
-        placement.create_build_effect_smoke = params.create_build_effect_smoke
+    if p.create_build_effect_smoke ~= nil then
+        placement.create_build_effect_smoke = p.create_build_effect_smoke
     end
-    if params.move_stuck_players ~= nil then
-        placement.move_stuck_players = params.move_stuck_players
+    if p.move_stuck_players ~= nil then
+        placement.move_stuck_players = p.move_stuck_players
     end
-    if params.spawn_decorations ~= nil then
-        placement.spawn_decorations = params.spawn_decorations
+    if p.spawn_decorations ~= nil then
+        placement.spawn_decorations = p.spawn_decorations
     end
 
     local entity = surface.create_entity(placement)
     if not entity then
-        error("Failed to place entity: " .. params.name)
+        error("Failed to place entity: " .. p.name)
     end
 
-    return {
+    local result = {
         name = entity.name,
         position = entity.position,
         direction = entity.direction,
@@ -104,6 +102,7 @@ function PlaceEntityAction:run(params)
         type = entity.type,
         force = entity.force and entity.force.name or nil
     }
+    return self:_post_run(result, p)
 end
 
 return PlaceEntityAction

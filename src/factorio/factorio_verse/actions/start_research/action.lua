@@ -1,6 +1,6 @@
 local Action = require("factorio_verse.core.action.Action")
 local ParamSpec = require("factorio_verse.core.action.ParamSpec")
-local validator_registry = require("factorio_verse.actions.start_research.validator")
+local validator_registry = require("factorio_verse.core.action.ValidatorRegistry")
 
 local validators = validator_registry:get_validations("start_research")
 local game_state = require("factorio_verse.core.game_state.GameState")
@@ -31,18 +31,22 @@ local StartResearchAction = Action:new("start_research", StartResearchParams, va
 --- @param params StartResearchParams
 --- @return table
 function StartResearchAction:run(params)
-    if Action.run then
-        params = Action.run(self, params)
-    end
-    local technology_name = params.technology_name
-    local agent = game_state.agent:get_agent(params.agent_id)
+    ---@type StartResearchParams
+    local p = self:_pre_run(game_state, params)
+    local technology_name = p.technology_name
+    local agent = game_state.agent:get_agent(p.agent_id)
     local force = agent.force
 
     if force.current_research then
-        force.set_saved_technology_progress(force.current_research.name, force.research_progress)
+        -- agent.force.research_progress()
+        table.insert(storage.agent_context[params.agent_id].research_progress, {
+            name = force.current_research.name,
+            progress = force.research_progress
+        })
     end
+
     -- Cancel current research if any
-    if params.cancel_current_research then
+    if p.cancel_current_research then
         force.cancel_current_research()
     end
 
@@ -62,11 +66,10 @@ function StartResearchAction:run(params)
     -- Collect all ingredients and their counts
     for _, ingredient in pairs(tech.research_unit_ingredients) do
         table.insert(ingredients, {
-            name = "\""..ingredient.name.."\"",
+            name = ingredient.name,
             count = ingredient.amount * units_required,
-            type = ingredient.type
         })
     end
 
-    return ingredients
+    return self:_post_run(ingredients, p)
 end

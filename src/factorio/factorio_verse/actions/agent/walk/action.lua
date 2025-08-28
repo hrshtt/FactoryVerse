@@ -36,9 +36,11 @@ local WalkAction = Action:new("agent.walk", WalkParams, validators)
 --- @param params WalkParams
 --- @return boolean
 function WalkAction:run(params)
-    local agent_id = params.agent_id
-    local direction = normalize_direction(params.direction)
-    local should_walk = params.walking
+    local p = self:_pre_run(game_state, params)
+    ---@cast p WalkParams
+    local agent_id = p.agent_id
+    local direction = normalize_direction(p.direction)
+    local should_walk = p.walking
 
     if direction == nil then
         return false
@@ -47,11 +49,11 @@ function WalkAction:run(params)
     local agent = game_state.agent:get_agent(agent_id)
 
     -- If ticks specified, register an intent to sustain walking each tick
-    if params.ticks and params.ticks > 0 then
+    if p.ticks and p.ticks > 0 then
         storage.walk_intents = storage.walk_intents or {}
         storage.walk_intents[agent_id] = {
             direction = direction,
-            end_tick = game.tick + params.ticks,
+            end_tick = game.tick + p.ticks,
             walking = (should_walk ~= false)
         }
         -- Apply immediately this tick as well
@@ -71,7 +73,7 @@ function WalkAction:run(params)
         agent.walking_state = { walking = true, direction = direction }
     end
 
-    return true
+    return self:_post_run(true, p)
 end
 
 -- Event handlers defined in the action so control.lua can register them later
