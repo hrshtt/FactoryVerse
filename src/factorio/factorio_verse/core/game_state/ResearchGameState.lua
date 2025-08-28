@@ -18,7 +18,7 @@ function ResearchGameState:new(parent)
 end
 
 function ResearchGameState:save_research(agent_id, research_id)
-    local player = global.agent_characters[agent_id]
+    local player = storage.agent_characters[agent_id]
     local force = player.force
 
     local research_state = {

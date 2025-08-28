@@ -44,7 +44,7 @@ function WalkAction:run(params)
         return false
     end
 
-    local agent = game_state.agent:get_agent(agent_id)
+    local agent = game_state:agent():get_agent(agent_id)
 
     -- If ticks specified, register an intent to sustain walking each tick
     if p.ticks and p.ticks > 0 then

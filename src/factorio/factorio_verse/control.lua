@@ -10,6 +10,9 @@ else
   log(mod)
 end
 
+-- Load admin api
+local admin_api = require("core.admin_api")
+admin_api.load_helpers()
 
 -- Register remote interface containing all actions' run methods
 local function register_remote_interface()

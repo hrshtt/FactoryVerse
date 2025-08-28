@@ -3,10 +3,46 @@
 
 local GameStateError = require("core.Error")
 
+--- @param h number
+--- @param s number
+--- @param v number
+--- @return table
+local function hsv_to_rgb(h, s, v)
+    local r, g, b
+    local i = math.floor(h * 6)
+    local f = h * 6 - i
+    local p = v * (1 - s)
+    local q = v * (1 - f * s)
+    local t = v * (1 - (1 - f) * s)
+    
+    i = i % 6
+    
+    if i == 0 then r, g, b = v, t, p
+    elseif i == 1 then r, g, b = q, v, p
+    elseif i == 2 then r, g, b = p, v, t
+    elseif i == 3 then r, g, b = p, q, v
+    elseif i == 4 then r, g, b = t, p, v
+    elseif i == 5 then r, g, b = v, p, q
+    end
+    
+    return {r = r, g = g, b = b, a = 1.0}
+end
+
+--- @param index number
+--- @param total_agents number
+--- @return table
+local function generate_agent_color(index, total_agents)
+    local hue = (index - 1) / total_agents
+    local saturation = 1.0
+    local value = 1.0
+    return hsv_to_rgb(hue, saturation, value)
+end
+
 --- @class AgentGameState
 --- @field game_state GameState
 --- @field agent_id number
---- @field player table
+--- @field agent_inventory_type string
+--- Methods: player()
 local AgentGameState = {}
 AgentGameState.__index = AgentGameState
 
@@ -15,32 +51,40 @@ local agent_inventory_type = defines.inventory.character_main
 function AgentGameState:new(game_state, agent_id)
     local instance = {
         game_state = game_state,
-        agent_id = agent_id or 1,
-        player = nil
+        agent_id = agent_id or 1
     }
-    
-    if game and game.players[agent_id] then
-        instance.player = game.players[agent_id]
-    end
     
     setmetatable(instance, self)
     return instance
 end
 
-function AgentGameState:create_agent(agent_id, position)
+-- Lazy getter for player
+function AgentGameState:player()
+    if not self._player then
+        local g = self.game_state:get_game()
+        if g and g.players[self.agent_id] then
+            self._player = g.players[self.agent_id]
+        end
+    end
+    return self._player
+end
+
+--- @param agent_id number
+--- @param position table
+--- @return LuaEntity?
+function AgentGameState:create_agent(agent_id, position, color)
     if not position then
         position = {x = 0, y = (agent_id - 1) * 2}
     end
     
-    local surface = self.game_state.game.surfaces[1]
-    if not surface then
-        return nil, GameStateError:new("No surface available for agent creation")
-    end
+    local surface = self.game_state:get_surface()
     
+    local g = self.game_state:get_game()
     local char = surface.create_entity{
         name = "character",
         position = position,
-        force = game.forces.player
+        force = g.forces.player,
+        color = color
     }
     return char
 end
@@ -49,7 +93,40 @@ end
 --- @return LuaEntity
 function AgentGameState:get_agent(agent_id)
     agent_id = agent_id or self.agent_id
-    return global.agent_characters[agent_id]
+    if not storage.agent_characters then
+        storage.agent_characters = {}
+        return nil
+    end
+    return storage.agent_characters[agent_id]
+end
+
+--- @param num_agents number
+--- @param destroy_existing boolean|nil
+--- @return boolean
+function AgentGameState:create_agent_characters(num_agents, destroy_existing)
+    if not storage.agent_characters then
+        storage.agent_characters = {}
+    end
+    if destroy_existing and storage.agent_characters then
+        for _, char in pairs(storage.agent_characters) do
+            if char and char.valid then
+                char.destroy()
+            end
+        end
+        storage.agent_characters = {}
+    end
+    
+    for _, player in pairs(game.connected_players) do
+        player.set_controller({type = defines.controllers.spectator})
+    end
+    
+    for i = 1, num_agents do
+        log("Creating agent character " .. i .. " of " .. num_agents)
+        position = {x = 0, y = (i - 1) * 2}
+        local char = self:create_agent(i, position, generate_agent_color(i, num_agents))
+        storage.agent_characters[i] = char
+    end
+    return true
 end
 
 --- @param agent_id number
@@ -90,16 +167,20 @@ end
 
 function AgentGameState:set_players_to_spectator()
     -- Remove connected player characters and make them viewers only
-    for _, player in pairs(game.connected_players) do
-        player.set_controller({type = defines.controllers.spectator})
+    local g = self.game_state:get_game()
+    if g then
+        for _, player in pairs(g.connected_players) do
+            player.set_controller({type = defines.controllers.spectator})
+        end
     end
 end
 
 function AgentGameState:to_json()
+    local player = self:player()
     return {
         agent_id = self.agent_id,
-        player_position = self.player and self.player.position or nil,
-        player_force = self.player and self.player.force.name or nil
+        player_position = player and player.position or nil,
+        player_force = player and player.force.name or nil
     }
 end
 

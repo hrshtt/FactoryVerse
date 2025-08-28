@@ -5,21 +5,13 @@ local GameStateError = require("core.Error")
 
 --- @class InventoryGameState
 --- @field game_state GameState
---- @field agent_id number
---- @field player table
 local InventoryGameState = {}
 InventoryGameState.__index = InventoryGameState
 
-function InventoryGameState:new(game_state, agent_id)
+function InventoryGameState:new(game_state)
     local instance = {
         game_state = game_state,
-        agent_id = agent_id or 1,
-        player = nil
     }
-    
-    if game and game.players[agent_id] then
-        instance.player = game.players[agent_id]
-    end
     
     setmetatable(instance, self)
     return instance
