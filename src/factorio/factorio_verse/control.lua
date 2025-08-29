@@ -13,6 +13,7 @@ end
 -- Load admin api
 local admin_api = require("core.admin_api")
 admin_api.load_helpers()
+admin_api.load_commands()
 
 -- Register remote interface containing all actions' run methods
 local function register_remote_interface()
