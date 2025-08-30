@@ -123,7 +123,6 @@ end
 
 function GameState:get_resource_patches()
     local surface = self:get_surface()
-    (prototypes.resource_category)
     -- return surface.find_resource_patches()
 end
 
