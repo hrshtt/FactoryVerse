@@ -422,8 +422,7 @@ end
 
 function ResourceSnapshot:take_water()
     local surface = GameState:get_surface()
-    local gs = GameState:new()
-    local charted_chunks = gs:get_charted_chunks(true) -- { {x=.., y=.., area=...}, ... }
+    local charted_chunks = GameState:get_charted_chunks(true) -- { {x=.., y=.., area=...}, ... }
 
     -- 1) Derive the set of water tile names via prototypes (so it works with mods too)
     local water_tile_names = {}

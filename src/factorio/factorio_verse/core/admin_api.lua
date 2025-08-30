@@ -1,5 +1,5 @@
 local GameState = require("core.game_state.GameState")
-local ResourceSnapshot = require("snapshot.ResourceSnapshot")
+local ResourceSnapshot = require("snapshots.ResourceSnapshot")
 
 
 local triple_print = function(print_str)
@@ -20,6 +20,14 @@ M.helpers.test = function()
     -- Quick & dirty: find connected water tiles and summarize water patches.
     -- Kept entirely inside this function as requested.
 
+    ResourceSnapshot:new():take()
+end
+
+M.helpers.take_water = function()
+    -- Quick & dirty: find connected water tiles and summarize water patches.
+    -- Kept entirely inside this function as requested.
+
+    ResourceSnapshot:new():take_water()
 end
 
 M.load_helpers = function()
