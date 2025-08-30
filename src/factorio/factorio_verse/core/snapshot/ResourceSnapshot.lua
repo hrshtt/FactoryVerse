@@ -222,10 +222,14 @@ function ResourceSnapshot:take()
                                 end
                                 table.insert(ry, { x = run_x, len = run_len, sum_amount = run_sum })
                                 -- Edge capture
-                                if y == min_y then table.insert(E.north,
-                                        { y = y, x = run_x, len = run_len, lbl = run_lbl }) end
-                                if y == max_y then table.insert(E.south,
-                                        { y = y, x = run_x, len = run_len, lbl = run_lbl }) end
+                                if y == min_y then
+                                    table.insert(E.north,
+                                        { y = y, x = run_x, len = run_len, lbl = run_lbl })
+                                end
+                                if y == max_y then
+                                    table.insert(E.south,
+                                        { y = y, x = run_x, len = run_len, lbl = run_lbl })
+                                end
                             end
                             -- start new run if lbl exists
                             if lbl then
@@ -416,6 +420,138 @@ function ResourceSnapshot:take()
     log(helpers.table_to_json(summary))
 end
 
+function ResourceSnapshot:take_water()
+    local surface = game.surfaces[1]
+    local gs = GameState:new()
+    local charted_chunks = gs:get_charted_chunks(true) -- { {x=.., y=.., area=...}, ... }
+
+    -- 1) Derive the set of water tile names via prototypes (so it works with mods too)
+    local water_tile_names = {}
+    local ok_proto, tiles_or_err = pcall(function()
+        return prototypes.get_tile_filtered({ { filter = "collision-mask", mask = "water-tile" } })
+    end)
+    if ok_proto and tiles_or_err then
+        for _, t in pairs(tiles_or_err) do table.insert(water_tile_names, t.name) end
+    else
+        -- fallback to common vanilla names if prototypes API not available here
+        water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
+    end
+
+    -- quick lookup set for names
+    local water_name_set = {}
+    for _, n in ipairs(water_tile_names) do water_name_set[n] = true end
+
+    -- 2) Seed collection: scan charted chunks for water tiles
+    local seeds = {} -- list of LuaTile we can start from
+    for _, chunk in ipairs(charted_chunks) do
+        local tiles = surface.find_tiles_filtered { area = chunk.area, name = water_tile_names }
+        for i = 1, #tiles do
+            local tile = tiles[i]
+            if tile and tile.valid and water_name_set[tile.name] then
+                table.insert(seeds, tile)
+            end
+        end
+    end
+
+    -- 3) Flood-fill via get_connected_tiles from each unvisited water tile
+    local visited = {} -- key: "x,y" -> true
+    local function keyxy(x, y) return x .. "," .. y end
+
+    local function xy_of(o)
+        if not o then return nil end
+        if o.position then
+            local px, py = o.position.x, o.position.y
+            if px and py then return math.floor(px), math.floor(py) end
+        end
+        local px = o.x or o[1]
+        local py = o.y or o[2]
+        if px and py then return math.floor(px), math.floor(py) end
+        return nil
+    end
+
+    local patches = {} -- { {id=1, tiles=n, bbox={min_x,...}, centroid={x,y}} , ... }
+    local next_id = 1
+
+    local function mark_and_agg(tiles_list, patch)
+        for i = 1, #tiles_list do
+            local t = tiles_list[i]
+            local x, y = xy_of(t)
+            if x and y then
+                local k = keyxy(x, y)
+                if not visited[k] then
+                    visited[k] = true
+                    patch.tiles = patch.tiles + 1
+                    if x < patch.bbox.min_x then patch.bbox.min_x = x end
+                    if y < patch.bbox.min_y then patch.bbox.min_y = y end
+                    if x > patch.bbox.max_x then patch.bbox.max_x = x end
+                    if y > patch.bbox.max_y then patch.bbox.max_y = y end
+                    patch.sum_x = patch.sum_x + x
+                    patch.sum_y = patch.sum_y + y
+                end
+            end
+        end
+    end
+
+    -- To avoid repeatedly flooding the same lake, skip seeds already visited
+    for i = 1, #seeds do
+        local tile = seeds[i]
+        local x = math.floor(tile.position.x)
+        local y = math.floor(tile.position.y)
+        local k = keyxy(x, y)
+        if not visited[k] then
+            -- fetch connected component. Prefer include_diagonal=true for “blobby” feel.
+            local ok, connected = pcall(function()
+                return surface.get_connected_tiles(tile.position, water_tile_names, true)
+            end)
+            if not ok or not connected then
+                -- Fallback: if signature differs, try without diag param
+                connected = surface.get_connected_tiles(tile.position, water_tile_names)
+            end
+
+            local patch = {
+                id = next_id,
+                tiles = 0,
+                bbox = { min_x = 1e9, min_y = 1e9, max_x = -1e9, max_y = -1e9 },
+                sum_x = 0,
+                sum_y = 0
+            }
+            next_id = next_id + 1
+            mark_and_agg(connected, patch)
+            patch.centroid = {
+                x = (patch.tiles > 0) and (patch.sum_x / patch.tiles) or 0,
+                y = (patch.tiles > 0) and (patch.sum_y / patch.tiles) or 0
+            }
+            patches[#patches + 1] = patch
+        end
+    end
+
+    -- 4) Print compact summary
+    table.sort(patches, function(a, b) return a.tiles > b.tiles end)
+    local top = {}
+    for i = 1, math.min(5, #patches) do
+        local p = patches[i]
+        top[#top + 1] = {
+            id = p.id,
+            tiles = p.tiles,
+            bbox = p.bbox,
+            centroid = { x = math.floor(p.centroid.x * 100) / 100, y = math.floor(p.centroid.y * 100) / 100 }
+        }
+    end
+
+    local out = {
+        surface = surface.name,
+        water = {
+            patch_count = #patches,
+            top = top
+        }
+    }
+
+    local print_str = helpers.table_to_json(out)
+    game.print(print_str)
+    log(print_str)
+    rcon.print(print_str)
+end
+
 function ResourceSnapshot:render(out)
     -- If you want full output for debugging, uncomment the next line (may be large!)
     -- rcon.print(helpers.table_to_json(out))
@@ -426,8 +562,8 @@ function ResourceSnapshot:render(out)
     local DRAW_BBOX     = true
     local DRAW_CENTROID = true
     local DRAW_LABEL    = true
-    local ONLY_IN_ALT   = false  -- set true if you want labels only in Alt-mode
-    local TTL_TICKS     = nil    -- e.g., 60*30 for 30 seconds, or nil to persist until cleared
+    local ONLY_IN_ALT   = false -- set true if you want labels only in Alt-mode
+    local TTL_TICKS     = nil   -- e.g., 60*30 for 30 seconds, or nil to persist until cleared
     local surface       = game.surfaces[1]
 
     -- Optional: clear previous renders from this mod to avoid stacking
