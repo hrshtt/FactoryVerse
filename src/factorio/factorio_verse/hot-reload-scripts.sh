@@ -6,6 +6,12 @@ set -eu
 # script resides) into /factorio/temp/currently-playing/ inside the container,
 # preserving the directory structure.
 
+# Check if game is available via rcon; if not, error out
+if ! rcon '/c rcon.print(game~=nil)' | grep -q 'true'; then
+  echo "Error: Factorio game object is not available (game==nil). Aborting hot reload."
+  exit 1
+fi
+
 DEST_DIR="/opt/factorio/temp/currently-playing"
 
 # Move to the directory where the script lives (scenario root)
@@ -37,5 +43,5 @@ done
 
 echo "Done. ${files_copied} *.lua files synced to $DEST_DIR."
 
-rcon '/reload_scripts'
-
+rcon '/c game.reload_script();game.print("Reloaded scripts");rcon.print("Reloaded scripts")'
+rcon '/c log("Reloaded scripts")'
