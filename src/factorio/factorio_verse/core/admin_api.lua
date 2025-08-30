@@ -15,13 +15,30 @@ M.helpers.create_agent_characters = function(num_agents, destroy_existing)
     return GameState:new():agent():create_agent_characters(num_agents, destroy_existing)
 end
 
+M.helpers.test = function()
+    local surface = game.surfaces[1]
+    local charted_chunks = GameState:new():get_charted_chunks(true)
+    for _, chunk in pairs(charted_chunks) do
+        local entities = surface.find_entities_filtered{ area = chunk.area, type = "resource" }
+        local count = surface.count_entities_filtered{ area = chunk.area, type = "resource" }
+        rcon.print("found: " .. tostring(count) )
+        for _, entity in pairs(entities) do
+            if _ <= 10 then
+                rcon.print(helpers.table_to_json({amount = entity.amount, name = entity.name, entity_position = entity.position}))
+            end
+        end
+    end
+end
+
 M.load_helpers = function()
     if remote.interfaces["helpers"] then
-        log("Removing helpers interface")
+        log("Found: " .. helpers.table_to_json(remote.interfaces["helpers"]))
         remote.remove_interface("helpers")
+        log("Removed stale 'helpers' interface")
     end
-    log("Adding helpers interface")
     remote.add_interface("helpers", M.helpers)
+    log("Loaded: " .. helpers.table_to_json(remote.interfaces["helpers"]))
+    log("Added fresh 'helpers' interface")
 end
 
 M.commands.pause = function()
@@ -68,18 +85,26 @@ M.commands.reload_scripts = function()
     end)
 end
 
+M.commands.remove_biters = function()
+    commands.add_command("remove_biters", "Remove biters", function()
+        game.forces["enemy"].kill_all_units()
+        game.map_settings.enemy_expansion.enabled = false
+        game.map_settings.enemy_evolution.enabled = false
+        local surface = game.surfaces[1]
+        for _, entity in pairs(surface.find_entities_filtered({type="unit-spawner"})) do
+            entity.destroy()
+        end
+    end)
+end
+
 M.load_commands = function()
-    log("Commands:")
-    log(helpers.table_to_json(commands.commands))
-    log("Loading commands")
     for name, command in pairs(commands.commands) do
-        log("Command: " .. name)
         if command then
-            log("Removing command: " .. name)
             local ok = commands.remove_command(name)
             log("Removed command: " .. name .. " " .. tostring(ok))
         end
     end
+    log("Loading commands")
     for name, command in pairs(M.commands) do
         if type(command) == "function" then
             local ok, err = pcall(command)

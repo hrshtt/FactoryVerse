@@ -2,15 +2,11 @@ local GameState = require "core.game_state.GameState":new()
 
 local Snapshot = {}
 
+Snapshot.game_state = GameState
+
 function Snapshot.new()
     return {
-        game_state = GameState,
-    }
-end
-
-function Snapshot.create_snapshot()
-    return {
-        game_state = GameState,
+        game_state = Snapshot.game_state,
     }
 end
 

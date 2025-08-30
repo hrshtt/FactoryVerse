@@ -7,7 +7,7 @@ local validator_registry = ValidatorRegistry:new()
 --- @param params StartResearchParams
 --- @return boolean
 local function can_research_technology(game_state, params)
-    local agent = game_state.agent:get_agent(params.agent_id)
+    local agent = game_state.agent_state:get_agent(params.agent_id)
     local force = agent.force
     local tech_name = params.technology_name
     local tech = force.technologies[tech_name]

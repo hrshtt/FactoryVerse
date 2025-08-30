@@ -8,7 +8,7 @@ set -eu
 
 # Check if game is available via rcon; if not, error out
 if ! rcon '/c rcon.print(game~=nil)' | grep -q 'true'; then
-  echo "Error: Factorio game object is not available (game==nil). Aborting hot reload."
+  echo "Error: Rcon not found or Factorio game object is not available (game==nil). Aborting hot reload."
   exit 1
 fi
 
