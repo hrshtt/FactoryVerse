@@ -71,7 +71,7 @@ function GameState:get_charted_chunks(sort_by_distance)
         utils.sort_coordinates_by_distance(charted_chunks)
     end
 
-    log("Charted chunks: " .. helpers.table_to_json(charted_chunks))
+    -- log("Charted chunks: " .. helpers.table_to_json(charted_chunks))
 
     return charted_chunks
 end
