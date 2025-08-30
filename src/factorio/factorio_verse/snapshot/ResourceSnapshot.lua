@@ -1,5 +1,5 @@
-local Snapshot = require "core.snapshot.Snapshot":new()
-local GameState = require "core.game_state.GameState":new()
+local Snapshot = require("core.Snapshot"):new()
+local GameState = require("core.game_state.GameState"):new()
 
 local ResourceSnapshot = {}
 ResourceSnapshot.__index = ResourceSnapshot
@@ -14,7 +14,7 @@ function ResourceSnapshot:take()
     rcon.print("Taking resource snapshot")
     log("Taking resource snapshot")
 
-    local surface = game.surfaces[1]
+    local surface = GameState:get_surface()
     local charted_chunks = GameState:get_charted_chunks(true) -- assumes it returns { {x=.., y=.., area=...}, ... }
 
     -- 1) Sort chunks into raster order (cy asc, then cx asc) to simplify north/west reconciliation
@@ -421,7 +421,7 @@ function ResourceSnapshot:take()
 end
 
 function ResourceSnapshot:take_water()
-    local surface = game.surfaces[1]
+    local surface = GameState:get_surface()
     local gs = GameState:new()
     local charted_chunks = gs:get_charted_chunks(true) -- { {x=.., y=.., area=...}, ... }
 
@@ -547,7 +547,6 @@ function ResourceSnapshot:take_water()
     }
 
     local print_str = helpers.table_to_json(out)
-    game.print(print_str)
     log(print_str)
     rcon.print(print_str)
 end

@@ -1,5 +1,5 @@
 local GameState = require("core.game_state.GameState")
-local ResourceSnapshot = require("core.snapshot.ResourceSnapshot")
+local ResourceSnapshot = require("snapshot.ResourceSnapshot")
 
 
 local triple_print = function(print_str)
@@ -17,9 +17,9 @@ M.helpers.create_agent_characters = function(num_agents, destroy_existing)
 end
 
 M.helpers.test = function()
-    -- Option A: Chunked Connected-Component Labeling (CCL) with border merges
-    -- Scrappy, single function implementation. Processes charted chunks, builds patches per resource.
-    ResourceSnapshot:new():take()
+    -- Quick & dirty: find connected water tiles and summarize water patches.
+    -- Kept entirely inside this function as requested.
+
 end
 
 M.load_helpers = function()
