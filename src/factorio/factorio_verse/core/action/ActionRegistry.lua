@@ -140,9 +140,12 @@ end
 function ActionRegistry:register_remote_interface()
   local iface = self:get_remote_interface()
   if remote and remote.add_interface then
-    if not (remote.interfaces and remote.interfaces["actions"]) then
-      remote.add_interface("actions", iface)
+    if remote.interfaces["actions"] then
+      log("Removing actions interface")
+      remote.remove_interface("actions")
     end
+    log("Adding actions interface")
+    remote.add_interface("actions", iface)
   end
 end
 

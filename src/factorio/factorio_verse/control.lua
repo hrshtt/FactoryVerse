@@ -39,6 +39,8 @@ end)
 
 script.on_load(function()
   log("hello from on_load")
+  admin_api.load_helpers()
+  admin_api.load_commands()
 end)
 
 script.on_configuration_changed(function()
