@@ -2,6 +2,8 @@ local GameState = require "core.game_state.GameState":new()
 
 --- Base class for all snapshots with shared functionality
 --- Provides common interface for snapshot operations and output formatting
+--- @class Snapshot
+--- @field game_state GameState
 local Snapshot = {}
 Snapshot.__index = Snapshot
 
