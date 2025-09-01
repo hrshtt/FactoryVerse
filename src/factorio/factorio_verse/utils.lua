@@ -22,8 +22,11 @@ function M.sort_coordinates_by_distance(coords, origin)
     table.sort(coords, function(a, b)
         local ax, ay = get_xy(a)
         local bx, by = get_xy(b)
-        local da = (ax - ox) * (ax - ox) + (ay - oy) * (ay - oy)
-        local db = (bx - ox) * (bx - ox) + (by - oy) * (by - oy)
+        -- Use integer arithmetic for distance calculation to avoid floating-point precision loss
+        local dx_a, dy_a = ax - ox, ay - oy
+        local dx_b, dy_b = bx - ox, by - oy
+        local da = dx_a * dx_a + dy_a * dy_a
+        local db = dx_b * dx_b + dy_b * dy_b
         return da < db
     end)
 

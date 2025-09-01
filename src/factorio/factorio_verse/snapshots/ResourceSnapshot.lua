@@ -27,6 +27,16 @@ function ResourceSnapshot:take()
     local resource_data = self:_analyze_resource_patches(charted_chunks)
     local output = self:create_output("snapshot.resources", "v1", resource_data)
 
+	-- Emit JSON for SQL ingestion (does not change return value)
+	self:emit_json({ output_dir = "script-output/factoryverse" }, "resources", {
+		meta = {
+			schema_version = "snapshot.resources.v1",
+			surface = output.surface,
+			tick = output.timestamp,
+		},
+		data = output.data,
+	})
+
     self:print_summary(output, function(out)
         local summary = { surface = out.surface, resources = {} }
         for _, resource in ipairs(out.data.resources) do
@@ -52,6 +62,16 @@ function ResourceSnapshot:take_water()
         patches = patches
     })
 
+    	-- Emit JSON for SQL ingestion (does not change return value)
+	self:emit_json({ output_dir = "script-output/factoryverse" }, "water", {
+		meta = {
+			schema_version = "snapshot.water.v1",
+			surface = output.surface,
+			tick = output.timestamp,
+		},
+		data = output.data,
+	})
+
     self:print_summary(output, function(out)
         -- Show top 5 largest patches
         local sorted = {}
@@ -66,8 +86,8 @@ function ResourceSnapshot:take_water()
                 tiles = p.tiles,
                 bbox = p.bbox,
                 centroid = {
-                    x = math.floor(p.centroid.x * 100) / 100,
-                    y = math.floor(p.centroid.y * 100) / 100
+                    x = p.centroid.x,
+                    y = p.centroid.y
                 }
             })
         end
@@ -458,10 +478,10 @@ function ResourceSnapshot:_add_run_to_patch(patch, y, x, len, sum_amount)
     if x < patch.min_x then patch.min_x = x end
     if x2 > patch.max_x then patch.max_x = x2 end
 
-    -- Update centroid sum
-    local mid_x = (x + x2) * 0.5
-    patch.sum_x = patch.sum_x + mid_x * len
-    patch.sum_y = patch.sum_y + y * len
+    -- Update centroid sum (use integer arithmetic to avoid floating-point precision loss)
+    -- Instead of (x + x2) * 0.5 * len, use (x + x2) * len / 2 but keep as integer operations
+    patch.sum_x = patch.sum_x + (x + x2) * len
+    patch.sum_y = patch.sum_y + y * len * 2
 end
 
 --- Create final output structure from tracking state
@@ -476,8 +496,9 @@ function ResourceSnapshot:_finalize_resource_output(state)
         for gid, patch in pairs(tracker.patches) do
             local canonical_gid = tracker.dsu:find(gid)
             if canonical_gid == gid then -- only emit canonical patches
-                local cx = (patch.tiles > 0) and (patch.sum_x / patch.tiles) or 0
-                local cy = (patch.tiles > 0) and (patch.sum_y / patch.tiles) or 0
+                -- Calculate centroid with precise division to Factorio's coordinate grid
+                local cx = (patch.tiles > 0) and (math.floor(patch.sum_x / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
+                local cy = (patch.tiles > 0) and (math.floor(patch.sum_y / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
 
                 table.insert(patches_out, {
                     patch_id = gid,
@@ -570,10 +591,17 @@ function ResourceSnapshot:_create_water_patch_from_tiles(tiles, id)
         end
     end
 
-    patch.centroid = {
-        x = (patch.tiles > 0) and (patch.sum_x / patch.tiles) or 0,
-        y = (patch.tiles > 0) and (patch.sum_y / patch.tiles) or 0
-    }
+    -- Calculate centroid with precise division to avoid floating-point drift
+    -- Factorio MapPosition uses double precision but tile coordinates are integers
+    if patch.tiles > 0 then
+        -- Use math.floor to snap to Factorio's coordinate grid (minimum precision: 1/256 = 0.00390625)
+        patch.centroid = {
+            x = math.floor(patch.sum_x / patch.tiles * 256 + 0.5) / 256,
+            y = math.floor(patch.sum_y / patch.tiles * 256 + 0.5) / 256
+        }
+    else
+        patch.centroid = { x = 0, y = 0 }
+    end
 
     return patch
 end
