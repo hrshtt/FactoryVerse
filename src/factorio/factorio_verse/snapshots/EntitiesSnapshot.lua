@@ -8,6 +8,12 @@ EntitiesSnapshot.__index = EntitiesSnapshot
 
 function EntitiesSnapshot:new()
     local instance = Snapshot:new()
+    -- Per-run caches to avoid repeated prototype/method work
+    instance._cache = {
+        inv = {},          -- [entity_name] -> { {name, id}, ... } inventory indices that exist
+        fluid = {},        -- [entity_name] -> { [index] = capacity }
+        belt = {},         -- [entity_name] -> max transport line index
+    }
     setmetatable(instance, self)
     return instance
 end
@@ -127,8 +133,17 @@ function EntitiesSnapshot:take_belts()
                 if e and e.valid then
                     local item_lines = {}
                     local max_index = 0
-                    local ok, v = pcall(function() return e.get_max_transport_line_index and e:get_max_transport_line_index() or 0 end)
-                    if ok and type(v) == "number" and v > 0 then max_index = v end
+                    do
+                        local name = e.name
+                        local cache = self._cache and self._cache.belt or nil
+                        if cache and cache[name] ~= nil then
+                            max_index = cache[name]
+                        else
+                            local v = (e.get_max_transport_line_index and e:get_max_transport_line_index()) or 0
+                            max_index = (type(v) == "number" and v > 0) and v or 0
+                            if cache then cache[name] = max_index end
+                        end
+                    end
 
                     for li = 1, max_index do
                         local tl = e.get_transport_line and e.get_transport_line(li) or nil
@@ -189,6 +204,11 @@ end
 function EntitiesSnapshot:_serialize_entity(e)
     if not (e and e.valid) then return nil end
 
+    local proto = e.prototype
+    local cache_inv  = self._cache and self._cache.inv or nil
+    local cache_fluid = self._cache and self._cache.fluid or nil
+    local ename = e.name
+
     local out = {
         unit_number = e.unit_number,
         name = e.name,
@@ -203,10 +223,9 @@ function EntitiesSnapshot:_serialize_entity(e)
 
     -- Health & status
     if e.health ~= nil then out.health = e.health end
-    local ok_status, status_val = pcall(function() return e.status end)
-    if ok_status and status_val ~= nil then
-        out.status = status_val
-        out.status_name = utils.entity_status_to_name(status_val)
+    if e.status ~= nil then
+        out.status = e.status
+        out.status_name = utils.entity_status_to_name(e.status)
     end
 
     -- Electric network id
@@ -218,81 +237,103 @@ function EntitiesSnapshot:_serialize_entity(e)
     local ok_buf, buf = pcall(function() return e.electric_buffer_size end)
     if ok_buf and buf then out.electric_buffer_size = buf end
 
-    -- Crafting / recipe
+    -- Crafting / recipe (gate to crafting machines only)
     do
-        local recipe_name = nil
-        local ok_r, recipe = pcall(function() return e.get_recipe and e.get_recipe() or nil end)
-        if ok_r and recipe then recipe_name = recipe.name end
-        if not recipe_name then
-            local ok_cr, cr = pcall(function() return e.get_recipe and e:get_recipe() end) -- alt call styles
-            if ok_cr and cr then recipe_name = cr.name end
+        -- Treat only true crafting machines as crafters
+        local is_crafter = (e.type == "assembling-machine" or e.type == "furnace")
+        if not is_crafter and proto and proto.crafting_categories then
+            is_crafter = true
         end
-        if not recipe_name then
-            local ok_sel, sel = pcall(function() return e.get_selected_recipe and e:get_selected_recipe() end)
-            if ok_sel and sel then recipe_name = sel.name end
-        end
-        if recipe_name then out.recipe = recipe_name end
 
-        local ok_prog, prog = pcall(function() return e.crafting_progress end)
-        if ok_prog and prog then out.crafting_progress = prog end
-    end
-
-    -- Burner info
-    do
-        local ok_b, burner = pcall(function() return e.burner end)
-        if ok_b and burner then
-            local b = {}
-            local ok_rem, rem = pcall(function() return burner.remaining_burning_fuel end)
-            if ok_rem and rem then b.remaining_burning_fuel = rem end
-            local ok_curr, cur = pcall(function() return burner.currently_burning and burner.currently_burning.name end)
-            if ok_curr and cur then b.currently_burning = cur end
-            local inv = {}
-            local ok_fi, fi = pcall(function() return burner.inventory end)
-            if ok_fi and fi and fi.valid and not fi.is_empty() then inv.fuel = fi.get_contents() end
-            local ok_bri, bri = pcall(function() return burner.burnt_result_inventory end)
-            if ok_bri and bri and bri.valid and not bri.is_empty() then inv.burnt = bri.get_contents() end
-            if next(inv) ~= nil then b.inventories = inv end
-            if next(b) ~= nil then out.burner = b end
+        if is_crafter then
+            -- Per docs, LuaEntity::get_recipe() is the supported way to read the current recipe
+            local r = e:get_recipe()
+            if r then out.recipe = r.name end
+            -- crafting_progress is valid on crafting machines
+            if e.crafting_progress ~= nil then
+                out.crafting_progress = e.crafting_progress
+            end
         end
     end
 
-    -- Inventories (scan all defines.inventory entries safely)
+    -- Burner info (gate by prototype)
+    do
+        if proto and proto.burner_prototype then
+            local burner = e.burner
+            if burner then
+                local b = {}
+                if burner.remaining_burning_fuel ~= nil then b.remaining_burning_fuel = burner.remaining_burning_fuel end
+                if burner.currently_burning and burner.currently_burning.name then
+                    b.currently_burning = burner.currently_burning.name
+                end
+                local inv = {}
+                local fi = burner.inventory
+                if fi and fi.valid and not fi.is_empty() then inv.fuel = fi.get_contents() end
+                local bri = burner.burnt_result_inventory
+                if bri and bri.valid and not bri.is_empty() then inv.burnt = bri.get_contents() end
+                if next(inv) ~= nil then b.inventories = inv end
+                if next(b) ~= nil then out.burner = b end
+            end
+        end
+    end
+
+    -- Inventories (prototype-gated + cached per entity name)
     do
         local inventories = {}
-        for inv_name, inv_id in pairs(defines.inventory) do
-            if type(inv_id) == "number" then
-                local ok_inv, inv = pcall(function() return e.get_inventory and e:get_inventory(inv_id) or nil end)
-                if ok_inv and inv and inv.valid and not inv.is_empty() then
-                    inventories[inv_name] = inv.get_contents()
+        local inv_defs = cache_inv and cache_inv[ename]
+        if inv_defs == nil then
+            inv_defs = {}
+            if e.get_inventory then
+                for inv_name, inv_id in pairs(defines.inventory) do
+                    -- Some builds surface defines.inventory values as userdata; just probe via entity
+                    local ok, inv = pcall(function() return e:get_inventory(inv_id) end)
+                    if ok and inv and inv.valid then
+                        inv_defs[#inv_defs + 1] = {inv_name, inv_id}
+                    end
                 end
+            end
+            if cache_inv then cache_inv[ename] = inv_defs end
+        end
+        for i = 1, #inv_defs do
+            local inv_name, inv_id = inv_defs[i][1], inv_defs[i][2]
+            local inv = e.get_inventory and e:get_inventory(inv_id) or nil
+            if inv and inv.valid and not inv.is_empty() then
+                inventories[inv_name] = inv.get_contents()
             end
         end
         if next(inventories) ~= nil then out.inventories = inventories end
     end
 
-    -- Fluidboxes
+    -- Fluidboxes (use prototype volumes when available; cache per entity name)
     do
-        local ok_fb, fb = pcall(function() return e.fluidbox end)
-        if ok_fb and fb then
+        local fb = e.fluidbox
+        if fb then
             local fluids = {}
-            local count = 0
-            local ok_len, len = pcall(function() return #fb end)
-            if ok_len and type(len) == "number" then
-                for i = 1, len do
-                    local f = fb[i]
-                    if f then
-                        count = count + 1
-                        local cap = nil
-                        local ok_cap, cval = pcall(function() return fb.get_capacity and fb.get_capacity(i) or nil end)
-                        if ok_cap then cap = cval end
-                        fluids[#fluids + 1] = {
-                            index = i,
-                            name = f.name,
-                            amount = f.amount,
-                            temperature = f.temperature,
-                            capacity = cap,
-                        }
+            local len = #fb
+            local caps = cache_fluid and cache_fluid[ename]
+            if caps == nil then
+                caps = {}
+                if proto and proto.fluidbox_prototypes then
+                    for idx, fbp in pairs(proto.fluidbox_prototypes) do
+                        if fbp and fbp.volume then caps[idx] = fbp.volume end
                     end
+                end
+                if cache_fluid then cache_fluid[ename] = caps end
+            end
+            for i = 1, len do
+                local f = fb[i]
+                if f then
+                    local cap = caps[i]
+                    if cap == nil and fb.get_capacity then
+                        cap = fb:get_capacity(i)
+                    end
+                    fluids[#fluids + 1] = {
+                        index = i,
+                        name = f.name,
+                        amount = f.amount,
+                        temperature = f.temperature,
+                        capacity = cap,
+                    }
                 end
             end
             if #fluids > 0 then out.fluids = fluids end
@@ -301,9 +342,8 @@ function EntitiesSnapshot:_serialize_entity(e)
 
     -- Train info (for rolling stock)
     do
-        local ok_train, train = pcall(function() return e.train end)
-        if ok_train and train then
-            out.train = { id = train.id, state = train.state }
+        if e.train then
+            out.train = { id = e.train.id, state = e.train.state }
         end
     end
 
@@ -311,5 +351,3 @@ function EntitiesSnapshot:_serialize_entity(e)
 end
 
 return EntitiesSnapshot
-
-
