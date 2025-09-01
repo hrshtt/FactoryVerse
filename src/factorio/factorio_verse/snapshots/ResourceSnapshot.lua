@@ -11,6 +11,7 @@ local utils = require "utils"
 --- 5. Uses Factorio's get_connected_tiles() for water (more efficient than manual flood-fill)
 ---
 --- OUTPUT: Structured data suitable for JSON export and SQL analysis
+--- TODO: Add trees to ResourceSnapshot
 local ResourceSnapshot = Snapshot:new()
 ResourceSnapshot.__index = ResourceSnapshot
 
@@ -135,6 +136,11 @@ function ResourceSnapshot:_process_chunk_for_resources(chunk, state)
     local chunk_key = utils.chunk_key(cx, cy)
     local resources_in_chunk = self.game_state:get_resources_in_chunks({ chunk })
 
+    -- Fast skip if the engine reports no resources in this chunk
+    if not resources_in_chunk or next(resources_in_chunk) == nil then
+        return
+    end
+
     for resource_name, entities in pairs(resources_in_chunk) do
         local tracker = self:_get_resource_tracker(state, resource_name)
 
@@ -246,10 +252,10 @@ function ResourceSnapshot:_extract_runs_and_edges(label_grid, amount_grid, bound
 
                         -- Add edge segments for boundary reconciliation
                         if y == min_y then
-                            table.insert(edges.north, { y = y, x = run_x, len = run_len, lbl = run_label })
+                            table.insert(edges.north, { y = y, x = run_x, len = run_len, lbl = run_label, k = run_x })
                         end
                         if y == max_y then
-                            table.insert(edges.south, { y = y, x = run_x, len = run_len, lbl = run_label })
+                            table.insert(edges.south, { y = y, x = run_x, len = run_len, lbl = run_label, k = run_x })
                         end
                     end
 
@@ -270,12 +276,12 @@ function ResourceSnapshot:_extract_runs_and_edges(label_grid, amount_grid, bound
         if label_row then
             local west_lbl = label_row[min_x]
             if west_lbl then
-                table.insert(edges.west, { y = y, x = min_x, len = 1, lbl = local_dsu:find(west_lbl) })
+                table.insert(edges.west, { y = y, x = min_x, len = 1, lbl = local_dsu:find(west_lbl), k = y })
             end
 
             local east_lbl = label_row[max_x]
             if east_lbl then
-                table.insert(edges.east, { y = y, x = max_x, len = 1, lbl = local_dsu:find(east_lbl) })
+                table.insert(edges.east, { y = y, x = max_x, len = 1, lbl = local_dsu:find(east_lbl), k = y })
             end
         end
     end
@@ -331,23 +337,25 @@ end
 --- @param chunk_a string - neighbor chunk key
 --- @param chunk_b string - current chunk key
 function ResourceSnapshot:_reconcile_edge_pair(tracker, edges_a, edges_b, chunk_a, chunk_b)
-    table.sort(edges_a, function(a, b) return (a.x or a.y) < (b.x or b.y) end)
-    table.sort(edges_b, function(a, b) return (a.x or a.y) < (b.x or b.y) end)
+    table.sort(edges_a, function(a, b) return a.k < b.k end)
+    table.sort(edges_b, function(a, b) return a.k < b.k end)
 
     local i, j = 1, 1
     while i <= #edges_a and j <= #edges_b do
         local seg_a, seg_b = edges_a[i], edges_b[j]
-        local coord_a, len_a = seg_a.x or seg_a.y, seg_a.len or 1
-        local coord_b, len_b = seg_b.x or seg_b.y, seg_b.len or 1
+        local a_start, a_len = (seg_a.x or seg_a.y), (seg_a.len or 1)
+        local b_start, b_len = (seg_b.x or seg_b.y), (seg_b.len or 1)
+        local a_end = a_start + a_len - 1
+        local b_end = b_start + b_len - 1
 
-        if utils.ranges_overlap(coord_a, coord_a + len_a - 1, coord_b, coord_b + len_b - 1) then
+        if utils.ranges_overlap(a_start, a_end, b_start, b_end) then
             -- Link the global components
             local gid_a = self:_get_global_id(tracker, chunk_a, seg_a.lbl)
             local gid_b = self:_get_global_id(tracker, chunk_b, seg_b.lbl)
             tracker.dsu:union(gid_a, gid_b)
         end
 
-        if coord_a + len_a - 1 < coord_b + len_b - 1 then i = i + 1 else j = j + 1 end
+        if a_end < b_end then i = i + 1 else j = j + 1 end
     end
 end
 
@@ -401,8 +409,12 @@ function ResourceSnapshot:_entities_to_grid(entities)
         local x = utils.floor(entity.position.x)
         local y = utils.floor(entity.position.y)
 
-        if not grid[y] then grid[y] = {} end
-        grid[y][x] = (grid[y][x] or 0) + (entity.amount or 0)
+        local row = grid[y]
+        if not row then
+            row = {}
+            grid[y] = row
+        end
+        row[x] = (row[x] or 0) + (entity.amount or 0)
     end
     return grid
 end
