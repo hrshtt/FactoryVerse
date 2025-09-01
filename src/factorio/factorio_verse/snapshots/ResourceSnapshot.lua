@@ -38,7 +38,7 @@ function ResourceSnapshot:take()
 	})
 
     self:print_summary(output, function(out)
-        local summary = { surface = out.surface, resources = {} }
+        local summary = { surface = out.surface, resources = {}, tick = out.timestamp }
         for _, resource in ipairs(out.data.resources) do
             table.insert(summary.resources, {
                 name = resource.name,
@@ -94,7 +94,8 @@ function ResourceSnapshot:take_water()
 
         return {
             surface = out.surface,
-            water = { patch_count = out.data.patch_count, top = top }
+            water = { patch_count = out.data.patch_count, top = top },
+            tick = out.timestamp
         }
     end)
 
@@ -576,6 +577,9 @@ function ResourceSnapshot:_create_water_patch_from_tiles(tiles, id)
         sum_y = 0
     }
 
+    -- Track tile positions per row to build row-wise spans for granular placement logic
+    local rows = {}
+
     for _, tile in ipairs(tiles) do
         local x, y = utils.extract_position(tile)
         if x and y then
@@ -588,6 +592,42 @@ function ResourceSnapshot:_create_water_patch_from_tiles(tiles, id)
 
             patch.sum_x = patch.sum_x + x
             patch.sum_y = patch.sum_y + y
+
+            if not rows[y] then rows[y] = {} end
+            rows[y][x] = true
+        end
+    end
+
+    -- Compress per-row x positions into contiguous spans
+    if next(rows) ~= nil then
+        patch.row_spans = {}
+        for y, xs in pairs(rows) do
+            local x_list = {}
+            for x, _ in pairs(xs) do table.insert(x_list, x) end
+            table.sort(x_list)
+
+            local seg_start, prev_x = nil, nil
+            for i = 1, #x_list do
+                local xv = x_list[i]
+                if seg_start == nil then
+                    seg_start = xv
+                    prev_x = xv
+                else
+                    if xv == prev_x + 1 then
+                        prev_x = xv
+                    else
+                        if not patch.row_spans[y] then patch.row_spans[y] = {} end
+                        table.insert(patch.row_spans[y], { x = seg_start, len = prev_x - seg_start + 1, tile_count = prev_x - seg_start + 1 })
+                        seg_start = xv
+                        prev_x = xv
+                    end
+                end
+            end
+
+            if seg_start ~= nil then
+                if not patch.row_spans[y] then patch.row_spans[y] = {} end
+                table.insert(patch.row_spans[y], { x = seg_start, len = (prev_x - seg_start + 1), tile_count = (prev_x - seg_start + 1) })
+            end
         end
     end
 
