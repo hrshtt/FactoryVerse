@@ -1,4 +1,5 @@
 local GameState = require("core.game_state.GameState")
+local EntitiesSnapshot = require("snapshots.EntitiesSnapshot")
 local ResourceSnapshot = require("snapshots.ResourceSnapshot")
 
 
@@ -28,6 +29,10 @@ M.helpers.take_water = function()
     -- Kept entirely inside this function as requested.
 
     ResourceSnapshot:new():take_water()
+end
+
+M.helpers.take_entities = function()
+    EntitiesSnapshot:new():take()
 end
 
 M.load_helpers = function()

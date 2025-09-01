@@ -1,255 +1,289 @@
 local Snapshot = require "core.Snapshot"
 local utils = require "utils"
 
----
---- EntitiesSnapshot (Scaffold)
----
---- Purpose: orchestrate a snapshot that exports SQL-friendly JSON tables for
----   - entities (machines worth reasoning about)
----   - power_domains (electric islands & burner/self domains)
----   - production_flows (aggregate outputs/inputs for selected products over windows)
----   - tags & entity_tags (LLM/user-defined spatial groupings)
----
---- This file intentionally contains **no heavy implementation**. It's a design/spec with
---- method decomposition, input/output contracts, and TODOs. We will wire real logic later.
----
---- Schema version for the JSON produced by this snapshotter
-local SCHEMA_VERSION = "entities.snapshot.v0"
-
----@class EntitiesSnapshot: Snapshot
+--- EntitiesSnapshot: Dumps raw entities and associated data chunk-wise
+--- Includes inventories, fluidboxes, energy/burner info, and basic metadata
 local EntitiesSnapshot = Snapshot:new()
 EntitiesSnapshot.__index = EntitiesSnapshot
 
---\\ Public API /////////////////////////////////////////////////////////////////
-
---- Create a new snapshot instance.
----@return EntitiesSnapshot
 function EntitiesSnapshot:new()
     local instance = Snapshot:new()
     setmetatable(instance, self)
     return instance
 end
 
---- High-level orchestrator. Collects, aggregates, and emits JSON.
---- **No real work yet** — just contracts and call sequence.
----
----@param opts EntitiesSnapshotOptions
----@return EntitiesSnapshotResult result  -- paths, totals, debug info
-function EntitiesSnapshot:take(opts)
-    opts = self:_normalize_opts(opts)
+--- Dump all entities chunk-wise with rich per-entity data
+function EntitiesSnapshot:take()
+    log("Taking entities snapshot")
 
-    -- 1) Resolve surface/force, time, and build meta
-    local meta = self:_build_meta(opts)
+    local charted_chunks = self.game_state:get_charted_chunks()
+    local chunks_out = {}
 
-    -- 2) Collect base tables (stubs for now)
-    local tags, entity_tags = self:_resolve_tags(opts)
-    local entities = self:_collect_entities(opts)
-    local power_domains = self:_derive_power_domains(opts, entities)
-    local production_flows = self:_compute_production_flows(opts, entities, tags)
+    local surface = self.game_state:get_surface()
+    if not surface then
+        local empty = self:create_output("snapshot.entities", "v1", { chunks = {} })
+        return empty
+    end
 
-    -- 3) Assemble snapshot payload
-    local payload = self:_assemble_payload(meta, entities, power_domains, production_flows, tags, entity_tags)
+    for _, chunk in ipairs(charted_chunks) do
+        local entities = surface.find_entities_filtered { area = chunk.area }
 
-    -- 4) Validate shape (lightweight schema checks)
-    self:_validate(payload)
+        local out_entities = {}
+        for i = 1, #entities do
+            local e = entities[i]
+            -- Filter out trees and resources (ores, oil, etc.)
+            if e and e.valid and e.type ~= "tree" and e.type ~= "resource" then
+                local serialized = self:_serialize_entity(e)
+                if serialized then
+                    out_entities[#out_entities + 1] = serialized
+                end
+            end
+        end
 
-    -- 5) Emit JSON (delegates to Snapshot base when we wire it)
-    local file_path = self:_emit(opts, payload)
+        if #out_entities > 0 then
+            chunks_out[#chunks_out + 1] = {
+                cx = chunk.x,
+                cy = chunk.y,
+                count = #out_entities,
+                entities = out_entities
+            }
+        end
+    end
 
-    -- 6) Optional debug overlays (no-op for now)
-    self:_debug_render(opts, payload)
+    local output = self:create_output("snapshot.entities", "v1", { chunks = chunks_out })
 
-    return {
-        snapshot_id = meta.snapshot_id,
-        schema_version = SCHEMA_VERSION,
-        file_path = file_path,
-        totals = {
-            entities = #payload.entities,
-            power_domains = #payload.power_domains,
-            production_flows = #payload.production_flows,
-            tags = #payload.tags,
-            entity_tags = #payload.entity_tags,
+    -- Emit JSON for SQL ingestion
+    self:emit_json({ output_dir = "script-output/factoryverse" }, "entities", {
+        meta = {
+            schema_version = "snapshot.entities.v1",
+            surface = output.surface,
+            tick = output.timestamp,
+        },
+        data = output.data,
+    })
+
+    self:print_summary(output, function(out)
+        local chunk_count = #out.data.chunks
+        local total_entities = 0
+        for _, c in ipairs(out.data.chunks) do total_entities = total_entities + (c.count or 0) end
+        return {
+            surface = out.surface,
+            entities = { chunk_count = chunk_count, total = total_entities },
+            tick = out.timestamp
         }
+    end)
+
+    return output
+end
+
+--- Dump only belt-like entities with transport line contents
+function EntitiesSnapshot:take_belts()
+    log("Taking belts snapshot")
+
+    local charted_chunks = self.game_state:get_charted_chunks()
+    local chunks_out = {}
+
+    local surface = self.game_state:get_surface()
+    if not surface then
+        local empty = self:create_output("snapshot.belts", "v1", { chunks = {} })
+        return empty
+    end
+
+    local belt_types = {
+        "transport-belt", "underground-belt", "splitter",
+        "loader", "loader-1x1", "linked-belt"
     }
+
+    for _, chunk in ipairs(charted_chunks) do
+        local belts = surface.find_entities_filtered { area = chunk.area, type = belt_types }
+        local out_entities = {}
+
+        for i = 1, #belts do
+            local e = belts[i]
+            if e and e.valid then
+                local item_lines = {}
+                local max_index = 0
+                local ok, v = pcall(function() return e.get_max_transport_line_index and e:get_max_transport_line_index() or 0 end)
+                if ok and type(v) == "number" and v > 0 then max_index = v end
+
+                for li = 1, max_index do
+                    local tl = e.get_transport_line and e:get_transport_line(li) or nil
+                    if tl then
+                        local contents = tl.get_contents and tl.get_contents() or nil
+                        if contents and next(contents) ~= nil then
+                            item_lines[#item_lines + 1] = { index = li, items = contents }
+                        end
+                    end
+                end
+
+                out_entities[#out_entities + 1] = {
+                    unit_number = e.unit_number,
+                    name = e.name,
+                    type = e.type,
+                    position = e.position,
+                    direction = e.direction,
+                    item_lines = item_lines
+                }
+            end
+        end
+
+        if #out_entities > 0 then
+            chunks_out[#chunks_out + 1] = {
+                cx = chunk.x,
+                cy = chunk.y,
+                count = #out_entities,
+                entities = out_entities
+            }
+        end
+    end
+
+    local output = self:create_output("snapshot.belts", "v1", { chunks = chunks_out })
+
+    self:emit_json({ output_dir = "script-output/factoryverse" }, "belts", {
+        meta = {
+            schema_version = "snapshot.belts.v1",
+            surface = output.surface,
+            tick = output.timestamp,
+        },
+        data = output.data,
+    })
+
+    self:print_summary(output, function(out)
+        local chunk_count = #out.data.chunks
+        local total = 0
+        for _, c in ipairs(out.data.chunks) do total = total + (c.count or 0) end
+        return { surface = out.surface, belts = { chunk_count = chunk_count, total = total }, tick = out.timestamp }
+    end)
+
+    return output
 end
 
---\\ Contracts & Types //////////////////////////////////////////////////////////
+-- Internal helpers -----------------------------------------------------------
 
----@class EntitiesSnapshotOptions
----@field surface LuaSurface|string|nil        -- default: current player surface or "nauvis"
----@field force LuaForce|string|nil           -- default: "player"
----@field scope "charted"|"visible"|"both"  -- default: "charted"
----@field area BoundingBox|nil                -- optional limit
----@field include_types string[]|nil          -- entity types to include
----@field include_names string[]|nil          -- entity names to include
----@field windows ("5s"|"1m"|"10m"|"1h")[]|nil  -- flow windows, default {"10m"}
----@field products_of_interest string[]|nil   -- item/fluids to report in production_flows
----@field tags TagSpec[]|nil                  -- user/LLM supplied spatial tags (see TagSpec)
----@field output_dir string|nil               -- where JSON is written; base class may provide default
----@field snapshot_id string|nil              -- override id; else auto
----@field compression "none"|"gzip"|nil     -- default: none
+function EntitiesSnapshot:_serialize_entity(e)
+    if not (e and e.valid) then return nil end
 
----@class EntitiesSnapshotResult
----@field snapshot_id string
----@field schema_version string
----@field file_path string|nil
----@field totals {entities:integer, power_domains:integer, production_flows:integer, tags:integer, entity_tags:integer}
-
----@class SnapshotMeta
----@field schema_version string
----@field factorio_version string
----@field force string
----@field tick integer
----@field created_at_utc string
----@field scope string
----@field area BoundingBox|nil
----@field windows string[]
-
----@class EntityRow
----@field snapshot_id string
----@field entity_id integer            -- unit_number
----@field name string
----@field type string
----@field position {x:integer, y:integer}
----@field force string
----@field power_kind "electric"|"burner"|"none"
----@field power_domain_id string|nil   -- "elec:<id>" or "burner:<entity_id>"
----@field status string|nil            -- defines.entity_status textual name
----@field recipe string|nil
----@field modules {name:string, count:integer}[]|nil
----@field beacons integer|nil
----@field crafting_progress number|nil
----@field energy_buffer integer|nil
-
----@class PowerDomainRow
----@field snapshot_id string
----@field power_domain_id string
----@field kind "electric"|"burner"
----@field electric_network_id integer|nil
----@field entity_id integer|nil          -- when kind==burner
----@field summary table|nil              -- optional {producers,consumers,accumulators,satisfaction,production_w}
-
-
----@class MiningSiteRow
----@field snapshot_id string
----@field patch_id string
----@field electric_network_id integer|nil
----@field entity_id integer|nil          -- when kind==burner
----@field summary table|nil              -- optional {producers,consumers,accumulators,satisfaction,production_w}
-
----@class ProductionFlowRow
----@field snapshot_id string
----@field flow_id string                 -- e.g., "pf:<product>:<window>:<scope>"
----@field product {item?:string, fluid?:string}
----@field window string
----@field scope {type:"surface"|"tag", surface?:string, tag_id?:string}
----@field output integer
----@field input integer
----@field net integer
----@field members integer[]              -- entity_ids believed involved
----@field notes string|nil
-
----@class TagSpec
----@field tag_id string
----@field label string
----@field parent_tag_id string|nil
----@field areas {min_cx:integer,min_cy:integer,max_cx:integer,max_cy:integer}[]
----@field notes string|nil
-
---\\ Private helpers (stubs) ///////////////////////////////////////////////////
-
----@param opts EntitiesSnapshotOptions
----@return EntitiesSnapshotOptions
-function EntitiesSnapshot:_normalize_opts(opts)
-    -- TODO: set sensible defaults; coerce surface/force to names
-    return opts or {}
-end
-
----@param opts EntitiesSnapshotOptions
----@return SnapshotMeta
-function EntitiesSnapshot:_build_meta(opts)
-    -- TODO: resolve factorio_version, surface name, force name, tick, created_at
-    return {
-        schema_version = SCHEMA_VERSION,
-        factorio_version = "2.0.60",
-        surface = "nauvis",
-        force = "player",
-        tick = 0,
-        created_at_utc = "0000-00-00T00:00:00Z",
-        scope = opts and opts.scope or "charted",
-        area = opts and opts.area or nil,
-        windows = (opts and opts.windows) or { "10m" }
+    local out = {
+        unit_number = e.unit_number,
+        name = e.name,
+        type = e.type,
+        force = (e.force and e.force.name) or nil,
+        position = e.position,
+        direction = e.direction,
+        direction_name = utils.direction_to_name(e.direction),
+        orientation = e.orientation,
+        orientation_name = utils.orientation_to_name(e.orientation),
     }
-end
 
----@param opts EntitiesSnapshotOptions
----@return TagSpec[] tags, table entity_tags  -- entity_tags is a list of {tag_id, entity_id}
-function EntitiesSnapshot:_resolve_tags(opts)
-    -- TODO: project chunk-rectangles to world bbox, compute membership for entities (later)
-    return opts and (opts.tags or {}) or {}, {}
-end
+    -- Health & status
+    if e.health ~= nil then out.health = e.health end
+    local ok_status, status_val = pcall(function() return e.status end)
+    if ok_status and status_val ~= nil then
+        out.status = status_val
+        out.status_name = utils.entity_status_to_name(status_val)
+    end
 
----@param opts EntitiesSnapshotOptions
----@return EntityRow[]
-function EntitiesSnapshot:_collect_entities(opts)
-    -- TODO: walk charted/visible chunks; collect unit_number entities matching filters
-    return {}
-end
+    -- Electric network id
+    local ok_enid, enid = pcall(function() return e.electric_network_id end)
+    if ok_enid and enid then out.electric_network_id = enid end
 
----@param opts EntitiesSnapshotOptions
----@param entities EntityRow[]
----@return PowerDomainRow[]
-function EntitiesSnapshot:_derive_power_domains(opts, entities)
-    -- TODO: group by electric_network_id; create burner:self domains; compute basic summaries
-    return {}
-end
+    -- Energy buffers
+    if e.energy ~= nil then out.energy = e.energy end
+    local ok_buf, buf = pcall(function() return e.electric_buffer_size end)
+    if ok_buf and buf then out.electric_buffer_size = buf end
 
----@param opts EntitiesSnapshotOptions
----@param entities EntityRow[]
----@param tags TagSpec[]
----@return ProductionFlowRow[]
-function EntitiesSnapshot:_compute_production_flows(opts, entities, tags)
-    -- TODO: query FlowStatistics for requested windows/products within scopes (surface or tag areas)
-    return {}
-end
+    -- Crafting / recipe
+    do
+        local recipe_name = nil
+        local ok_r, recipe = pcall(function() return e.get_recipe and e.get_recipe() or nil end)
+        if ok_r and recipe then recipe_name = recipe.name end
+        if not recipe_name then
+            local ok_cr, cr = pcall(function() return e.get_recipe and e:get_recipe() end) -- alt call styles
+            if ok_cr and cr then recipe_name = cr.name end
+        end
+        if not recipe_name then
+            local ok_sel, sel = pcall(function() return e.get_selected_recipe and e:get_selected_recipe() end)
+            if ok_sel and sel then recipe_name = sel.name end
+        end
+        if recipe_name then out.recipe = recipe_name end
 
----@param meta SnapshotMeta
----@param entities EntityRow[]
----@param power_domains PowerDomainRow[]
----@param production_flows ProductionFlowRow[]
----@param tags TagSpec[]
----@param entity_tags table
----@return table payload
-function EntitiesSnapshot:_assemble_payload(meta, entities, power_domains, production_flows, tags, entity_tags)
-    return {
-        meta = meta,
-        entities = entities or {},
-        power_domains = power_domains or {},
-        production_flows = production_flows or {},
-        tags = tags or {},
-        entity_tags = entity_tags or {}
-    }
-end
+        local ok_prog, prog = pcall(function() return e.crafting_progress end)
+        if ok_prog and prog then out.crafting_progress = prog end
+    end
 
----@param payload table
-function EntitiesSnapshot:_validate(payload)
-    -- TODO: assert minimal keys and types; log warnings for big tables
-    return true
-end
+    -- Burner info
+    do
+        local ok_b, burner = pcall(function() return e.burner end)
+        if ok_b and burner then
+            local b = {}
+            local ok_rem, rem = pcall(function() return burner.remaining_burning_fuel end)
+            if ok_rem and rem then b.remaining_burning_fuel = rem end
+            local ok_curr, cur = pcall(function() return burner.currently_burning and burner.currently_burning.name end)
+            if ok_curr and cur then b.currently_burning = cur end
+            local inv = {}
+            local ok_fi, fi = pcall(function() return burner.inventory end)
+            if ok_fi and fi and fi.valid and not fi.is_empty() then inv.fuel = fi.get_contents() end
+            local ok_bri, bri = pcall(function() return burner.burnt_result_inventory end)
+            if ok_bri and bri and bri.valid and not bri.is_empty() then inv.burnt = bri.get_contents() end
+            if next(inv) ~= nil then b.inventories = inv end
+            if next(b) ~= nil then out.burner = b end
+        end
+    end
 
----@param opts EntitiesSnapshotOptions
----@param payload table
----@return string|nil file_path
-function EntitiesSnapshot:_emit(opts, payload)
-    -- TODO: delegate to base Snapshot (e.g., self:write_json), respect compression/output_dir
-    -- return absolute path (or nil in test mode)
-    return nil
-end
+    -- Inventories (scan all defines.inventory entries safely)
+    do
+        local inventories = {}
+        for inv_name, inv_id in pairs(defines.inventory) do
+            if type(inv_id) == "number" then
+                local ok_inv, inv = pcall(function() return e.get_inventory and e:get_inventory(inv_id) or nil end)
+                if ok_inv and inv and inv.valid and not inv.is_empty() then
+                    inventories[inv_name] = inv.get_contents()
+                end
+            end
+        end
+        if next(inventories) ~= nil then out.inventories = inventories end
+    end
 
----@param opts EntitiesSnapshotOptions
----@param payload table
-function EntitiesSnapshot:_debug_render(opts, payload)
-    -- TODO: optional LuaRendering overlays (zones/tags/power islands)
+    -- Fluidboxes
+    do
+        local ok_fb, fb = pcall(function() return e.fluidbox end)
+        if ok_fb and fb then
+            local fluids = {}
+            local count = 0
+            local ok_len, len = pcall(function() return #fb end)
+            if ok_len and type(len) == "number" then
+                for i = 1, len do
+                    local f = fb[i]
+                    if f then
+                        count = count + 1
+                        local cap = nil
+                        local ok_cap, cval = pcall(function() return fb.get_capacity and fb.get_capacity(i) or nil end)
+                        if ok_cap then cap = cval end
+                        fluids[#fluids + 1] = {
+                            index = i,
+                            name = f.name,
+                            amount = f.amount,
+                            temperature = f.temperature,
+                            capacity = cap,
+                        }
+                    end
+                end
+            end
+            if #fluids > 0 then out.fluids = fluids end
+        end
+    end
+
+    -- Train info (for rolling stock)
+    do
+        local ok_train, train = pcall(function() return e.train end)
+        if ok_train and train then
+            out.train = { id = train.id, state = train.state }
+        end
+    end
+
+    return out
 end
 
 return EntitiesSnapshot
+
+

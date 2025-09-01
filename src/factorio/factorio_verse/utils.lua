@@ -109,4 +109,50 @@ function M.ranges_overlap(a1, a2, b1, b2)
     return not (a2 < b1 or b2 < a1)
 end
 
+-- Enum helpers ----------------------------------------------------------------
+
+--- Reverse-lookup a name from a Factorio defines.* enum table
+--- @param enum_table table
+--- @param value any
+--- @return string|nil
+function M.enum_value_to_name(enum_table, value)
+    if type(enum_table) ~= "table" then return nil end
+    for k, v in pairs(enum_table) do
+        if v == value then return k end
+    end
+    return nil
+end
+
+--- Convert defines.direction value to its lowercase name (e.g., "north-east")
+--- @param dir number|nil
+--- @return string|nil
+function M.direction_to_name(dir)
+    if dir == nil then return nil end
+    local name = M.enum_value_to_name(defines.direction or {}, dir)
+    if not name then return nil end
+    return string.lower(string.gsub(name, "_", "-"))
+end
+
+--- Convert LuaEntity.status (defines.entity_status) to name
+--- @param status any
+--- @return string|nil
+function M.entity_status_to_name(status)
+    local name = M.enum_value_to_name(defines.entity_status or {}, status)
+    if not name then return nil end
+    return string.lower(string.gsub(name, "_", "-"))
+end
+
+--- Map orientation [0,1) to 8-way compass name
+--- @param orientation number|nil
+--- @return string|nil
+function M.orientation_to_name(orientation)
+    if type(orientation) ~= "number" then return nil end
+    local names = {
+        "north", "north-east", "east", "south-east",
+        "south", "south-west", "west", "north-west"
+    }
+    local idx = math.floor(orientation * 8 + 0.5) % 8
+    return names[idx + 1]
+end
+
 return M

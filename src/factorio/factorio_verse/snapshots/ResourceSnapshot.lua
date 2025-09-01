@@ -295,7 +295,7 @@ function ResourceSnapshot:_add_run_to_label(runs_by_label, label, y, x, len, sum
     if not runs_by_label[label][y] then runs_by_label[label][y] = {} end
 
     table.insert(runs_by_label[label][y], {
-        x = x, len = len, sum_amount = sum_amount
+        x = x, y = y, len = len, sum_amount = sum_amount
     })
 end
 
@@ -465,7 +465,7 @@ function ResourceSnapshot:_add_run_to_patch(patch, y, x, len, sum_amount)
     -- Add to row spans
     if not patch.row_spans[y] then patch.row_spans[y] = {} end
     table.insert(patch.row_spans[y], {
-        x = x, len = len, tile_count = len, sum_amount = sum_amount
+        x = x, y = y, len = len, tile_count = len, sum_amount = sum_amount
     })
 
     -- Update aggregates
@@ -617,7 +617,7 @@ function ResourceSnapshot:_create_water_patch_from_tiles(tiles, id)
                         prev_x = xv
                     else
                         if not patch.row_spans[y] then patch.row_spans[y] = {} end
-                        table.insert(patch.row_spans[y], { x = seg_start, len = prev_x - seg_start + 1, tile_count = prev_x - seg_start + 1 })
+                        table.insert(patch.row_spans[y], { x = seg_start, y = y, len = prev_x - seg_start + 1, tile_count = prev_x - seg_start + 1 })
                         seg_start = xv
                         prev_x = xv
                     end
@@ -626,7 +626,7 @@ function ResourceSnapshot:_create_water_patch_from_tiles(tiles, id)
 
             if seg_start ~= nil then
                 if not patch.row_spans[y] then patch.row_spans[y] = {} end
-                table.insert(patch.row_spans[y], { x = seg_start, len = (prev_x - seg_start + 1), tile_count = (prev_x - seg_start + 1) })
+                table.insert(patch.row_spans[y], { x = seg_start, y = y, len = (prev_x - seg_start + 1), tile_count = (prev_x - seg_start + 1) })
             end
         end
     end
