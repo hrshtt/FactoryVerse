@@ -26,38 +26,48 @@ function EntitiesSnapshot:take()
     end
 
     for _, chunk in ipairs(charted_chunks) do
-        local entities = surface.find_entities_filtered { area = chunk.area }
+        -- Use engine filter for force only; do type exclusions in Lua to avoid invert/force pitfalls
+        local filter = { area = chunk.area, force = "player" }
 
-        -- Skip types: trees/resources handled elsewhere; belts handled by take_belts()
-        local skip_types = {
-            tree = true,
-            resource = true,
-            ["transport-belt"] = true,
-            ["underground-belt"] = true,
-            splitter = true,
-            loader = true,
-            ["loader-1x1"] = true,
-            ["linked-belt"] = true,
-        }
+        -- Fast skip chunks with zero matching entities for this force
+        local cnt = surface.count_entities_filtered(filter)
+        if cnt ~= 0 then
+            local entities = surface.find_entities_filtered(filter)
 
-        local out_entities = {}
-        for i = 1, #entities do
-            local e = entities[i]
-            if e and e.valid and not skip_types[e.type] then
-                local serialized = self:_serialize_entity(e)
-                if serialized then
-                    out_entities[#out_entities + 1] = serialized
-                end
-            end
-        end
-
-        if #out_entities > 0 then
-            chunks_out[#chunks_out + 1] = {
-                cx = chunk.x,
-                cy = chunk.y,
-                count = #out_entities,
-                entities = out_entities
+            -- Excluded types (handled elsewhere or not needed)
+            local skip_types = {
+                resource = true, tree = true, fish = true,
+                ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
+                loader = true, ["loader-1x1"] = true, ["linked-belt"] = true,
             }
+
+            local out_entities = {}
+            for i = 1, #entities do
+                local e = entities[i]
+                if e and e.valid and not skip_types[e.type] then
+                    -- Filter common rock variants (type "simple-entity") if any
+                    if e.type == "simple-entity" then
+                        local n = e.name
+                        if n == "rock-huge" or n == "rock-big" or n == "sand-rock-big" then
+                            goto continue_entity
+                        end
+                    end
+                    local serialized = self:_serialize_entity(e)
+                    if serialized then
+                        out_entities[#out_entities + 1] = serialized
+                    end
+                end
+                ::continue_entity::
+            end
+
+            if #out_entities > 0 then
+                chunks_out[#chunks_out + 1] = {
+                    cx = chunk.x,
+                    cy = chunk.y,
+                    count = #out_entities,
+                    entities = out_entities
+                }
+            end
         end
     end
 
@@ -106,45 +116,50 @@ function EntitiesSnapshot:take_belts()
     }
 
     for _, chunk in ipairs(charted_chunks) do
-        local belts = surface.find_entities_filtered { area = chunk.area, type = belt_types }
-        local out_entities = {}
+        local filter = { area = chunk.area, force = "player", type = belt_types }
+        local cnt = surface.count_entities_filtered(filter)
+        if cnt ~= 0 then
+            local belts = surface.find_entities_filtered(filter)
+            local out_entities = {}
 
-        for i = 1, #belts do
-            local e = belts[i]
-            if e and e.valid then
-                local item_lines = {}
-                local max_index = 0
-                local ok, v = pcall(function() return e.get_max_transport_line_index and e:get_max_transport_line_index() or 0 end)
-                if ok and type(v) == "number" and v > 0 then max_index = v end
+            for i = 1, #belts do
+                local e = belts[i]
+                if e and e.valid then
+                    local item_lines = {}
+                    local max_index = 0
+                    local ok, v = pcall(function() return e.get_max_transport_line_index and e:get_max_transport_line_index() or 0 end)
+                    if ok and type(v) == "number" and v > 0 then max_index = v end
 
-                for li = 1, max_index do
-                    local tl = e.get_transport_line and e.get_transport_line(li) or nil
-                    if tl then
-                        local contents = tl.get_contents and tl.get_contents() or nil
-                        if contents and next(contents) ~= nil then
-                            item_lines[#item_lines + 1] = { index = li, items = contents }
+                    for li = 1, max_index do
+                        local tl = e.get_transport_line and e.get_transport_line(li) or nil
+                        if tl then
+                            local contents = tl.get_contents and tl.get_contents() or nil
+                            if contents and next(contents) ~= nil then
+                                item_lines[#item_lines + 1] = { index = li, items = contents }
+                            end
                         end
                     end
-                end
 
-                out_entities[#out_entities + 1] = {
-                    unit_number = e.unit_number,
-                    name = e.name,
-                    type = e.type,
-                    position = e.position,
-                    direction = e.direction,
-                    item_lines = item_lines
+                    out_entities[#out_entities + 1] = {
+                        unit_number = e.unit_number,
+                        name = e.name,
+                        type = e.type,
+                        position = e.position,
+                        direction = e.direction,
+                        direction_name = utils.direction_to_name(e.direction),
+                        item_lines = item_lines
+                    }
+                end
+            end
+
+            if #out_entities > 0 then
+                chunks_out[#chunks_out + 1] = {
+                    cx = chunk.x,
+                    cy = chunk.y,
+                    count = #out_entities,
+                    entities = out_entities
                 }
             end
-        end
-
-        if #out_entities > 0 then
-            chunks_out[#chunks_out + 1] = {
-                cx = chunk.x,
-                cy = chunk.y,
-                count = #out_entities,
-                entities = out_entities
-            }
         end
     end
 
