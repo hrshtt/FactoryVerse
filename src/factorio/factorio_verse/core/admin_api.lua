@@ -35,6 +35,10 @@ M.helpers.take_entities = function()
     EntitiesSnapshot:new():take()
 end
 
+M.helpers.take_belts = function()
+    EntitiesSnapshot:new():take_belts()
+end
+
 M.load_helpers = function()
     if remote.interfaces["helpers"] then
         log("Found: " .. helpers.table_to_json(remote.interfaces["helpers"]))

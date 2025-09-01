@@ -28,11 +28,22 @@ function EntitiesSnapshot:take()
     for _, chunk in ipairs(charted_chunks) do
         local entities = surface.find_entities_filtered { area = chunk.area }
 
+        -- Skip types: trees/resources handled elsewhere; belts handled by take_belts()
+        local skip_types = {
+            tree = true,
+            resource = true,
+            ["transport-belt"] = true,
+            ["underground-belt"] = true,
+            splitter = true,
+            loader = true,
+            ["loader-1x1"] = true,
+            ["linked-belt"] = true,
+        }
+
         local out_entities = {}
         for i = 1, #entities do
             local e = entities[i]
-            -- Filter out trees and resources (ores, oil, etc.)
-            if e and e.valid and e.type ~= "tree" and e.type ~= "resource" then
+            if e and e.valid and not skip_types[e.type] then
                 local serialized = self:_serialize_entity(e)
                 if serialized then
                     out_entities[#out_entities + 1] = serialized
@@ -107,7 +118,7 @@ function EntitiesSnapshot:take_belts()
                 if ok and type(v) == "number" and v > 0 then max_index = v end
 
                 for li = 1, max_index do
-                    local tl = e.get_transport_line and e:get_transport_line(li) or nil
+                    local tl = e.get_transport_line and e.get_transport_line(li) or nil
                     if tl then
                         local contents = tl.get_contents and tl.get_contents() or nil
                         if contents and next(contents) ~= nil then
