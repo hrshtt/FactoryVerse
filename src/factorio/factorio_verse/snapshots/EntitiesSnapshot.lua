@@ -139,7 +139,7 @@ function EntitiesSnapshot:take_belts()
                         if cache and cache[name] ~= nil then
                             max_index = cache[name]
                         else
-                            local v = (e.get_max_transport_line_index and e:get_max_transport_line_index()) or 0
+                            local v = (e.get_max_transport_line_index and e.get_max_transport_line_index()) or 0
                             max_index = (type(v) == "number" and v > 0) and v or 0
                             if cache then cache[name] = max_index end
                         end
@@ -247,7 +247,7 @@ function EntitiesSnapshot:_serialize_entity(e)
 
         if is_crafter then
             -- Per docs, LuaEntity::get_recipe() is the supported way to read the current recipe
-            local r = e:get_recipe()
+            local r = e.get_recipe()
             if r then out.recipe = r.name end
             -- crafting_progress is valid on crafting machines
             if e.crafting_progress ~= nil then
@@ -277,28 +277,30 @@ function EntitiesSnapshot:_serialize_entity(e)
         end
     end
 
-    -- Inventories (prototype-gated + cached per entity name)
+    -- Inventories (enumerate 1..get_max_inventory_index; cache per entity name)
     do
         local inventories = {}
         local inv_defs = cache_inv and cache_inv[ename]
         if inv_defs == nil then
             inv_defs = {}
-            if e.get_inventory then
-                for inv_name, inv_id in pairs(defines.inventory) do
-                    -- Some builds surface defines.inventory values as userdata; just probe via entity
-                    local ok, inv = pcall(function() return e:get_inventory(inv_id) end)
-                    if ok and inv and inv.valid then
-                        inv_defs[#inv_defs + 1] = {inv_name, inv_id}
+            local max_idx = (e.get_max_inventory_index and e.get_max_inventory_index()) or 0
+            if max_idx and max_idx > 0 then
+                for idx = 1, max_idx do
+                    local inv = e.get_inventory and e.get_inventory(idx) or nil
+                    if inv and inv.valid then
+                        local inv_name = (e.get_inventory_name and e.get_inventory_name(idx)) or tostring(idx)
+                        inv_defs[#inv_defs + 1] = {inv_name, idx}
                     end
                 end
             end
             if cache_inv then cache_inv[ename] = inv_defs end
         end
         for i = 1, #inv_defs do
-            local inv_name, inv_id = inv_defs[i][1], inv_defs[i][2]
-            local inv = e.get_inventory and e:get_inventory(inv_id) or nil
-            if inv and inv.valid and not inv.is_empty() then
-                inventories[inv_name] = inv.get_contents()
+            local inv_name, idx = inv_defs[i][1], inv_defs[i][2]
+            local inv = e.get_inventory and e.get_inventory(idx) or nil
+            if inv and inv.valid then
+                local contents = inv.get_contents and inv.get_contents() or nil
+                inventories[inv_name] = contents or {}
             end
         end
         if next(inventories) ~= nil then out.inventories = inventories end
@@ -325,7 +327,7 @@ function EntitiesSnapshot:_serialize_entity(e)
                 if f then
                     local cap = caps[i]
                     if cap == nil and fb.get_capacity then
-                        cap = fb:get_capacity(i)
+                        cap = fb.get_capacity(i)
                     end
                     fluids[#fluids + 1] = {
                         index = i,
