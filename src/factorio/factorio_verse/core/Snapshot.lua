@@ -48,4 +48,26 @@ function Snapshot:take()
     error("take() method must be implemented by subclass")
 end
 
+function Snapshot:emit_json(opts, name, payload)
+	local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
+	-- Prefer explicit snapshot_id if provided
+	local snapshot_id = (opts and opts.snapshot_id)
+	if not snapshot_id then
+		-- Try meta.snapshot_id, otherwise derive a stable id from tick
+		local tick = (payload and payload.meta and payload.meta.tick) or (game and game.tick) or 0
+		snapshot_id = "snap-" .. tostring(tick)
+	end
+
+	-- Example filename: script-output/factoryverse/entities.snap-12345.json
+	local file_path = string.format("%s/%s.%s.json", base_dir, name, snapshot_id)
+
+	-- Factorio will create subdirs under script-output if needed.
+	local json_str = helpers.table_to_json(payload)
+	helpers.write_file(file_path, json_str, false)
+
+	-- Optional: print where it was written
+	log("Wrote snapshot to " .. file_path)
+	return file_path
+end
+
 return Snapshot
