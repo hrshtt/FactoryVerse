@@ -221,6 +221,40 @@ function EntitiesSnapshot:_serialize_entity(e)
         orientation_name = utils.orientation_to_name(e.orientation),
     }
 
+    -- Selection & bounding boxes (runtime first; fall back to prototype)
+    do
+        local bb_ok, bb = pcall(function() return e.bounding_box end)
+        if bb_ok and bb and bb.left_top and bb.right_bottom then
+            out.bounding_box = {
+                min_x = bb.left_top.x, min_y = bb.left_top.y,
+                max_x = bb.right_bottom.x, max_y = bb.right_bottom.y
+            }
+        end
+        local sb_ok, sb = pcall(function() return e.selection_box end)
+        if sb_ok and sb and sb.left_top and sb.right_bottom then
+            out.selection_box = {
+                min_x = sb.left_top.x, min_y = sb.left_top.y,
+                max_x = sb.right_bottom.x, max_y = sb.right_bottom.y
+            }
+        elseif proto and proto.selection_box then
+            local psb = proto.selection_box
+            -- Prototype selection_box may be in array form {{x1,y1},{x2,y2}} or with left_top/right_bottom
+            if psb.left_top and psb.right_bottom then
+                out.selection_box = {
+                    min_x = psb.left_top.x or psb.left_top[1],
+                    min_y = psb.left_top.y or psb.left_top[2],
+                    max_x = psb.right_bottom.x or psb.right_bottom[1],
+                    max_y = psb.right_bottom.y or psb.right_bottom[2]
+                }
+            elseif type(psb) == "table" and psb[1] and psb[2] then
+                out.selection_box = {
+                    min_x = psb[1][1], min_y = psb[1][2],
+                    max_x = psb[2][1], max_y = psb[2][2]
+                }
+            end
+        end
+    end
+
     -- Health & status
     if e.health ~= nil then out.health = e.health end
     if e.status ~= nil then
@@ -236,6 +270,27 @@ function EntitiesSnapshot:_serialize_entity(e)
     if e.energy ~= nil then out.energy = e.energy end
     local ok_buf, buf = pcall(function() return e.electric_buffer_size end)
     if ok_buf and buf then out.electric_buffer_size = buf end
+
+    -- Electric pole copper neighbours (unit_numbers)
+    do
+        if e.type == "electric-pole" then
+            local n_ok, ns = pcall(function() return e.neighbours end)
+            if n_ok and ns then
+                local list = ns.copper or ns
+                local ids = {}
+                if type(list) == "table" then
+                    for _, p in pairs(list) do
+                        if p and p.valid and p.unit_number then
+                            ids[#ids+1] = p.unit_number
+                        end
+                    end
+                end
+                if #ids > 0 then
+                    out.neighbours = { copper = ids }
+                end
+            end
+        end
+    end
 
     -- Crafting / recipe (gate to crafting machines only)
     do
@@ -339,6 +394,25 @@ function EntitiesSnapshot:_serialize_entity(e)
                 end
             end
             if #fluids > 0 then out.fluids = fluids end
+        end
+    end
+
+    -- Inserter IO (pickup/drop positions and resolved targets)
+    do
+        if e.type == "inserter" then
+            local ins = {
+                pickup_position = e.pickup_position,
+                drop_position = e.drop_position,
+            }
+            local ok_pt, pt = pcall(function() return e.pickup_target end)
+            if ok_pt and pt and pt.valid and pt.unit_number then
+                ins.pickup_target_unit = pt.unit_number
+            end
+            local ok_dt, dt = pcall(function() return e.drop_target end)
+            if ok_dt and dt and dt.valid and dt.unit_number then
+                ins.drop_target_unit = dt.unit_number
+            end
+            if next(ins) ~= nil then out.inserter = ins end
         end
     end
 

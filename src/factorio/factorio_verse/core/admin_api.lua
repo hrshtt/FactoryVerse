@@ -18,16 +18,14 @@ M.helpers.create_agent_characters = function(num_agents, destroy_existing)
 end
 
 M.helpers.test = function()
-    -- Quick & dirty: find connected water tiles and summarize water patches.
-    -- Kept entirely inside this function as requested.
+    triple_print("Testing")
+end
 
+M.helpers.take_resources = function()
     ResourceSnapshot:new():take()
 end
 
 M.helpers.take_water = function()
-    -- Quick & dirty: find connected water tiles and summarize water patches.
-    -- Kept entirely inside this function as requested.
-
     ResourceSnapshot:new():take_water()
 end
 
