@@ -40,7 +40,7 @@ function PlaceEntityAction:run(params)
     local p = self:_pre_run(gs, params)
     ---@cast p PlaceEntityParams
 
-    local agent = gs:agent():get_agent(p.agent_id)
+    local agent = gs:agent_state():get_agent(p.agent_id)
     if not agent then
         error("Agent not found for id " .. tostring(params.agent_id))
     end

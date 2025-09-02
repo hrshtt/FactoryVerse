@@ -1,8 +1,5 @@
 local Action = require("core.action.Action")
 local ParamSpec = require("core.action.ParamSpec")
-local validator_registry = require("core.action.ValidatorRegistry"):new()
-
-local validators = validator_registry:get_validations("start_research")
 local game_state = require("core.game_state.GameState")
 
 --- @class StartResearchParams : ParamSpec
@@ -26,7 +23,7 @@ local StartResearchParams = ParamSpec:new({
 })
 
 --- @class StartResearchAction : Action
-local StartResearchAction = Action:new("start_research", StartResearchParams, validators)
+local StartResearchAction = Action:new("start_research", StartResearchParams)
 
 --- @param params StartResearchParams
 --- @return table
@@ -34,7 +31,7 @@ function StartResearchAction:run(params)
     ---@type StartResearchParams
     local p = self:_pre_run(game_state, params)
     local technology_name = p.technology_name
-    local agent = game_state.agent_state:get_agent(p.agent_id)
+    local agent = game_state:agent_state():get_agent(p.agent_id)
     local force = agent.force
 
     if force.current_research then
@@ -73,3 +70,5 @@ function StartResearchAction:run(params)
 
     return self:_post_run(ingredients, p)
 end
+
+return { action = StartResearchAction, StartResearchParams = StartResearchParams }
