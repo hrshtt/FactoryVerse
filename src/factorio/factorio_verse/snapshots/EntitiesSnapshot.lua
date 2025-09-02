@@ -19,15 +19,16 @@ function EntitiesSnapshot:new()
 end
 
 --- Dump all entities chunk-wise with rich per-entity data
+--- Dump all entities as flat rows (no chunk grouping). Each row includes its chunk coords
 function EntitiesSnapshot:take()
     log("Taking entities snapshot")
 
     local charted_chunks = self.game_state:get_charted_chunks()
-    local chunks_out = {}
+    local rows_out = {}
 
     local surface = self.game_state:get_surface()
     if not surface then
-        local empty = self:create_output("snapshot.entities", "v1", { chunks = {} })
+        local empty = self:create_output("snapshot.entities", "v2", { rows = {} })
         return empty
     end
 
@@ -47,7 +48,6 @@ function EntitiesSnapshot:take()
                 loader = true, ["loader-1x1"] = true, ["linked-belt"] = true,
             }
 
-            local out_entities = {}
             for i = 1, #entities do
                 local e = entities[i]
                 if e and e.valid and not skip_types[e.type] then
@@ -60,29 +60,22 @@ function EntitiesSnapshot:take()
                     end
                     local serialized = self:_serialize_entity(e)
                     if serialized then
-                        out_entities[#out_entities + 1] = serialized
+                        -- Attach chunk coordinates on the row so consumers can recover chunk locality
+                        serialized.chunk = { x = chunk.x, y = chunk.y }
+                        rows_out[#rows_out + 1] = serialized
                     end
                 end
                 ::continue_entity::
             end
-
-            if #out_entities > 0 then
-                chunks_out[#chunks_out + 1] = {
-                    cx = chunk.x,
-                    cy = chunk.y,
-                    count = #out_entities,
-                    entities = out_entities
-                }
-            end
         end
     end
 
-    local output = self:create_output("snapshot.entities", "v1", { chunks = chunks_out })
+    local output = self:create_output("snapshot.entities", "v2", { rows = rows_out })
 
     -- Emit JSON for SQL ingestion
     self:emit_json({ output_dir = "script-output/factoryverse" }, "entities", {
         meta = {
-            schema_version = "snapshot.entities.v1",
+            schema_version = "snapshot.entities.v2",
             surface = output.surface,
             tick = output.timestamp,
         },
@@ -90,12 +83,11 @@ function EntitiesSnapshot:take()
     })
 
     self:print_summary(output, function(out)
-        local chunk_count = #out.data.chunks
         local total_entities = 0
-        for _, c in ipairs(out.data.chunks) do total_entities = total_entities + (c.count or 0) end
+        if out and out.data and out.data.rows then total_entities = #out.data.rows end
         return {
             surface = out.surface,
-            entities = { chunk_count = chunk_count, total = total_entities },
+            entities = { total = total_entities },
             tick = out.timestamp
         }
     end)
@@ -104,15 +96,16 @@ function EntitiesSnapshot:take()
 end
 
 --- Dump only belt-like entities with transport line contents
+--- Dump only belt-like entities with transport line contents as flat rows
 function EntitiesSnapshot:take_belts()
     log("Taking belts snapshot")
 
     local charted_chunks = self.game_state:get_charted_chunks()
-    local chunks_out = {}
+    local rows_out = {}
 
     local surface = self.game_state:get_surface()
     if not surface then
-        local empty = self:create_output("snapshot.belts", "v1", { chunks = {} })
+        local empty = self:create_output("snapshot.belts", "v2", { rows = {} })
         return empty
     end
 
@@ -126,7 +119,6 @@ function EntitiesSnapshot:take_belts()
         local cnt = surface.count_entities_filtered(filter)
         if cnt ~= 0 then
             local belts = surface.find_entities_filtered(filter)
-            local out_entities = {}
 
             for i = 1, #belts do
                 local e = belts[i]
@@ -178,7 +170,7 @@ function EntitiesSnapshot:take_belts()
                         if un and un.valid and un.unit_number then underground_other = un.unit_number end
                     end
 
-                    out_entities[#out_entities + 1] = {
+                    rows_out[#rows_out + 1] = {
                         unit_number = e.unit_number,
                         name = e.name,
                         type = e.type,
@@ -188,27 +180,19 @@ function EntitiesSnapshot:take_belts()
                         item_lines = item_lines,
                         belt_neighbours = ( (#inputs_ids>0 or #outputs_ids>0) and { inputs = inputs_ids, outputs = outputs_ids } ) or nil,
                         belt_to_ground_type = belt_to_ground_type,
-                        underground_neighbour_unit = underground_other
+                        underground_neighbour_unit = underground_other,
+                        chunk = { x = chunk.x, y = chunk.y },
                     }
                 end
-            end
-
-            if #out_entities > 0 then
-                chunks_out[#chunks_out + 1] = {
-                    cx = chunk.x,
-                    cy = chunk.y,
-                    count = #out_entities,
-                    entities = out_entities
-                }
             end
         end
     end
 
-    local output = self:create_output("snapshot.belts", "v1", { chunks = chunks_out })
+    local output = self:create_output("snapshot.belts", "v2", { rows = rows_out })
 
     self:emit_json({ output_dir = "script-output/factoryverse" }, "belts", {
         meta = {
-            schema_version = "snapshot.belts.v1",
+            schema_version = "snapshot.belts.v2",
             surface = output.surface,
             tick = output.timestamp,
         },
@@ -216,10 +200,9 @@ function EntitiesSnapshot:take_belts()
     })
 
     self:print_summary(output, function(out)
-        local chunk_count = #out.data.chunks
         local total = 0
-        for _, c in ipairs(out.data.chunks) do total = total + (c.count or 0) end
-        return { surface = out.surface, belts = { chunk_count = chunk_count, total = total }, tick = out.timestamp }
+        if out and out.data and out.data.rows then total = #out.data.rows end
+        return { surface = out.surface, belts = { total = total }, tick = out.timestamp }
     end)
 
     return output
