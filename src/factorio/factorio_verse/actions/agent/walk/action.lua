@@ -140,6 +140,65 @@ local function desired_octant_manhattan(from, to, alpha, snap_eps, allow_diag)
     end
 end
 
+local function _bbox_radius_from_proto(proto)
+    if not (proto and proto.collision_box) then return 0.6 end
+    local bb = proto.collision_box
+    local w = (bb.right_bottom.x - bb.left_top.x)
+    local h = (bb.right_bottom.y - bb.left_top.y)
+    local r = math.max(w, h) * 0.5 + 0.05
+    return r
+end
+
+local DIRV = {
+    [0] = { 1, 0}, [1] = { 1, 1},
+    [2] = { 0, 1}, [3] = {-1, 1},
+    [4] = {-1, 0}, [5] = {-1,-1},
+    [6] = { 0,-1}, [7] = { 1,-1},
+}
+
+local function _scale(v, s) return { v[1]*s, v[2]*s } end
+local function _addp(p, v)  return { x = p.x + v[1], y = p.y + v[2] } end
+
+-- Start a small perpendicular sidestep around an obstacle (deterministic left/right)
+local function _maybe_start_micro_detour(job, control, pos, curr_oct)
+    if not (control and control.valid) then return false end
+    -- Prefer cardinal notion of "forward"
+    local f_oct = curr_oct
+    if f_oct % 2 == 1 then
+        -- diagonal: derive dominant axis from Manhattan intent
+        -- pick nearest cardinal toward goal
+        local tgt = _current_target and _current_target(job, pos) or job.goal
+        local adx = math.abs(tgt.x - pos.x)
+        local ady = math.abs(tgt.y - pos.y)
+        if adx >= ady then f_oct = (tgt.x > pos.x) and 0 or 4 else f_oct = (tgt.y > pos.y) and 2 or 6 end
+    end
+    local left  = (f_oct + 6) % 8  -- 90° left
+    local right = (f_oct + 2) % 8  -- 90° right
+    local first, second = left, right
+    if (job.id % 2) == 1 then first, second = right, left end  -- deterministic per job
+
+    local step = 1.0
+    local proto = control.prototype
+    local name = control.name
+    local surf = control.surface
+    local radius = _bbox_radius_from_proto(proto)
+
+    local function try_dir(oct)
+        local off = _scale(DIRV[oct], step)
+        local guess = _addp(pos, off)
+        -- Nudge to a non-colliding position near the guess
+        local ok = surf.find_non_colliding_position(name, guess, radius + 0.75, 0.25, true)
+        if ok then
+            job.micro_goal = ok
+            job.micro_timeout = 120 -- 2 seconds at 60 tps
+            return true
+        end
+        return false
+    end
+
+    return try_dir(first) or try_dir(second)
+end
+
 -- ===== WalkTo action (plan + follow) =====
 
 --- Internal job state
@@ -181,6 +240,10 @@ local function _new_walkto_job(agent_id, goal, opts)
         prefer_cardinal = (opts and opts.prefer_cardinal ~= false), -- default true
         diag_band = (opts and opts.diag_band) or 0.25,              -- 25% band around equal deltas
         snap_axis_eps = (opts and opts.snap_axis_eps) or 0.25       -- snap to axis near goal
+        ,
+        micro_goal = nil,                 -- temporary sidestep target {x,y}
+        micro_timeout = 0,                -- ticks left for current micro detour
+        samepos_ticks = 0                 -- consecutive ticks with negligible movement
     }
 end
 
@@ -202,7 +265,9 @@ local function _request_path(job, control)
         bounding_box = bbox,
         collision_mask = mask,
         can_open_gates = true,
-        path_resolution_modifier = 0
+        path_resolution_modifier = (job.replans and job.replans > 0) and -2 or 0,
+        radius = _bbox_radius_from_proto(proto),
+        entity_to_ignore = control
     }
     job.req_id = req_id
     job.state = "planning"
@@ -218,6 +283,14 @@ local function _advance_waypoint(job, pos)
 end
 
 local function _current_target(job, pos)
+    if job.micro_goal then
+        if dist_sq(pos, job.micro_goal) > 0.35*0.35 then
+            return job.micro_goal
+        end
+        -- reached micro goal
+        job.micro_goal = nil
+        job.micro_timeout = 0
+    end
     if job.waypoints and job.waypoints[job.wp_index] then
         local wp = job.waypoints[job.wp_index].position or job.waypoints[job.wp_index]
         return wp
@@ -227,6 +300,11 @@ end
 
 local function _tick_follow(job, control)
     local pos = control.position
+    local last = job.last_pos or pos
+    local dx, dy = pos.x - last.x, pos.y - last.y
+    local step_len = math.sqrt(dx*dx + dy*dy)
+    job.last_pos = { x = pos.x, y = pos.y }
+
     -- arrival check
     if dist_sq(pos, job.goal) <= (job.arrive_radius * job.arrive_radius) then
         control.walking_state = { walking = false, direction = job.current_dir or defines.direction.north }
@@ -251,23 +329,57 @@ local function _tick_follow(job, control)
 
     control.walking_state = { walking = true, direction = next_dir }
 
-    -- progress & stuck detection
+    -- motion-based stuck detection (hard collision or tight alley)
+    if step_len < 0.01 then
+        job.samepos_ticks = (job.samepos_ticks or 0) + 1
+    else
+        job.samepos_ticks = 0
+    end
+
+    if job.micro_goal then
+        job.micro_timeout = math.max(0, (job.micro_timeout or 0) - 1)
+        if job.micro_timeout == 0 then
+            job.micro_goal = nil
+        end
+    end
+
+    if (job.samepos_ticks or 0) >= 15 and (not job.micro_goal) then
+        local curr_oct = ENUM_TO_DIR_IDX[job.current_dir or next_dir] or 0
+        local started = _maybe_start_micro_detour(job, control, pos, curr_oct)
+        if not started then
+            -- couldn't find sidestep; escalate to replan immediately
+            if job.replans < job.max_replans then
+                job.replans = job.replans + 1
+                _request_path(job, control)
+                job.no_progress_ticks = 0
+                return
+            else
+                job.state = "failed"
+                control.walking_state = { walking = false, direction = job.current_dir or defines.direction.north }
+                return
+            end
+        end
+    end
+
     local goal_dist = math.sqrt(dist_sq(pos, job.goal))
-    if goal_dist > job.last_goal_dist - 0.05 then
-        job.no_progress_ticks = job.no_progress_ticks + 1
+    local improving = (goal_dist <= job.last_goal_dist - 0.02)
+    if not improving and (not job.micro_goal) then
+        job.no_progress_ticks = (job.no_progress_ticks or 0) + 1
     else
         job.no_progress_ticks = 0
     end
     job.last_goal_dist = goal_dist
 
-    if job.replan_on_stuck and job.no_progress_ticks >= 60 then
+    if job.replan_on_stuck and (job.no_progress_ticks or 0) >= 45 then
         if job.replans < job.max_replans then
             job.replans = job.replans + 1
             _request_path(job, control)
             job.no_progress_ticks = 0
+            return
         else
             job.state = "failed"
             control.walking_state = { walking = false, direction = job.current_dir or defines.direction.north }
+            return
         end
     end
 end
@@ -362,22 +474,16 @@ local function on_tick_walk_intents(event)
     if not storage.walk_intents then return end
 
     local current_tick = game.tick
-    local agent_ids = {}
-    for agent_id, _ in pairs(storage.walk_intents) do agent_ids[#agent_ids+1] = agent_id end
-    table.sort(agent_ids)
-    for _, agent_id in ipairs(agent_ids) do
-        local intent = storage.walk_intents[agent_id]
-        if intent then
-            if intent.end_tick and current_tick >= intent.end_tick then
-                storage.walk_intents[agent_id] = nil
-            else
-                local control = _get_control_for_agent(agent_id)
-                if control and control.walking_state ~= nil then
-                    control.walking_state = {
-                        walking = (intent.walking ~= false),
-                        direction = intent.direction
-                    }
-                end
+    for agent_id, intent in pairs(storage.walk_intents) do
+        if intent.end_tick and current_tick >= intent.end_tick then
+            storage.walk_intents[agent_id] = nil
+        else
+            local control = _get_control_for_agent(agent_id)
+            if control and control.walking_state ~= nil then
+                control.walking_state = {
+                    walking = (intent.walking ~= false),
+                    direction = intent.direction
+                }
             end
         end
     end
@@ -385,45 +491,41 @@ end
 
 local function on_tick_walk_to(event)
     if not storage.walk_to_jobs then return end
-    local ids = {}
-    for id, _ in pairs(storage.walk_to_jobs) do ids[#ids+1] = id end
-    table.sort(ids)
-    for _, id in ipairs(ids) do
-        local job = storage.walk_to_jobs[id]
-        if job then
-            if job.state == "arrived" or job.state == "failed" then
-                storage.walk_to_jobs[id] = nil
-            else
-                local control = _get_control_for_agent(job.agent_id)
-                if control and control.valid then
+    for id, job in pairs(storage.walk_to_jobs) do
+        if job.state == "arrived" or job.state == "failed" then
+            storage.walk_to_jobs[id] = nil
+        else
+            local control = _get_control_for_agent(job.agent_id)
+            if control and control.valid then
+                if job.state == "planning" then
+                    -- do nothing; wait for path callback but still nudge toward goal
+                    _tick_follow(job, control)
+                elseif job.state == "following" then
                     _tick_follow(job, control)
                 else
-                    storage.walk_to_jobs[id] = nil
+                    _tick_follow(job, control)
                 end
+            else
+                storage.walk_to_jobs[id] = nil
             end
         end
     end
 end
 
 local function on_tick(event)
-    -- Idempotency guard: prevent duplicate execution if event handlers were registered twice
-    if storage._walk_tick_stamp == game.tick then return end
-    storage._walk_tick_stamp = game.tick
-
     on_tick_walk_intents(event)
     on_tick_walk_to(event)
 end
 
 local function on_script_path_request_finished(e)
     if not (storage.walk_to_jobs and e and e.id) then return end
-    storage._processed_path_evt = storage._processed_path_evt or {}
-    if storage._processed_path_evt[e.id] then return end
-    storage._processed_path_evt[e.id] = true
     for _, job in pairs(storage.walk_to_jobs) do
         if job.req_id == e.id then
             if e.path and #e.path > 0 then
                 job.waypoints = e.path
                 job.wp_index = 1
+                job.micro_goal = nil
+                job.micro_timeout = 0
                 job.state = "following"
             else
                 -- Path failed; keep local steering, optionally mark failed if we insist
