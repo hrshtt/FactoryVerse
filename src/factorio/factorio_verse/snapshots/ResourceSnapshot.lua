@@ -39,14 +39,7 @@ function ResourceSnapshot:take()
 	})
 
     self:print_summary(output, function(out)
-        local summary = { surface = out.surface, resources = {}, tick = out.timestamp }
-        for _, resource in ipairs(out.data.resources) do
-            table.insert(summary.resources, {
-                name = resource.name,
-                patch_count = resource.patch_count
-            })
-        end
-        return summary
+        return { surface = out.surface, patch_count = #(out.data.patch or {}), tick = out.timestamp }
     end)
 
     return output
@@ -58,9 +51,33 @@ function ResourceSnapshot:take_water()
     )
 
     local patches = self:_analyze_water_patches(water_data.tiles, water_data.tile_names)
+    -- Flatten water: patch (area-level) + data (row segments)
+    local patch_out = {}
+    local data_rows = {}
+    for _, p in ipairs(patches) do
+        table.insert(patch_out, {
+            id = p.id,
+            tiles = p.tiles,
+            bbox = p.bbox,
+            centroid = p.centroid
+        })
+
+        for y, segments in pairs(p.row_spans or {}) do
+            for _, seg in ipairs(segments) do
+                table.insert(data_rows, {
+                    patch_id = p.id,
+                    y = y,
+                    x = seg.x,
+                    len = seg.len,
+                    tile_count = seg.tile_count
+                })
+            end
+        end
+    end
+
     local output = self:create_output("snapshot.water", "v1", {
-        patch_count = #patches,
-        patches = patches
+        patch = patch_out,
+        data = data_rows
     })
 
     	-- Emit JSON for SQL ingestion (does not change return value)
@@ -76,7 +93,7 @@ function ResourceSnapshot:take_water()
     self:print_summary(output, function(out)
         -- Show top 5 largest patches
         local sorted = {}
-        for _, p in ipairs(out.data.patches) do table.insert(sorted, p) end
+        for _, p in ipairs(out.data.patch or {}) do table.insert(sorted, p) end
         table.sort(sorted, function(a, b) return a.tiles > b.tiles end)
 
         local top = {}
@@ -95,7 +112,159 @@ function ResourceSnapshot:take_water()
 
         return {
             surface = out.surface,
-            water = { patch_count = out.data.patch_count, top = top },
+            water = { patch_count = #(out.data.patch or {}), top = top },
+            tick = out.timestamp
+        }
+    end)
+
+    return output
+end
+
+--- CRUDE OIL SNAPSHOT (Single-tile wells)
+--- Treat each crude-oil entity (oil well) as its own patch with no spans.
+function ResourceSnapshot:take_crude()
+    log("Taking crude oil snapshot")
+
+    -- Gather all resources in charted chunks once, then filter to crude-oil
+    local charted_chunks = self.game_state:get_charted_chunks()
+    local resources_by_name = self.game_state:get_resources_in_chunks(charted_chunks)
+    local wells = resources_by_name["crude-oil"] or {}
+
+    -- Cluster wells by spatial proximity to form an "oil field" patch
+    -- Use Euclidean distance threshold in tiles
+    local EPS = 12 -- tiles; tweakable threshold for grouping wells into a field
+
+    local dsu = utils.DSU:new()
+    local points = {}
+    local bucket = {}
+    local cell = EPS
+
+    local function bucket_key(gx, gy)
+        return tostring(gx) .. "," .. tostring(gy)
+    end
+
+    -- Index wells and union neighbors within radius
+    for i, well in ipairs(wells) do
+        local px = (well.position and well.position.x) or 0
+        local py = (well.position and well.position.y) or 0
+        local tx = utils.floor(px)
+        local ty = utils.floor(py)
+
+        points[i] = { px = px, py = py, tx = tx, ty = ty, amount = well.amount or 0, unit_number = well.unit_number }
+        dsu:find(i)
+
+        local gx = math.floor(tx / cell)
+        local gy = math.floor(ty / cell)
+
+        -- Check neighboring buckets for nearby wells
+        for oy = -1, 1 do
+            for ox = -1, 1 do
+                local k = bucket_key(gx + ox, gy + oy)
+                local list = bucket[k]
+                if list then
+                    for _, j in ipairs(list) do
+                        local pj = points[j]
+                        local dx = tx - pj.tx
+                        local dy = ty - pj.ty
+                        if (dx * dx + dy * dy) <= (EPS * EPS) then
+                            dsu:union(i, j)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Insert into its bucket
+        local bk = bucket_key(gx, gy)
+        if not bucket[bk] then bucket[bk] = {} end
+        table.insert(bucket[bk], i)
+    end
+
+    -- Aggregate patches by DSU root
+    local patches_by_root = {}
+    for i = 1, #points do
+        local r = dsu:find(i)
+        local p = points[i]
+        local agg = patches_by_root[r]
+        if not agg then
+            agg = {
+                wells = 0,
+                tiles = 0, -- keep schema parity; equals wells
+                total_amount = 0,
+                min_x = 1e9, min_y = 1e9, max_x = -1e9, max_y = -1e9,
+                sum_x = 0, sum_y = 0,
+            }
+            patches_by_root[r] = agg
+        end
+
+        agg.wells = agg.wells + 1
+        agg.tiles = agg.tiles + 1
+        agg.total_amount = agg.total_amount + (p.amount or 0)
+        if p.tx < agg.min_x then agg.min_x = p.tx end
+        if p.ty < agg.min_y then agg.min_y = p.ty end
+        if p.tx > agg.max_x then agg.max_x = p.tx end
+        if p.ty > agg.max_y then agg.max_y = p.ty end
+        agg.sum_x = agg.sum_x + p.px
+        agg.sum_y = agg.sum_y + p.py
+    end
+
+    local patches = {}
+    local wells_out = {}
+    local root_to_id = {}
+    local next_id = 1
+    for r, agg in pairs(patches_by_root) do
+        local count = math.max(agg.wells, 1)
+        root_to_id[r] = next_id
+        table.insert(patches, {
+            id = next_id,
+            tiles = agg.tiles,
+            wells = agg.wells,
+            total_amount = agg.total_amount,
+            bbox = { min_x = agg.min_x, min_y = agg.min_y, max_x = agg.max_x, max_y = agg.max_y },
+            centroid = {
+                x = math.floor((agg.sum_x / count) * 256 + 0.5) / 256,
+                y = math.floor((agg.sum_y / count) * 256 + 0.5) / 256
+            }
+        })
+        next_id = next_id + 1
+    end
+
+    -- Create per-well rows with patch_id
+    for i = 1, #points do
+        local r = dsu:find(i)
+        local id = root_to_id[r]
+        local p = points[i]
+        table.insert(wells_out, {
+            patch_id = id,
+            resource_name = "crude-oil",
+            amount = p.amount or 0,
+            tile = { x = p.tx, y = p.ty },
+            position = { x = p.px, y = p.py },
+            unit_number = p.unit_number
+        })
+    end
+
+    local output = self:create_output("snapshot.crude", "v1", {
+        patch = patches,
+        data = wells_out
+    })
+
+    -- Emit JSON for SQL ingestion (does not change return value)
+    self:emit_json({ output_dir = "script-output/factoryverse" }, "crude", {
+        meta = {
+            schema_version = "snapshot.crude.v1",
+            surface = output.surface,
+            tick = output.timestamp,
+        },
+        data = output.data,
+    })
+
+    self:print_summary(output, function(out)
+        local total_amount = 0
+        for _, p in ipairs(out.data.patch or {}) do total_amount = total_amount + (p.total_amount or 0) end
+        return {
+            surface = out.surface,
+            crude = { well_count = #(out.data.data or {}), patch_count = #(out.data.patch or {}), total_amount = total_amount },
             tick = out.timestamp
         }
     end)
@@ -140,6 +309,9 @@ function ResourceSnapshot:_process_chunk_for_resources(chunk, state)
     if not resources_in_chunk or next(resources_in_chunk) == nil then
         return
     end
+
+    -- Exclude crude oil from the general resource snapshot; handled by take_crude()
+    resources_in_chunk["crude-oil"] = nil
 
     for resource_name, entities in pairs(resources_in_chunk) do
         local tracker = self:_get_resource_tracker(state, resource_name)
@@ -247,7 +419,7 @@ function ResourceSnapshot:_extract_runs_and_edges(label_grid, amount_grid, bound
                     run_sum = run_sum + (amount_row[x] or 0)
                 else
                     -- End current run
-                    if run_label then
+                    if run_label and run_x ~= nil then
                         self:_add_run_to_label(runs_by_label, run_label, y, run_x, run_len, run_sum)
 
                         -- Add edge segments for boundary reconciliation
@@ -501,19 +673,17 @@ end
 --- @param state table - tracking state
 --- @return table - structured output
 function ResourceSnapshot:_finalize_resource_output(state)
-    local resources_out = {}
+    local patch_out = {}
+    local data_rows = {}
 
     for resource_name, tracker in pairs(state.resources) do
-        local patches_out = {}
-
         for gid, patch in pairs(tracker.patches) do
             local canonical_gid = tracker.dsu:find(gid)
-            if canonical_gid == gid then -- only emit canonical patches
-                -- Calculate centroid with precise division to Factorio's coordinate grid
+            if canonical_gid == gid then
                 local cx = (patch.tiles > 0) and (math.floor(patch.sum_x / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
                 local cy = (patch.tiles > 0) and (math.floor(patch.sum_y / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
 
-                table.insert(patches_out, {
+                table.insert(patch_out, {
                     patch_id = gid,
                     resource_name = resource_name,
                     tiles = patch.tiles,
@@ -524,20 +694,28 @@ function ResourceSnapshot:_finalize_resource_output(state)
                         max_x = patch.max_x,
                         max_y = patch.max_y
                     },
-                    centroid = { x = cx, y = cy },
-                    row_spans = patch.row_spans
+                    centroid = { x = cx, y = cy }
                 })
+
+                -- Flatten row spans into data rows
+                for y, segments in pairs(patch.row_spans or {}) do
+                    for _, seg in ipairs(segments) do
+                        table.insert(data_rows, {
+                            patch_id = gid,
+                            resource_name = resource_name,
+                            y = y,
+                            x = seg.x,
+                            len = seg.len,
+                            tile_count = seg.tile_count,
+                            sum_amount = seg.sum_amount
+                        })
+                    end
+                end
             end
         end
-
-        table.insert(resources_out, {
-            name = resource_name,
-            patch_count = #patches_out,
-            patches = patches_out
-        })
     end
 
-    return { resources = resources_out }
+    return { patch = patch_out, data = data_rows }
 end
 
 --- WATER PATCH ANALYSIS (Flood Fill)
