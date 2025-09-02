@@ -39,7 +39,7 @@ function ResourceSnapshot:take()
 	})
 
     self:print_summary(output, function(out)
-        return { surface = out.surface, patch_count = #(out.data.patch or {}), tick = out.timestamp }
+        return { surface = out.surface, patch_count = #(out.data.patch or {}), row_count = #(out.data.rows or {}), tick = out.timestamp }
     end)
 
     return output
@@ -55,8 +55,12 @@ function ResourceSnapshot:take_water()
     local patch_out = {}
     local data_rows = {}
     for _, p in ipairs(patches) do
+        -- derive stable id from integer centroid
+        local ix = math.floor(p.centroid.x + 0.5)
+        local iy = math.floor(p.centroid.y + 0.5)
+        local patch_id = "water;" .. tostring(ix) .. ";" .. tostring(iy)
         table.insert(patch_out, {
-            id = p.id,
+            patch_id = patch_id,
             tiles = p.tiles,
             bbox = p.bbox,
             centroid = p.centroid
@@ -65,7 +69,7 @@ function ResourceSnapshot:take_water()
         for y, segments in pairs(p.row_spans or {}) do
             for _, seg in ipairs(segments) do
                 table.insert(data_rows, {
-                    patch_id = p.id,
+                    patch_id = patch_id,
                     y = y,
                     x = seg.x,
                     len = seg.len,
@@ -77,7 +81,7 @@ function ResourceSnapshot:take_water()
 
     local output = self:create_output("snapshot.water", "v1", {
         patch = patch_out,
-        data = data_rows
+        rows = data_rows
     })
 
     	-- Emit JSON for SQL ingestion (does not change return value)
@@ -215,8 +219,11 @@ function ResourceSnapshot:take_crude()
     for r, agg in pairs(patches_by_root) do
         local count = math.max(agg.wells, 1)
         root_to_id[r] = next_id
+        local ix = math.floor((math.floor((agg.sum_x / count) * 256 + 0.5) / 256) + 0.5)
+        local iy = math.floor((math.floor((agg.sum_y / count) * 256 + 0.5) / 256) + 0.5)
+        local patch_id = "oil;" .. tostring(ix) .. ";" .. tostring(iy)
         table.insert(patches, {
-            id = next_id,
+            patch_id = patch_id,
             tiles = agg.tiles,
             wells = agg.wells,
             total_amount = agg.total_amount,
@@ -227,6 +234,7 @@ function ResourceSnapshot:take_crude()
             }
         })
         next_id = next_id + 1
+        root_to_id[r] = patch_id
     end
 
     -- Create per-well rows with patch_id
@@ -246,7 +254,7 @@ function ResourceSnapshot:take_crude()
 
     local output = self:create_output("snapshot.crude", "v1", {
         patch = patches,
-        data = wells_out
+        rows = wells_out
     })
 
     -- Emit JSON for SQL ingestion (does not change return value)
@@ -264,7 +272,7 @@ function ResourceSnapshot:take_crude()
         for _, p in ipairs(out.data.patch or {}) do total_amount = total_amount + (p.total_amount or 0) end
         return {
             surface = out.surface,
-            crude = { well_count = #(out.data.data or {}), patch_count = #(out.data.patch or {}), total_amount = total_amount },
+            crude = { well_count = #(out.data.rows or {}), patch_count = #(out.data.patch or {}), total_amount = total_amount },
             tick = out.timestamp
         }
     end)
@@ -682,9 +690,12 @@ function ResourceSnapshot:_finalize_resource_output(state)
             if canonical_gid == gid then
                 local cx = (patch.tiles > 0) and (math.floor(patch.sum_x / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
                 local cy = (patch.tiles > 0) and (math.floor(patch.sum_y / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
+                local ix = math.floor(cx + 0.5)
+                local iy = math.floor(cy + 0.5)
+                local patch_id = resource_name .. ";" .. tostring(ix) .. ";" .. tostring(iy)
 
                 table.insert(patch_out, {
-                    patch_id = gid,
+                    patch_id = patch_id,
                     resource_name = resource_name,
                     tiles = patch.tiles,
                     total_amount = patch.amount,
@@ -701,7 +712,7 @@ function ResourceSnapshot:_finalize_resource_output(state)
                 for y, segments in pairs(patch.row_spans or {}) do
                     for _, seg in ipairs(segments) do
                         table.insert(data_rows, {
-                            patch_id = gid,
+                            patch_id = patch_id,
                             resource_name = resource_name,
                             y = y,
                             x = seg.x,
@@ -715,7 +726,7 @@ function ResourceSnapshot:_finalize_resource_output(state)
         end
     end
 
-    return { patch = patch_out, data = data_rows }
+    return { patch = patch_out, rows = data_rows }
 end
 
 --- WATER PATCH ANALYSIS (Flood Fill)
