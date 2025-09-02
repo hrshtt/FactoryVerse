@@ -61,6 +61,11 @@ function Snapshot:emit_json(opts, name, payload)
 	-- Example filename: script-output/factoryverse/entities.snap-12345.json
 	local file_path = string.format("%s/%s.%s.json", base_dir, name, snapshot_id)
 
+	-- Ensure a fresh write: try to remove any existing file first
+	if helpers and helpers.remove_path then
+		pcall(helpers.remove_path, file_path)
+	end
+
 	-- Factorio will create subdirs under script-output if needed.
 	local json_str = helpers.table_to_json(payload)
 	helpers.write_file(file_path, json_str, false)
