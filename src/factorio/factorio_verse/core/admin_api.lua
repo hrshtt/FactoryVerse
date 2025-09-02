@@ -25,6 +25,10 @@ M.helpers.take_resources = function()
     ResourceSnapshot:new():take()
 end
 
+M.helpers.take_crude_oil = function()
+    ResourceSnapshot:new():take_crude()
+end
+
 M.helpers.take_water = function()
     ResourceSnapshot:new():take_water()
 end
