@@ -188,4 +188,120 @@ function AgentGameState:to_json()
     }
 end
 
+-- Internal helper to fetch the agent's LuaEntity (character)
+local function _get_control_for_agent(agent_id)
+    local agents = storage.agent_characters
+    if agents and agents[agent_id] and agents[agent_id].valid then
+        return agents[agent_id]
+    end
+    return nil
+end
+
+-- Hard exclusivity policy: only one activity active at a time for stability
+-- Stop all walking-related activities (intents and immediate walking state)
+function AgentGameState:stop_walking(agent_id)
+    agent_id = agent_id or self.agent_id
+    -- Clear sustained intents
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+    -- Stop walking immediately on the entity
+    local control = _get_control_for_agent(agent_id)
+    if control and control.valid then
+        local current_dir = (control.walking_state and control.walking_state.direction) or defines.direction.north
+        control.walking_state = { walking = false, direction = current_dir }
+    end
+end
+
+-- Start or stop walking for this tick. Enforces exclusivity with mining when starting.
+function AgentGameState:set_walking(agent_id, direction, walking)
+    agent_id = agent_id or self.agent_id
+    local control = _get_control_for_agent(agent_id)
+    if not (control and control.valid) then return end
+    -- If starting to walk, stop mining per exclusivity policy
+    if walking then
+        if control.mining_state and control.mining_state.mining then
+            control.mining_state = { mining = false }
+        end
+    end
+    -- Apply walking state
+    local dir = direction or (control.walking_state and control.walking_state.direction) or defines.direction.north
+    control.walking_state = { walking = (walking ~= false), direction = dir }
+end
+
+-- Sustain walking for a number of ticks; immediately applies for current tick as well
+function AgentGameState:sustain_walking(agent_id, direction, ticks)
+    agent_id = agent_id or self.agent_id
+    if not ticks or ticks <= 0 then return end
+    storage.walk_intents = storage.walk_intents or {}
+    local end_tick = (game and game.tick or 0) + ticks
+    storage.walk_intents[agent_id] = {
+        direction = direction,
+        end_tick = end_tick,
+        walking = true
+    }
+    -- Immediate apply this tick
+    self:set_walking(agent_id, direction, true)
+end
+
+-- Clear any sustained walking intent for the agent, without changing walk_to jobs
+function AgentGameState:clear_walking_intent(agent_id)
+    agent_id = agent_id or self.agent_id
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+end
+
+-- Cancel any active walk_to jobs for the agent (without touching walking intents)
+function AgentGameState:cancel_walk_to(agent_id)
+    agent_id = agent_id or self.agent_id
+    if not storage.walk_to_jobs then return end
+    for id, job in pairs(storage.walk_to_jobs) do
+        if job and job.agent_id == agent_id then
+            storage.walk_to_jobs[id] = nil
+        end
+    end
+end
+
+-- Start/stop mining on the entity; when starting, enforce exclusivity by stopping walking
+-- target may be a position {x,y} or an entity with .position
+function AgentGameState:set_mining(agent_id, mining, target)
+    agent_id = agent_id or self.agent_id
+    local control = _get_control_for_agent(agent_id)
+    if not (control and control.valid) then return end
+    if mining then
+        -- Exclusivity: stop any walking and walk_to jobs
+        self:stop_walking(agent_id)
+        local pos = target and (target.position or target) or nil
+        -- When a specific entity is provided, prefer explicit target entity
+        local ent = (target and target.valid == true and target) or nil
+        if pos then
+            control.mining_state = { mining = true, position = { x = pos.x, y = pos.y }, entity = ent }
+        else
+            control.mining_state = { mining = true, entity = ent }
+        end
+    else
+        control.mining_state = { mining = false }
+    end
+end
+
+-- Transient selection handling ------------------------------------------------
+function AgentGameState:set_selected(agent_id, selected)
+    agent_id = agent_id or self.agent_id
+    storage.agent_selection = storage.agent_selection or {}
+    storage.agent_selection[agent_id] = selected
+end
+
+function AgentGameState:get_selected(agent_id)
+    agent_id = agent_id or self.agent_id
+    return storage.agent_selection and storage.agent_selection[agent_id] or nil
+end
+
+function AgentGameState:clear_selected(agent_id)
+    agent_id = agent_id or self.agent_id
+    if storage.agent_selection then
+        storage.agent_selection[agent_id] = nil
+    end
+end
+
 return AgentGameState

@@ -82,15 +82,27 @@ local function _find_resource_entity(surface, position, resource_name)
     if ok_ent and ent and ent.valid and ent.type == "resource" then
         return ent
     end
-    -- Fallback: small area around the provided coordinates
-    local x, y = position.x, position.y
-    local epsilon = 0.5
+    -- Fallback: search in a reasonable radius and pick the nearest
+    local search_radius = 2.5
     local entities = surface.find_entities_filtered{
-        area = { { x - epsilon, y - epsilon }, { x + epsilon, y + epsilon } },
+        position = position,
+        radius = search_radius,
         type = "resource",
         name = resource_name
     }
-    return (entities and entities[1]) or nil
+    if not entities or #entities == 0 then return nil end
+    local px, py = position.x, position.y
+    local best, best_d2 = nil, math.huge
+    for _, e in ipairs(entities) do
+        if e and e.valid then
+            local dx, dy = e.position.x - px, e.position.y - py
+            local d2 = dx*dx + dy*dy
+            if d2 < best_d2 then
+                best, best_d2 = e, d2
+            end
+        end
+    end
+    return best
 end
 
 local function _get_resource_products(resource)
@@ -108,6 +120,50 @@ local function _get_resource_products(resource)
     end
     if #names == 0 then table.insert(names, resource.name) end
     return names, requires_fluid
+end
+
+-- Perform one mining step: mine the resource entity and insert products into control's inventory
+local function _perform_mining_step(control, resource, job)
+    if not (control and control.valid and resource and resource.valid) then return 0 end
+    local products = resource.prototype and resource.prototype.mineable_properties and resource.prototype.mineable_properties.products or nil
+    if not products or #products == 0 then
+        -- Fallback: try mine() which may handle tiles/resources
+        pcall(function() resource.mine({ ignore_minable = false, raise_destroyed = true }) end)
+        return 0
+    end
+
+    -- Destroy the entity (simulate mining) and insert products
+    local inserted = 0
+    local inv = control.get_inventory and control.get_inventory(defines.inventory.character_main) or nil
+    local pos = resource.position
+    local surf = resource.surface
+
+    -- Use mine to raise proper events and remove entity
+    local ok_mine = pcall(function()
+        return resource.mine({ ignore_minable = false, raise_destroyed = true })
+    end)
+    if not ok_mine then
+        -- fallback destroy
+        pcall(function() resource.destroy({ raise_destroy = true }) end)
+    end
+
+    for _, prod in ipairs(products) do
+        local name = prod.name
+        local amount = prod.amount or 1
+        if inv and name and amount and amount > 0 then
+            local actually = inv.insert({ name = name, count = amount }) or 0
+            inserted = inserted + actually
+            if actually < amount then
+                -- Drop overflow on ground
+                pcall(function()
+                    surf.spill_item_stack(pos, { name = name, count = amount - actually }, true, control.force, false)
+                end)
+            end
+        end
+    end
+
+    job.mined_count = (job.mined_count or 0) + inserted
+    return inserted
 end
 
 local function _ensure_walking_towards(job)
@@ -180,7 +236,7 @@ local function _tick_mine_jobs(event)
             else
                 -- Stop if completed
                 if (job.mined_count or 0) >= job.min_count then
-                    control.mining_state = { mining = false }
+                    game_state:agent_state():set_mining(agent_id, false)
                     job.finished = true
                     storage.mine_resource_jobs[agent_id] = nil
                 else
@@ -189,7 +245,7 @@ local function _tick_mine_jobs(event)
 
                     if not (resource and resource.valid) then
                         -- Target depleted or missing
-                        control.mining_state = { mining = false }
+                        game_state:agent_state():set_mining(agent_id, false)
                         job.finished = true
                         storage.mine_resource_jobs[agent_id] = nil
                     else
@@ -198,7 +254,7 @@ local function _tick_mine_jobs(event)
                             local names, requires_fluid = _get_resource_products(resource)
                             if requires_fluid then
                                 log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", job.resource_name, agent_id))
-                                control.mining_state = { mining = false }
+                                game_state:agent_state():set_mining(agent_id, false)
                                 job.finished = true
                                 storage.mine_resource_jobs[agent_id] = nil
                                 goto continue_agent
@@ -213,20 +269,21 @@ local function _tick_mine_jobs(event)
                         if reachable then
                             -- Ensure we are not walking and keep mining active by reasserting every tick
                             _cancel_walk_for_agent(agent_id)
-                            control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
+                            local agent_state = game_state:agent_state()
+                            agent_state:set_mining(agent_id, true, resource)
                             job.mining_active = true
 
-                            local current_total = _get_items_total(control, job.products)
-                            job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
-                            if job.mined_count >= job.min_count then
-                                control.mining_state = { mining = false }
+                            -- Actively mine one step per tick to ensure progress for character agents
+                            local inserted = _perform_mining_step(control, resource, job)
+                            if (job.mined_count or 0) >= job.min_count then
+                                agent_state:set_mining(agent_id, false)
                                 job.finished = true
                                 storage.mine_resource_jobs[agent_id] = nil
                                 log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.min_count))
                             end
                         else
                             if job.mining_active then
-                                control.mining_state = { mining = false }
+                                game_state:agent_state():set_mining(agent_id, false)
                                 job.mining_active = false
                             end
                             if job.walk_if_unreachable then
@@ -283,9 +340,10 @@ function MineResourceAction:run(params)
             local reachable = _can_reach_entity(control, resource)
             if reachable then
                 _cancel_walk_for_agent(agent_id)
-                local target_pos = resource.position
-                control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
+                game_state:agent_state():set_mining(agent_id, true, resource)
                 job.mining_active = true
+                -- Immediate mining step attempt on start
+                _perform_mining_step(control, resource, job)
             elseif job.walk_if_unreachable then
                 _ensure_walking_towards(job)
             end

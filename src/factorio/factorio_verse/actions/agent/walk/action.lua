@@ -159,6 +159,9 @@ local DIRV = {
 local function _scale(v, s) return { v[1]*s, v[2]*s } end
 local function _addp(p, v)  return { x = p.x + v[1], y = p.y + v[2] } end
 
+-- Forward declaration to satisfy linter for references before definition
+local _current_target
+
 -- Start a small perpendicular sidestep around an obstacle (deterministic left/right)
 local function _maybe_start_micro_detour(job, control, pos, curr_oct)
     if not (control and control.valid) then return false end
@@ -307,7 +310,8 @@ local function _tick_follow(job, control)
 
     -- arrival check
     if dist_sq(pos, job.goal) <= (job.arrive_radius * job.arrive_radius) then
-        control.walking_state = { walking = false, direction = job.current_dir or defines.direction.north }
+        local agent_state = game_state:agent_state()
+        agent_state:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
         job.state = "arrived"
         return
     end
@@ -327,7 +331,8 @@ local function _tick_follow(job, control)
     local next_dir = hysteresis_octant(job.current_dir, desired_oct)
     job.current_dir = next_dir
 
-    control.walking_state = { walking = true, direction = next_dir }
+    local agent_state = game_state:agent_state()
+    agent_state:set_walking(job.agent_id, next_dir, true)
 
     -- motion-based stuck detection (hard collision or tight alley)
     if step_len < 0.01 then
@@ -355,7 +360,7 @@ local function _tick_follow(job, control)
                 return
             else
                 job.state = "failed"
-                control.walking_state = { walking = false, direction = job.current_dir or defines.direction.north }
+                agent_state:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
                 return
             end
         end
@@ -378,7 +383,7 @@ local function _tick_follow(job, control)
             return
         else
             job.state = "failed"
-            control.walking_state = { walking = false, direction = job.current_dir or defines.direction.north }
+            agent_state:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
             return
         end
     end
@@ -440,31 +445,22 @@ function WalkAction:run(params)
         return false
     end
 
-    local agent = game_state:agent_state():get_agent(agent_id)
+    local agent_state = game_state:agent_state()
+    local agent = agent_state:get_agent(agent_id)
 
     -- If ticks specified, register an intent to sustain walking each tick
     if p.ticks and p.ticks > 0 then
-        storage.walk_intents = storage.walk_intents or {}
-        storage.walk_intents[agent_id] = {
-            direction = direction,
-            end_tick = game.tick + p.ticks,
-            walking = (should_walk ~= false)
-        }
-        -- Apply immediately this tick as well
-        agent.walking_state = { walking = (should_walk ~= false), direction = direction }
+        agent_state:sustain_walking(agent_id, direction, p.ticks)
         return true
     end
 
     -- One-shot set for this tick
     if should_walk == false then
         -- Stop walking and clear any intent
-        if storage.walk_intents then
-            storage.walk_intents[agent_id] = nil
-        end
-        local current_dir = (agent.walking_state and agent.walking_state.direction) or direction
-        agent.walking_state = { walking = false, direction = current_dir }
+        agent_state:clear_walking_intent(agent_id)
+        agent_state:set_walking(agent_id, direction, false)
     else
-        agent.walking_state = { walking = true, direction = direction }
+        agent_state:set_walking(agent_id, direction, true)
     end
 
     return self:_post_run(true, p)
@@ -478,13 +474,8 @@ local function on_tick_walk_intents(event)
         if intent.end_tick and current_tick >= intent.end_tick then
             storage.walk_intents[agent_id] = nil
         else
-            local control = _get_control_for_agent(agent_id)
-            if control and control.walking_state ~= nil then
-                control.walking_state = {
-                    walking = (intent.walking ~= false),
-                    direction = intent.direction
-                }
-            end
+            local agent_state = game_state:agent_state()
+            agent_state:set_walking(agent_id, intent.direction, (intent.walking ~= false))
         end
     end
 end
@@ -532,26 +523,9 @@ function WalkCancelAction:run(params)
     local p = self:_pre_run(game_state, params)
     local agent_id = p.agent_id
 
-    -- Cancel sustained walk intents
-    if storage.walk_intents then
-        storage.walk_intents[agent_id] = nil
-    end
-
-    -- Cancel any active walk_to jobs for this agent
-    if storage.walk_to_jobs then
-        for id, job in pairs(storage.walk_to_jobs) do
-            if job and job.agent_id == agent_id then
-                storage.walk_to_jobs[id] = nil
-            end
-        end
-    end
-
-    -- Stop walking immediately
-    local control = _get_control_for_agent(agent_id)
-    if control then
-        local current_dir = (control.walking_state and control.walking_state.direction) or defines.direction.north
-        control.walking_state = { walking = false, direction = current_dir }
-    end
+    -- Delegate to AgentGameState for centralized state management
+    local agent_state = game_state:agent_state()
+    agent_state:stop_walking(agent_id)
 
     return self:_post_run(true, p)
 end
