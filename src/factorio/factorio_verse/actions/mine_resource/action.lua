@@ -40,6 +40,8 @@ local function _new_job(agent_id, pos, resource_name, min_count, walk_if_unreach
         walking_started = false,
         walk_if_unreachable = walk_if_unreachable and true or false,
         finished = false,
+        current_entity = nil,
+        ticks_left = nil,
     }
 end
 
@@ -122,30 +124,32 @@ local function _get_resource_products(resource)
     return names, requires_fluid
 end
 
--- Perform one mining step: mine the resource entity and insert products into control's inventory
-local function _perform_mining_step(control, resource, job)
+-- Compute number of ticks required to mine the entity, approximating player mining (60 tps)
+local function _ticks_to_mine(control, resource)
+    local props = resource.prototype and resource.prototype.mineable_properties
+    local mining_time = (props and props.mining_time) or 1
+    -- TODO: incorporate bonuses/mining speed if needed
+    return math.max(1, math.ceil(mining_time * 60))
+end
+
+-- Complete mining of the entity after enough ticks: remove entity and insert products
+local function _complete_mining_of_entity(control, resource, job)
     if not (control and control.valid and resource and resource.valid) then return 0 end
     local products = resource.prototype and resource.prototype.mineable_properties and resource.prototype.mineable_properties.products or nil
     if not products or #products == 0 then
-        -- Fallback: try mine() which may handle tiles/resources
-        pcall(function() resource.mine({ ignore_minable = false, raise_destroyed = true }) end)
+        -- Fallback: destroy without products
+        pcall(function() resource.destroy({ raise_destroy = true }) end)
         return 0
     end
 
-    -- Destroy the entity (simulate mining) and insert products
+    -- Destroy the entity and insert products
     local inserted = 0
     local inv = control.get_inventory and control.get_inventory(defines.inventory.character_main) or nil
     local pos = resource.position
     local surf = resource.surface
 
-    -- Use mine to raise proper events and remove entity
-    local ok_mine = pcall(function()
-        return resource.mine({ ignore_minable = false, raise_destroyed = true })
-    end)
-    if not ok_mine then
-        -- fallback destroy
-        pcall(function() resource.destroy({ raise_destroy = true }) end)
-    end
+    -- Remove entity and raise events
+    pcall(function() resource.destroy({ raise_destroy = true }) end)
 
     for _, prod in ipairs(products) do
         local name = prod.name
@@ -273,8 +277,20 @@ local function _tick_mine_jobs(event)
                             agent_state:set_mining(agent_id, true, resource)
                             job.mining_active = true
 
-                            -- Actively mine one step per tick to ensure progress for character agents
-                            local inserted = _perform_mining_step(control, resource, job)
+                            -- Initialize or continue swing timer
+                            if (not job.current_entity) or (not job.current_entity.valid) or (job.current_entity ~= resource) then
+                                job.current_entity = resource
+                                job.ticks_left = _ticks_to_mine(control, resource)
+                            else
+                                job.ticks_left = math.max(0, (job.ticks_left or 0) - 1)
+                            end
+
+                            if (job.ticks_left or 0) <= 0 then
+                                local added = _complete_mining_of_entity(control, resource, job)
+                                job.current_entity = nil
+                                job.ticks_left = nil
+                            end
+
                             if (job.mined_count or 0) >= job.min_count then
                                 agent_state:set_mining(agent_id, false)
                                 job.finished = true
@@ -342,8 +358,9 @@ function MineResourceAction:run(params)
                 _cancel_walk_for_agent(agent_id)
                 game_state:agent_state():set_mining(agent_id, true, resource)
                 job.mining_active = true
-                -- Immediate mining step attempt on start
-                _perform_mining_step(control, resource, job)
+                -- Initialize swing timer
+                job.current_entity = resource
+                job.ticks_left = _ticks_to_mine(control, resource)
             elseif job.walk_if_unreachable then
                 _ensure_walking_towards(job)
             end
