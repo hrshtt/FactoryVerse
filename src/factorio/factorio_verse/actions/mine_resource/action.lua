@@ -10,9 +10,7 @@ local action_registry = require("core.action.ActionRegistry")
 --- @field resource_name string
 --- @field max_count number
 --- @field walk_if_unreachable boolean|nil
---- @field emulate boolean|nil
 --- @field debug boolean|nil
---- @field bind_player boolean|nil
 local MineResourceParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
     x = { type = "number", required = true },
@@ -20,9 +18,7 @@ local MineResourceParams = ParamSpec:new({
     resource_name = { type = "string", required = true },
     max_count = { type = "number", required = true },
     walk_if_unreachable = { type = "boolean", required = false, default = false },
-    emulate = { type = "boolean", required = false, default = true },
     debug = { type = "boolean", required = false, default = false },
-    bind_player = { type = "boolean", required = false, default = false },
 })
 
 --- Internal per-agent job state
@@ -47,13 +43,9 @@ local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreach
         walk_if_unreachable = walk_if_unreachable and true or false,
         finished = false,
         current_entity = nil,
-        ticks_left = nil,
-        emulate = true,
-        player = nil,
         start_total = nil,
         was_in_reach = false,
         debug = false,
-        bind_player = false,
     }
 end
 
@@ -159,69 +151,7 @@ local function _get_resource_products(resource)
 end
 
 -- Compute number of ticks required to mine the entity, approximating player mining (60 tps)
-local function _ticks_to_mine(control, resource)
-    local props = resource.prototype and resource.prototype.mineable_properties
-    local mining_time = (props and props.mining_time) or 1
-    -- TODO: incorporate bonuses/mining speed if needed
-    return math.max(1, math.ceil(mining_time * 60))
-end
-
--- Bind/unbind helper for emulate mode
-local function _bind_player_to_character(agent_id, control)
-    if not (game and game.players and game.players[agent_id]) then return nil end
-    local player = game.players[agent_id]
-    if not (player and player.valid) then return nil end
-    local ok = pcall(function()
-        player.set_controller{ type = defines.controllers.character, character = control }
-    end)
-    if ok then return player end
-    return nil
-end
-
-local function _unbind_player(player)
-    if not (player and player.valid) then return end
-    pcall(function()
-        player.set_controller{ type = defines.controllers.spectator }
-    end)
-end
-
--- Complete mining of the entity after enough ticks: remove entity and insert products
-local function _complete_mining_of_entity(control, resource, job)
-    if not (control and control.valid and resource and resource.valid) then return 0 end
-    local products = resource.prototype and resource.prototype.mineable_properties and resource.prototype.mineable_properties.products or nil
-    if not products or #products == 0 then
-        -- Fallback: destroy without products
-        pcall(function() resource.destroy({ raise_destroy = true }) end)
-        return 0
-    end
-
-    -- Destroy the entity and insert products
-    local inserted = 0
-    local inv = control.get_inventory and control.get_inventory(defines.inventory.character_main) or nil
-    local pos = resource.position
-    local surf = resource.surface
-
-    -- Remove entity and raise events
-    pcall(function() resource.destroy({ raise_destroy = true }) end)
-
-    for _, prod in ipairs(products) do
-        local name = prod.name
-        local amount = prod.amount or 1
-        if inv and name and amount and amount > 0 then
-            local actually = inv.insert({ name = name, count = amount }) or 0
-            inserted = inserted + actually
-            if actually < amount then
-                -- Drop overflow on ground
-                pcall(function()
-                    surf.spill_item_stack(pos, { name = name, count = amount - actually }, true, control.force, false)
-                end)
-            end
-        end
-    end
-
-    job.mined_count = (job.mined_count or 0) + inserted
-    return inserted
-end
+-- Removed: fake swing timer path and player bind/unbind; we only emulate via mining_state and inventory deltas
 
 local function _ensure_walking_towards(job)
     if job.walking_started then return end
@@ -291,17 +221,15 @@ local function _tick_mine_jobs(event)
             if not control then
                 storage.mine_resource_jobs[agent_id] = nil
             else
-                -- Refresh progress from inventory when possible (handles emulate path robustly)
+                -- Refresh progress from inventory when possible (authoritative stop)
                 if job.products and (job.start_total ~= nil) then
-                    local actor = (job.player and job.player.valid) and job.player or control
-                    local current_total = _get_actor_items_total(actor, job.products)
+                    local current_total = _get_actor_items_total(control, job.products)
                     job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
                 end
 
                 -- Stop if completed
                 if (job.mined_count or 0) >= job.max_count then
                     game_state:agent_state():set_mining(agent_id, false)
-                    if job.player then _unbind_player(job.player) end
                     job.finished = true
                     storage.mine_resource_jobs[agent_id] = nil
                 else
@@ -311,12 +239,11 @@ local function _tick_mine_jobs(event)
                     if not (resource and resource.valid) then
                         -- Target depleted or missing
                         game_state:agent_state():set_mining(agent_id, false)
-                        if job.player then _unbind_player(job.player) end
                         job.finished = true
                         storage.mine_resource_jobs[agent_id] = nil
                     else
                         if job.debug and ((game.tick % 60) == 0) then
-                            log(string.format("[mine_resource] tick=%d agent=%d mined=%d/%d emulate=%s", game.tick, agent_id, job.mined_count or 0, job.max_count, tostring(job.emulate)))
+                            log(string.format("[mine_resource] tick=%d agent=%d mined=%d/%d", game.tick, agent_id, job.mined_count or 0, job.max_count))
                         end
                         -- Initialize products and guard against fluid-only mining
                         if not job.products then
@@ -324,14 +251,12 @@ local function _tick_mine_jobs(event)
                             if requires_fluid then
                                 log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", job.resource_name, agent_id))
                                 game_state:agent_state():set_mining(agent_id, false)
-                                if job.player then _unbind_player(job.player) end
                                 job.finished = true
                                 storage.mine_resource_jobs[agent_id] = nil
                                 goto continue_agent
                             end
                             job.products = names
-                            local actor = (job.player and job.player.valid) and job.player or control
-                            job.start_total = _get_actor_items_total(actor, job.products)
+                            job.start_total = _get_actor_items_total(control, job.products)
                         end
 
                         local target_pos = resource.position or job.target
@@ -344,44 +269,22 @@ local function _tick_mine_jobs(event)
                             agent_state:set_mining(agent_id, true, resource)
                             job.mining_active = true
 
-                            if job.emulate then
-                                local actor = (job.player and job.player.valid) and job.player or control
-                                if actor.update_selected_entity and target_pos then
-                                    pcall(function() actor.update_selected_entity(target_pos) end)
+                            -- Emulation: reassert mining_state via control, track via inventory
+                            if control.update_selected_entity and target_pos then
+                                pcall(function() control.update_selected_entity(target_pos) end)
+                            end
+                            if control.mining_state ~= nil then
+                                control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
+                            end
+                            local current_total = _get_actor_items_total(control, job.products)
+                            job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
+                            if (job.mined_count or 0) >= job.max_count then
+                                if control.mining_state ~= nil then
+                                    control.mining_state = { mining = false }
                                 end
-                                if actor.mining_state ~= nil then
-                                    actor.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
-                                end
-                                local current_total = _get_actor_items_total(actor, job.products)
-                                job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
-                                if (job.mined_count or 0) >= job.max_count then
-                                    if actor.mining_state ~= nil then
-                                        actor.mining_state = { mining = false }
-                                    end
-                                    if job.player then _unbind_player(job.player) end
-                                    job.finished = true
-                                    storage.mine_resource_jobs[agent_id] = nil
-                                    log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.max_count))
-                                end
-                            else
-                                -- Initialize or continue swing timer
-                                if (not job.current_entity) or (not job.current_entity.valid) or (job.current_entity ~= resource) then
-                                    job.current_entity = resource
-                                    job.ticks_left = _ticks_to_mine(control, resource)
-                                else
-                                    job.ticks_left = math.max(0, (job.ticks_left or 0) - 1)
-                                end
-                                if (job.ticks_left or 0) <= 0 then
-                                    local added = _complete_mining_of_entity(control, resource, job)
-                                    job.current_entity = nil
-                                    job.ticks_left = nil
-                                end
-                                if (job.mined_count or 0) >= job.max_count then
-                                    agent_state:set_mining(agent_id, false)
-                                    job.finished = true
-                                    storage.mine_resource_jobs[agent_id] = nil
-                                    log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.max_count))
-                                end
+                                job.finished = true
+                                storage.mine_resource_jobs[agent_id] = nil
+                                log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.max_count))
                             end
                         else
                             if job.mining_active then
@@ -414,9 +317,8 @@ function MineResourceAction:run(params)
     local target = { x = p.x, y = p.y }
     local resource_name = p.resource_name
     local max_count = p.max_count
-    local emulate = (p.emulate ~= false)
+    local emulate = true
     local debug = (p.debug == true)
-    local bind_player = (p.bind_player == true)
     
 
     storage.mine_resource_jobs = storage.mine_resource_jobs or {}
@@ -425,7 +327,6 @@ function MineResourceAction:run(params)
     local job = _new_job(agent_id, target, resource_name, max_count, p.walk_if_unreachable)
     job.emulate = emulate
     job.debug = debug
-    job.bind_player = bind_player
     storage.mine_resource_jobs[agent_id] = job
     log(string.format("[mine_resource] start agent=%d target=(%.2f,%.2f) res=%s max=%d walk=%s emulate=%s", agent_id, target.x, target.y, resource_name, max_count, tostring(p.walk_if_unreachable), tostring(emulate)))
 
@@ -442,11 +343,7 @@ function MineResourceAction:run(params)
                 return self:_post_run(false, p)
             end
             job.products = names
-            if emulate and bind_player then
-                job.player = _bind_player_to_character(agent_id, control)
-            end
-            local actor = (job.player and job.player.valid) and job.player or control
-            job.start_total = _get_actor_items_total(actor, job.products)
+            job.start_total = _get_actor_items_total(control, job.products)
 
             -- Try to begin mining immediately if in reach; tick will maintain it
             local reachable = _can_reach_entity(control, resource)
@@ -454,18 +351,12 @@ function MineResourceAction:run(params)
                 _cancel_walk_for_agent(agent_id)
                 game_state:agent_state():set_mining(agent_id, true, resource)
                 job.mining_active = true
-                if emulate then
-                    local target_pos = resource.position
-                    if actor.update_selected_entity and target_pos then
-                        pcall(function() actor.update_selected_entity(target_pos) end)
-                    end
-                    if actor.mining_state ~= nil then
-                        actor.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
-                    end
-                else
-                    -- Initialize swing timer
-                    job.current_entity = resource
-                    job.ticks_left = _ticks_to_mine(control, resource)
+                local target_pos = resource.position
+                if control.update_selected_entity and target_pos then
+                    pcall(function() control.update_selected_entity(target_pos) end)
+                end
+                if control.mining_state ~= nil then
+                    control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
                 end
             elseif job.walk_if_unreachable then
                 _ensure_walking_towards(job)
