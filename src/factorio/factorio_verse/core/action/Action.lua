@@ -43,7 +43,8 @@ end
 
 --- Validate parameters using external validators
 --- @param params ParamSpec|table Parameter instance or raw params (for backward compatibility)
---- @return boolean
+--- @return boolean success
+--- @return string|nil error_message
 function Action:validate(params)
   local params_table
   if type(params) == "table" and params.get_values then
@@ -54,10 +55,15 @@ function Action:validate(params)
     params_table = params
   end
   
-  for _, validator in ipairs(self.validators) do
-    local result = validator(params_table)
-    if not result then
-      return false
+  for i, validator in ipairs(self.validators) do
+    local ok, result, error_msg = pcall(validator, params_table)
+    if not ok then
+      return false, "Validator " .. i .. " threw error: " .. tostring(result)
+    elseif result == false then
+      return false, error_msg or ("Validator " .. i .. " failed")
+    elseif result ~= true then
+      -- Handle case where validator returns just false without error message
+      return false, "Validator " .. i .. " failed"
     end
   end
   return true
@@ -99,21 +105,12 @@ function Action:_pre_run(game_state, params)
   if not instance:is_validated() then
     instance:validate()
   end
-  local ok = self:validate(instance)
+  local ok, error_msg = self:validate(instance)
   if ok == false then
-    error("Validation failed for action '" .. tostring(self.name) .. "'")
+    error("Validation failed for action '" .. tostring(self.name) .. "': " .. (error_msg or "unknown error"))
   end
  
   self.params = instance
-
-  -- Run external validators
-  for _, validator in ipairs(self.validators) do
-    local ok2, result = pcall(validator, instance)
-    if not ok2 then
-      log("Validation failed for action '" .. tostring(self.name) .. "': " .. tostring(result))
-      error("Validation failed for action '" .. tostring(self.name) .. "': " .. tostring(result))
-    end
-  end
   return instance
 end
 

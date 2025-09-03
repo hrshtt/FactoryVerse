@@ -14,14 +14,14 @@ local ACTION_MODULES = {
   -- "actions.agent.send_message.action",
 
   -- entity
-  -- "actions.entity.place.action",
+  "actions.entity.place.action",
   -- "actions.entity.move.action",
   -- "actions.entity.remove.action",
   -- "actions.entity.set_recipe.action",
   -- "actions.entity.connect.action",
 
   -- item
-  -- "actions.item.craft.action",
+  "actions.item.craft.action",
   -- "actions.item.transfer.action",
 
   -- resources / research

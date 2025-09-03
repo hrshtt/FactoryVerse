@@ -45,9 +45,21 @@ function InventoryGameState:check_item_in_inventory(entity, item_name, inventory
         return false, GameStateError:new("Invalid entity")
     end
     local contents, err = self:get_inventory_contents(entity, inventory_type)
-    if not contents then
-        return false, err
+    if not contents or type(contents) ~= "table" or contents.message then
+        -- contents might be a GameStateError object
+        local error_msg = (contents and contents.message) or (err and err.message) or "unknown error"
+        return false, err or contents
     end
 
-    return contents[item_name] ~= nil
+    -- Factorio's get_contents() returns an array of {name, count, quality} objects
+    -- We need to iterate through the array to find the item
+    for _, item in pairs(contents) do
+        if item.name == item_name and item.count > 0 then
+            return true
+        end
+    end
+    
+    return false
 end
+
+return InventoryGameState

@@ -157,7 +157,7 @@ function AgentGameState:get_surrounding_entities(agent_id, radius, filter)
         {agent.position.x - radius, agent.position.y - radius},
         {agent.position.x + radius, agent.position.y + radius}
     }
-    return self.game_state.entities_state:get_entities_in_area(area, filter)
+    return self.game_state:entities_state():get_entities_in_area(area, filter)
 end
 
 --- @param agent_id number
@@ -167,7 +167,7 @@ function AgentGameState:get_inventory_contents(agent_id)
     if not agent then
         return GameStateError:new("Agent not found", {agent_id = agent_id})
     end
-    return self.game_state.inventory_state:get_inventory_contents(agent, agent_inventory_type)
+    return self.game_state:inventory_state():get_inventory_contents(agent, agent_inventory_type)
 end
 
 function AgentGameState:check_item_in_inventory(agent_id, item_name)
@@ -176,7 +176,7 @@ function AgentGameState:check_item_in_inventory(agent_id, item_name)
         return GameStateError:new("Agent not found", {agent_id = agent_id})
     end
 
-    return self.game_state.inventory_state:check_item_in_inventory(agent, item_name, agent_inventory_type)
+    return self.game_state:inventory_state():check_item_in_inventory(agent, item_name, agent_inventory_type)
 end
 
 function AgentGameState:to_json()
