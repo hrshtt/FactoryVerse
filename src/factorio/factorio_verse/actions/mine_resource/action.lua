@@ -43,7 +43,7 @@ local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreach
         walking_started = false,
         walk_if_unreachable = walk_if_unreachable and true or false,
         finished = false,
-        current_entity = nil,
+        -- no swing timer state required
         start_total = nil,
         start_item_count = nil,
         was_in_reach = false,
@@ -63,25 +63,7 @@ local function _distance(a, b)
 end
 
 
-local function _get_item_count(control, item_name)
-    if not (control and control.valid and control.get_inventory) then return 0 end
-    local inv = control.get_inventory(defines.inventory.character_main)
-    if not inv then return 0 end
-    if inv.get_item_count then
-        return inv.get_item_count(item_name)
-    end
-    local contents = inv.get_contents and inv.get_contents() or {}
-    return contents[item_name] or 0
-end
-
-local function _get_items_total(control, names)
-    if not names or #names == 0 then return 0 end
-    local total = 0
-    for _, name in ipairs(names) do
-        total = total + _get_item_count(control, name)
-    end
-    return total
-end
+-- removed older single-item helpers; we now use _get_actor_items_total/_get_actor_item_count
 
 local function _find_resource_entity(surface, position, resource_name)
     if not (surface and position and resource_name) then return nil end
@@ -359,7 +341,7 @@ function MineResourceAction:run(params)
     job.emulate = emulate
     job.debug = debug
     storage.mine_resource_jobs[agent_id] = job
-    log(string.format("[mine_resource] start agent=%d target=(%.2f,%.2f) res=%s max=%d walk=%s emulate=%s", agent_id, target.x, target.y, resource_name, max_count, tostring(p.walk_if_unreachable), tostring(emulate)))
+    log(string.format("[mine_resource] start agent=%d target=(%.2f,%.2f) res=%s max=%d walk=%s", agent_id, target.x, target.y, resource_name, max_count, tostring(p.walk_if_unreachable)))
 
     local control = _get_control_for_agent(agent_id)
     if control then
