@@ -30,6 +30,7 @@ local MineResourceParams = ParamSpec:new({
 --- @field mined_count number
 --- @field products string[]|nil
 --- @field start_total number|nil
+--- @field start_item_count number|nil
 --- @field walking_started boolean
 --- @field finished boolean
 local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreachable)
@@ -44,6 +45,7 @@ local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreach
         finished = false,
         current_entity = nil,
         start_total = nil,
+        start_item_count = nil,
         was_in_reach = false,
         debug = false,
     }
@@ -129,6 +131,21 @@ local function _get_actor_items_total(actor, names)
         local contents = inv.get_contents and inv.get_contents() or {}
         for _, n in ipairs(names) do total = total + (contents[n] or 0) end
         return total
+    end
+    return 0
+end
+
+local function _get_actor_item_count(actor, name)
+    if not (actor and actor.valid and name) then return 0 end
+    if actor.get_main_inventory then
+        local inv = actor.get_main_inventory()
+        if not inv then return 0 end
+        return (inv.get_item_count and inv.get_item_count(name)) or 0
+    end
+    if actor.get_inventory then
+        local inv = actor.get_inventory(defines.inventory.character_main)
+        if not inv then return 0 end
+        return (inv.get_item_count and inv.get_item_count(name)) or 0
     end
     return 0
 end
@@ -222,9 +239,18 @@ local function _tick_mine_jobs(event)
                 storage.mine_resource_jobs[agent_id] = nil
             else
                 -- Refresh progress from inventory when possible (authoritative stop)
+                local mined_by_total = nil
+                local mined_by_item = nil
                 if job.products and (job.start_total ~= nil) then
                     local current_total = _get_actor_items_total(control, job.products)
-                    job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
+                    mined_by_total = math.max(0, (current_total - (job.start_total or 0)))
+                end
+                if job.resource_name and (job.start_item_count ~= nil) then
+                    local current_item = _get_actor_item_count(control, job.resource_name)
+                    mined_by_item = math.max(0, (current_item - (job.start_item_count or 0)))
+                end
+                if mined_by_total or mined_by_item then
+                    job.mined_count = math.max(mined_by_total or 0, mined_by_item or 0)
                 end
 
                 -- Stop if completed
@@ -243,7 +269,7 @@ local function _tick_mine_jobs(event)
                         storage.mine_resource_jobs[agent_id] = nil
                     else
                         if job.debug and ((game.tick % 60) == 0) then
-                            log(string.format("[mine_resource] tick=%d agent=%d mined=%d/%d", game.tick, agent_id, job.mined_count or 0, job.max_count))
+                            log(string.format("[mine_resource] tick=%d agent=%d mined=%d/%d (item=%d)", game.tick, agent_id, job.mined_count or 0, job.max_count, (job.resource_name and _get_actor_item_count(control, job.resource_name) - (job.start_item_count or 0)) or -1))
                         end
                         -- Initialize products and guard against fluid-only mining
                         if not job.products then
@@ -257,6 +283,7 @@ local function _tick_mine_jobs(event)
                             end
                             job.products = names
                             job.start_total = _get_actor_items_total(control, job.products)
+                            job.start_item_count = _get_actor_item_count(control, job.resource_name)
                         end
 
                         local target_pos = resource.position or job.target
@@ -277,7 +304,11 @@ local function _tick_mine_jobs(event)
                                 control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
                             end
                             local current_total = _get_actor_items_total(control, job.products)
-                            job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
+                            local current_item = _get_actor_item_count(control, job.resource_name)
+                            job.mined_count = math.max(
+                                math.max(0, (current_total - (job.start_total or 0))),
+                                math.max(0, (current_item - (job.start_item_count or 0)))
+                            )
                             if (job.mined_count or 0) >= job.max_count then
                                 if control.mining_state ~= nil then
                                     control.mining_state = { mining = false }
@@ -344,6 +375,7 @@ function MineResourceAction:run(params)
             end
             job.products = names
             job.start_total = _get_actor_items_total(control, job.products)
+            job.start_item_count = _get_actor_item_count(control, job.resource_name)
 
             -- Try to begin mining immediately if in reach; tick will maintain it
             local reachable = _can_reach_entity(control, resource)
