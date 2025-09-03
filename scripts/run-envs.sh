@@ -58,12 +58,12 @@ generate_compose_file() {
     fi
 
     # Always create saves directory and mount it
-    # mkdir -p ../../.fle/saves
+    mkdir -p .fv-output/saves
     
     # Build save file volume block - always include saves volume
-    # SAVE_VOLUME="    - source: ../../.fle/saves
-    #   target: /opt/factorio/saves
-    #   type: bind"
+    SAVE_VOLUME="    - source: .fv-output/saves
+      target: /opt/factorio/saves
+      type: bind"
     
     # Build optional save file logic based on SAVE_ADDED
     if [ "$SAVE_ADDED" = true ]; then
@@ -82,7 +82,7 @@ generate_compose_file() {
         # Create variable for the container path
         CONTAINER_SAVE_PATH="/opt/factorio/saves/$SAVE_FILE_NAME"
         
-        COMMAND="--start-server ${SAVE_FILE_NAME}"
+        COMMAND="--start-server ${CONTAINER_SAVE_PATH}"
     fi
     
     # Validate scenario
@@ -148,7 +148,7 @@ EOF
     - source: ./src/factorio/config/
       target: /factorio/config
       type: bind
-    - source: ../../.fle/data/_screenshots
+    - source: .fv-output/output_${i}
       target: /opt/factorio/script-output
       type: bind
 ${SAVE_VOLUME}
@@ -183,8 +183,23 @@ stop_cluster() {
     setup_compose_cmd
     
     if [ -f "docker-compose.yml" ]; then
+        echo "Kicking all players before stopping servers..."
+        
+        # Get list of running factorio containers
+        RUNNING_CONTAINERS=$($COMPOSE_CMD -f docker-compose.yml ps --services --filter "status=running" 2>/dev/null | grep "factorio_" || true)
+        
+        if [ -n "$RUNNING_CONTAINERS" ]; then
+            echo "$RUNNING_CONTAINERS" | while read -r container_name; do
+                PLAYER_NAMES=$($COMPOSE_CMD -f docker-compose.yml exec -T "$container_name" rcon '/c for _,p in pairs(game.connected_players) do rcon.print(p.name) end' 2>/dev/null || true)
+                echo "$PLAYER_NAMES" | while read -r player_name; do
+                    [ -n "$player_name" ] && $COMPOSE_CMD -f docker-compose.yml exec -T "$container_name" rcon "/kick $player_name Server restart" 2>/dev/null
+                done
+            done
+            sleep 1
+        fi
+        
         echo "Stopping Factorio cluster..."
-        $COMPOSE_CMD -f docker-compose.yml down
+        $COMPOSE_CMD -f docker-compose.yml down && docker network prune -f
         echo "Cluster stopped."
     else
         echo "Error: docker-compose.yml not found. No cluster to stop."

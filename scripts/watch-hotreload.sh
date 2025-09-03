@@ -5,7 +5,7 @@ set -euo pipefail
 WATCH_DIR="./src/factorio/factorio_verse"
 
 # The command that reloads inside the container
-HOT_RELOAD_CMD="(docker compose ps -q factorio_0 | grep -q . || ./scripts/run-envs.sh start -n 1) && docker compose exec factorio_0 sh -lc 'sh /opt/factorio/scenarios/factorio_verse/hot-reload-mod.sh'"
+HOT_RELOAD_CMD="(docker compose ps -q factorio_0 | grep -q . || docker compose up -d factorio_0) && docker compose exec factorio_0 sh -lc 'sh /opt/factorio/scenarios/factorio_verse/hot-reload-mod.sh'"
 
 # Debounce window (e.g., 500ms). In practice 300–800ms feels good for editors that save temp files.
 # Increased to 1000ms to reduce rapid-fire reloads
