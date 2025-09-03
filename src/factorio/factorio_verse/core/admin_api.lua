@@ -72,6 +72,31 @@ M.helpers.take_belts = function()
     EntitiesSnapshot:new():take_belts()
 end
 
+-- Forcefully stop all agent activities and flush pending intents/jobs
+M.helpers.reset_agents_state = function()
+    local gs = GameState:new()
+    local agent_state = gs:agent_state()
+
+    -- Stop walking/mining on all agent characters
+    if storage.agent_characters then
+        for id, agent in pairs(storage.agent_characters) do
+            if agent and agent.valid then
+                local current_dir = (agent.walking_state and agent.walking_state.direction) or defines.direction.north
+                agent.walking_state = { walking = false, direction = current_dir }
+                agent.mining_state = { mining = false }
+            end
+        end
+    end
+
+    -- Flush intents and jobs
+    storage.walk_intents = nil
+    storage.walk_to_jobs = nil
+    storage.mine_resource_jobs = nil
+    storage.agent_selection = nil
+
+    triple_print("[helpers.reset_agents_state] Stopped all agent walking/mining and cleared pending jobs/intents.")
+end
+
 M.load_helpers = function()
     if remote.interfaces["helpers"] then
         log("Found: " .. helpers.table_to_json(remote.interfaces["helpers"]))
