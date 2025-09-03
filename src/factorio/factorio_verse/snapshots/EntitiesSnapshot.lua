@@ -20,37 +20,55 @@ end
 
 --- Dump all entities chunk-wise with rich per-entity data
 --- Dump all entities as flat rows (no chunk grouping). Each row includes its chunk coords
+--- Dump all entities as componentized flat rows (no chunk grouping)
 function EntitiesSnapshot:take()
     log("Taking entities snapshot")
 
     local charted_chunks = self.game_state:get_charted_chunks()
-    local rows_out = {}
+
+    -- Engine-side allowlist to avoid creating wrappers for belts/naturals
+    local allowed_types = {
+        "assembling-machine","furnace","mining-drill","inserter","lab","roboport","beacon",
+        "electric-pole","radar","pipe","pipe-to-ground","storage-tank","offshore-pump",
+        "chemical-plant","oil-refinery","boiler","generator","pump","pumpjack","rocket-silo",
+        "container","logistic-container","arithmetic-combinator","decider-combinator",
+        "constant-combinator","lamp","reactor","heat-pipe","accumulator",
+        "electric-energy-interface","programmable-speaker","train-stop","rail-signal",
+        "rail-chain-signal","locomotive","cargo-wagon","fluid-wagon"
+    }
+
+    -- Componentized outputs
+    local entity_rows = {}
+    local electric_rows = {}
+    local crafting_rows = {}
+    local burner_rows = {}
+    local inventory_rows = {}
+    local fluids_rows = {}
+    local inserter_rows = {}
 
     local surface = self.game_state:get_surface()
     if not surface then
-        local empty = self:create_output("snapshot.entities", "v2", { rows = {} })
+        local empty = self:create_output("snapshot.entities", "v3", {
+            entity_rows = {},
+            electric_rows = {},
+            crafting_rows = {},
+            burner_rows = {},
+            inventory_rows = {},
+            fluids_rows = {},
+            inserter_rows = {},
+        })
         return empty
     end
 
     for _, chunk in ipairs(charted_chunks) do
-        -- Use engine filter for force only; do type exclusions in Lua to avoid invert/force pitfalls
-        local filter = { area = chunk.area, force = "player" }
-
-        -- Fast skip chunks with zero matching entities for this force
-        local cnt = surface.count_entities_filtered(filter)
-        if cnt ~= 0 then
-            local entities = surface.find_entities_filtered(filter)
-
-            -- Excluded types (handled elsewhere or not needed)
-            local skip_types = {
-                resource = true, tree = true, fish = true,
-                ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
-                loader = true, ["loader-1x1"] = true, ["linked-belt"] = true,
-            }
-
+        -- Use engine filter for force and allowed types only
+        local filter = { area = chunk.area, force = "player", type = allowed_types }
+        local entities = surface.find_entities_filtered(filter)
+        if #entities ~= 0 then
+            local chunk_field = { x = chunk.x, y = chunk.y }
             for i = 1, #entities do
                 local e = entities[i]
-                if e and e.valid and not skip_types[e.type] then
+                if e and e.valid then
                     -- Filter common rock variants (type "simple-entity") if any
                     if e.type == "simple-entity" then
                         local n = e.name
@@ -58,11 +76,88 @@ function EntitiesSnapshot:take()
                             goto continue_entity
                         end
                     end
-                    local serialized = self:_serialize_entity(e)
-                    if serialized then
-                        -- Attach chunk coordinates on the row so consumers can recover chunk locality
-                        serialized.chunk = { x = chunk.x, y = chunk.y }
-                        rows_out[#rows_out + 1] = serialized
+
+                    local row = self:_serialize_entity(e)
+                    if row then
+                        local chunk = chunk_field
+
+                        -- Base entity row (no component payloads)
+                        local base = {
+                            unit_number = row.unit_number,
+                            name = row.name,
+                            type = row.type,
+                            force = row.force,
+                            position = row.position,
+                            direction = row.direction,
+                            direction_name = row.direction_name,
+                            orientation = row.orientation,
+                            orientation_name = row.orientation_name,
+                            chunk = chunk,
+                        }
+                        if row.health ~= nil then base.health = row.health end
+                        if row.status ~= nil then base.status = row.status end
+                        if row.status_name ~= nil then base.status_name = row.status_name end
+                        if row.bounding_box ~= nil then base.bounding_box = row.bounding_box end
+                        if row.selection_box ~= nil then base.selection_box = row.selection_box end
+                        if row.train ~= nil then base.train = row.train end
+                        entity_rows[#entity_rows + 1] = base
+
+                        -- Electric component
+                        if row.electric_network_id ~= nil or row.electric_buffer_size ~= nil or row.energy ~= nil then
+                            electric_rows[#electric_rows + 1] = {
+                                unit_number = row.unit_number,
+                                electric_network_id = row.electric_network_id,
+                                electric_buffer_size = row.electric_buffer_size,
+                                energy = row.energy,
+                                chunk = chunk,
+                            }
+                        end
+
+                        -- Crafting component
+                        if row.recipe ~= nil or row.crafting_progress ~= nil then
+                            crafting_rows[#crafting_rows + 1] = {
+                                unit_number = row.unit_number,
+                                recipe = row.recipe,
+                                crafting_progress = row.crafting_progress,
+                                chunk = chunk,
+                            }
+                        end
+
+                        -- Burner component
+                        if row.burner ~= nil then
+                            burner_rows[#burner_rows + 1] = {
+                                unit_number = row.unit_number,
+                                burner = row.burner,
+                                chunk = chunk,
+                            }
+                        end
+
+                        -- Inventory component
+                        if row.inventories ~= nil then
+                            inventory_rows[#inventory_rows + 1] = {
+                                unit_number = row.unit_number,
+                                inventories = row.inventories,
+                                chunk = chunk,
+                            }
+                        end
+
+                        -- Fluids component
+                        if row.fluids ~= nil then
+                            fluids_rows[#fluids_rows + 1] = {
+                                unit_number = row.unit_number,
+                                fluids = row.fluids,
+                                chunk = chunk,
+                            }
+                        end
+
+                        -- Inserter component
+                        if row.inserter ~= nil then
+                            inserter_rows[#inserter_rows + 1] = {
+                                unit_number = row.unit_number,
+                                inserter = row.inserter,
+                                chunk = chunk,
+                            }
+                        end
                     end
                 end
                 ::continue_entity::
@@ -70,12 +165,20 @@ function EntitiesSnapshot:take()
         end
     end
 
-    local output = self:create_output("snapshot.entities", "v2", { rows = rows_out })
+    local output = self:create_output("snapshot.entities", "v3", {
+        entity_rows = entity_rows,
+        electric_rows = electric_rows,
+        crafting_rows = crafting_rows,
+        burner_rows = burner_rows,
+        inventory_rows = inventory_rows,
+        fluids_rows = fluids_rows,
+        inserter_rows = inserter_rows,
+    })
 
     -- Emit JSON for SQL ingestion
     self:emit_json({ output_dir = "script-output/factoryverse" }, "entities", {
         meta = {
-            schema_version = "snapshot.entities.v2",
+            schema_version = "snapshot.entities.v3",
             surface = output.surface,
             tick = output.timestamp,
         },
@@ -83,12 +186,20 @@ function EntitiesSnapshot:take()
     })
 
     self:print_summary(output, function(out)
-        local total_entities = 0
-        if out and out.data and out.data.rows then total_entities = #out.data.rows end
+        local d = out and out.data or {}
+        local c = function(t) return (t and #t) or 0 end
         return {
             surface = out.surface,
-            entities = { total = total_entities },
-            tick = out.timestamp
+            tick = out.timestamp,
+            entities = {
+                entity_rows = c(d.entity_rows),
+                electric_rows = c(d.electric_rows),
+                crafting_rows = c(d.crafting_rows),
+                burner_rows = c(d.burner_rows),
+                inventory_rows = c(d.inventory_rows),
+                fluids_rows = c(d.fluids_rows),
+                inserter_rows = c(d.inserter_rows),
+            },
         }
     end)
 
@@ -97,15 +208,16 @@ end
 
 --- Dump only belt-like entities with transport line contents
 --- Dump only belt-like entities with transport line contents as flat rows
+--- Dump only belt-like entities with transport line contents as flat component rows
 function EntitiesSnapshot:take_belts()
     log("Taking belts snapshot")
 
     local charted_chunks = self.game_state:get_charted_chunks()
-    local rows_out = {}
+    local belt_rows = {}
 
     local surface = self.game_state:get_surface()
     if not surface then
-        local empty = self:create_output("snapshot.belts", "v2", { rows = {} })
+        local empty = self:create_output("snapshot.belts", "v3", { belt_rows = {} })
         return empty
     end
 
@@ -116,10 +228,9 @@ function EntitiesSnapshot:take_belts()
 
     for _, chunk in ipairs(charted_chunks) do
         local filter = { area = chunk.area, force = "player", type = belt_types }
-        local cnt = surface.count_entities_filtered(filter)
-        if cnt ~= 0 then
-            local belts = surface.find_entities_filtered(filter)
-
+        local belts = surface.find_entities_filtered(filter)
+        if #belts ~= 0 then
+            local chunk_field = { x = chunk.x, y = chunk.y }
             for i = 1, #belts do
                 local e = belts[i]
                 if e and e.valid then
@@ -170,7 +281,7 @@ function EntitiesSnapshot:take_belts()
                         if un and un.valid and un.unit_number then underground_other = un.unit_number end
                     end
 
-                    rows_out[#rows_out + 1] = {
+                    belt_rows[#belt_rows + 1] = {
                         unit_number = e.unit_number,
                         name = e.name,
                         type = e.type,
@@ -181,18 +292,18 @@ function EntitiesSnapshot:take_belts()
                         belt_neighbours = ( (#inputs_ids>0 or #outputs_ids>0) and { inputs = inputs_ids, outputs = outputs_ids } ) or nil,
                         belt_to_ground_type = belt_to_ground_type,
                         underground_neighbour_unit = underground_other,
-                        chunk = { x = chunk.x, y = chunk.y },
+                        chunk = chunk_field,
                     }
                 end
             end
         end
     end
 
-    local output = self:create_output("snapshot.belts", "v2", { rows = rows_out })
+    local output = self:create_output("snapshot.belts", "v3", { belt_rows = belt_rows })
 
     self:emit_json({ output_dir = "script-output/factoryverse" }, "belts", {
         meta = {
-            schema_version = "snapshot.belts.v2",
+            schema_version = "snapshot.belts.v3",
             surface = output.surface,
             tick = output.timestamp,
         },
@@ -201,7 +312,7 @@ function EntitiesSnapshot:take_belts()
 
     self:print_summary(output, function(out)
         local total = 0
-        if out and out.data and out.data.rows then total = #out.data.rows end
+        if out and out.data and out.data.belt_rows then total = #out.data.belt_rows end
         return { surface = out.surface, belts = { total = total }, tick = out.timestamp }
     end)
 
@@ -307,8 +418,12 @@ function EntitiesSnapshot:_serialize_entity(e)
             local inv_name, idx = inv_defs[i][1], inv_defs[i][2]
             local inv = e.get_inventory and e.get_inventory(idx) or nil
             if inv and inv.valid then
-                local contents = inv.get_contents and inv.get_contents() or nil
-                inventories[inv_name] = contents or {}
+                if inv.is_empty and inv.is_empty() then
+                    inventories[inv_name] = {}
+                else
+                    local contents = inv.get_contents and inv.get_contents() or nil
+                    inventories[inv_name] = contents or {}
+                end
             end
         end
         if next(inventories) ~= nil then out.inventories = inventories end

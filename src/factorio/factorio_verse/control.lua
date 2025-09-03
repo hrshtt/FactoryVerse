@@ -1,6 +1,7 @@
 -- control.lua: registers action run methods on a remote interface and hooks events
 
 local action_registry = require("core.action.ActionRegistry")
+local utils = require("utils")
 
 local ok, mod = pcall(require, "actions.agent.walk.action")
 if ok then
@@ -31,6 +32,16 @@ end
 
 register_remote_interface()
 register_events()
+
+-- Force players to spectator when they join
+script.on_event(defines.events.on_player_joined_game, function(event)
+  log("hello from on_player_joined_game")
+  utils.players_to_spectators()
+end)
+
+script.on_nth_tick(15, function()
+  utils.chart_scanners()
+end)
 
 -- Perform registrations at different lifecycle points to be safe on reloads
 script.on_init(function()

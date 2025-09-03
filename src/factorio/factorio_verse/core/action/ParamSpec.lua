@@ -47,6 +47,7 @@ function ParamSpec:new(spec, values)
     return instance
 end
 
+
 --- Set values from a table
 --- @param table table Parameter values
 --- @return ParamSpec self for chaining
@@ -59,9 +60,7 @@ function ParamSpec:_set_values(table)
     end
     for k, v in pairs(table) do
         if k ~= "_spec" and k ~= "_validated" then
-            log("Setting parameter: " .. k .. " = " .. tostring(v))
             rawset(self, k, v)
-            log("Value set: " .. tostring(self[k]))
         end
     end
     self._validated = false

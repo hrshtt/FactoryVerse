@@ -517,6 +517,45 @@ local function on_tick(event)
     on_tick_walk_to(event)
 end
 
+--- @class WalkCancelParams : ParamSpec
+--- @field agent_id number
+local WalkCancelParams = ParamSpec:new({
+    agent_id = { type = "number", required = true },
+})
+
+--- @class WalkCancelAction : Action
+local WalkCancelAction = Action:new("agent.walk_cancel", WalkCancelParams)
+
+--- @param params WalkCancelParams
+--- @return boolean
+function WalkCancelAction:run(params)
+    local p = self:_pre_run(game_state, params)
+    local agent_id = p.agent_id
+
+    -- Cancel sustained walk intents
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+
+    -- Cancel any active walk_to jobs for this agent
+    if storage.walk_to_jobs then
+        for id, job in pairs(storage.walk_to_jobs) do
+            if job and job.agent_id == agent_id then
+                storage.walk_to_jobs[id] = nil
+            end
+        end
+    end
+
+    -- Stop walking immediately
+    local control = _get_control_for_agent(agent_id)
+    if control then
+        local current_dir = (control.walking_state and control.walking_state.direction) or defines.direction.north
+        control.walking_state = { walking = false, direction = current_dir }
+    end
+
+    return self:_post_run(true, p)
+end
+
 local function on_script_path_request_finished(e)
     if not (storage.walk_to_jobs and e and e.id) then return end
     for _, job in pairs(storage.walk_to_jobs) do
@@ -546,4 +585,4 @@ WalkAction.events = {
     [defines.events.on_script_path_request_finished] = on_script_path_request_finished
 }
 
-return { WalkAction, WalkToAction }
+return { WalkAction, WalkToAction, WalkCancelAction }

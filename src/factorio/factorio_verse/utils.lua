@@ -1,5 +1,75 @@
 local M = {}
 
+
+function M.chart_native_start_area(surface, force, position)
+    local radius_tiles = 150  -- Hacky but accepted vanilla feel
+    force.chart(surface, {
+      { x = position.x - radius_tiles, y = position.y - radius_tiles },
+      { x = position.x + radius_tiles, y = position.y + radius_tiles }
+    })
+    surface.request_to_generate_chunks(position, math.ceil(radius_tiles / 32))
+    surface.force_generate_chunk_requests()
+end
+
+function M.players_to_spectators()
+    for _, player in pairs(game.connected_players) do
+        player.set_controller({type = defines.controllers.spectator})
+    end
+end
+
+local CHUNK = 32
+local VISION_CHUNK_RADIUS = 1  -- 1 => 3x3 like a player-ish feel; try 2 for 5x5
+
+local function chunk_pos(pos)
+  return { x = math.floor(pos.x / CHUNK), y = math.floor(pos.y / CHUNK) }
+end
+
+local function chunk_bounds(cx, cy, radius)
+  local left   = (cx - radius) * CHUNK
+  local top    = (cy - radius) * CHUNK
+  local right  = (cx + radius + 1) * CHUNK
+  local bottom = (cy + radius + 1) * CHUNK
+  return { left_top = {x = left, y = top}, right_bottom = {x = right, y = bottom} }
+end
+
+function M.chart_scanners()
+  if not storage.agent_characters then return end
+  for _, agent in pairs(storage.agent_characters) do
+    if agent and agent.valid then
+      local cp = chunk_pos(agent.position)
+
+      -- Only do work if any chunk in the vision square isn’t charted yet.
+      local needs_chart = false
+      for dx = -VISION_CHUNK_RADIUS, VISION_CHUNK_RADIUS do
+        for dy = -VISION_CHUNK_RADIUS, VISION_CHUNK_RADIUS do
+          if not agent.force.is_chunk_charted(agent.surface, {x = cp.x + dx, y = cp.y + dy}) then
+            needs_chart = true
+            break
+          end
+        end
+        if needs_chart then break end
+      end
+
+      if needs_chart then
+        local area = chunk_bounds(cp.x, cp.y, VISION_CHUNK_RADIUS)
+        agent.force.chart(agent.surface, area) -- authoritative chart
+
+        -- Mirror to any spectator forces so clients in spectator mode see it live.
+        for _, pc in pairs(game.connected_players) do
+          if pc.controller_type == defines.controllers.spectator or pc.spectator then
+            pc.force.chart(agent.surface, area)
+          end
+        end
+
+        -- Optional: ensure smooth edges if you’re racing ahead
+        agent.surface.request_to_generate_chunks(agent.position, VISION_CHUNK_RADIUS + 1)
+        agent.surface.force_generate_chunk_requests()
+      end
+    end
+  end
+end
+
+
 --- Sort a list of coordinates in-place by distance to an origin.
 --- Coordinates can be tables like {x=..., y=...} or arrays {x, y}.
 --- @param coords table

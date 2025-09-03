@@ -25,7 +25,7 @@ local ACTION_MODULES = {
   -- "actions.item.transfer.action",
 
   -- resources / research
-  -- "actions.mine_resource.action",
+  "actions.mine_resource.action",
   "actions.start_research.action",
 }
 
@@ -34,9 +34,9 @@ local ACTION_MODULES = {
 function ActionRegistry:new()
   local instance = {
     loaded = false,
-    actions = {},          -- array of action instances
-    actions_by_name = {},  -- name -> action instance
-    events = {},           -- event_id -> {handler, ...}
+    actions = {},         -- array of action instances
+    actions_by_name = {}, -- name -> action instance
+    events = {},          -- event_id -> {handler, ...}
   }
   setmetatable(instance, self)
   return instance
@@ -51,32 +51,51 @@ function ActionRegistry:load()
   validator_registry:build_registry()
 
 
+  -- Helper to register a single action instance
+  local function register_action(action)
+    if not (type(action) == "table" and type(action.name) == "string" and type(action.run) == "function") then
+      return
+    end
+    local ok2, err = pcall(function()
+      action:attach_validators(validator_registry:get_validations(action.name))
+    end)
+    if ok2 then
+      log("Attached validator to action: " .. tostring(action.name))
+    else
+      log("Error attaching validator to action: " .. tostring(action.name))
+      log(err)
+    end
+
+    table.insert(self.actions, action)
+    self.actions_by_name[action.name] = action
+
+    if type(action.events) == "table" then
+      for event_id, handler in pairs(action.events) do
+        if handler ~= nil then
+          self.events[event_id] = self.events[event_id] or {}
+          table.insert(self.events[event_id], handler)
+        end
+      end
+    end
+  end
+
   for _, module_name in ipairs(ACTION_MODULES) do
     local ok, action_or_err = pcall(require, module_name)
     if ok and type(action_or_err) == "table" then
-      local action = action_or_err
-      local ok2, err = pcall(function()
-        action:attach_validators(validator_registry:get_validations(action.name))
-      end)
-      if ok2 then
-        log("Attached validator to action: " .. tostring(action.name))
-      else
-        log("Error attaching validator to action: " .. tostring(action.name))
-        log(err)
-      end
-      if type(action.name) == "string" and type(action.run) == "function" then
-        table.insert(self.actions, action)
-        self.actions_by_name[action.name] = action
-
-        -- Optionally collect event handlers defined on actions
-        if type(action.events) == "table" then
-          for event_id, handler in pairs(action.events) do
-            if handler ~= nil then
-              self.events[event_id] = self.events[event_id] or {}
-              table.insert(self.events[event_id], handler)
-            end
-          end
+      -- Cases:
+      -- 1) Single action table with name/run
+      -- 2) Array of actions {action1, action2, ...}
+      -- 3) Table with field `action`
+      if type(action_or_err.name) == "string" and type(action_or_err.run) == "function" then
+        register_action(action_or_err)
+      elseif type(action_or_err[1]) == "table" then
+        for _, a in ipairs(action_or_err) do
+          register_action(a)
         end
+      elseif type(action_or_err.action) == "table" then
+        register_action(action_or_err.action)
+      else
+        log("Module did not return an action: " .. module_name)
       end
     else
       log("Error loading action: " .. module_name)
@@ -150,5 +169,3 @@ function ActionRegistry:register_remote_interface()
 end
 
 return ActionRegistry:new()
-
-

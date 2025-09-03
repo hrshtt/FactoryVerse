@@ -9,7 +9,7 @@ local EntitiesGameState = require("core.game_state.EntitiesGameState")
 local PowerGameState = require("core.game_state.PowerGameState")
 local utils = require("utils")
 --- @class GameState
---- Methods: agent(), entities(), inventory(), power(), get_game(), get_surface()
+--- Methods: agent_state(), entities(), inventory(), power(), get_game(), get_surface()
 local GameState = {}
 GameState.__index = GameState
 
@@ -25,14 +25,20 @@ function GameState:get_game()
 end
 
 -- Lazy getter for surface
+--- @return LuaSurface
 function GameState:get_surface()
     local g = self:get_game()
     return g and g.surfaces[1] or nil
 end
 
+--- @return LuaForce
+function GameState:get_player_force()
+    return game.forces["player"]
+end
+
 function GameState:get_visible_chunks(sort_by_distance)
     local surface = self:get_surface()
-    local force = game.forces["player"]
+    local force = self:get_player_force()
     local visible_chunks = {}
 
     if not (surface and force) then
@@ -54,7 +60,7 @@ end
 
 function GameState:get_charted_chunks(sort_by_distance)
     local surface = self:get_surface()
-    local force = game.forces["player"]
+    local force = self:get_player_force()
     local charted_chunks = {}
 
     if not (surface and force) then

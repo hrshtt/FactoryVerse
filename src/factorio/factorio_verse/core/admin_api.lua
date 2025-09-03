@@ -1,6 +1,7 @@
 local GameState = require("core.game_state.GameState")
 local EntitiesSnapshot = require("snapshots.EntitiesSnapshot")
 local ResourceSnapshot = require("snapshots.ResourceSnapshot")
+local utils = require("utils")
 
 
 local triple_print = function(print_str)
@@ -14,12 +15,42 @@ M.helpers = {}
 M.commands = {}
 
 M.helpers.create_agent_characters = function(num_agents, destroy_existing)
-    return GameState:new():agent():create_agent_characters(num_agents, destroy_existing)
+    return GameState:new():agent_state():create_agent_characters(num_agents, destroy_existing)
+end
+
+M.helpers.force_clear_agents = function()
+    utils.players_to_spectators()
+    return GameState:new():agent_state():force_destroy_agents()
 end
 
 M.helpers.test = function()
-    triple_print("Testing")
+    triple_print("Testing say hiii")
 end
+
+M.helpers.print_agent_inventory = function(agent_index)
+    local agent = GameState:new():agent_state():get_agent(agent_index)
+    if not agent or not agent.valid then
+        rcon.print('{"error": "Agent character not found or invalid"}')
+        return
+    end
+    local inv = agent.get_main_inventory and agent:get_main_inventory()
+    if not inv then
+        rcon.print('{"error": "No main inventory for agent"}')
+        return
+    end
+    local items = {}
+    for i = 1, #inv do
+        local stack = inv[i]
+        if stack and stack.valid_for_read then
+            table.insert(items, {
+                name = stack.name,
+                count = stack.count
+            })
+        end
+    end
+    rcon.print(helpers.table_to_json({inventory = items}))
+end
+
 
 M.helpers.take_resources = function()
     ResourceSnapshot:new():take()

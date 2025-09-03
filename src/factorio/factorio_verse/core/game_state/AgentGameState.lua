@@ -2,6 +2,7 @@
 --- AgentGameState sub-module for managing agent-related functionality.
 
 local GameStateError = require("core.Error")
+local utils = require("utils")
 
 --- @param h number
 --- @param s number
@@ -69,6 +70,23 @@ function AgentGameState:player()
     return self._player
 end
 
+function AgentGameState:force_destroy_agents()
+
+    -- Destroy all character entities on the surface, excluding those controlled by connected players
+    for _, entity in pairs(self.game_state:get_surface().find_entities_filtered{ name = "character" }) do
+        if entity and entity.valid then
+            local associated_player = entity.associated_player
+            -- Only destroy if not controlled by a connected player
+            if not (associated_player and associated_player.connected) then
+                entity.destroy()
+            end
+        end
+    end
+    -- Clear the agent_characters table
+    storage.agent_characters = {}
+end
+
+
 --- @param agent_id number
 --- @param position table
 --- @return LuaEntity?
@@ -78,7 +96,6 @@ function AgentGameState:create_agent(agent_id, position, color)
     end
     
     local surface = self.game_state:get_surface()
-    
     local g = self.game_state:get_game()
     local char = surface.create_entity{
         name = "character",
@@ -86,6 +103,7 @@ function AgentGameState:create_agent(agent_id, position, color)
         force = g.forces.player,
         color = color
     }
+    utils.chart_native_start_area(surface, g.forces.player, position)
     return char
 end
 
@@ -114,10 +132,6 @@ function AgentGameState:create_agent_characters(num_agents, destroy_existing)
             end
         end
         storage.agent_characters = {}
-    end
-    
-    for _, player in pairs(game.connected_players) do
-        player.set_controller({type = defines.controllers.spectator})
     end
     
     for i = 1, num_agents do
@@ -163,16 +177,6 @@ function AgentGameState:check_item_in_inventory(agent_id, item_name)
     end
 
     return self.game_state.inventory_state:check_item_in_inventory(agent, item_name, agent_inventory_type)
-end
-
-function AgentGameState:set_players_to_spectator()
-    -- Remove connected player characters and make them viewers only
-    local g = self.game_state:get_game()
-    if g then
-        for _, player in pairs(g.connected_players) do
-            player.set_controller({type = defines.controllers.spectator})
-        end
-    end
 end
 
 function AgentGameState:to_json()
