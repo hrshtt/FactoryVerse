@@ -1,38 +1,24 @@
 local Action = require("core.action.Action")
 local ParamSpec = require("core.action.ParamSpec")
-local validator_registry = require("core.action.ValidatorRegistry"):new()
 local GameState = require("core.game_state.GameState")
-
-local validators = validator_registry:get_validations("entity.place")
-
 local gs = GameState:new()
 
 --- @class PlaceEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field name string Prototype name of the entity to place (e.g., "assembling-machine-1")
+--- @field entity_name string Prototype name of the entity to place (e.g., "assembling-machine-1")
 --- @field position table Position to place at: { x = number, y = number }
---- @field direction string|number Optional direction; accepts alias from GameState.aliases.direction or defines.direction value
---- @field force string|nil Optional force name; defaults to agent force
---- @field fast_replace boolean|nil Whether to allow fast replace when supported
---- @field raise_built boolean|nil Raise on_built event
---- @field create_build_effect_smoke boolean|nil Show build effect smoke when applicable
---- @field move_stuck_players boolean|nil Move players if stuck in entity placement
---- @field spawn_decorations boolean|nil Spawn decorations for entity placement
+--- @field direction string|number|nil Optional direction; accepts alias from GameState.aliases.direction or defines.direction value
+--- @field orient_towards table|nil Optional orientation hint: { entity_name = string|nil, position = {x:number,y:number}|nil }
 local PlaceEntityParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
-    name = { type = "string", required = true },
+    entity_name = { type = "string", required = true },
     position = { type = "table", required = true },
     direction = { type = "any", required = false },
-    force = { type = "string", required = false },
-    fast_replace = { type = "boolean", required = false },
-    raise_built = { type = "boolean", required = false },
-    create_build_effect_smoke = { type = "boolean", required = false },
-    move_stuck_players = { type = "boolean", required = false },
-    spawn_decorations = { type = "boolean", required = false }
+    orient_towards = { type = "table", required = false }
 })
 
 --- @class PlaceEntityAction : Action
-local PlaceEntityAction = Action:new("entity.place", PlaceEntityParams, validators)
+local PlaceEntityAction = Action:new("entity.place", PlaceEntityParams)
 
 --- @param params PlaceEntityParams
 --- @return table result Data about the placed entity
@@ -45,15 +31,15 @@ function PlaceEntityAction:run(params)
         error("Agent not found for id " .. tostring(params.agent_id))
     end
 
-    local surface = gs.surface
+    local surface = gs:get_surface()
     if not surface then
         error("No surface available to place entity")
     end
 
     local placement = {
-        name = p.name,
+        name = p.entity_name,
         position = p.position,
-        force = p.force or agent.force,
+        force = agent.force,
     }
 
     local function normalize_direction(dir)
@@ -73,26 +59,76 @@ function PlaceEntityAction:run(params)
         placement.direction = dir
     end
 
-    if p.fast_replace ~= nil then
-        placement.fast_replace = p.fast_replace
+    -- If direction not provided, but orient_towards is provided, derive direction
+    if (not placement.direction) and p.orient_towards then
+        local target_pos = nil
+        -- Prefer explicit entity lookup when both name and position are provided
+        if p.orient_towards.entity_name and p.orient_towards.position then
+            local ok, ent = pcall(function()
+                return surface.find_entity(p.orient_towards.entity_name, p.orient_towards.position)
+            end)
+            if ok and ent and ent.valid then
+                target_pos = ent.position
+            end
+        end
+        -- Fallback: use provided position directly
+        if (not target_pos) and p.orient_towards.position then
+            target_pos = p.orient_towards.position
+        end
+        if target_pos then
+            local dx = target_pos.x - placement.position.x
+            local dy = target_pos.y - placement.position.y
+            if not (dx == 0 and dy == 0) then
+                local a
+                do
+                    local ok, angle = pcall(function() return math.atan(dy, dx) end)
+                    if ok and type(angle) == "number" then
+                        a = angle
+                    else
+                        local denom = (dx == 0) and ((dy >= 0) and 1e-9 or -1e-9) or dx
+                        a = math.atan(dy / denom)
+                        if dx < 0 then
+                            if dy >= 0 then a = a + math.pi else a = a - math.pi end
+                        end
+                        if a < 0 then a = a + 2*math.pi end
+                    end
+                end
+                local oct = math.floor(((a + math.pi/8) % (2*math.pi)) / (math.pi/4))
+                local DIR_IDX_TO_ENUM = {
+                    [0]=defines.direction.east, [1]=defines.direction.southeast,
+                    [2]=defines.direction.south,[3]=defines.direction.southwest,
+                    [4]=defines.direction.west, [5]=defines.direction.northwest,
+                    [6]=defines.direction.north,[7]=defines.direction.northeast
+                }
+                placement.direction = DIR_IDX_TO_ENUM[oct]
+            end
+        end
     end
-    if p.raise_built ~= nil then
-        placement.raise_built = p.raise_built
+
+    -- Validate placement
+    local can_place = surface.can_place_entity{
+        name = placement.name,
+        position = placement.position,
+        direction = placement.direction,
+        force = placement.force
+    }
+    if not can_place then
+        error("Cannot place entity at the specified position")
     end
-    if p.create_build_effect_smoke ~= nil then
-        placement.create_build_effect_smoke = p.create_build_effect_smoke
-    end
-    if p.move_stuck_players ~= nil then
-        placement.move_stuck_players = p.move_stuck_players
-    end
-    if p.spawn_decorations ~= nil then
-        placement.spawn_decorations = p.spawn_decorations
+
+    -- Ensure agent has the item; we assume item name matches entity prototype name
+    local inv = agent.get_inventory(defines.inventory.character_main) or nil
+    if not inv or inv.get_item_count(p.entity_name) <= 0 then
+        error("Agent does not have item in inventory: " .. tostring(p.entity_name))
     end
 
     local entity = surface.create_entity(placement)
     if not entity then
-        error("Failed to place entity: " .. p.name)
+        error("Failed to place entity: " .. p.entity_name)
     end
+
+    -- Consume one item on successful placement
+    inv.remove({ name = p.entity_name, count = 1 })
 
     local result = {
         name = entity.name,
