@@ -8,17 +8,21 @@ local action_registry = require("core.action.ActionRegistry")
 --- @field x number
 --- @field y number
 --- @field resource_name string
---- @field min_count number
+--- @field max_count number
 --- @field walk_if_unreachable boolean|nil
 --- @field emulate boolean|nil
+--- @field debug boolean|nil
+--- @field bind_player boolean|nil
 local MineResourceParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
     x = { type = "number", required = true },
     y = { type = "number", required = true },
     resource_name = { type = "string", required = true },
-    min_count = { type = "number", required = true },
+    max_count = { type = "number", required = true },
     walk_if_unreachable = { type = "boolean", required = false, default = false },
     emulate = { type = "boolean", required = false, default = true },
+    debug = { type = "boolean", required = false, default = false },
+    bind_player = { type = "boolean", required = false, default = false },
 })
 
 --- Internal per-agent job state
@@ -26,18 +30,18 @@ local MineResourceParams = ParamSpec:new({
 --- @field agent_id number
 --- @field target {x:number,y:number}
 --- @field resource_name string
---- @field min_count number
+--- @field max_count number
 --- @field mined_count number
 --- @field products string[]|nil
 --- @field start_total number|nil
 --- @field walking_started boolean
 --- @field finished boolean
-local function _new_job(agent_id, pos, resource_name, min_count, walk_if_unreachable)
+local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreachable)
     return {
         agent_id = agent_id,
         target = { x = pos.x, y = pos.y },
         resource_name = resource_name,
-        min_count = min_count,
+        max_count = max_count,
         mined_count = 0,
         walking_started = false,
         walk_if_unreachable = walk_if_unreachable and true or false,
@@ -47,6 +51,9 @@ local function _new_job(agent_id, pos, resource_name, min_count, walk_if_unreach
         emulate = true,
         player = nil,
         start_total = nil,
+        was_in_reach = false,
+        debug = false,
+        bind_player = false,
     }
 end
 
@@ -284,8 +291,15 @@ local function _tick_mine_jobs(event)
             if not control then
                 storage.mine_resource_jobs[agent_id] = nil
             else
+                -- Refresh progress from inventory when possible (handles emulate path robustly)
+                if job.products and (job.start_total ~= nil) then
+                    local actor = (job.player and job.player.valid) and job.player or control
+                    local current_total = _get_actor_items_total(actor, job.products)
+                    job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
+                end
+
                 -- Stop if completed
-                if (job.mined_count or 0) >= job.min_count then
+                if (job.mined_count or 0) >= job.max_count then
                     game_state:agent_state():set_mining(agent_id, false)
                     if job.player then _unbind_player(job.player) end
                     job.finished = true
@@ -301,6 +315,9 @@ local function _tick_mine_jobs(event)
                         job.finished = true
                         storage.mine_resource_jobs[agent_id] = nil
                     else
+                        if job.debug and ((game.tick % 60) == 0) then
+                            log(string.format("[mine_resource] tick=%d agent=%d mined=%d/%d emulate=%s", game.tick, agent_id, job.mined_count or 0, job.max_count, tostring(job.emulate)))
+                        end
                         -- Initialize products and guard against fluid-only mining
                         if not job.products then
                             local names, requires_fluid = _get_resource_products(resource)
@@ -337,14 +354,14 @@ local function _tick_mine_jobs(event)
                                 end
                                 local current_total = _get_actor_items_total(actor, job.products)
                                 job.mined_count = math.max(0, (current_total - (job.start_total or 0)))
-                                if (job.mined_count or 0) >= job.min_count then
+                                if (job.mined_count or 0) >= job.max_count then
                                     if actor.mining_state ~= nil then
                                         actor.mining_state = { mining = false }
                                     end
                                     if job.player then _unbind_player(job.player) end
                                     job.finished = true
                                     storage.mine_resource_jobs[agent_id] = nil
-                                    log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.min_count))
+                                    log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.max_count))
                                 end
                             else
                                 -- Initialize or continue swing timer
@@ -359,11 +376,11 @@ local function _tick_mine_jobs(event)
                                     job.current_entity = nil
                                     job.ticks_left = nil
                                 end
-                                if (job.mined_count or 0) >= job.min_count then
+                                if (job.mined_count or 0) >= job.max_count then
                                     agent_state:set_mining(agent_id, false)
                                     job.finished = true
                                     storage.mine_resource_jobs[agent_id] = nil
-                                    log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.min_count))
+                                    log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.max_count))
                                 end
                             end
                         else
@@ -396,17 +413,21 @@ function MineResourceAction:run(params)
     local agent_id = p.agent_id
     local target = { x = p.x, y = p.y }
     local resource_name = p.resource_name
-    local min_count = p.min_count
+    local max_count = p.max_count
     local emulate = (p.emulate ~= false)
+    local debug = (p.debug == true)
+    local bind_player = (p.bind_player == true)
     
 
     storage.mine_resource_jobs = storage.mine_resource_jobs or {}
 
     -- Initialize or replace existing job for this agent
-    local job = _new_job(agent_id, target, resource_name, min_count, p.walk_if_unreachable)
+    local job = _new_job(agent_id, target, resource_name, max_count, p.walk_if_unreachable)
     job.emulate = emulate
+    job.debug = debug
+    job.bind_player = bind_player
     storage.mine_resource_jobs[agent_id] = job
-    log(string.format("[mine_resource] start agent=%d target=(%.2f,%.2f) res=%s min=%d walk=%s", agent_id, target.x, target.y, resource_name, min_count, tostring(p.walk_if_unreachable)))
+    log(string.format("[mine_resource] start agent=%d target=(%.2f,%.2f) res=%s max=%d walk=%s emulate=%s", agent_id, target.x, target.y, resource_name, max_count, tostring(p.walk_if_unreachable), tostring(emulate)))
 
     local control = _get_control_for_agent(agent_id)
     if control then
@@ -421,7 +442,7 @@ function MineResourceAction:run(params)
                 return self:_post_run(false, p)
             end
             job.products = names
-            if emulate then
+            if emulate and bind_player then
                 job.player = _bind_player_to_character(agent_id, control)
             end
             local actor = (job.player and job.player.valid) and job.player or control
