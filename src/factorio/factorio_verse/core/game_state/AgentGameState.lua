@@ -49,6 +49,9 @@ AgentGameState.__index = AgentGameState
 
 local agent_inventory_type = defines.inventory.character_main
 
+--- @param game_state GameState
+--- @param agent_id number
+--- @return AgentGameState
 function AgentGameState:new(game_state, agent_id)
     local instance = {
         game_state = game_state,

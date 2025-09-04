@@ -8,6 +8,8 @@ local GameStateError = require("core.Error")
 local ResearchGameState = {}
 ResearchGameState.__index = ResearchGameState
 
+--- @param parent GameState
+--- @return ResearchGameState
 function ResearchGameState:new(parent)
     local instance = {
         parent = parent
@@ -30,9 +32,9 @@ function ResearchGameState:save_research(agent_id, research_id)
     }
 
     -- Save all technology states
-    for name, tech in pairs(force.technologies) do
-        research_state.technologies[name] = serialize_technology(tech)
-    end
+    -- for name, tech in pairs(force.technologies) do
+    --     research_state.technologies[name] = serialize_technology(tech)
+    -- end
 
     -- Save current research and progress
     if force.current_research then

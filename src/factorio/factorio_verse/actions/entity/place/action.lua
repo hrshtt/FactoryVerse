@@ -27,14 +27,7 @@ function PlaceEntityAction:run(params)
     ---@cast p PlaceEntityParams
 
     local agent = gs:agent_state():get_agent(p.agent_id)
-    if not agent then
-        error("Agent not found for id " .. tostring(params.agent_id))
-    end
-
     local surface = gs:get_surface()
-    if not surface then
-        error("No surface available to place entity")
-    end
 
     local placement = {
         name = p.entity_name,
@@ -81,7 +74,7 @@ function PlaceEntityAction:run(params)
             if not (dx == 0 and dy == 0) then
                 local a
                 do
-                    local ok, angle = pcall(function() return math.atan(dy, dx) end)
+                    local ok, angle = pcall(function() return math.atan2(dy, dx) end)
                     if ok and type(angle) == "number" then
                         a = angle
                     else

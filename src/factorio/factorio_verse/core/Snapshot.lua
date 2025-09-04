@@ -7,6 +7,7 @@ local GameState = require "core.game_state.GameState":new()
 local Snapshot = {}
 Snapshot.__index = Snapshot
 
+--- @return Snapshot
 function Snapshot:new()
     local instance = {}
     setmetatable(instance, self)

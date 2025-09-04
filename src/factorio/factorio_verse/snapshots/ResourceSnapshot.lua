@@ -12,12 +12,15 @@ local utils = require "utils"
 ---
 --- OUTPUT: Structured data suitable for JSON export and SQL analysis
 --- TODO: Add trees to ResourceSnapshot
+--- @class ResourceSnapshot : Snapshot
 local ResourceSnapshot = Snapshot:new()
 ResourceSnapshot.__index = ResourceSnapshot
 
+---@return ResourceSnapshot
 function ResourceSnapshot:new()
     local instance = Snapshot:new()
     setmetatable(instance, self)
+    ---@cast instance ResourceSnapshot
     return instance
 end
 

@@ -13,6 +13,8 @@ local utils = require("utils")
 local GameState = {}
 GameState.__index = GameState
 
+
+--- @return GameState
 function GameState:new()
     local instance = {}
     setmetatable(instance, self)

@@ -8,6 +8,8 @@ local GameStateError = require("core.Error")
 local InventoryGameState = {}
 InventoryGameState.__index = InventoryGameState
 
+--- @param game_state GameState
+--- @return InventoryGameState
 function InventoryGameState:new(game_state)
     local instance = {
         game_state = game_state,

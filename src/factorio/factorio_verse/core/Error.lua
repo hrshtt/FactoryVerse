@@ -39,6 +39,7 @@ local ValidationError = {}
 ValidationError.__index = ValidationError
 setmetatable(ValidationError, Error)
 
+---@return ValidationError
 function ValidationError:new(message, field, value)
     local instance = Error.new(self, "VALIDATION_ERROR", message, {
         field = field,

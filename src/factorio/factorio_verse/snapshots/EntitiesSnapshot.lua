@@ -3,9 +3,11 @@ local utils = require "utils"
 
 --- EntitiesSnapshot: Dumps raw entities and associated data chunk-wise
 --- Includes inventories, fluidboxes, energy/burner info, and basic metadata
+--- @class EntitiesSnapshot : Snapshot
 local EntitiesSnapshot = Snapshot:new()
 EntitiesSnapshot.__index = EntitiesSnapshot
 
+---@return EntitiesSnapshot
 function EntitiesSnapshot:new()
     local instance = Snapshot:new()
     -- Per-run caches to avoid repeated prototype/method work

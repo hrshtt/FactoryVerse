@@ -8,6 +8,9 @@ local GameStateError = require("core.Error")
 local EntitiesGameState = {}
 EntitiesGameState.__index = EntitiesGameState
 
+
+--- @param game_state GameState
+--- @return EntitiesGameState
 function EntitiesGameState:new(game_state)
     local instance = {
         game_state = game_state

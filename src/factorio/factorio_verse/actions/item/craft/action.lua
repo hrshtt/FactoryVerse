@@ -57,40 +57,25 @@ end
 --- @param params CraftParams
 --- @return table
 function CraftAction:run(params)
-    local p = self:_pre_run(gs, params)
-    ---@cast p CraftParams
+    params = self:_pre_run(gs, params)
+    ---@cast params CraftParams
 
     ---@type LuaEntity
-    local agent = gs:agent_state():get_agent(p.agent_id)
-    if not (agent and agent.valid) then
-        error("Agent not found for id " .. tostring(p.agent_id))
-    end
-    local inv = agent.get_inventory(defines.inventory.character_main) or nil
+    local agent = gs:agent_state():get_agent(params.agent_id)
+    local inv = agent.get_inventory(defines.inventory.character_main)
+
     if not inv then
         error("Agent has no character inventory")
     end
 
-    local recipe_proto = (prototypes and prototypes.recipe and prototypes.recipe[p.recipe]) or nil
-    if not recipe_proto then
-        error("Unknown recipe: " .. tostring(p.recipe))
-    end
-
-    if not is_hand_craftable(recipe_proto) then
-        error("Recipe not hand-craftable: " .. p.recipe)
-    end
-
-    -- Ensure recipe is enabled for the agent's force
-    local force_recipe = agent.force and agent.force.recipes and agent.force.recipes[p.recipe] or nil
-    if not (force_recipe and force_recipe.enabled) then
-        error("Recipe not enabled for force: " .. p.recipe)
-    end
+    local recipe_proto = (prototypes and prototypes.recipe and prototypes.recipe[params.recipe])
 
     local ingredients, reason = get_item_ingredients(recipe_proto)
     if not ingredients then
         error("Recipe requires unsupported ingredients (" .. tostring(reason) .. ")")
     end
 
-    local desired = math.max(1, math.floor(p.count or 1))
+    local desired = math.max(1, math.floor(params.count or 1))
 
     -- Compute feasible crafts based on inventory
     local feasible = desired
@@ -100,7 +85,7 @@ function CraftAction:run(params)
         if can < feasible then feasible = can end
     end
     if feasible <= 0 then
-        error("Insufficient ingredients for recipe: " .. p.recipe)
+        error("Insufficient ingredients for recipe: " .. params.recipe)
     end
 
     -- Remove ingredients
@@ -133,7 +118,7 @@ function CraftAction:run(params)
         end
     end
 
-    return self:_post_run({ crafted = feasible, recipe = p.recipe, products = produced }, p)
+    return self:_post_run({ crafted = feasible, recipe = params.recipe, products = produced }, params)
 end
 
 return CraftAction
