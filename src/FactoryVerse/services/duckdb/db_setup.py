@@ -34,7 +34,7 @@ class DuckDBSetup:
     def create_spatial_resource_patches(self) -> None:
         """Create/refresh unioned polygon geometries for solid resource patches.
 
-        Builds a table `sp_resource_patches` with: (tick, surface, patch_id,
+        Builds a table `sp_resource_patches` with: (tick, patch_id,
         resource_name, tiles, total_amount, geom, area_tiles, perimeter,
         centroid, bbox_geom) using row-span rectangles from `raw_resource_tiles`
         and summary columns from `raw_resource_patches`.
@@ -50,7 +50,6 @@ class DuckDBSetup:
             WITH spans AS (
               SELECT
                 tick,
-                surface,
                 patch_id,
                 resource_name,
                 CAST(tile_x AS DOUBLE)                 AS xmin,
@@ -58,23 +57,23 @@ class DuckDBSetup:
                 CAST(tile_x + len AS DOUBLE)           AS xmax,
                 CAST(tile_y + 1 AS DOUBLE)             AS ymax
               FROM raw_resource_tiles
+              WHERE surface = 'nauvis'
             ),
             rects AS (
               SELECT
-                tick, surface, patch_id, resource_name,
+                tick, patch_id, resource_name,
                 ST_MakeEnvelope(xmin, ymin, xmax, ymax) AS geom
               FROM spans
             ),
             patches AS (
               SELECT
-                tick, surface, patch_id, resource_name,
+                tick, patch_id, resource_name,
                 ST_Union_Agg(geom) AS geom
               FROM rects
-              GROUP BY tick, surface, patch_id, resource_name
+              GROUP BY tick, patch_id, resource_name
             )
             SELECT
               p.tick,
-              p.surface,
               p.patch_id,
               p.resource_name,
               rp.tiles,
@@ -86,7 +85,8 @@ class DuckDBSetup:
               ST_Envelope(p.geom)  AS bbox_geom
             FROM patches p
             LEFT JOIN raw_resource_patches rp
-              USING (tick, surface, patch_id, resource_name);
+              ON p.tick = rp.tick AND p.patch_id = rp.patch_id AND p.resource_name = rp.resource_name
+              AND rp.surface = 'nauvis';
             """
         )
         # Spatial R-Tree index on geometry for fast predicates
@@ -97,7 +97,7 @@ class DuckDBSetup:
     def create_spatial_water_patches(self) -> None:
         """Create/refresh unioned polygon geometries for water patches.
 
-        Builds a table `sp_water_patches` with: (tick, surface, patch_id,
+        Builds a table `sp_water_patches` with: (tick, patch_id,
         geom, area_tiles, perimeter, centroid, bbox_geom, tiles).
         Uses row-span rectangles from `raw_water_tiles` and joins counts from
         `raw_water_patches`.
@@ -112,30 +112,29 @@ class DuckDBSetup:
             WITH spans AS (
               SELECT
                 tick,
-                surface,
                 patch_id,
                 CAST(tile_x AS DOUBLE)                 AS xmin,
                 CAST(tile_y AS DOUBLE)                 AS ymin,
                 CAST(tile_x + len AS DOUBLE)           AS xmax,
                 CAST(tile_y + 1 AS DOUBLE)             AS ymax
               FROM raw_water_tiles
+              WHERE surface = 'nauvis'
             ),
             rects AS (
               SELECT
-                tick, surface, patch_id,
+                tick, patch_id,
                 ST_MakeEnvelope(xmin, ymin, xmax, ymax) AS geom
               FROM spans
             ),
             patches AS (
               SELECT
-                tick, surface, patch_id,
+                tick, patch_id,
                 ST_Union_Agg(geom) AS geom
               FROM rects
-              GROUP BY tick, surface, patch_id
+              GROUP BY tick, patch_id
             )
             SELECT
               p.tick,
-              p.surface,
               p.patch_id,
               p.geom,
               ST_Area(p.geom)      AS area_tiles,
@@ -145,7 +144,8 @@ class DuckDBSetup:
               wp.tiles
             FROM patches p
             LEFT JOIN raw_water_patches wp
-              USING (tick, surface, patch_id);
+              ON p.tick = wp.tick AND p.patch_id = wp.patch_id
+              AND wp.surface = 'nauvis';
             """
         )
         con.execute(
@@ -167,7 +167,6 @@ class DuckDBSetup:
             CREATE TABLE sp_crude_wells AS
             SELECT
               tick,
-              surface,
               patch_id,
               resource_name,
               tile_x,
@@ -176,7 +175,8 @@ class DuckDBSetup:
               pos_y,
               amount,
               ST_Point(pos_x, pos_y) AS geom
-            FROM raw_crude_tiles;
+            FROM raw_crude_tiles
+            WHERE surface = 'nauvis';
             """
         )
         con.execute(
@@ -197,10 +197,10 @@ class DuckDBSetup:
         can be placed.
         
         Usage:
-        - get_water_coast(NULL, NULL, 'nauvis') - all water patches (latest tick)
-        - get_water_coast('patch_123', NULL, 'nauvis') - specific patch (latest tick)
-        - get_water_coast('patch_123', 1000, 'nauvis') - specific patch with tick
-        - get_water_coast(NULL, 1000, 'nauvis') - all patches at specific tick
+        - get_water_coast(NULL, NULL) - all water patches (latest tick)
+        - get_water_coast('patch_123', NULL) - specific patch (latest tick)
+        - get_water_coast('patch_123', 1000) - specific patch with tick
+        - get_water_coast(NULL, 1000) - all patches at specific tick
         """
         con = self.con
         con.execute("DROP MACRO IF EXISTS get_water_coast;")
@@ -208,19 +208,16 @@ class DuckDBSetup:
             r"""
             CREATE OR REPLACE MACRO get_water_coast(
                 patch_id_filter,
-                tick_filter,
-                surface_filter
+                tick_filter
             ) AS TABLE (
                 WITH ctx AS (
                     SELECT 
-                        COALESCE(surface_filter, 'nauvis') AS surface,
-                        COALESCE(tick_filter, (SELECT MAX(w.tick) FROM sp_water_patches w WHERE w.surface = COALESCE(surface_filter, 'nauvis'))) AS tick
+                        COALESCE(tick_filter, (SELECT MAX(w.tick) FROM sp_water_patches w)) AS tick
                 ),
                 filtered_patches AS (
                     SELECT w.patch_id, w.geom, w.area_tiles, w.perimeter
                     FROM sp_water_patches w, ctx
-                    WHERE w.surface = ctx.surface 
-                      AND w.tick = ctx.tick
+                    WHERE w.tick = ctx.tick
                       AND (patch_id_filter IS NULL OR w.patch_id = patch_id_filter)
                 )
                 SELECT 
