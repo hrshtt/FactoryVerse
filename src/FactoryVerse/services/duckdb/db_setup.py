@@ -191,42 +191,37 @@ class DuckDBSetup:
 
     def create_water_coast_macro(self) -> None:
         """Create macro for getting water patch boundaries/coasts.
-        
+
         Creates a macro `get_water_coast` that returns the boundary geometry
         of water patches, useful for finding shorelines where offshore pumps
         can be placed.
-        
+
         Usage:
-        - get_water_coast(NULL, NULL) - all water patches (latest tick)
-        - get_water_coast('patch_123', NULL) - specific patch (latest tick)
-        - get_water_coast('patch_123', 1000) - specific patch with tick
-        - get_water_coast(NULL, 1000) - all patches at specific tick
+        - get_water_coast(NULL) - all water patches (latest tick)
+        - get_water_coast('patch_123') - specific patch (latest tick)
         """
         con = self.con
         con.execute("DROP MACRO IF EXISTS get_water_coast;")
         con.execute(
             r"""
             CREATE OR REPLACE MACRO get_water_coast(
-                patch_id_filter,
-                tick_filter
+                patch_id_filter
             ) AS TABLE (
-                WITH ctx AS (
-                    SELECT 
-                        COALESCE(tick_filter, (SELECT MAX(w.tick) FROM sp_water_patches w)) AS tick
+                WITH latest_tick AS (
+                    SELECT MAX(tick) AS tick FROM sp_water_patches
                 ),
                 filtered_patches AS (
                     SELECT w.patch_id, w.geom, w.area_tiles, w.perimeter
-                    FROM sp_water_patches w, ctx
-                    WHERE w.tick = ctx.tick
+                    FROM sp_water_patches w, latest_tick lt
+                    WHERE w.tick = lt.tick
                       AND (patch_id_filter IS NULL OR w.patch_id = patch_id_filter)
                 )
                 SELECT 
                     fp.patch_id,
-                    ST_Boundary(fp.geom) AS coast_geom,
-                    ST_AsText(ST_Boundary(fp.geom)) AS coast_wkt,
+                    -- ST_Boundary(fp.geom) AS coast_geom,
+                    -- ST_AsText(ST_Boundary(fp.geom)) AS coast_wkt,
                     ST_AsGeoJSON(ST_Boundary(fp.geom)) AS coast_geojson,
-                    fp.area_tiles,
-                    fp.perimeter,
+                    fp.area_tiles as total_area,
                     ST_Length(ST_Boundary(fp.geom)) AS coast_length
                 FROM filtered_patches fp
                 ORDER BY fp.area_tiles DESC
