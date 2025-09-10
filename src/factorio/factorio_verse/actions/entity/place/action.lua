@@ -9,12 +9,14 @@ local gs = GameState:new()
 --- @field position table Position to place at: { x = number, y = number }
 --- @field direction string|number|nil Optional direction; accepts alias from GameState.aliases.direction or defines.direction value
 --- @field orient_towards table|nil Optional orientation hint: { entity_name = string|nil, position = {x:number,y:number}|nil }
+--- @field walk_if_unreachable boolean|nil Optional walk_if_unreachable hint
 local PlaceEntityParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
     entity_name = { type = "string", required = true },
     position = { type = "table", required = true },
     direction = { type = "any", required = false },
-    orient_towards = { type = "table", required = false }
+    orient_towards = { type = "table", required = false },
+    walk_if_unreachable = { type = "boolean", required = false, default = false }
 })
 
 --- @class PlaceEntityAction : Action
@@ -94,6 +96,25 @@ function PlaceEntityAction:run(params)
                     [6]=defines.direction.north,[7]=defines.direction.northeast
                 }
                 placement.direction = DIR_IDX_TO_ENUM[oct]
+            end
+        end
+    end
+
+    -- Handle walk_if_unreachable logic
+    if p.walk_if_unreachable then
+        local placement_reachable = self.walk_helper:is_reachable(agent, p.position)
+        if not placement_reachable then
+            local walk_success = self.walk_helper:start_walk_to({
+                agent_id = p.agent_id,
+                target_position = p.position,
+                walk_if_unreachable = true,
+                arrive_radius = 1.0, -- Close enough to place
+                prefer_cardinal = true
+            })
+            if walk_success then
+                error("Agent is walking to position. Try placing again when closer.")
+            else
+                error("Cannot reach position and failed to start walking")
             end
         end
     end

@@ -17,6 +17,7 @@ function EntitiesSnapshot:new()
         belt = {},         -- [entity_name] -> max transport line index
     }
     setmetatable(instance, self)
+    ---@cast instance EntitiesSnapshot
     return instance
 end
 

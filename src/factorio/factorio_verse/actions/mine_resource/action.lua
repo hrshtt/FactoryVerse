@@ -31,7 +31,6 @@ local MineResourceParams = ParamSpec:new({
 --- @field products string[]|nil
 --- @field start_total number|nil
 --- @field start_item_count number|nil
---- @field walking_started boolean
 --- @field finished boolean
 local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreachable)
     return {
@@ -40,13 +39,11 @@ local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreach
         resource_name = resource_name,
         max_count = max_count,
         mined_count = 0,
-        walking_started = false,
         walk_if_unreachable = walk_if_unreachable and true or false,
         finished = false,
         -- no swing timer state required
         start_total = nil,
         start_item_count = nil,
-        was_in_reach = false,
         debug = false,
     }
 end
@@ -152,34 +149,12 @@ end
 -- Compute number of ticks required to mine the entity, approximating player mining (60 tps)
 -- Removed: fake swing timer path and player bind/unbind; we only emulate via mining_state and inventory deltas
 
-local function _ensure_walking_towards(job)
-    if job.walking_started then return end
-    -- Invoke the existing walk_to action for simple greedy approach
-    local walk_to = action_registry:get("agent.walk_to")
-    if walk_to then
-        local ok = pcall(function()
-            walk_to:run({
-                agent_id = job.agent_id,
-                goal = { x = job.target.x, y = job.target.y },
-                arrive_radius = 1.2,
-                replan_on_stuck = true,
-                max_replans = 2,
-                prefer_cardinal = true
-            })
-        end)
-        if ok then
-            job.walking_started = true
-        end
-    end
-end
+-- Create a shared WalkHelper instance for mine_resource actions
+local walk_helper = require("core.WalkHelper"):new()
+
 
 local function _cancel_walk_for_agent(agent_id)
-    local cancel = action_registry:get("agent.walk_cancel")
-    if cancel then
-        pcall(function()
-            cancel:run({ agent_id = agent_id })
-        end)
-    end
+    walk_helper:cancel_walk(agent_id)
 end
 
 -- Compute a conservative resource reach distance for the character
@@ -195,6 +170,8 @@ end
 
 local function _can_reach_entity(control, entity)
     if not (control and control.valid and entity and entity.valid) then return false end
+    
+    -- First try Factorio's built-in can_reach_entity if available
     if control.can_reach_entity then
         -- Try both call styles defensively
         local ok, res = pcall(function() return control.can_reach_entity(control, entity) end)
@@ -203,11 +180,11 @@ local function _can_reach_entity(control, entity)
         end
         if ok and type(res) == "boolean" then return res end
     end
-    -- Fallback to distance-based check
+    
+    -- Fallback to WalkHelper's reach checking with resource-specific reach distance
     local pos = entity.position or entity
-    local dist = _distance(control.position, pos)
     local reach = _resource_reach_distance(control)
-    return dist <= reach
+    return walk_helper:is_reachable(control, pos, nil, reach)
 end
 
 local function _tick_mine_jobs(event)
@@ -305,7 +282,12 @@ local function _tick_mine_jobs(event)
                                 job.mining_active = false
                             end
                             if job.walk_if_unreachable then
-                                _ensure_walking_towards(job)
+                                walk_helper:start_walk_to({
+                                    agent_id = job.agent_id,
+                                    target_position = job.target,
+                                    arrive_radius = 1.2,
+                                    prefer_cardinal = true
+                                })
                             end
                         end
                     end
@@ -373,11 +355,23 @@ function MineResourceAction:run(params)
                     control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
                 end
             elseif job.walk_if_unreachable then
-                _ensure_walking_towards(job)
+                walk_helper:start_walk_to({
+                    agent_id = job.agent_id,
+                    target_position = job.target,
+                    arrive_radius = 1.2,
+                    prefer_cardinal = true
+                })
             end
         else
             -- No entity found yet; optionally start walking toward the tile
-            if job.walk_if_unreachable then _ensure_walking_towards(job) end
+            if job.walk_if_unreachable then 
+                walk_helper:start_walk_to({
+                    agent_id = job.agent_id,
+                    target_position = job.target,
+                    arrive_radius = 1.2,
+                    prefer_cardinal = true
+                })
+            end
         end
     end
 

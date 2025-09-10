@@ -63,11 +63,6 @@ function CraftAction:run(params)
     ---@type LuaEntity
     local agent = gs:agent_state():get_agent(params.agent_id)
     local inv = agent.get_inventory(defines.inventory.character_main)
-
-    if not inv then
-        error("Agent has no character inventory")
-    end
-
     local recipe_proto = (prototypes and prototypes.recipe and prototypes.recipe[params.recipe])
 
     local ingredients, reason = get_item_ingredients(recipe_proto)

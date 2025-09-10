@@ -1,12 +1,15 @@
 --- factorio_verse/core/action/Action.lua
 --- Base class for all actions.
 
+local WalkHelper = require("core.WalkHelper")
+
 --- @class Action
 --- @field name string
 --- @field params ParamSpec
 --- @field validators table
 --- @field validate function
 --- @field run function
+--- @field walk_helper WalkHelper
 local Action = {}
 Action.__index = Action
 
@@ -32,6 +35,7 @@ function Action:new(name, params, validators)
     name = name,
     params = params,
     validators = validators or {},
+    walk_helper = WalkHelper:new(),
   }, Action)
 end
 
