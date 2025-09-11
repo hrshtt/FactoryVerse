@@ -44,7 +44,12 @@ Human players rely heavily on visual information that provides crucial gameplay 
 
 These visual cues are difficult to capture for text-based LLMs without enabling direct screen observation across multiple frames to understand dynamics.
 
-## FactoryVerse's Solution: Context on the Table
+## Context on the Table
+
+<p align="center">
+  <img src="docs/fv.png" alt="FactoryVerse Overview" width="600"/>
+</p>
+
 
 Rather than relying on visual interpretation, FactoryVerse makes implicit game context explicit through a queryable spatial database approach:
 
