@@ -47,7 +47,7 @@ These visual cues are difficult to capture for text-based LLMs without enabling 
 ## Context on the Table
 
 <p align="center">
-  <img src="docs/fv.png" alt="FactoryVerse Overview" width="600"/>
+  <img src="docs/fv.svg" width="600" alt="FactoryVerse Overview"/>
 </p>
 
 
