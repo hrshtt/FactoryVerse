@@ -76,4 +76,46 @@ function Snapshot:emit_json(opts, name, payload)
 	return file_path
 end
 
+--- Emit CSV data with metadata tracking
+--- @param opts table - options {output_dir, snapshot_id, metadata}
+--- @param name string - base filename (without extension)
+--- @param csv_data string - raw CSV data
+--- @param metadata table - optional metadata for this CSV file
+--- @return string - file path written
+function Snapshot:emit_csv(opts, name, csv_data, metadata)
+	local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
+	local snapshot_id = (opts and opts.snapshot_id) or ("snap-" .. tostring(game and game.tick or 0))
+	
+	-- Write CSV file directly
+	local csv_path = string.format("%s/%s.%s.csv", base_dir, name, snapshot_id)
+	helpers.write_file(csv_path, csv_data, false)
+	
+	-- Write metadata JSON file (once per tick)
+	local meta_path = string.format("%s/metadata.%s.json", base_dir, snapshot_id)
+	local meta_data = opts.metadata or {}
+	meta_data.tick = game and game.tick or 0
+	meta_data.surface = self.game_state:get_surface() and self.game_state:get_surface().name or "unknown"
+	meta_data.timestamp = game and game.tick or 0
+	meta_data.files = meta_data.files or {}
+	
+	-- Add this CSV file to the metadata
+	table.insert(meta_data.files, {
+		name = name,
+		path = csv_path,
+		lines = (function()
+			local count = 0
+			for _ in string.gmatch(csv_data, "\n") do count = count + 1 end
+			return count
+		end)(),
+		metadata = metadata or {}
+	})
+	
+	-- Write metadata (overwrite each time to accumulate files)
+	local meta_json = helpers.table_to_json(meta_data)
+	helpers.write_file(meta_path, meta_json, false)
+	
+	log("Wrote CSV to " .. csv_path)
+	return csv_path
+end
+
 return Snapshot

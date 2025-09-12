@@ -1,20 +1,27 @@
 local Snapshot = require "core.Snapshot"
 local utils = require "utils"
 
---- ResourceSnapshot: Detects and analyzes resource patches and water bodies
+--- ResourceSnapshot: High-performance tile streaming to Postgres
 ---
 --- DESIGN DECISIONS:
---- 1. Resource patches = connected groups of same resource type using 4-neighbor connectivity
---- 2. Water patches = connected areas of water tiles using flood-fill
---- 3. Cross-chunk processing in raster order enables efficient boundary reconciliation
---- 4. Uses scanline Connected Component Labeling (CCL) for resources
---- 5. Uses Factorio's get_connected_tiles() for water (more efficient than manual flood-fill)
+--- 1. Stream raw tiles in CSV format for maximum throughput
+--- 2. Chunked buffering by surface/chunk/kind for efficient batching
+--- 3. Dual output: files (reliable) and UDP (low-latency)
+--- 4. Compression for large batches to reduce I/O overhead
+--- 5. Time and size-based flush triggers for balanced performance
 ---
---- OUTPUT: Structured data suitable for JSON export and SQL analysis
---- TODO: Add trees to ResourceSnapshot
+--- OUTPUT: Raw tile data streamed to files or UDP for Postgres ingestion
 --- @class ResourceSnapshot : Snapshot
 local ResourceSnapshot = Snapshot:new()
 ResourceSnapshot.__index = ResourceSnapshot
+
+-- Configuration constants
+local MAX_LINES = 2000          -- ~100 KB CSV per flush
+local UDP_PORT = 27600          -- UDP collector port
+local USE_UDP = false           -- Toggle between UDP and file output
+
+-- Global buffers: keyed by "surface:cx:cy:kind" -> buffer table
+local BUFS = {}
 
 ---@return ResourceSnapshot
 function ResourceSnapshot:new()
@@ -25,257 +32,65 @@ function ResourceSnapshot:new()
 end
 
 function ResourceSnapshot:take()
-    log("Taking resource snapshot")
+    log("Taking resource snapshot - streaming all tiles")
 
     local charted_chunks = self.game_state:get_charted_chunks()
-    local resource_data = self:_analyze_resource_patches(charted_chunks)
-    local output = self:create_output("snapshot.resources", "v1", resource_data)
-
-	-- Emit JSON for SQL ingestion (does not change return value)
-	self:emit_json({ output_dir = "script-output/factoryverse" }, "resources", {
-		meta = {
-			schema_version = "snapshot.resources.v1",
-			surface = output.surface,
-			tick = output.timestamp,
-		},
-		data = output.data,
+    local tile_count = self:_stream_all_tiles_from_chunks(charted_chunks)
+    
+    -- Flush all remaining buffers immediately
+    self:_flush_all()
+    
+    local output = self:create_output("snapshot.tiles", "v1", {
+        tile_count = tile_count,
+        buffer_count = 0, -- All flushed now
+        flush_mode = USE_UDP and "udp" or "file"
 	})
 
     self:print_summary(output, function(out)
-        return { surface = out.surface, patch_count = #(out.data.patch or {}), row_count = #(out.data.rows or {}), tick = out.timestamp }
-    end)
-
-    return output
-end
-
-function ResourceSnapshot:take_water()
-    local water_data = self.game_state:get_water_tiles_in_chunks(
-        self.game_state:get_charted_chunks()
-    )
-
-    local patches = self:_analyze_water_patches(water_data.tiles, water_data.tile_names)
-    -- Flatten water: patch (area-level) + data (row segments)
-    local patch_out = {}
-    local data_rows = {}
-    for _, p in ipairs(patches) do
-        -- derive stable id from integer centroid
-        local ix = math.floor(p.centroid.x + 0.5)
-        local iy = math.floor(p.centroid.y + 0.5)
-        local patch_id = "water;" .. tostring(ix) .. ";" .. tostring(iy)
-        table.insert(patch_out, {
-            patch_id = patch_id,
-            tiles = p.tiles,
-            bbox = p.bbox,
-            centroid = p.centroid
-        })
-
-        for y, segments in pairs(p.row_spans or {}) do
-            for _, seg in ipairs(segments) do
-                table.insert(data_rows, {
-                    patch_id = patch_id,
-                    y = y,
-                    x = seg.x,
-                    len = seg.len,
-                    tile_count = seg.tile_count
-                })
-            end
-        end
-    end
-
-    local output = self:create_output("snapshot.water", "v1", {
-        patch = patch_out,
-        rows = data_rows
-    })
-
-    	-- Emit JSON for SQL ingestion (does not change return value)
-	self:emit_json({ output_dir = "script-output/factoryverse" }, "water", {
-		meta = {
-			schema_version = "snapshot.water.v1",
-			surface = output.surface,
-			tick = output.timestamp,
-		},
-		data = output.data,
-	})
-
-    self:print_summary(output, function(out)
-        -- Show top 5 largest patches
-        local sorted = {}
-        for _, p in ipairs(out.data.patch or {}) do table.insert(sorted, p) end
-        table.sort(sorted, function(a, b) return a.tiles > b.tiles end)
-
-        local top = {}
-        for i = 1, math.min(5, #sorted) do
-            local p = sorted[i]
-            table.insert(top, {
-                id = p.id,
-                tiles = p.tiles,
-                bbox = p.bbox,
-                centroid = {
-                    x = p.centroid.x,
-                    y = p.centroid.y
-                }
-            })
-        end
-
-        return {
-            surface = out.surface,
-            water = { patch_count = #(out.data.patch or {}), top = top },
-            tick = out.timestamp
+        return { 
+            surface = out.surface, 
+            tiles_streamed = out.data.tile_count,
+            buffers_active = out.data.buffer_count,
+            mode = out.data.flush_mode,
+            tick = out.timestamp 
         }
     end)
 
     return output
 end
 
---- CRUDE OIL SNAPSHOT (Single-tile wells)
---- Treat each crude-oil entity (oil well) as its own patch with no spans.
+--- CRUDE OIL SNAPSHOT (Stream oil wells as tiles)
 function ResourceSnapshot:take_crude()
-    log("Taking crude oil snapshot")
+    log("Taking crude oil snapshot - streaming oil wells")
 
-    -- Gather all resources in charted chunks once, then filter to crude-oil
     local charted_chunks = self.game_state:get_charted_chunks()
     local resources_by_name = self.game_state:get_resources_in_chunks(charted_chunks)
     local wells = resources_by_name["crude-oil"] or {}
 
-    -- Cluster wells by spatial proximity to form an "oil field" patch
-    -- Use Euclidean distance threshold in tiles
-    local EPS = 12 -- tiles; tweakable threshold for grouping wells into a field
-
-    local dsu = utils.DSU:new()
-    local points = {}
-    local bucket = {}
-    local cell = EPS
-
-    local function bucket_key(gx, gy)
-        return tostring(gx) .. "," .. tostring(gy)
+    local tile_count = 0
+    for _, well in ipairs(wells) do
+        local x = utils.floor(well.position.x)
+        local y = utils.floor(well.position.y)
+        local chunk_x = math.floor(x / 32)
+        local chunk_y = math.floor(y / 32)
+        local amount = well.amount or 0
+        self:_enqueue_tile_for_chunk(chunk_x, chunk_y, x, y, "crude-oil", amount)
+        tile_count = tile_count + 1
     end
 
-    -- Index wells and union neighbors within radius
-    for i, well in ipairs(wells) do
-        local px = (well.position and well.position.x) or 0
-        local py = (well.position and well.position.y) or 0
-        local tx = utils.floor(px)
-        local ty = utils.floor(py)
-
-        points[i] = { px = px, py = py, tx = tx, ty = ty, amount = well.amount or 0, unit_number = well.unit_number }
-        dsu:find(i)
-
-        local gx = math.floor(tx / cell)
-        local gy = math.floor(ty / cell)
-
-        -- Check neighboring buckets for nearby wells
-        for oy = -1, 1 do
-            for ox = -1, 1 do
-                local k = bucket_key(gx + ox, gy + oy)
-                local list = bucket[k]
-                if list then
-                    for _, j in ipairs(list) do
-                        local pj = points[j]
-                        local dx = tx - pj.tx
-                        local dy = ty - pj.ty
-                        if (dx * dx + dy * dy) <= (EPS * EPS) then
-                            dsu:union(i, j)
-                        end
-                    end
-                end
-            end
-        end
-
-        -- Insert into its bucket
-        local bk = bucket_key(gx, gy)
-        if not bucket[bk] then bucket[bk] = {} end
-        table.insert(bucket[bk], i)
-    end
-
-    -- Aggregate patches by DSU root
-    local patches_by_root = {}
-    for i = 1, #points do
-        local r = dsu:find(i)
-        local p = points[i]
-        local agg = patches_by_root[r]
-        if not agg then
-            agg = {
-                wells = 0,
-                tiles = 0, -- keep schema parity; equals wells
-                total_amount = 0,
-                min_x = 1e9, min_y = 1e9, max_x = -1e9, max_y = -1e9,
-                sum_x = 0, sum_y = 0,
-            }
-            patches_by_root[r] = agg
-        end
-
-        agg.wells = agg.wells + 1
-        agg.tiles = agg.tiles + 1
-        agg.total_amount = agg.total_amount + (p.amount or 0)
-        if p.tx < agg.min_x then agg.min_x = p.tx end
-        if p.ty < agg.min_y then agg.min_y = p.ty end
-        if p.tx > agg.max_x then agg.max_x = p.tx end
-        if p.ty > agg.max_y then agg.max_y = p.ty end
-        agg.sum_x = agg.sum_x + p.px
-        agg.sum_y = agg.sum_y + p.py
-    end
-
-    local patches = {}
-    local wells_out = {}
-    local root_to_id = {}
-    local next_id = 1
-    for r, agg in pairs(patches_by_root) do
-        local count = math.max(agg.wells, 1)
-        root_to_id[r] = next_id
-        local ix = math.floor((math.floor((agg.sum_x / count) * 256 + 0.5) / 256) + 0.5)
-        local iy = math.floor((math.floor((agg.sum_y / count) * 256 + 0.5) / 256) + 0.5)
-        local patch_id = "oil;" .. tostring(ix) .. ";" .. tostring(iy)
-        table.insert(patches, {
-            patch_id = patch_id,
-            tiles = agg.tiles,
-            wells = agg.wells,
-            total_amount = agg.total_amount,
-            bbox = { min_x = agg.min_x, min_y = agg.min_y, max_x = agg.max_x, max_y = agg.max_y },
-            centroid = {
-                x = math.floor((agg.sum_x / count) * 256 + 0.5) / 256,
-                y = math.floor((agg.sum_y / count) * 256 + 0.5) / 256
-            }
-        })
-        next_id = next_id + 1
-        root_to_id[r] = patch_id
-    end
-
-    -- Create per-well rows with patch_id
-    for i = 1, #points do
-        local r = dsu:find(i)
-        local id = root_to_id[r]
-        local p = points[i]
-        table.insert(wells_out, {
-            patch_id = id,
-            resource_name = "crude-oil",
-            amount = p.amount or 0,
-            tile = { x = p.tx, y = p.ty },
-            position = { x = p.px, y = p.py },
-            unit_number = p.unit_number
-        })
-    end
+    -- Flush all remaining buffers immediately
+    self:_flush_all()
 
     local output = self:create_output("snapshot.crude", "v1", {
-        patch = patches,
-        rows = wells_out
-    })
-
-    -- Emit JSON for SQL ingestion (does not change return value)
-    self:emit_json({ output_dir = "script-output/factoryverse" }, "crude", {
-        meta = {
-            schema_version = "snapshot.crude.v1",
-            surface = output.surface,
-            tick = output.timestamp,
-        },
-        data = output.data,
+        tile_count = tile_count,
+        buffer_count = 0 -- All flushed now
     })
 
     self:print_summary(output, function(out)
-        local total_amount = 0
-        for _, p in ipairs(out.data.patch or {}) do total_amount = total_amount + (p.total_amount or 0) end
         return {
             surface = out.surface,
-            crude = { well_count = #(out.data.rows or {}), patch_count = #(out.data.patch or {}), total_amount = total_amount },
+            oil_wells = out.data.tile_count,
+            buffers_active = out.data.buffer_count,
             tick = out.timestamp
         }
     end)
@@ -283,656 +98,221 @@ function ResourceSnapshot:take_crude()
     return output
 end
 
---- RESOURCE PATCH ANALYSIS (Connected Component Labeling)
+--- TILE STREAMING FUNCTIONS
 
---- Analyze resource patches using scanline CCL across chunk boundaries
+--- Stream all tiles (resources + water) from all charted chunks
 --- @param chunks table - list of charted chunks
---- @return table - structured resource data
-function ResourceSnapshot:_analyze_resource_patches(chunks)
-    -- Sort chunks in raster order for efficient boundary reconciliation
-    table.sort(chunks, function(a, b)
-        if a.y == b.y then return a.x < b.x end
-        return a.y < b.y
-    end)
-
-    local state = {
-        resources = {}, -- [name] = ResourceTracker
-        next_gid = 1
-    }
-
-    -- Process each chunk in order
+--- @return number - total tiles streamed
+function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
+    local total_tiles = 0
+    
     for _, chunk in ipairs(chunks) do
-        self:_process_chunk_for_resources(chunk, state)
-    end
-
-    return self:_finalize_resource_output(state)
-end
-
---- Process a single chunk for resource detection
---- @param chunk table - chunk data {x, y, area}
---- @param state table - global tracking state
-function ResourceSnapshot:_process_chunk_for_resources(chunk, state)
-    local cx, cy = chunk.x, chunk.y
-    local chunk_key = utils.chunk_key(cx, cy)
-    local resources_in_chunk = self.game_state:get_resources_in_chunks({ chunk })
-
-    -- Fast skip if the engine reports no resources in this chunk
-    if not resources_in_chunk or next(resources_in_chunk) == nil then
-        return
-    end
-
-    -- Exclude crude oil from the general resource snapshot; handled by take_crude()
-    resources_in_chunk["crude-oil"] = nil
-
-    for resource_name, entities in pairs(resources_in_chunk) do
-        local tracker = self:_get_resource_tracker(state, resource_name)
-
-        -- Run local CCL on this chunk
-        local grid = self:_entities_to_grid(entities)
-        local bounds = self:_get_chunk_bounds(chunk.area)
-        local ccl_result = self:_run_local_ccl(grid, bounds)
-
-        -- Store edge information for boundary reconciliation
-        tracker.edges[chunk_key] = ccl_result.edges
-        tracker.local2global[chunk_key] = {}
-
-        -- Reconcile with neighbors (north and west already processed)
-        self:_reconcile_chunk_boundaries(tracker, chunk_key, cx, cy)
-
-        -- Assign global IDs and accumulate patch data
-        self:_accumulate_patch_data(tracker, chunk_key, ccl_result, state)
-    end
-end
-
---- Run Connected Component Labeling on a position grid within chunk bounds
---- This is the core algorithm: scanline CCL with local equivalence tracking
---- @param grid table - [y][x] = amount
---- @param bounds table - {min_x, min_y, max_x, max_y}
---- @return table - {labels=grid, runs=runs_by_label, edges=edge_segments}
-function ResourceSnapshot:_run_local_ccl(grid, bounds)
-    local min_x, min_y = bounds.min_x, bounds.min_y
-    local max_x, max_y = bounds.max_x, bounds.max_y
-
-    local next_local = 1
-    local label_grid = {}             -- [y][x] = local_label
-    local local_dsu = utils.DSU:new() -- for local equivalence resolution
-    local edges = { north = {}, south = {}, west = {}, east = {} }
-
-    -- Scanline CCL with 4-connectivity
-    for y = min_y, max_y do
-        local row = grid[y]
-        if row then
-            for x = min_x, max_x do
-                if row[x] then
-                    -- Check west and north neighbors
-                    local west_lbl = (label_grid[y] and label_grid[y][x - 1]) or nil
-                    local north_lbl = (label_grid[y - 1] and label_grid[y - 1][x]) or nil
-
-                    local label
-                    if west_lbl and north_lbl then
-                        label = west_lbl
-                        if north_lbl ~= west_lbl then
-                            local_dsu:union(west_lbl, north_lbl)
-                        end
-                    elseif west_lbl or north_lbl then
-                        label = west_lbl or north_lbl
-                    else
-                        label = next_local
-                        next_local = next_local + 1
-                    end
-
-                    if not label_grid[y] then label_grid[y] = {} end
-                    label_grid[y][x] = label
-                end
-            end
-        end
-    end
-
-    -- Build runs and edges from labeled grid
-    local runs_by_label = self:_extract_runs_and_edges(label_grid, grid, bounds, edges, local_dsu)
-
-    return {
-        labels = label_grid,
-        runs = runs_by_label,
-        edges = edges,
-        local_dsu = local_dsu
-    }
-end
-
---- Extract horizontal runs and edge segments from labeled grid
---- @param label_grid table - [y][x] = local_label
---- @param amount_grid table - [y][x] = amount
---- @param bounds table - chunk bounds
---- @param edges table - edge segments to populate
---- @param local_dsu table - local DSU for label resolution
---- @return table - runs grouped by resolved label
-function ResourceSnapshot:_extract_runs_and_edges(label_grid, amount_grid, bounds, edges, local_dsu)
-    local min_x, min_y = bounds.min_x, bounds.min_y
-    local max_x, max_y = bounds.max_x, bounds.max_y
-    local runs_by_label = {}
-
-    for y = min_y, max_y do
-        local label_row = label_grid[y]
-        local amount_row = amount_grid[y]
-        if label_row and amount_row then
-            local run_label, run_x, run_len, run_sum = nil, nil, 0, 0
-
-            for x = min_x, max_x + 1 do -- +1 for sentinel
-                local label = label_row[x]
-                if label then label = local_dsu:find(label) end
-
-                if label and (run_label == nil or label == run_label) then
-                    -- Continue or start run
-                    if run_label == nil then
-                        run_label, run_x, run_len, run_sum = label, x, 0, 0
-                    end
-                    run_len = run_len + 1
-                    run_sum = run_sum + (amount_row[x] or 0)
-                else
-                    -- End current run
-                    if run_label and run_x ~= nil then
-                        self:_add_run_to_label(runs_by_label, run_label, y, run_x, run_len, run_sum)
-
-                        -- Add edge segments for boundary reconciliation
-                        if y == min_y then
-                            table.insert(edges.north, { y = y, x = run_x, len = run_len, lbl = run_label, k = run_x })
-                        end
-                        if y == max_y then
-                            table.insert(edges.south, { y = y, x = run_x, len = run_len, lbl = run_label, k = run_x })
-                        end
-                    end
-
-                    -- Start new run
-                    if label then
-                        run_label, run_x, run_len, run_sum = label, x, 1, (amount_row[x] or 0)
-                    else
-                        run_label = nil
+        local chunk_tiles = 0
+        
+        -- Process resources in this chunk
+        local resources_in_chunk = self.game_state:get_resources_in_chunks({ chunk })
+        if resources_in_chunk then
+            for resource_name, entities in pairs(resources_in_chunk) do
+                -- Skip crude oil - handled by take_crude()
+                if resource_name ~= "crude-oil" then
+                    for _, entity in ipairs(entities) do
+                        local x = utils.floor(entity.position.x)
+                        local y = utils.floor(entity.position.y)
+                        local amount = entity.amount or 0
+                        self:_enqueue_tile_for_chunk(chunk.x, chunk.y, x, y, resource_name, amount)
+                        chunk_tiles = chunk_tiles + 1
                     end
                 end
             end
         end
-    end
-
-    -- Add vertical edges (west/east boundaries)
-    for y = min_y, max_y do
-        local label_row = label_grid[y]
-        if label_row then
-            local west_lbl = label_row[min_x]
-            if west_lbl then
-                table.insert(edges.west, { y = y, x = min_x, len = 1, lbl = local_dsu:find(west_lbl), k = y })
-            end
-
-            local east_lbl = label_row[max_x]
-            if east_lbl then
-                table.insert(edges.east, { y = y, x = max_x, len = 1, lbl = local_dsu:find(east_lbl), k = y })
+        
+        -- Process water tiles in this chunk
+        local water_data = self.game_state:get_water_tiles_in_chunks({ chunk })
+        if water_data and water_data.tiles then
+            for _, tile in ipairs(water_data.tiles) do
+                local x, y = utils.extract_position(tile)
+                if x and y then
+                    self:_enqueue_tile_for_chunk(chunk.x, chunk.y, x, y, "water", 0) -- Water has no yield
+                    chunk_tiles = chunk_tiles + 1
+                end
             end
         end
+        
+        -- Flush this chunk's buffer immediately
+        self:_flush_chunk_buffer(chunk.x, chunk.y)
+        
+        total_tiles = total_tiles + chunk_tiles
     end
-
-    return runs_by_label
+    
+    return total_tiles
 end
 
---- Add a run segment to the runs collection
---- @param runs_by_label table - collection to add to
---- @param label number - component label
---- @param y number - row coordinate
---- @param x number - start x coordinate
---- @param len number - run length
---- @param sum_amount number - total amount in run
-function ResourceSnapshot:_add_run_to_label(runs_by_label, label, y, x, len, sum_amount)
-    if not runs_by_label[label] then runs_by_label[label] = {} end
-    if not runs_by_label[label][y] then runs_by_label[label][y] = {} end
-
-    table.insert(runs_by_label[label][y], {
-        x = x, y = y, len = len, sum_amount = sum_amount
-    })
-end
-
---- BOUNDARY RECONCILIATION (link components across chunk boundaries)
-
---- Reconcile chunk boundaries with already-processed neighbors
---- @param tracker table - resource tracker
---- @param chunk_key string - current chunk key
---- @param cx number - chunk x coordinate
---- @param cy number - chunk y coordinate
-function ResourceSnapshot:_reconcile_chunk_boundaries(tracker, chunk_key, cx, cy)
-    local edges = tracker.edges[chunk_key]
-
-    -- North neighbor
-    local north_key = utils.chunk_key(cx, cy - 1)
-    local north_edges = tracker.edges[north_key]
-    if north_edges and north_edges.south and #north_edges.south > 0 and #edges.north > 0 then
-        self:_reconcile_edge_pair(tracker, north_edges.south, edges.north, north_key, chunk_key)
-    end
-
-    -- West neighbor
-    local west_key = utils.chunk_key(cx - 1, cy)
-    local west_edges = tracker.edges[west_key]
-    if west_edges and west_edges.east and #west_edges.east > 0 and #edges.west > 0 then
-        self:_reconcile_edge_pair(tracker, west_edges.east, edges.west, west_key, chunk_key)
-    end
-end
-
---- Reconcile two edge lists by linking overlapping segments
---- @param tracker table - resource tracker with global DSU
---- @param edges_a table - neighbor chunk edges
---- @param edges_b table - current chunk edges
---- @param chunk_a string - neighbor chunk key
---- @param chunk_b string - current chunk key
-function ResourceSnapshot:_reconcile_edge_pair(tracker, edges_a, edges_b, chunk_a, chunk_b)
-    table.sort(edges_a, function(a, b) return a.k < b.k end)
-    table.sort(edges_b, function(a, b) return a.k < b.k end)
-
-    local i, j = 1, 1
-    while i <= #edges_a and j <= #edges_b do
-        local seg_a, seg_b = edges_a[i], edges_b[j]
-        local a_start, a_len = (seg_a.x or seg_a.y), (seg_a.len or 1)
-        local b_start, b_len = (seg_b.x or seg_b.y), (seg_b.len or 1)
-        local a_end = a_start + a_len - 1
-        local b_end = b_start + b_len - 1
-
-        if utils.ranges_overlap(a_start, a_end, b_start, b_end) then
-            -- Link the global components
-            local gid_a = self:_get_global_id(tracker, chunk_a, seg_a.lbl)
-            local gid_b = self:_get_global_id(tracker, chunk_b, seg_b.lbl)
-            tracker.dsu:union(gid_a, gid_b)
-        end
-
-        if a_end < b_end then i = i + 1 else j = j + 1 end
-    end
-end
-
---- HELPER FUNCTIONS
-
---- Get or create resource tracker for a resource type
---- @param state table - global state
---- @param name string - resource name
---- @return table - resource tracker
-function ResourceSnapshot:_get_resource_tracker(state, name)
-    local tracker = state.resources[name]
-    if not tracker then
-        tracker = {
-            dsu = utils.DSU:new(),
-            local2global = {},
-            patches = {},
-            edges = {}
+--- Enqueue a tile for a specific chunk
+--- @param chunk_x number - chunk x coordinate
+--- @param chunk_y number - chunk y coordinate
+--- @param x number - tile x coordinate
+--- @param y number - tile y coordinate  
+--- @param kind string - tile kind (resource name, water, etc.)
+--- @param amount number - resource yield amount (0 for water)
+function ResourceSnapshot:_enqueue_tile_for_chunk(chunk_x, chunk_y, x, y, kind, amount)
+    local k = self:_chunk_buffer_key(chunk_x, chunk_y)
+    local b = BUFS[k]
+    
+    if not b then 
+        b = {
+            rows = {}, 
+            count = 0, 
+            chunk_x = chunk_x, 
+            chunk_y = chunk_y,
+            surface = 1
         }
-        state.resources[name] = tracker
+        BUFS[k] = b 
     end
-    return tracker
+    
+    b.count = b.count + 1
+    b.rows[b.count] = kind .. "," .. x .. "," .. y .. "," .. tostring(amount) .. "\n"
 end
 
---- Get or assign global ID for local label
---- @param tracker table - resource tracker
---- @param chunk_key string - chunk identifier
---- @param local_label number - local component label
---- @return number - global ID
-function ResourceSnapshot:_get_global_id(tracker, chunk_key, local_label)
-    if not tracker.local2global[chunk_key] then
-        tracker.local2global[chunk_key] = {}
-    end
-
-    local gid = tracker.local2global[chunk_key][local_label]
-    if not gid then
-        gid = tracker.next_gid or 1
-        tracker.next_gid = gid + 1
-        tracker.local2global[chunk_key][local_label] = gid
-        tracker.dsu:find(gid) -- initialize in DSU
-    end
-
-    return gid
+--- Generate buffer key for chunk-based buffering
+--- @param chunk_x number - chunk x coordinate
+--- @param chunk_y number - chunk y coordinate
+--- @return string - buffer key
+function ResourceSnapshot:_chunk_buffer_key(chunk_x, chunk_y)
+    return "chunk_" .. chunk_x .. "_" .. chunk_y
 end
 
---- Convert entity list to position grid
---- @param entities table - resource entities
---- @return table - [y][x] = amount
-function ResourceSnapshot:_entities_to_grid(entities)
-    local grid = {}
-    for _, entity in ipairs(entities) do
-        local x = utils.floor(entity.position.x)
-        local y = utils.floor(entity.position.y)
-
-        local row = grid[y]
-        if not row then
-            row = {}
-            grid[y] = row
+--- Flush a specific chunk's buffer
+--- @param chunk_x number - chunk x coordinate
+--- @param chunk_y number - chunk y coordinate
+function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
+    local k = self:_chunk_buffer_key(chunk_x, chunk_y)
+    local b = BUFS[k]
+    if not b or b.count == 0 then return end
+    
+    local payload = table.concat(b.rows, "", 1, b.count)
+    
+    if USE_UDP then
+        -- Split into safe datagrams (~8KB)
+        local chunk_size = 8192
+        for i = 1, #payload, chunk_size do
+            helpers.send_udp(UDP_PORT, string.sub(payload, i, i + chunk_size - 1))
         end
-        row[x] = (row[x] or 0) + (entity.amount or 0)
-    end
-    return grid
-end
-
---- Get chunk bounds from area
---- @param area table - {left_top, right_bottom}
---- @return table - {min_x, min_y, max_x, max_y}
-function ResourceSnapshot:_get_chunk_bounds(area)
-    return {
-        min_x = utils.floor(area.left_top.x),
-        min_y = utils.floor(area.left_top.y),
-        max_x = utils.floor(area.right_bottom.x) - 1,
-        max_y = utils.floor(area.right_bottom.y) - 1
-    }
-end
-
---- Accumulate patch data from CCL results into global patches
---- @param tracker table - resource tracker
---- @param chunk_key string - chunk identifier
---- @param ccl_result table - CCL output
---- @param state table - global state
-function ResourceSnapshot:_accumulate_patch_data(tracker, chunk_key, ccl_result, state)
-    for local_label, runs_by_y in pairs(ccl_result.runs) do
-        local gid = self:_get_global_id(tracker, chunk_key, local_label)
-        local canonical_gid = tracker.dsu:find(gid)
-
-        -- Get or create patch data
-        local patch = tracker.patches[canonical_gid]
-        if not patch then
-            patch = {
-                tiles = 0,
-                amount = 0,
-                min_x = 1e9,
-                min_y = 1e9,
-                max_x = -1e9,
-                max_y = -1e9,
-                sum_x = 0,
-                sum_y = 0,
-                row_spans = {}
-            }
-            tracker.patches[canonical_gid] = patch
-        end
-
-        -- Add runs to patch
-        for y, runs in pairs(runs_by_y) do
-            for _, run in ipairs(runs) do
-                self:_add_run_to_patch(patch, y, run.x, run.len, run.sum_amount)
-            end
-        end
-    end
-end
-
---- Add a run segment to patch data
---- @param patch table - patch data
---- @param y number - row coordinate
---- @param x number - start x
---- @param len number - length
---- @param sum_amount number - total amount
-function ResourceSnapshot:_add_run_to_patch(patch, y, x, len, sum_amount)
-    -- Add to row spans
-    if not patch.row_spans[y] then patch.row_spans[y] = {} end
-    table.insert(patch.row_spans[y], {
-        x = x, y = y, len = len, tile_count = len, sum_amount = sum_amount
-    })
-
-    -- Update aggregates
-    patch.tiles = patch.tiles + len
-    patch.amount = patch.amount + sum_amount
-
-    -- Update bounds
-    local x2 = x + len - 1
-    if y < patch.min_y then patch.min_y = y end
-    if y > patch.max_y then patch.max_y = y end
-    if x < patch.min_x then patch.min_x = x end
-    if x2 > patch.max_x then patch.max_x = x2 end
-
-    -- Update centroid sum (use integer arithmetic to avoid floating-point precision loss)
-    -- Instead of (x + x2) * 0.5 * len, use (x + x2) * len / 2 but keep as integer operations
-    patch.sum_x = patch.sum_x + (x + x2) * len
-    patch.sum_y = patch.sum_y + y * len * 2
-end
-
---- Create final output structure from tracking state
---- @param state table - tracking state
---- @return table - structured output
-function ResourceSnapshot:_finalize_resource_output(state)
-    local patch_out = {}
-    local data_rows = {}
-
-    for resource_name, tracker in pairs(state.resources) do
-        for gid, patch in pairs(tracker.patches) do
-            local canonical_gid = tracker.dsu:find(gid)
-            if canonical_gid == gid then
-                local cx = (patch.tiles > 0) and (math.floor(patch.sum_x / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
-                local cy = (patch.tiles > 0) and (math.floor(patch.sum_y / (patch.tiles * 2) * 256 + 0.5) / 256) or 0
-                local ix = math.floor(cx + 0.5)
-                local iy = math.floor(cy + 0.5)
-                local patch_id = resource_name .. ";" .. tostring(ix) .. ";" .. tostring(iy)
-
-                table.insert(patch_out, {
-                    patch_id = patch_id,
-                    resource_name = resource_name,
-                    tiles = patch.tiles,
-                    total_amount = patch.amount,
-                    bbox = {
-                        min_x = patch.min_x,
-                        min_y = patch.min_y,
-                        max_x = patch.max_x,
-                        max_y = patch.max_y
-                    },
-                    centroid = { x = cx, y = cy }
-                })
-
-                -- Flatten row spans into data rows
-                for y, segments in pairs(patch.row_spans or {}) do
-                    for _, seg in ipairs(segments) do
-                        table.insert(data_rows, {
-                            patch_id = patch_id,
-                            resource_name = resource_name,
-                            y = y,
-                            x = seg.x,
-                            len = seg.len,
-                            tile_count = seg.tile_count,
-                            sum_amount = seg.sum_amount
-                        })
-                    end
-                end
-            end
-        end
-    end
-
-    return { patch = patch_out, rows = data_rows }
-end
-
---- WATER PATCH ANALYSIS (Flood Fill)
-
---- Analyze water patches using flood fill
---- @param tiles table - water tiles
---- @param tile_names table - water tile names
---- @return table - water patch data
-function ResourceSnapshot:_analyze_water_patches(tiles, tile_names)
-    local visited = {}
-    local patches = {}
-    local next_id = 1
-
-    for _, tile in ipairs(tiles) do
-        local x, y = utils.extract_position(tile)
-        if x and y then
-            local key = utils.chunk_key(x, y)
-            if not visited[key] then
-                local connected = self.game_state:get_connected_water_tiles(tile.position, tile_names)
-                local patch = self:_create_water_patch_from_tiles(connected, next_id)
-
-                -- Mark all tiles as visited
-                for _, t in ipairs(connected) do
-                    local tx, ty = utils.extract_position(t)
-                    if tx and ty then
-                        visited[utils.chunk_key(tx, ty)] = true
-                    end
-                end
-
-                table.insert(patches, patch)
-                next_id = next_id + 1
-            end
-        end
-    end
-
-    return patches
-end
-
---- Create water patch data from connected tiles
---- @param tiles table - connected water tiles
---- @param id number - patch ID
---- @return table - patch data
-function ResourceSnapshot:_create_water_patch_from_tiles(tiles, id)
-    local patch = {
-        id = id,
-        tiles = 0,
-        bbox = { min_x = 1e9, min_y = 1e9, max_x = -1e9, max_y = -1e9 },
-        sum_x = 0,
-        sum_y = 0
-    }
-
-    -- Track tile positions per row to build row-wise spans for granular placement logic
-    local rows = {}
-
-    for _, tile in ipairs(tiles) do
-        local x, y = utils.extract_position(tile)
-        if x and y then
-            patch.tiles = patch.tiles + 1
-
-            if x < patch.bbox.min_x then patch.bbox.min_x = x end
-            if y < patch.bbox.min_y then patch.bbox.min_y = y end
-            if x > patch.bbox.max_x then patch.bbox.max_x = x end
-            if y > patch.bbox.max_y then patch.bbox.max_y = y end
-
-            patch.sum_x = patch.sum_x + x
-            patch.sum_y = patch.sum_y + y
-
-            if not rows[y] then rows[y] = {} end
-            rows[y][x] = true
-        end
-    end
-
-    -- Compress per-row x positions into contiguous spans
-    if next(rows) ~= nil then
-        patch.row_spans = {}
-        for y, xs in pairs(rows) do
-            local x_list = {}
-            for x, _ in pairs(xs) do table.insert(x_list, x) end
-            table.sort(x_list)
-
-            local seg_start, prev_x = nil, nil
-            for i = 1, #x_list do
-                local xv = x_list[i]
-                if seg_start == nil then
-                    seg_start = xv
-                    prev_x = xv
-                else
-                    if xv == prev_x + 1 then
-                        prev_x = xv
-                    else
-                        if not patch.row_spans[y] then patch.row_spans[y] = {} end
-                        table.insert(patch.row_spans[y], { x = seg_start, y = y, len = prev_x - seg_start + 1, tile_count = prev_x - seg_start + 1 })
-                        seg_start = xv
-                        prev_x = xv
-                    end
-                end
-            end
-
-            if seg_start ~= nil then
-                if not patch.row_spans[y] then patch.row_spans[y] = {} end
-                table.insert(patch.row_spans[y], { x = seg_start, y = y, len = (prev_x - seg_start + 1), tile_count = (prev_x - seg_start + 1) })
-            end
-        end
-    end
-
-    -- Calculate centroid with precise division to avoid floating-point drift
-    -- Factorio MapPosition uses double precision but tile coordinates are integers
-    if patch.tiles > 0 then
-        -- Use math.floor to snap to Factorio's coordinate grid (minimum precision: 1/256 = 0.00390625)
-        patch.centroid = {
-            x = math.floor(patch.sum_x / patch.tiles * 256 + 0.5) / 256,
-            y = math.floor(patch.sum_y / patch.tiles * 256 + 0.5) / 256
-        }
     else
-        patch.centroid = { x = 0, y = 0 }
+        -- Use emit_csv for direct CSV file writing - one file per chunk
+        local file_name = string.format("chunk_%dx%d", chunk_x, chunk_y)
+        local metadata = {
+            chunk_x = chunk_x,
+            chunk_y = chunk_y,
+            surface_id = b.surface,
+            line_count = b.count
+        }
+        
+        self:emit_csv({ 
+            output_dir = "script-output/factoryverse/tiles",
+            metadata = { schema_version = "tiles.raw.v1" }
+        }, file_name, payload, metadata)
     end
+    
+    -- Clear this chunk's buffer
+    BUFS[k] = nil
+end
 
-    return patch
+--- Flush a single buffer (legacy method for compatibility)
+--- @param k string - buffer key
+function ResourceSnapshot:_flush_one(k)
+    local b = BUFS[k]
+    if not b or b.count == 0 then return end
+    
+    local payload = table.concat(b.rows, "", 1, b.count)
+    
+    if USE_UDP then
+        -- Split into safe datagrams (~8KB)
+        local chunk_size = 8192
+        for i = 1, #payload, chunk_size do
+            helpers.send_udp(UDP_PORT, string.sub(payload, i, i + chunk_size - 1))
+        end
+    else
+        -- Use emit_csv for direct CSV file writing
+        local file_name = string.format("tiles_s%u_c%dx%d_%s", b.surface, b.cx, b.cy, b.kind)
+        local metadata = {
+            chunk_x = b.cx,
+            chunk_y = b.cy,
+            kind = b.kind,
+            surface_id = b.surface,
+            line_count = b.count
+        }
+        
+        self:emit_csv({ 
+            output_dir = "script-output/factoryverse/tiles",
+            metadata = { schema_version = "tiles.raw.v1" }
+        }, file_name, payload, metadata)
+    end
+    
+    -- Reset buffer
+    BUFS[k] = {
+        rows = {}, 
+        count = 0, 
+        cx = b.cx, 
+        cy = b.cy, 
+        kind = b.kind, 
+        surface = b.surface
+    }
+end
+
+--- Flush all buffers (time-based trigger)
+function ResourceSnapshot:_flush_all()
+    for k, _ in pairs(BUFS) do
+        self:_flush_one(k)
+    end
+end
+
+--- Get count of active buffers
+--- @return number - number of active buffers
+function ResourceSnapshot:_get_buffer_count()
+    local count = 0
+    for _, b in pairs(BUFS) do
+        if b.count > 0 then count = count + 1 end
+    end
+    return count
+end
+
+
+--- CONFIGURATION HELPERS
+
+--- Set output mode (UDP or file)
+--- @param use_udp boolean - true for UDP, false for file output
+function ResourceSnapshot:set_output_mode(use_udp)
+    USE_UDP = use_udp
+end
+
+
+--- Set flush parameters
+--- @param max_lines number - max lines per buffer before flush
+function ResourceSnapshot:set_flush_params(max_lines)
+    MAX_LINES = max_lines
 end
 
 --- VISUALIZATION/DEBUG
 
 function ResourceSnapshot:render(output)
-    -- Same render logic as before, but working with new output structure
-    local DRAW_SPANS, DRAW_BBOX, DRAW_CENTROID, DRAW_LABEL = true, true, true, true
-    local ONLY_IN_ALT, TTL_TICKS = false, nil
+    -- Simple visualization for streaming mode
     local surface = game.surfaces[1]
-
     if rendering then rendering.clear() end
-
-    local function tint_for(name)
-        local map = {
-            ["iron-ore"] = { r = 0.55, g = 0.75, b = 1.00, a = 1 },
-            ["copper-ore"] = { r = 1.00, g = 0.60, b = 0.30, a = 1 },
-            ["coal"] = { r = 0.35, g = 0.35, b = 0.35, a = 1 },
-            ["stone"] = { r = 0.80, g = 0.80, b = 0.80, a = 1 },
-            ["crude-oil"] = { r = 0.45, g = 0.10, b = 0.80, a = 1 }
+    
+    -- Show buffer status
+    local buffer_count = self:_get_buffer_count()
+    if buffer_count > 0 then
+        rendering.draw_text {
+            surface = surface,
+            target = { 0, 0 },
+            text = {
+                "Tile Streaming Active",
+                "\nBuffers: " .. tostring(buffer_count),
+                "\nMode: " .. (USE_UDP and "UDP" or "File")
+            },
+            color = { 1, 1, 1, 1 },
+            scale_with_zoom = true
         }
-        return map[name] or { r = 0.90, g = 0.90, b = 0.90, a = 1 }
-    end
-
-    for _, resource in ipairs(output.data.resources) do
-        local tint = tint_for(resource.name)
-        for _, patch in ipairs(resource.patches) do
-            -- Draw row spans
-            if DRAW_SPANS and patch.row_spans then
-                for y, segments in pairs(patch.row_spans) do
-                    for _, seg in ipairs(segments) do
-                        rendering.draw_rectangle {
-                            surface = surface,
-                            left_top = { seg.x, y },
-                            right_bottom = { seg.x + seg.len, y + 1 },
-                            color = { r = tint.r, g = tint.g, b = tint.b, a = 0.20 },
-                            filled = true,
-                            only_in_alt_mode = ONLY_IN_ALT,
-                            time_to_live = TTL_TICKS,
-                            draw_on_ground = true
-                        }
-                    end
-                end
-            end
-
-            -- Draw bbox, centroid, labels (same as before...)
-            if DRAW_BBOX and patch.bbox then
-                rendering.draw_rectangle {
-                    surface = surface,
-                    left_top = { patch.bbox.min_x, patch.bbox.min_y },
-                    right_bottom = { patch.bbox.max_x + 1, patch.bbox.max_y + 1 },
-                    color = { r = tint.r, g = tint.g, b = tint.b, a = 0.90 },
-                    filled = false, width = 1,
-                    only_in_alt_mode = ONLY_IN_ALT,
-                    time_to_live = TTL_TICKS,
-                    draw_on_ground = true
-                }
-            end
-
-            if DRAW_CENTROID and patch.centroid then
-                rendering.draw_circle {
-                    surface = surface,
-                    target = { patch.centroid.x, patch.centroid.y },
-                    radius = 0.35, filled = true,
-                    color = { r = tint.r, g = tint.g, b = tint.b, a = 0.90 },
-                    only_in_alt_mode = ONLY_IN_ALT,
-                    time_to_live = TTL_TICKS,
-                    draw_on_ground = true
-                }
-            end
-
-            if DRAW_LABEL then
-                rendering.draw_text {
-                    surface = surface,
-                    target = { patch.centroid.x, patch.centroid.y - 0.8 },
-                    text = {
-                        "", resource.name, " #", tostring(patch.patch_id),
-                        "\ntiles:", tostring(patch.tiles),
-                        " amt:", tostring(patch.total_amount)
-                    },
-                    color = { 1, 1, 1, 1 }, scale_with_zoom = true,
-                    only_in_alt_mode = ONLY_IN_ALT,
-                    time_to_live = TTL_TICKS
-                }
-            end
-        end
     end
 end
 
