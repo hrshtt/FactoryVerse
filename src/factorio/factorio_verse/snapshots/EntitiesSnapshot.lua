@@ -9,6 +9,8 @@ EntitiesSnapshot.__index = EntitiesSnapshot
 
 ---@return EntitiesSnapshot
 function EntitiesSnapshot:new()
+    ---@class EntitiesSnapshot : Snapshot
+    ---@field _cache table
     local instance = Snapshot:new()
     -- Per-run caches to avoid repeated prototype/method work
     instance._cache = {
@@ -137,11 +139,21 @@ function EntitiesSnapshot:take()
 
                         -- Inventory component
                         if row.inventories ~= nil then
-                            inventory_rows[#inventory_rows + 1] = {
-                                unit_number = row.unit_number,
-                                inventories = row.inventories,
-                                chunk = chunk,
-                            }
+                            -- Filter out empty mining_drill_modules
+                            local filtered_inventories = {}
+                            for inv_name, inv_data in pairs(row.inventories) do
+                                if inv_name ~= "mining_drill_modules" or (inv_data and next(inv_data) ~= nil) then
+                                    filtered_inventories[inv_name] = inv_data
+                                end
+                            end
+                            -- Only add if there are non-empty inventories
+                            if next(filtered_inventories) ~= nil then
+                                inventory_rows[#inventory_rows + 1] = {
+                                    unit_number = row.unit_number,
+                                    inventories = filtered_inventories,
+                                    chunk = chunk,
+                                }
+                            end
                         end
 
                         -- Fluids component
@@ -178,15 +190,65 @@ function EntitiesSnapshot:take()
         inserter_rows = inserter_rows,
     })
 
-    -- Emit JSON for SQL ingestion
-    self:emit_json({ output_dir = "script-output/factoryverse" }, "entities", {
-        meta = {
+    -- Emit CSV files for each component type
+    local opts = { 
+        output_dir = "script-output/factoryverse",
+        metadata = {
             schema_version = "snapshot.entities.v3",
             surface = output.surface,
             tick = output.timestamp,
-        },
-        data = output.data,
-    })
+        }
+    }
+
+    -- Flatten and emit each component as separate CSV files
+    local entity_headers = self:_get_entity_headers()
+    local flattened_entities = {}
+    for _, entity in ipairs(entity_rows) do
+        table.insert(flattened_entities, self:_flatten_entity_data(entity))
+    end
+    self:emit_csv(opts, "entities", self:_array_to_csv(flattened_entities, entity_headers), { headers = entity_headers })
+
+    local electric_headers = self:_get_electric_headers()
+    local flattened_electric = {}
+    for _, electric in ipairs(electric_rows) do
+        table.insert(flattened_electric, self:_flatten_entity_data(electric))
+    end
+    self:emit_csv(opts, "entities_electric", self:_array_to_csv(flattened_electric, electric_headers), { headers = electric_headers })
+
+    local crafting_headers = self:_get_crafting_headers()
+    local flattened_crafting = {}
+    for _, crafting in ipairs(crafting_rows) do
+        table.insert(flattened_crafting, self:_flatten_entity_data(crafting))
+    end
+    self:emit_csv(opts, "entities_crafting", self:_array_to_csv(flattened_crafting, crafting_headers), { headers = crafting_headers })
+
+    local burner_headers = self:_get_burner_headers()
+    local flattened_burner = {}
+    for _, burner in ipairs(burner_rows) do
+        table.insert(flattened_burner, self:_flatten_entity_data(burner))
+    end
+    self:emit_csv(opts, "entities_burner", self:_array_to_csv(flattened_burner, burner_headers), { headers = burner_headers })
+
+    local inventory_headers = self:_get_inventory_headers()
+    local flattened_inventory = {}
+    for _, inventory in ipairs(inventory_rows) do
+        table.insert(flattened_inventory, self:_flatten_entity_data(inventory))
+    end
+    self:emit_csv(opts, "entities_inventory", self:_array_to_csv(flattened_inventory, inventory_headers), { headers = inventory_headers })
+
+    local fluids_headers = self:_get_fluids_headers()
+    local flattened_fluids = {}
+    for _, fluids in ipairs(fluids_rows) do
+        table.insert(flattened_fluids, self:_flatten_entity_data(fluids))
+    end
+    self:emit_csv(opts, "entities_fluids", self:_array_to_csv(flattened_fluids, fluids_headers), { headers = fluids_headers })
+
+    local inserter_headers = self:_get_inserter_headers()
+    local flattened_inserter = {}
+    for _, inserter in ipairs(inserter_rows) do
+        table.insert(flattened_inserter, self:_flatten_entity_data(inserter))
+    end
+    self:emit_csv(opts, "entities_inserter", self:_array_to_csv(flattened_inserter, inserter_headers), { headers = inserter_headers })
 
     self:print_summary(output, function(out)
         local d = out and out.data or {}
@@ -290,7 +352,7 @@ function EntitiesSnapshot:take_belts()
                         type = e.type,
                         position = e.position,
                         direction = e.direction,
-                        direction_name = utils.direction_to_name(e.direction),
+                        direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
                         item_lines = item_lines,
                         belt_neighbours = ( (#inputs_ids>0 or #outputs_ids>0) and { inputs = inputs_ids, outputs = outputs_ids } ) or nil,
                         belt_to_ground_type = belt_to_ground_type,
@@ -304,14 +366,22 @@ function EntitiesSnapshot:take_belts()
 
     local output = self:create_output("snapshot.belts", "v3", { belt_rows = belt_rows })
 
-    self:emit_json({ output_dir = "script-output/factoryverse" }, "belts", {
-        meta = {
+    -- Emit CSV for belts
+    local opts = { 
+        output_dir = "script-output/factoryverse",
+        metadata = {
             schema_version = "snapshot.belts.v3",
             surface = output.surface,
             tick = output.timestamp,
-        },
-        data = output.data,
-    })
+        }
+    }
+
+    local belt_headers = self:_get_belt_headers()
+    local flattened_belts = {}
+    for _, belt in ipairs(belt_rows) do
+        table.insert(flattened_belts, self:_flatten_entity_data(belt))
+    end
+    self:emit_csv(opts, "belts", self:_array_to_csv(flattened_belts, belt_headers), { headers = belt_headers })
 
     self:print_summary(output, function(out)
         local total = 0
@@ -323,6 +393,162 @@ function EntitiesSnapshot:take_belts()
 end
 
 -- Internal helpers -----------------------------------------------------------
+
+--- Convert table to CSV row, handling nested structures
+--- @param data table - data to convert
+--- @param headers table - column headers
+--- @return string - CSV row
+function EntitiesSnapshot:_table_to_csv_row(data, headers)
+    local values = {}
+    for _, header in ipairs(headers) do
+        local value = data[header]
+        if value == nil then
+            table.insert(values, "")
+        elseif type(value) == "table" then
+            -- Convert table to JSON string for complex nested data
+            local json_str = helpers.table_to_json(value)
+            table.insert(values, "'" .. json_str .. "'")
+        elseif type(value) == "string" then
+            -- Regular string, escape quotes and wrap in quotes
+            table.insert(values, '"' .. value:gsub('"', '""') .. '"')
+        else
+            table.insert(values, tostring(value))
+        end
+    end
+    return table.concat(values, ",")
+end
+
+--- Convert array of tables to CSV
+--- @param data table - array of data rows
+--- @param headers table - column headers
+--- @return string - CSV content
+function EntitiesSnapshot:_array_to_csv(data, headers)
+    if #data == 0 then
+        return table.concat(headers, ",") .. "\n"
+    end
+    
+    local csv_lines = {table.concat(headers, ",")}
+    for _, row in ipairs(data) do
+        table.insert(csv_lines, self:_table_to_csv_row(row, headers))
+    end
+    return table.concat(csv_lines, "\n") .. "\n"
+end
+
+--- Get headers for entity base data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_entity_headers()
+    return {
+        "unit_number", "name", "type", "force", "position_x", "position_y", 
+        "direction", "direction_name", "orientation", "orientation_name",
+        "chunk_x", "chunk_y", "health", "status", "status_name",
+        "bounding_box_min_x", "bounding_box_min_y", "bounding_box_max_x", "bounding_box_max_y",
+        "selection_box_min_x", "selection_box_min_y", "selection_box_max_x", "selection_box_max_y",
+        "train_id", "train_state"
+    }
+end
+
+--- Get headers for electric component data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_electric_headers()
+    return {"unit_number", "electric_network_id", "electric_buffer_size", "energy", "chunk_x", "chunk_y"}
+end
+
+--- Get headers for crafting component data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_crafting_headers()
+    return {"unit_number", "recipe", "crafting_progress", "chunk_x", "chunk_y"}
+end
+
+--- Get headers for burner component data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_burner_headers()
+    return {
+        "unit_number", "remaining_burning_fuel", "currently_burning", "inventories", 
+        "chunk_x", "chunk_y"
+    }
+end
+
+--- Get headers for inventory component data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_inventory_headers()
+    return {"unit_number", "inventories", "chunk_x", "chunk_y"}
+end
+
+--- Get headers for fluids component data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_fluids_headers()
+    return {"unit_number", "fluids", "chunk_x", "chunk_y"}
+end
+
+--- Get headers for inserter component data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_inserter_headers()
+    return {
+        "unit_number", "pickup_position_x", "pickup_position_y", "drop_position_x", "drop_position_y",
+        "pickup_target_unit", "drop_target_unit", "chunk_x", "chunk_y"
+    }
+end
+
+--- Get headers for belt data
+--- @return table - array of header names
+function EntitiesSnapshot:_get_belt_headers()
+    return {
+        "unit_number", "name", "type", "position_x", "position_y",
+        "direction", "direction_name", "item_lines", "belt_neighbours",
+        "belt_to_ground_type", "underground_neighbour_unit", "chunk_x", "chunk_y"
+    }
+end
+
+--- Flatten entity data for CSV output
+--- @param entity_data table - entity data row
+--- @return table - flattened entity data
+function EntitiesSnapshot:_flatten_entity_data(entity_data)
+    local flattened = {}
+    for k, v in pairs(entity_data) do
+        if k == "position" and type(v) == "table" then
+            flattened.position_x = v.x
+            flattened.position_y = v.y
+        elseif k == "chunk" and type(v) == "table" then
+            flattened.chunk_x = v.x
+            flattened.chunk_y = v.y
+        elseif k == "bounding_box" and type(v) == "table" then
+            flattened.bounding_box_min_x = v.min_x
+            flattened.bounding_box_min_y = v.min_y
+            flattened.bounding_box_max_x = v.max_x
+            flattened.bounding_box_max_y = v.max_y
+        elseif k == "selection_box" and type(v) == "table" then
+            flattened.selection_box_min_x = v.min_x
+            flattened.selection_box_min_y = v.min_y
+            flattened.selection_box_max_x = v.max_x
+            flattened.selection_box_max_y = v.max_y
+        elseif k == "train" and type(v) == "table" then
+            flattened.train_id = v.id
+            flattened.train_state = v.state
+        elseif k == "burner" and type(v) == "table" then
+            -- Flatten simple burner fields, keep inventories as JSON
+            flattened.remaining_burning_fuel = v.remaining_burning_fuel
+            flattened.currently_burning = v.currently_burning
+            if v.inventories then
+                flattened.inventories = v.inventories  -- Keep as table, will be converted to JSON in CSV
+            end
+        elseif k == "inserter" and type(v) == "table" then
+            -- Flatten inserter position fields
+            if v.pickup_position and type(v.pickup_position) == "table" then
+                flattened.pickup_position_x = v.pickup_position.x
+                flattened.pickup_position_y = v.pickup_position.y
+            end
+            if v.drop_position and type(v.drop_position) == "table" then
+                flattened.drop_position_x = v.drop_position.x
+                flattened.drop_position_y = v.drop_position.y
+            end
+            flattened.pickup_target_unit = v.pickup_target_unit
+            flattened.drop_target_unit = v.drop_target_unit
+        else
+            flattened[k] = v
+        end
+    end
+    return flattened
+end
 
 function EntitiesSnapshot:_serialize_entity(e)
     if not (e and e.valid) then return nil end
@@ -339,7 +565,7 @@ function EntitiesSnapshot:_serialize_entity(e)
         force = (e.force and e.force.name) or nil,
         position = e.position,
         direction = e.direction,
-        direction_name = utils.direction_to_name(e.direction),
+        direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
         orientation = e.orientation,
         orientation_name = utils.orientation_to_name(e.orientation),
     }
