@@ -190,65 +190,200 @@ function EntitiesSnapshot:take()
         inserter_rows = inserter_rows,
     })
 
-    -- Emit CSV files for each component type
-    local opts = { 
+    -- Group entities by chunk for chunk-wise CSV emission
+    local entities_by_chunk = {}
+    local electric_by_chunk = {}
+    local crafting_by_chunk = {}
+    local burner_by_chunk = {}
+    local inventory_by_chunk = {}
+    local fluids_by_chunk = {}
+    local inserter_by_chunk = {}
+
+    -- Group all entity data by chunk
+    for _, entity in ipairs(entity_rows) do
+        local chunk_key = string.format("%d_%d", entity.chunk.x, entity.chunk.y)
+        if not entities_by_chunk[chunk_key] then
+            entities_by_chunk[chunk_key] = { chunk_x = entity.chunk.x, chunk_y = entity.chunk.y, entities = {} }
+        end
+        table.insert(entities_by_chunk[chunk_key].entities, entity)
+    end
+
+    for _, electric in ipairs(electric_rows) do
+        local chunk_key = string.format("%d_%d", electric.chunk.x, electric.chunk.y)
+        if not electric_by_chunk[chunk_key] then
+            electric_by_chunk[chunk_key] = { chunk_x = electric.chunk.x, chunk_y = electric.chunk.y, entities = {} }
+        end
+        table.insert(electric_by_chunk[chunk_key].entities, electric)
+    end
+
+    for _, crafting in ipairs(crafting_rows) do
+        local chunk_key = string.format("%d_%d", crafting.chunk.x, crafting.chunk.y)
+        if not crafting_by_chunk[chunk_key] then
+            crafting_by_chunk[chunk_key] = { chunk_x = crafting.chunk.x, chunk_y = crafting.chunk.y, entities = {} }
+        end
+        table.insert(crafting_by_chunk[chunk_key].entities, crafting)
+    end
+
+    for _, burner in ipairs(burner_rows) do
+        local chunk_key = string.format("%d_%d", burner.chunk.x, burner.chunk.y)
+        if not burner_by_chunk[chunk_key] then
+            burner_by_chunk[chunk_key] = { chunk_x = burner.chunk.x, chunk_y = burner.chunk.y, entities = {} }
+        end
+        table.insert(burner_by_chunk[chunk_key].entities, burner)
+    end
+
+    for _, inventory in ipairs(inventory_rows) do
+        local chunk_key = string.format("%d_%d", inventory.chunk.x, inventory.chunk.y)
+        if not inventory_by_chunk[chunk_key] then
+            inventory_by_chunk[chunk_key] = { chunk_x = inventory.chunk.x, chunk_y = inventory.chunk.y, entities = {} }
+        end
+        table.insert(inventory_by_chunk[chunk_key].entities, inventory)
+    end
+
+    for _, fluids in ipairs(fluids_rows) do
+        local chunk_key = string.format("%d_%d", fluids.chunk.x, fluids.chunk.y)
+        if not fluids_by_chunk[chunk_key] then
+            fluids_by_chunk[chunk_key] = { chunk_x = fluids.chunk.x, chunk_y = fluids.chunk.y, entities = {} }
+        end
+        table.insert(fluids_by_chunk[chunk_key].entities, fluids)
+    end
+
+    for _, inserter in ipairs(inserter_rows) do
+        local chunk_key = string.format("%d_%d", inserter.chunk.x, inserter.chunk.y)
+        if not inserter_by_chunk[chunk_key] then
+            inserter_by_chunk[chunk_key] = { chunk_x = inserter.chunk.x, chunk_y = inserter.chunk.y, entities = {} }
+        end
+        table.insert(inserter_by_chunk[chunk_key].entities, inserter)
+    end
+
+    -- Emit CSV files for each chunk and component type
+    local base_opts = { 
         output_dir = "script-output/factoryverse",
+        tick = output.timestamp,
         metadata = {
             schema_version = "snapshot.entities.v3",
             surface = output.surface,
-            tick = output.timestamp,
         }
     }
 
-    -- Flatten and emit each component as separate CSV files
+    -- Emit entities by chunk
     local entity_headers = self:_get_entity_headers()
-    local flattened_entities = {}
-    for _, entity in ipairs(entity_rows) do
-        table.insert(flattened_entities, self:_flatten_entity_data(entity))
+    for chunk_key, chunk_data in pairs(entities_by_chunk) do
+        local flattened_entities = {}
+        for _, entity in ipairs(chunk_data.entities) do
+            table.insert(flattened_entities, self:_flatten_entity_data(entity))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities", self:_array_to_csv(flattened_entities, entity_headers), { headers = entity_headers })
     end
-    self:emit_csv(opts, "entities", self:_array_to_csv(flattened_entities, entity_headers), { headers = entity_headers })
 
+    -- Emit electric by chunk
     local electric_headers = self:_get_electric_headers()
-    local flattened_electric = {}
-    for _, electric in ipairs(electric_rows) do
-        table.insert(flattened_electric, self:_flatten_entity_data(electric))
+    for chunk_key, chunk_data in pairs(electric_by_chunk) do
+        local flattened_electric = {}
+        for _, electric in ipairs(chunk_data.entities) do
+            table.insert(flattened_electric, self:_flatten_entity_data(electric))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities_electric", self:_array_to_csv(flattened_electric, electric_headers), { headers = electric_headers })
     end
-    self:emit_csv(opts, "entities_electric", self:_array_to_csv(flattened_electric, electric_headers), { headers = electric_headers })
 
+    -- Emit crafting by chunk
     local crafting_headers = self:_get_crafting_headers()
-    local flattened_crafting = {}
-    for _, crafting in ipairs(crafting_rows) do
-        table.insert(flattened_crafting, self:_flatten_entity_data(crafting))
+    for chunk_key, chunk_data in pairs(crafting_by_chunk) do
+        local flattened_crafting = {}
+        for _, crafting in ipairs(chunk_data.entities) do
+            table.insert(flattened_crafting, self:_flatten_entity_data(crafting))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities_crafting", self:_array_to_csv(flattened_crafting, crafting_headers), { headers = crafting_headers })
     end
-    self:emit_csv(opts, "entities_crafting", self:_array_to_csv(flattened_crafting, crafting_headers), { headers = crafting_headers })
 
+    -- Emit burner by chunk
     local burner_headers = self:_get_burner_headers()
-    local flattened_burner = {}
-    for _, burner in ipairs(burner_rows) do
-        table.insert(flattened_burner, self:_flatten_entity_data(burner))
+    for chunk_key, chunk_data in pairs(burner_by_chunk) do
+        local flattened_burner = {}
+        for _, burner in ipairs(chunk_data.entities) do
+            table.insert(flattened_burner, self:_flatten_entity_data(burner))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities_burner", self:_array_to_csv(flattened_burner, burner_headers), { headers = burner_headers })
     end
-    self:emit_csv(opts, "entities_burner", self:_array_to_csv(flattened_burner, burner_headers), { headers = burner_headers })
 
+    -- Emit inventory by chunk
     local inventory_headers = self:_get_inventory_headers()
-    local flattened_inventory = {}
-    for _, inventory in ipairs(inventory_rows) do
-        table.insert(flattened_inventory, self:_flatten_entity_data(inventory))
+    for chunk_key, chunk_data in pairs(inventory_by_chunk) do
+        local flattened_inventory = {}
+        for _, inventory in ipairs(chunk_data.entities) do
+            table.insert(flattened_inventory, self:_flatten_entity_data(inventory))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities_inventory", self:_array_to_csv(flattened_inventory, inventory_headers), { headers = inventory_headers })
     end
-    self:emit_csv(opts, "entities_inventory", self:_array_to_csv(flattened_inventory, inventory_headers), { headers = inventory_headers })
 
+    -- Emit fluids by chunk
     local fluids_headers = self:_get_fluids_headers()
-    local flattened_fluids = {}
-    for _, fluids in ipairs(fluids_rows) do
-        table.insert(flattened_fluids, self:_flatten_entity_data(fluids))
+    for chunk_key, chunk_data in pairs(fluids_by_chunk) do
+        local flattened_fluids = {}
+        for _, fluids in ipairs(chunk_data.entities) do
+            table.insert(flattened_fluids, self:_flatten_entity_data(fluids))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities_fluids", self:_array_to_csv(flattened_fluids, fluids_headers), { headers = fluids_headers })
     end
-    self:emit_csv(opts, "entities_fluids", self:_array_to_csv(flattened_fluids, fluids_headers), { headers = fluids_headers })
 
+    -- Emit inserter by chunk
     local inserter_headers = self:_get_inserter_headers()
-    local flattened_inserter = {}
-    for _, inserter in ipairs(inserter_rows) do
-        table.insert(flattened_inserter, self:_flatten_entity_data(inserter))
+    for chunk_key, chunk_data in pairs(inserter_by_chunk) do
+        local flattened_inserter = {}
+        for _, inserter in ipairs(chunk_data.entities) do
+            table.insert(flattened_inserter, self:_flatten_entity_data(inserter))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities_inserter", self:_array_to_csv(flattened_inserter, inserter_headers), { headers = inserter_headers })
     end
-    self:emit_csv(opts, "entities_inserter", self:_array_to_csv(flattened_inserter, inserter_headers), { headers = inserter_headers })
 
     self:print_summary(output, function(out)
         local d = out and out.data or {}
@@ -366,22 +501,41 @@ function EntitiesSnapshot:take_belts()
 
     local output = self:create_output("snapshot.belts", "v3", { belt_rows = belt_rows })
 
-    -- Emit CSV for belts
-    local opts = { 
+    -- Group belts by chunk for chunk-wise CSV emission
+    local belts_by_chunk = {}
+    for _, belt in ipairs(belt_rows) do
+        local chunk_key = string.format("%d_%d", belt.chunk.x, belt.chunk.y)
+        if not belts_by_chunk[chunk_key] then
+            belts_by_chunk[chunk_key] = { chunk_x = belt.chunk.x, chunk_y = belt.chunk.y, belts = {} }
+        end
+        table.insert(belts_by_chunk[chunk_key].belts, belt)
+    end
+
+    -- Emit CSV for belts by chunk
+    local base_opts = { 
         output_dir = "script-output/factoryverse",
+        tick = output.timestamp,
         metadata = {
             schema_version = "snapshot.belts.v3",
             surface = output.surface,
-            tick = output.timestamp,
         }
     }
 
     local belt_headers = self:_get_belt_headers()
-    local flattened_belts = {}
-    for _, belt in ipairs(belt_rows) do
-        table.insert(flattened_belts, self:_flatten_entity_data(belt))
+    for chunk_key, chunk_data in pairs(belts_by_chunk) do
+        local flattened_belts = {}
+        for _, belt in ipairs(chunk_data.belts) do
+            table.insert(flattened_belts, self:_flatten_entity_data(belt))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "belts", self:_array_to_csv(flattened_belts, belt_headers), { headers = belt_headers })
     end
-    self:emit_csv(opts, "belts", self:_array_to_csv(flattened_belts, belt_headers), { headers = belt_headers })
 
     self:print_summary(output, function(out)
         local total = 0
@@ -407,7 +561,7 @@ function EntitiesSnapshot:_table_to_csv_row(data, headers)
         elseif type(value) == "table" then
             -- Convert table to JSON string for complex nested data
             local json_str = helpers.table_to_json(value)
-            table.insert(values, "'" .. json_str .. "'")
+            table.insert(values, '"' .. json_str:gsub('"', '""') .. '"')
         elseif type(value) == "string" then
             -- Regular string, escape quotes and wrap in quotes
             table.insert(values, '"' .. value:gsub('"', '""') .. '"')

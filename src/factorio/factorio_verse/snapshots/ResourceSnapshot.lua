@@ -199,7 +199,6 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
         end
     else
         -- Use emit_csv for direct CSV file writing - one file per chunk
-        local file_name = string.format("chunk_%dx%d", chunk_x, chunk_y)
         local metadata = {
             chunk_x = chunk_x,
             chunk_y = chunk_y,
@@ -208,9 +207,12 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
         }
         
         self:emit_csv({ 
-            output_dir = "script-output/factoryverse/tiles",
+            output_dir = "script-output/factoryverse",
+            chunk_x = chunk_x,
+            chunk_y = chunk_y,
+            tick = game and game.tick or 0,
             metadata = { schema_version = "tiles.raw.v1" }
-        }, file_name, payload, metadata)
+        }, "tiles", payload, metadata)
     end
     
     -- Clear this chunk's buffer
@@ -233,7 +235,6 @@ function ResourceSnapshot:_flush_one(k)
         end
     else
         -- Use emit_csv for direct CSV file writing
-        local file_name = string.format("tiles_s%u_c%dx%d_%s", b.surface, b.cx, b.cy, b.kind)
         local metadata = {
             chunk_x = b.cx,
             chunk_y = b.cy,
@@ -243,9 +244,12 @@ function ResourceSnapshot:_flush_one(k)
         }
         
         self:emit_csv({ 
-            output_dir = "script-output/factoryverse/tiles",
+            output_dir = "script-output/factoryverse",
+            chunk_x = b.cx,
+            chunk_y = b.cy,
+            tick = game and game.tick or 0,
             metadata = { schema_version = "tiles.raw.v1" }
-        }, file_name, payload, metadata)
+        }, "tiles", payload, metadata)
     end
     
     -- Reset buffer
