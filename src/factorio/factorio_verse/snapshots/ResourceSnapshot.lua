@@ -94,6 +94,9 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
             end
         end
         
+        -- Process rocks in this chunk
+        self:_stream_rocks_from_chunk(chunk)
+        
         -- Flush this chunk's buffer immediately
         self:_flush_chunk_buffer(chunk.x, chunk.y)
         
@@ -101,6 +104,66 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
     end
     
     return total_tiles
+end
+
+--- Stream rocks from a specific chunk
+--- @param chunk table - chunk with x, y coordinates
+function ResourceSnapshot:_stream_rocks_from_chunk(chunk)
+    local surface = game.surfaces[1] -- Assuming surface 1, could be made configurable
+    
+    -- Calculate chunk boundaries (32x32 tiles per chunk)
+    local x0 = chunk.x * 32
+    local y0 = chunk.y * 32
+    local x1 = (chunk.x + 1) * 32
+    local y1 = (chunk.y + 1) * 32
+    
+    -- Find all simple-entity types in this chunk area
+    local entities = surface.find_entities_filtered({
+        area = {{x0, y0}, {x1, y1}},
+        type = "simple-entity",
+        force = "neutral"
+    })
+    
+    -- Filter for actual rocks and build CSV payload
+    local rock_rows = {}
+    local rock_count = 0
+    
+    for _, entity in ipairs(entities) do
+        -- Use the rock-specific filter to ensure we only get actual rocks
+        if entity.prototype.count_as_rock_for_filtered_deconstruction then
+            local x = utils.floor(entity.position.x)
+            local y = utils.floor(entity.position.y)
+            local name = entity.name
+            
+            -- Calculate size hint from collision box
+            local collision_box = entity.prototype.collision_box
+            local width = collision_box.right_bottom.x - collision_box.left_top.x
+            local height = collision_box.right_bottom.y - collision_box.left_top.y
+            local size_hint = math.max(math.floor(width), math.floor(height))
+            
+            rock_count = rock_count + 1
+            rock_rows[rock_count] = name .. "," .. x .. "," .. y .. "," .. size_hint .. "\n"
+        end
+    end
+    
+    -- Emit rocks CSV for this chunk if any rocks found
+    if rock_count > 0 then
+        local payload = table.concat(rock_rows, "", 1, rock_count)
+        local metadata = {
+            chunk_x = chunk.x,
+            chunk_y = chunk.y,
+            surface_id = 1,
+            line_count = rock_count
+        }
+        
+        self:emit_csv({ 
+            output_dir = "script-output/factoryverse",
+            chunk_x = chunk.x,
+            chunk_y = chunk.y,
+            tick = game and game.tick or 0,
+            metadata = { schema_version = "rocks.raw.v1" }
+        }, "resource_rocks", payload, metadata)
+    end
 end
 
 --- Enqueue a tile for a specific chunk
@@ -168,7 +231,7 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
             chunk_y = chunk_y,
             tick = game and game.tick or 0,
             metadata = { schema_version = "tiles.raw.v1" }
-        }, "tiles", payload, metadata)
+        }, "resource_tiles", payload, metadata)
     end
     
     -- Clear this chunk's buffer
@@ -205,7 +268,7 @@ function ResourceSnapshot:_flush_one(k)
             chunk_y = b.cy,
             tick = game and game.tick or 0,
             metadata = { schema_version = "tiles.raw.v1" }
-        }, "tiles", payload, metadata)
+        }, "resource_tiles", payload, metadata)
     end
     
     -- Reset buffer
