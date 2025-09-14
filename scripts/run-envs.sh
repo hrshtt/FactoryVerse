@@ -4,9 +4,7 @@
 setup_platform() {
     ARCH=$(uname -m)
     OS=$(uname -s)
-    if [ "$FORCE_AMD" = true ]; then
-        export DOCKER_PLATFORM="linux/amd64"
-    elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
         export EMULATOR="/bin/box64"
         export DOCKER_PLATFORM="linux/arm64"
     else
@@ -256,7 +254,6 @@ EMULATOR=""
 
 # Boolean: attach mods or not
 ATTACH_MOD=false
-FORCE_AMD=false
 SAVE_ADDED=false
 
 # Parse args (supporting both short and long options)
@@ -312,10 +309,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     -m|--attach_mods)
       ATTACH_MOD=true
-      shift
-      ;;
-    -f86|--force_amd)
-      FORCE_AMD=true
       shift
       ;;
     -h|--help)

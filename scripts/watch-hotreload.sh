@@ -9,7 +9,7 @@ HOT_RELOAD_CMD="(docker compose ps -q factorio_0 | grep -q . || docker compose u
 
 # Debounce window (e.g., 500ms). In practice 300–800ms feels good for editors that save temp files.
 # Increased to 1000ms to reduce rapid-fire reloads
-DEBOUNCE_MS=1000
+DEBOUNCE_MS=5000
 
 # Check if the watch directory exists
 if [[ ! -d "$WATCH_DIR" ]]; then
