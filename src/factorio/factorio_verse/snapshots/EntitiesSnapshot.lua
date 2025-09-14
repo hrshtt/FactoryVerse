@@ -2,6 +2,10 @@ local Snapshot = require "core.Snapshot"
 local utils = require "utils"
 
 -- Module-level constants for better maintainability
+-- Enable debug metadata generation (set to true for debugging)
+-- When enabled, generates comprehensive entity property mapping for debugging
+local ENABLE_DEBUG_METADATA = false
+
 -- All entity types that should be processed by the snapshot system
 local ALLOWED_ENTITY_TYPES = {
     "assembling-machine", "furnace", "mining-drill", "inserter", "lab", "roboport", "beacon",
@@ -49,12 +53,12 @@ local COMPONENTS = {
     entity = {
         name = "entities",
         headers = {
-            "unit_number", "name", "type", "force", "position_x", "position_y",
+            "unit_number", "name", "type", "position_x", "position_y",
             "direction", "direction_name", "orientation", "orientation_name",
             "chunk_x", "chunk_y", "health", "status", "status_name",
             "bounding_box_min_x", "bounding_box_min_y", "bounding_box_max_x", "bounding_box_max_y",
             "selection_box_min_x", "selection_box_min_y", "selection_box_max_x", "selection_box_max_y",
-            "train_id", "train_state"
+            "train_id", "train_state", "electric_network_id"
         },
         extract = function(row)
             -- Always present - base entity data (filtered in flatten)
@@ -62,7 +66,6 @@ local COMPONENTS = {
                 unit_number = row.unit_number,
                 name = row.name,
                 type = row.type,
-                force = row.force,
                 position = row.position,
                 direction = row.direction,
                 direction_name = row.direction_name,
@@ -74,28 +77,13 @@ local COMPONENTS = {
                 status_name = row.status_name,
                 bounding_box = row.bounding_box,
                 selection_box = row.selection_box,
-                train = row.train
+                train = row.train,
+                electric_network_id = row.electric_network_id
             }
         end,
         should_include = function(row) return true end -- Always include base entity
     },
 
-    electric = {
-        name = "entities_electric",
-        headers = { "unit_number", "electric_network_id", "electric_buffer_size", "energy", "chunk_x", "chunk_y" },
-        extract = function(row)
-            return {
-                unit_number = row.unit_number,
-                electric_network_id = row.electric_network_id,
-                electric_buffer_size = row.electric_buffer_size,
-                energy = row.energy,
-                chunk = row.chunk
-            }
-        end,
-        should_include = function(row)
-            return row.electric_network_id ~= nil or row.electric_buffer_size ~= nil or row.energy ~= nil
-        end
-    },
 
     crafting = {
         name = "entities_crafting",
@@ -234,12 +222,24 @@ function EntitiesSnapshot:take()
     -- Process all entities once
     local all_entity_data = self:_extract_all_entities(surface, charted_chunks)
 
+    -- Generate debug metadata only if enabled
+    local debug_metadata = nil
+    if ENABLE_DEBUG_METADATA then
+        debug_metadata = self:_generate_debug_metadata(all_entity_data)
+        self._debug_metadata = debug_metadata
+    end
+
     -- Generate component data and emit CSVs
     local component_counts = {}
     for comp_key, comp_def in pairs(COMPONENTS) do
         local component_data = self:_extract_component_data(all_entity_data, comp_def)
         component_counts[comp_key .. "_rows"] = #component_data
         self:_emit_component_csv(component_data, comp_def)
+    end
+
+    -- Add debug metadata to component counts only if enabled
+    if ENABLE_DEBUG_METADATA then
+        component_counts.debug = debug_metadata
     end
 
     local output = self:create_output("snapshot.entities", "v3", component_counts)
@@ -256,12 +256,98 @@ end
 
 -- PRIVATE METHODS --------------------------------------------------------
 
+--- Generate comprehensive debug metadata for entity mapping
+function EntitiesSnapshot:_generate_debug_metadata(all_entity_data)
+    local debug = {
+        entities = {},      -- {entity_name: {properties: set}}
+        entity_types = {}   -- {entity_type: {properties: set}}
+    }
+
+    -- Analyze properties for each entity name and type
+    for _, entity_data in ipairs(all_entity_data) do
+        local entity_name = entity_data.name
+        local entity_type = entity_data.type
+
+        -- Get all non-nil properties for this entity
+        local properties = {}
+        for key, value in pairs(entity_data) do
+            if value ~= nil then
+                properties[key] = true
+            end
+        end
+
+        -- Track properties by entity name
+        if entity_name then
+            if not debug.entities[entity_name] then
+                debug.entities[entity_name] = {}
+            end
+            for prop, _ in pairs(properties) do
+                debug.entities[entity_name][prop] = true
+            end
+        end
+
+        -- Track properties by entity type
+        if entity_type then
+            if not debug.entity_types[entity_type] then
+                debug.entity_types[entity_type] = {}
+            end
+            for prop, _ in pairs(properties) do
+                debug.entity_types[entity_type][prop] = true
+            end
+        end
+    end
+
+    -- Convert sets to sorted arrays for better readability
+    local entities_with_props = {}
+    for name, props in pairs(debug.entities) do
+        local prop_list = {}
+        for prop, _ in pairs(props) do
+            table.insert(prop_list, prop)
+        end
+        table.sort(prop_list)
+        table.insert(entities_with_props, {name = name, properties = prop_list})
+    end
+    table.sort(entities_with_props, function(a, b) return a.name < b.name end)
+
+    local types_with_props = {}
+    for type_name, props in pairs(debug.entity_types) do
+        local prop_list = {}
+        for prop, _ in pairs(props) do
+            table.insert(prop_list, prop)
+        end
+        table.sort(prop_list)
+        table.insert(types_with_props, {type = type_name, properties = prop_list})
+    end
+    table.sort(types_with_props, function(a, b) return a.type < b.type end)
+
+    return {
+        entities = entities_with_props,
+        entity_types = types_with_props,
+        total_entities = #all_entity_data,
+        unique_entity_names = #entities_with_props,
+        unique_entity_types = #types_with_props
+    }
+end
+
 --- Create empty output structure
 function EntitiesSnapshot:_create_empty_output()
     local empty_data = {}
     for comp_key, _ in pairs(COMPONENTS) do
         empty_data[comp_key .. "_rows"] = {}
     end
+    
+    -- Add debug metadata only if enabled
+    if ENABLE_DEBUG_METADATA then
+        empty_data.debug = {
+            entities = {},
+            entity_types = {},
+            total_entities = 0,
+            unique_entity_names = 0,
+            unique_entity_types = 0
+        }
+        self._debug_metadata = empty_data.debug
+    end
+    
     return self:create_output("snapshot.entities", "v3", empty_data)
 end
 
@@ -348,12 +434,19 @@ function EntitiesSnapshot:_emit_csv_by_chunks(data, file_prefix, headers, schema
             table.insert(flattened_rows, self:_flatten_entity_data(row))
         end
 
+        local metadata = { schema_version = schema_version }
+        
+        -- Add debug metadata if enabled and available (only for the main entities component)
+        if ENABLE_DEBUG_METADATA and file_prefix == "entities" and self._debug_metadata then
+            metadata.debug = self._debug_metadata
+        end
+        
         local opts = {
             output_dir = "script-output/factoryverse",
             chunk_x = chunk_data.chunk_x,
             chunk_y = chunk_data.chunk_y,
             tick = game and game.tick or 0,
-            metadata = { schema_version = schema_version }
+            metadata = metadata
         }
 
         self:emit_csv(opts, file_prefix, self:_array_to_csv(flattened_rows, headers), { headers = headers })
@@ -526,10 +619,6 @@ function EntitiesSnapshot:_serialize_entity(e)
     -- Electric network id
     local ok_enid, enid = pcall(function() return e.electric_network_id end)
     if ok_enid and enid then out.electric_network_id = enid end
-
-    -- Energy buffers
-    if e.energy ~= nil then out.energy = e.energy end
-    if e.electric_buffer_size ~= nil then out.electric_buffer_size = e.electric_buffer_size end
 
     -- Crafting / recipe (gate to crafting machines only)
     do
