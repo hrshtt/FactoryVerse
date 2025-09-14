@@ -1,5 +1,11 @@
 local M = {}
 
+function M.min_position(a, b)
+    return {
+        x = math.floor(math.min(a.x, b.x)), 
+        y = math.floor(math.min(a.y, b.y)) 
+    }
+end
 
 function M.chart_native_start_area(surface, force, position)
     local radius_tiles = 150  -- Hacky but accepted vanilla feel
@@ -223,6 +229,104 @@ function M.orientation_to_name(orientation)
     }
     local idx = math.floor(orientation * 8 + 0.5) % 8
     return names[idx + 1]
+end
+
+-- SCHEMA-DRIVEN FLATTENING UTILITIES -----------------------------------------
+
+--- Factorio-specific flattening patterns for common data structures
+M.FLATTEN_PATTERNS = {
+    --- Flatten position objects to x,y coordinates
+    --- @param prefix string - field name prefix
+    --- @param value table - position object with x,y fields
+    --- @return table - flattened coordinates
+    coordinates = function(prefix, value)
+        return { [prefix .. "_x"] = value.x, [prefix .. "_y"] = value.y }
+    end,
+    
+    --- Flatten bounding box objects to min/max coordinates
+    --- @param prefix string - field name prefix
+    --- @param value table - bounding box with min_x, min_y, max_x, max_y fields
+    --- @return table - flattened bounds
+    bounds = function(prefix, value)
+        return {
+            [prefix .. "_min_x"] = value.min_x,
+            [prefix .. "_min_y"] = value.min_y,
+            [prefix .. "_max_x"] = value.max_x,
+            [prefix .. "_max_y"] = value.max_y
+        }
+    end,
+    
+    --- Flatten object fields by prefixing each key
+    --- @param prefix string - field name prefix
+    --- @param value table - object to flatten
+    --- @return table - flattened object fields
+    object_fields = function(prefix, value)
+        local result = {}
+        for k, v in pairs(value) do
+            result[prefix .. "_" .. k] = v
+        end
+        return result
+    end,
+    
+    --- Flatten inserter position objects
+    --- @param prefix string - field name prefix
+    --- @param value table - inserter object with pickup_position and drop_position
+    --- @return table - flattened inserter positions
+    inserter_positions = function(prefix, value)
+        local result = {}
+        if value.pickup_position and type(value.pickup_position) == "table" then
+            result[prefix .. "_pickup_position_x"] = value.pickup_position.x
+            result[prefix .. "_pickup_position_y"] = value.pickup_position.y
+        end
+        if value.drop_position and type(value.drop_position) == "table" then
+            result[prefix .. "_drop_position_x"] = value.drop_position.x
+            result[prefix .. "_drop_position_y"] = value.drop_position.y
+        end
+        result[prefix .. "_pickup_target_unit"] = value.pickup_target_unit
+        result[prefix .. "_drop_target_unit"] = value.drop_target_unit
+        return result
+    end,
+    
+    --- Flatten train object to id and state
+    --- @param prefix string - field name prefix
+    --- @param value table - train object with id and state
+    --- @return table - flattened train fields
+    train_fields = function(prefix, value)
+        return {
+            [prefix .. "_id"] = value.id,
+            [prefix .. "_state"] = value.state
+        }
+    end,
+    
+    --- Flatten burner object to fuel and burning info
+    --- @param prefix string - field name prefix
+    --- @param value table - burner object
+    --- @return table - flattened burner fields
+    burner_fields = function(prefix, value)
+        local result = {}
+        result[prefix .. "_remaining_burning_fuel"] = value.remaining_burning_fuel
+        result[prefix .. "_currently_burning"] = value.currently_burning and value.currently_burning.name
+        result[prefix .. "_inventories"] = value.inventories or nil
+        return result
+    end
+}
+
+--- Validate that a flattening pattern exists
+--- @param pattern_name string - name of the pattern to validate
+--- @return boolean - true if pattern exists
+function M.is_valid_flatten_pattern(pattern_name)
+    return M.FLATTEN_PATTERNS[pattern_name] ~= nil
+end
+
+--- Get all available flattening pattern names
+--- @return table - array of pattern names
+function M.get_flatten_pattern_names()
+    local patterns = {}
+    for name, _ in pairs(M.FLATTEN_PATTERNS) do
+        table.insert(patterns, name)
+    end
+    table.sort(patterns)
+    return patterns
 end
 
 return M

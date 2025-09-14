@@ -73,7 +73,7 @@ function Snapshot:emit_json(opts, name, payload)
 	helpers.write_file(file_path, json_str, false)
 
 	-- Optional: print where it was written
-	log("Wrote snapshot to " .. file_path)
+	-- log("Wrote snapshot to " .. file_path)
 	return file_path
 end
 
@@ -126,7 +126,7 @@ function Snapshot:emit_csv(opts, name, csv_data, metadata)
 	local meta_json = helpers.table_to_json(meta_data)
 	helpers.write_file(meta_path, meta_json, false)
 	
-	log("Wrote CSV to " .. csv_path)
+	-- log("Wrote CSV to " .. csv_path)
 	return csv_path
 end
 
@@ -177,12 +177,26 @@ end
 --- @param schema_version string - schema version for metadata
 --- @param flatten_fn function - optional function to flatten each row before CSV conversion
 function Snapshot:emit_csv_by_chunks(data, file_prefix, headers, schema_version, flatten_fn)
-    -- Group by chunk
+    -- Group by chunk - handle both flattened and unflattened data
     local data_by_chunk = {}
     for _, row in ipairs(data) do
-        local chunk_key = string.format("%d_%d", row.chunk.x, row.chunk.y)
+        local chunk_x, chunk_y
+        
+        -- Check if data is already flattened (has chunk_x, chunk_y) or unflattened (has chunk object)
+        if row.chunk_x and row.chunk_y then
+            -- Data is already flattened
+            chunk_x, chunk_y = row.chunk_x, row.chunk_y
+        elseif row.chunk and row.chunk.x and row.chunk.y then
+            -- Data is unflattened, extract from chunk object
+            chunk_x, chunk_y = row.chunk.x, row.chunk.y
+        else
+            -- Fallback to default chunk (0,0) if no chunk info available
+            chunk_x, chunk_y = 0, 0
+        end
+        
+        local chunk_key = string.format("%d_%d", chunk_x, chunk_y)
         if not data_by_chunk[chunk_key] then
-            data_by_chunk[chunk_key] = { chunk_x = row.chunk.x, chunk_y = row.chunk.y, rows = {} }
+            data_by_chunk[chunk_key] = { chunk_x = chunk_x, chunk_y = chunk_y, rows = {} }
         end
         table.insert(data_by_chunk[chunk_key].rows, row)
     end
@@ -273,6 +287,152 @@ function Snapshot:flush_chunk_buffer(buffer, file_prefix, schema_version, metada
     }
     
     self:emit_csv(opts, file_prefix, payload, metadata)
+end
+
+-- SCHEMA-DRIVEN COMPONENT SYSTEM --------------------------------------------
+
+-- Import flattening patterns from utils
+local utils = require "utils"
+local FLATTEN_PATTERNS = utils.FLATTEN_PATTERNS
+
+--- Generic data flattening using declarative configuration
+--- @param data table - data to flatten
+--- @param flatten_config table - configuration mapping field names to flattening rules
+--- @return table - flattened data
+function Snapshot:flatten_data(data, flatten_config)
+    local flattened = {}
+    
+    for field_name, value in pairs(data) do
+        local flatten_rule = flatten_config[field_name]
+        
+        if not flatten_rule then
+            -- No flattening rule, keep as-is
+            flattened[field_name] = value
+        elseif flatten_rule == false then
+            -- Explicitly keep as complex object (JSON)
+            flattened[field_name] = value
+        elseif type(value) == "table" and FLATTEN_PATTERNS[flatten_rule] then
+            -- Apply flattening pattern
+            local flattened_fields = FLATTEN_PATTERNS[flatten_rule](field_name, value)
+            for k, v in pairs(flattened_fields) do
+                flattened[k] = v
+            end
+        else
+            -- Keep as-is if no pattern matches
+            flattened[field_name] = value
+        end
+    end
+    
+    return flattened
+end
+
+--- Discover schema from data sample using introspection
+--- @param data_sample table - representative sample of data
+--- @param flatten_config table - flattening configuration
+--- @return table - discovered schema with field information
+function Snapshot:discover_schema(data_sample, flatten_config)
+    local schema = { fields = {}, nested_fields = {} }
+    
+    -- Analyze a representative sample of data
+    for _, row in ipairs(data_sample) do
+        for field_name, value in pairs(row) do
+            if not schema.fields[field_name] then
+                schema.fields[field_name] = { 
+                    type = type(value), 
+                    flatten = flatten_config[field_name] 
+                }
+            end
+            
+            -- Track nested structure if it should be flattened
+            if type(value) == "table" and flatten_config[field_name] then
+                schema.nested_fields[field_name] = self:discover_nested_fields(value, field_name)
+            end
+        end
+    end
+    
+    return schema
+end
+
+--- Discover nested field structure for complex objects
+--- @param value table - nested object to analyze
+--- @param field_name string - name of the parent field
+--- @return table - nested field structure
+function Snapshot:discover_nested_fields(value, field_name)
+    local nested = {}
+    for k, v in pairs(value) do
+        nested[k] = type(v)
+    end
+    return nested
+end
+
+--- Generate headers from discovered schema
+--- @param schema table - discovered schema
+--- @return table - array of header names
+function Snapshot:generate_headers_from_schema(schema)
+    local headers = {}
+    
+    for field_name, field_info in pairs(schema.fields) do
+        if field_info.flatten and FLATTEN_PATTERNS[field_info.flatten] then
+            -- Add flattened field names based on pattern
+            local sample_value = { x = 0, y = 0 } -- dummy for pattern generation
+            local flattened_fields = FLATTEN_PATTERNS[field_info.flatten](field_name, sample_value)
+            for k, _ in pairs(flattened_fields) do
+                table.insert(headers, k)
+            end
+        else
+            -- Add field as-is
+            table.insert(headers, field_name)
+        end
+    end
+    
+    -- Sort headers for consistent output
+    table.sort(headers)
+    return headers
+end
+
+--- Process component data using schema-driven approach
+--- @param all_data table - all data to process
+--- @param component_def table - component definition with flatten_config
+--- @return table - processed component data with schema and headers
+function Snapshot:process_component_schema_driven(all_data, component_def)
+    -- Filter relevant data
+    local component_data = {}
+    for _, row in ipairs(all_data) do
+        if component_def.should_include(row) then
+            local extracted = component_def.extract(row)
+            if extracted then
+                table.insert(component_data, extracted)
+            end
+        end
+    end
+    
+    if #component_data == 0 then
+        return { data = {}, schema = { fields = {} }, headers = {} }
+    end
+    
+    -- Discover schema from sample
+    local sample_size = math.min(10, #component_data)
+    local sample = {}
+    for i = 1, sample_size do
+        table.insert(sample, component_data[i])
+    end
+    
+    local schema = self:discover_schema(sample, component_def.flatten_config)
+    
+    -- Generate headers from schema
+    local headers = self:generate_headers_from_schema(schema)
+    
+    -- Flatten data using discovered schema
+    local flattened_data = {}
+    for _, row in ipairs(component_data) do
+        table.insert(flattened_data, self:flatten_data(row, component_def.flatten_config))
+    end
+    
+    return {
+        data = flattened_data,
+        schema = schema,
+        headers = headers
+    }
 end
 
 return Snapshot

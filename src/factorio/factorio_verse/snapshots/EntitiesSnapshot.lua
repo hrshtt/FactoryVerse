@@ -48,17 +48,19 @@ function EntitiesSnapshot:new()
     return instance
 end
 
--- COMPONENT DEFINITIONS: Each component defines its own extraction and flattening logic
+-- COMPONENT DEFINITIONS: Schema-driven with declarative flattening configuration
 local COMPONENTS = {
     entity = {
         name = "entities",
-        headers = {
-            "unit_number", "name", "type", "position_x", "position_y",
-            "direction", "direction_name", "orientation", "orientation_name",
-            "chunk_x", "chunk_y", "health", "status", "status_name",
-            "bounding_box_min_x", "bounding_box_min_y", "bounding_box_max_x", "bounding_box_max_y",
-            "selection_box_min_x", "selection_box_min_y", "selection_box_max_x", "selection_box_max_y",
-            "train_id", "train_state", "electric_network_id"
+        flatten_config = {
+            position = "coordinates",      -- position -> position_x, position_y
+            chunk = "coordinates",         -- chunk -> chunk_x, chunk_y
+            bounding_box = "bounds",       -- bounding_box -> bounding_box_min_x, etc.
+            selection_box = "bounds",      -- selection_box -> selection_box_min_x, etc.
+            train = "train_fields",        -- train -> train_id, train_state
+            -- Keep complex fields as JSON
+            inventories = false,           -- Keep as JSON
+            fluids = false,               -- Keep as JSON
         },
         extract = function(row)
             -- Always present - base entity data (filtered in flatten)
@@ -87,7 +89,9 @@ local COMPONENTS = {
 
     crafting = {
         name = "entities_crafting",
-        headers = { "unit_number", "recipe", "crafting_progress", "chunk_x", "chunk_y" },
+        flatten_config = {
+            chunk = "coordinates",  -- chunk -> chunk_x, chunk_y
+        },
         extract = function(row)
             return {
                 unit_number = row.unit_number,
@@ -103,7 +107,10 @@ local COMPONENTS = {
 
     burner = {
         name = "entities_burner",
-        headers = { "unit_number", "remaining_burning_fuel", "currently_burning", "inventories", "chunk_x", "chunk_y" },
+        flatten_config = {
+            burner = "burner_fields",  -- burner -> remaining_burning_fuel, currently_burning, inventories
+            chunk = "coordinates",     -- chunk -> chunk_x, chunk_y
+        },
         extract = function(row)
             return {
                 unit_number = row.unit_number,
@@ -118,7 +125,10 @@ local COMPONENTS = {
 
     inventory = {
         name = "entities_inventory",
-        headers = { "unit_number", "inventories", "chunk_x", "chunk_y" },
+        flatten_config = {
+            chunk = "coordinates",  -- chunk -> chunk_x, chunk_y
+            inventories = false,    -- Keep as JSON
+        },
         extract = function(row)
             -- Filter out empty mining_drill_modules
             local filtered_inventories = {}
@@ -149,7 +159,10 @@ local COMPONENTS = {
 
     fluids = {
         name = "entities_fluids",
-        headers = { "unit_number", "fluids", "chunk_x", "chunk_y" },
+        flatten_config = {
+            chunk = "coordinates",  -- chunk -> chunk_x, chunk_y
+            fluids = false,         -- Keep as JSON
+        },
         extract = function(row)
             return {
                 unit_number = row.unit_number,
@@ -164,9 +177,9 @@ local COMPONENTS = {
 
     inserter = {
         name = "entities_inserter",
-        headers = {
-            "unit_number", "pickup_position_x", "pickup_position_y", "drop_position_x", "drop_position_y",
-            "pickup_target_unit", "drop_target_unit", "chunk_x", "chunk_y"
+        flatten_config = {
+            inserter = "inserter_positions",  -- inserter -> pickup_position_x, drop_position_x, etc.
+            chunk = "coordinates",            -- chunk -> chunk_x, chunk_y
         },
         extract = function(row)
             return {
@@ -182,10 +195,11 @@ local COMPONENTS = {
 
     belts = {
         name = "entities_belts",
-        headers = {
-            "unit_number", "name", "type", "position_x", "position_y",
-            "direction", "direction_name", "item_lines", "belt_neighbours",
-            "belt_to_ground_type", "underground_neighbour_unit", "chunk_x", "chunk_y"
+        flatten_config = {
+            position = "coordinates",  -- position -> position_x, position_y
+            chunk = "coordinates",     -- chunk -> chunk_x, chunk_y
+            item_lines = false,        -- Keep as JSON
+            belt_neighbours = false,   -- Keep as JSON
         },
         extract = function(row)
             return {
@@ -238,12 +252,12 @@ function EntitiesSnapshot:take()
         self._debug_metadata = debug_metadata
     end
 
-    -- Generate component data and emit CSVs
+    -- Generate component data and emit CSVs using schema-driven approach
     local component_counts = {}
     for comp_key, comp_def in pairs(COMPONENTS) do
-        local component_data = self:_extract_component_data(flattened_entities, comp_def)
-        component_counts[comp_key .. "_rows"] = #component_data
-        self:_emit_component_csv(component_data, comp_def)
+        local result = self:process_component_schema_driven(flattened_entities, comp_def)
+        component_counts[comp_key .. "_rows"] = #result.data
+        self:_emit_component_csv_schema_driven(result, comp_def)
     end
 
     -- Add debug metadata to component counts only if enabled
@@ -418,7 +432,26 @@ function EntitiesSnapshot:_extract_component_data(all_entities, component_def)
     return component_data
 end
 
---- Emit CSV for a specific component
+--- Emit CSV for a specific component using schema-driven approach
+function EntitiesSnapshot:_emit_component_csv_schema_driven(result, component_def)
+    local schema_version = component_def.name == "entities_belts" and "snapshot.belts.v3" or "snapshot.entities.v3"
+    
+    -- Create custom flatten function that includes debug metadata
+    local flatten_fn = function(row)
+        local flattened = row  -- Data is already flattened by schema-driven processing
+        
+        -- Add debug metadata if enabled and available (only for the main entities component)
+        if ENABLE_DEBUG_METADATA and component_def.name == "entities" and self._debug_metadata then
+            flattened._debug_metadata = self._debug_metadata
+        end
+        
+        return flattened
+    end
+    
+    self:emit_csv_by_chunks(result.data, component_def.name, result.headers, schema_version, flatten_fn)
+end
+
+--- Legacy method for backward compatibility (deprecated)
 function EntitiesSnapshot:_emit_component_csv(component_data, component_def)
     local schema_version = component_def.name == "entities_belts" and "snapshot.belts.v3" or "snapshot.entities.v3"
     
@@ -437,7 +470,9 @@ function EntitiesSnapshot:_emit_component_csv(component_data, component_def)
     self:emit_csv_by_chunks(component_data, component_def.name, component_def.headers, schema_version, flatten_fn)
 end
 
---- Flatten entity data for CSV output (unified flattening logic)
+--- DEPRECATED: Legacy flattening method - use schema-driven approach instead
+--- This method is kept for backward compatibility but should not be used in new code
+--- @deprecated Use the schema-driven flattening system in parent Snapshot class
 function EntitiesSnapshot:_flatten_entity_data(entity_data)
     local flattened = {}
 
