@@ -416,21 +416,6 @@ function EntitiesSnapshot:_should_skip_entity(e)
     return false
 end
 
---- Extract component-specific data from all entities
-function EntitiesSnapshot:_extract_component_data(all_entities, component_def)
-    local component_data = {}
-
-    for _, entity_row in ipairs(all_entities) do
-        if component_def.should_include(entity_row) then
-            local extracted = component_def.extract(entity_row)
-            if extracted then
-                table.insert(component_data, extracted)
-            end
-        end
-    end
-
-    return component_data
-end
 
 --- Emit CSV for a specific component using schema-driven approach
 function EntitiesSnapshot:_emit_component_csv_schema_driven(result, component_def)
@@ -451,79 +436,6 @@ function EntitiesSnapshot:_emit_component_csv_schema_driven(result, component_de
     self:emit_csv_by_chunks(result.data, component_def.name, result.headers, schema_version, flatten_fn)
 end
 
---- Legacy method for backward compatibility (deprecated)
-function EntitiesSnapshot:_emit_component_csv(component_data, component_def)
-    local schema_version = component_def.name == "entities_belts" and "snapshot.belts.v3" or "snapshot.entities.v3"
-    
-    -- Create custom flatten function that includes debug metadata
-    local flatten_fn = function(row)
-        local flattened = self:_flatten_entity_data(row)
-        
-        -- Add debug metadata if enabled and available (only for the main entities component)
-        if ENABLE_DEBUG_METADATA and component_def.name == "entities" and self._debug_metadata then
-            flattened._debug_metadata = self._debug_metadata
-        end
-        
-        return flattened
-    end
-    
-    self:emit_csv_by_chunks(component_data, component_def.name, component_def.headers, schema_version, flatten_fn)
-end
-
---- DEPRECATED: Legacy flattening method - use schema-driven approach instead
---- This method is kept for backward compatibility but should not be used in new code
---- @deprecated Use the schema-driven flattening system in parent Snapshot class
-function EntitiesSnapshot:_flatten_entity_data(entity_data)
-    local flattened = {}
-
-    for k, v in pairs(entity_data) do
-        if k == "position" and type(v) == "table" then
-            flattened.position_x = v.x
-            flattened.position_y = v.y
-        elseif k == "chunk" and type(v) == "table" then
-            flattened.chunk_x = v.x
-            flattened.chunk_y = v.y
-        elseif k == "bounding_box" and type(v) == "table" then
-            flattened.bounding_box_min_x = v.min_x
-            flattened.bounding_box_min_y = v.min_y
-            flattened.bounding_box_max_x = v.max_x
-            flattened.bounding_box_max_y = v.max_y
-        elseif k == "selection_box" and type(v) == "table" then
-            flattened.selection_box_min_x = v.min_x
-            flattened.selection_box_min_y = v.min_y
-            flattened.selection_box_max_x = v.max_x
-            flattened.selection_box_max_y = v.max_y
-        elseif k == "train" and type(v) == "table" then
-            flattened.train_id = v.id
-            flattened.train_state = v.state
-        elseif k == "burner" and type(v) == "table" then
-            flattened.remaining_burning_fuel = v.remaining_burning_fuel
-            flattened.currently_burning = v.currently_burning and v.currently_burning.name
-            flattened.inventories = v.inventories or nil
-        elseif k == "inserter" and type(v) == "table" then
-            if v.pickup_position and type(v.pickup_position) == "table" then
-                flattened.pickup_position_x = v.pickup_position.x
-                flattened.pickup_position_y = v.pickup_position.y
-            end
-            if v.drop_position and type(v.drop_position) == "table" then
-                flattened.drop_position_x = v.drop_position.x
-                flattened.drop_position_y = v.drop_position.y
-            end
-            flattened.pickup_target_unit = v.pickup_target_unit
-            flattened.drop_target_unit = v.drop_target_unit
-        elseif k == "item_lines" and type(v) == "table" then
-            -- Keep item_lines as JSON for belt data
-            flattened.item_lines = v
-        elseif k == "belt_neighbours" and type(v) == "table" then
-            -- Keep belt_neighbours as JSON for belt data
-            flattened.belt_neighbours = v
-        else
-            flattened[k] = v
-        end
-    end
-
-    return flattened
-end
 
 --- Serialize belt entity (extracted from original belt logic)
 function EntitiesSnapshot:_serialize_belt(e)
