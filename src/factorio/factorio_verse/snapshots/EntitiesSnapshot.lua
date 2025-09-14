@@ -59,15 +59,15 @@ local COMPONENTS = {
         extract = function(row)
             -- Always present - base entity data (filtered in flatten)
             return {
-                            unit_number = row.unit_number,
-                            name = row.name,
-                            type = row.type,
-                            force = row.force,
-                            position = row.position,
-                            direction = row.direction,
-                            direction_name = row.direction_name,
-                            orientation = row.orientation,
-                            orientation_name = row.orientation_name,
+                unit_number = row.unit_number,
+                name = row.name,
+                type = row.type,
+                force = row.force,
+                position = row.position,
+                direction = row.direction,
+                direction_name = row.direction_name,
+                orientation = row.orientation,
+                orientation_name = row.orientation_name,
                 chunk = row.chunk,
                 health = row.health,
                 status = row.status,
@@ -85,10 +85,10 @@ local COMPONENTS = {
         headers = { "unit_number", "electric_network_id", "electric_buffer_size", "energy", "chunk_x", "chunk_y" },
         extract = function(row)
             return {
-                                unit_number = row.unit_number,
-                                electric_network_id = row.electric_network_id,
-                                electric_buffer_size = row.electric_buffer_size,
-                                energy = row.energy,
+                unit_number = row.unit_number,
+                electric_network_id = row.electric_network_id,
+                electric_buffer_size = row.electric_buffer_size,
+                energy = row.energy,
                 chunk = row.chunk
             }
         end,
@@ -102,9 +102,9 @@ local COMPONENTS = {
         headers = { "unit_number", "recipe", "crafting_progress", "chunk_x", "chunk_y" },
         extract = function(row)
             return {
-                                unit_number = row.unit_number,
-                                recipe = row.recipe,
-                                crafting_progress = row.crafting_progress,
+                unit_number = row.unit_number,
+                recipe = row.recipe,
+                crafting_progress = row.crafting_progress,
                 chunk = row.chunk
             }
         end,
@@ -118,8 +118,8 @@ local COMPONENTS = {
         headers = { "unit_number", "remaining_burning_fuel", "currently_burning", "inventories", "chunk_x", "chunk_y" },
         extract = function(row)
             return {
-                                unit_number = row.unit_number,
-                                burner = row.burner,
+                unit_number = row.unit_number,
+                burner = row.burner,
                 chunk = row.chunk
             }
         end,
@@ -132,17 +132,17 @@ local COMPONENTS = {
         name = "entities_inventory",
         headers = { "unit_number", "inventories", "chunk_x", "chunk_y" },
         extract = function(row)
-                            -- Filter out empty mining_drill_modules
-                            local filtered_inventories = {}
+            -- Filter out empty mining_drill_modules
+            local filtered_inventories = {}
             if row.inventories then
-                            for inv_name, inv_data in pairs(row.inventories) do
-                                if inv_name ~= "mining_drill_modules" or (inv_data and next(inv_data) ~= nil) then
-                                    filtered_inventories[inv_name] = inv_data
-                                end
-                            end
+                for inv_name, inv_data in pairs(row.inventories) do
+                    if inv_name ~= "mining_drill_modules" or (inv_data and next(inv_data) ~= nil) then
+                        filtered_inventories[inv_name] = inv_data
+                    end
+                end
             end
             return {
-                                unit_number = row.unit_number,
+                unit_number = row.unit_number,
                 inventories = next(filtered_inventories) and filtered_inventories or nil,
                 chunk = row.chunk
             }
@@ -187,11 +187,11 @@ local COMPONENTS = {
                 chunk = row.chunk
             }
         end,
-        should_include = function(row) 
-            return row.inserter ~= nil 
+        should_include = function(row)
+            return row.inserter ~= nil
         end
     },
-    
+
     belts = {
         name = "entities_belts",
         headers = {
@@ -214,7 +214,7 @@ local COMPONENTS = {
                 chunk = row.chunk
             }
         end,
-        should_include = function(row) 
+        should_include = function(row)
             return BELT_TYPES[row.type] == true
         end
     }
@@ -254,7 +254,6 @@ function EntitiesSnapshot:take()
     return output
 end
 
-
 -- PRIVATE METHODS --------------------------------------------------------
 
 --- Create empty output structure
@@ -268,7 +267,6 @@ end
 
 --- Extract all entity data from surface chunks
 function EntitiesSnapshot:_extract_all_entities(surface, charted_chunks)
-
     local all_entities = {}
 
     for _, chunk in ipairs(charted_chunks) do
@@ -287,14 +285,14 @@ function EntitiesSnapshot:_extract_all_entities(surface, charted_chunks)
                     else
                         serialized = self:_serialize_entity(e)
                     end
-                    
+
                     if serialized then
                         serialized.chunk = chunk_field
                         table.insert(all_entities, serialized)
                     end
-                            end
-                        end
-                    end
+                end
+            end
+        end
     end
 
     return all_entities
@@ -308,7 +306,6 @@ function EntitiesSnapshot:_should_skip_entity(e)
     end
     return false
 end
-
 
 --- Extract component-specific data from all entities
 function EntitiesSnapshot:_extract_component_data(all_entities, component_def)
@@ -368,7 +365,7 @@ function EntitiesSnapshot:_array_to_csv(data, headers)
     if #data == 0 then
         return table.concat(headers, ",") .. "\n"
     end
-    
+
     local csv_lines = { table.concat(headers, ",") }
     for _, row in ipairs(data) do
         table.insert(csv_lines, self:_table_to_csv_row(row, headers))
@@ -428,7 +425,6 @@ function EntitiesSnapshot:_flatten_entity_data(entity_data)
 
     return flattened
 end
-
 
 --- Serialize belt entity (extracted from original belt logic)
 function EntitiesSnapshot:_serialize_belt(e)
