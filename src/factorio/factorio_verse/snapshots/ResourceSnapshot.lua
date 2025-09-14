@@ -59,47 +59,6 @@ function ResourceSnapshot:take()
     return output
 end
 
---- CRUDE OIL SNAPSHOT (Stream oil wells as tiles)
-function ResourceSnapshot:take_crude()
-    log("Taking crude oil snapshot - streaming oil wells")
-
-    local charted_chunks = self.game_state:get_charted_chunks()
-    local resources_by_name = self.game_state:get_resources_in_chunks(charted_chunks)
-    local wells = resources_by_name["crude-oil"] or {}
-
-    local tile_count = 0
-    for _, well in ipairs(wells) do
-        local x = utils.floor(well.position.x)
-        local y = utils.floor(well.position.y)
-        local chunk_x = math.floor(x / 32)
-        local chunk_y = math.floor(y / 32)
-        local amount = well.amount or 0
-        self:_enqueue_tile_for_chunk(chunk_x, chunk_y, x, y, "crude-oil", amount)
-        tile_count = tile_count + 1
-    end
-
-    -- Flush all remaining buffers immediately
-    self:_flush_all()
-
-    local output = self:create_output("snapshot.crude", "v1", {
-        tile_count = tile_count,
-        buffer_count = 0 -- All flushed now
-    })
-
-    self:print_summary(output, function(out)
-        return {
-            surface = out.surface,
-            oil_wells = out.data.tile_count,
-            buffers_active = out.data.buffer_count,
-            tick = out.timestamp
-        }
-    end)
-
-    return output
-end
-
---- TILE STREAMING FUNCTIONS
-
 --- Stream all tiles (resources + water) from all charted chunks
 --- @param chunks table - list of charted chunks
 --- @return number - total tiles streamed
@@ -113,15 +72,12 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
         local resources_in_chunk = self.game_state:get_resources_in_chunks({ chunk })
         if resources_in_chunk then
             for resource_name, entities in pairs(resources_in_chunk) do
-                -- Skip crude oil - handled by take_crude()
-                if resource_name ~= "crude-oil" then
-                    for _, entity in ipairs(entities) do
-                        local x = utils.floor(entity.position.x)
-                        local y = utils.floor(entity.position.y)
-                        local amount = entity.amount or 0
-                        self:_enqueue_tile_for_chunk(chunk.x, chunk.y, x, y, resource_name, amount)
-                        chunk_tiles = chunk_tiles + 1
-                    end
+                for _, entity in ipairs(entities) do
+                    local x = utils.floor(entity.position.x)
+                    local y = utils.floor(entity.position.y)
+                    local amount = entity.amount or 0
+                    self:_enqueue_tile_for_chunk(chunk.x, chunk.y, x, y, resource_name, amount)
+                    chunk_tiles = chunk_tiles + 1
                 end
             end
         end
