@@ -150,7 +150,7 @@ end
 -- Removed: fake swing timer path and player bind/unbind; we only emulate via mining_state and inventory deltas
 
 -- Create a shared WalkHelper instance for mine_resource actions
-local walk_helper = require("core.WalkHelper"):new()
+local walk_helper = require("actions.agent.walk.helper"):new()
 
 
 local function _cancel_walk_for_agent(agent_id)

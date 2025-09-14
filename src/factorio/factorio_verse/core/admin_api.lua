@@ -56,20 +56,21 @@ M.helpers.take_resources = function()
     ResourceSnapshot:new():take()
 end
 
-M.helpers.take_crude_oil = function()
-    ResourceSnapshot:new():take_crude()
-end
-
-M.helpers.take_water = function()
-    ResourceSnapshot:new():take_water()
-end
-
 M.helpers.take_entities = function()
     EntitiesSnapshot:new():take()
 end
 
 M.helpers.take_belts = function()
     EntitiesSnapshot:new():take_belts()
+end
+
+M.helpers.clear_script_output = function()
+    local success, _ = pcall(helpers.remove_path, "script-output/factoryverse")
+    if success then
+        triple_print("[helpers.clear_script_output] Successfully cleared script-output/factoryverse directory")
+    else
+        triple_print("[helpers.clear_script_output] Failed to clear script-output/factoryverse directory (may not exist)")
+    end
 end
 
 -- Forcefully stop all agent activities and flush pending intents/jobs

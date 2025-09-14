@@ -1,7 +1,7 @@
 -- control.lua: registers action run methods on a remote interface and hooks events
 
 local action_registry = require("core.action.ActionRegistry")
-local action_queue = require("core.action.ActionQueue"):new()
+-- local action_queue = require("core.action.ActionQueue")
 local utils = require("utils")
 
 local ok, mod = pcall(require, "actions.agent.walk.action")
@@ -20,7 +20,7 @@ admin_api.load_commands()
 -- Register remote interface containing all actions' run methods
 local function register_remote_interface()
   action_registry:register_remote_interface()
-  action_queue:register_queue_remote_interface()
+  -- action_queue:register_queue_remote_interface()
 end
 
 -- Hook any events exposed by actions (e.g., on_tick runners)

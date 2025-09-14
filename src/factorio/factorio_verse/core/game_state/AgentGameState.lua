@@ -50,12 +50,11 @@ AgentGameState.__index = AgentGameState
 local agent_inventory_type = defines.inventory.character_main
 
 --- @param game_state GameState
---- @param agent_id number
 --- @return AgentGameState
-function AgentGameState:new(game_state, agent_id)
+function AgentGameState:new(game_state)
     local instance = {
         game_state = game_state,
-        agent_id = agent_id or 1
+        -- agent_id = agent_id or 1
     }
     
     setmetatable(instance, self)
