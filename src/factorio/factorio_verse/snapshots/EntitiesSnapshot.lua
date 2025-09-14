@@ -212,27 +212,36 @@ local COMPONENTS = {
 function EntitiesSnapshot:take()
     log("Taking entities snapshot")
 
-    local charted_chunks = self.game_state:get_charted_chunks()
     local surface = self.game_state:get_surface()
 
     if not surface then
         return self:_create_empty_output()
     end
 
-    -- Process all entities once
-    local all_entity_data = self:_extract_all_entities(surface, charted_chunks)
+    -- Process all entities once using parent class chunk processing
+    local all_entity_data = self:process_charted_chunks(function(chunk)
+        return self:_extract_entities_from_chunk(surface, chunk)
+    end)
+    
+    -- Flatten the nested array structure
+    local flattened_entities = {}
+    for _, chunk_entities in ipairs(all_entity_data) do
+        for _, entity in ipairs(chunk_entities) do
+            table.insert(flattened_entities, entity)
+        end
+    end
 
     -- Generate debug metadata only if enabled
     local debug_metadata = nil
     if ENABLE_DEBUG_METADATA then
-        debug_metadata = self:_generate_debug_metadata(all_entity_data)
+        debug_metadata = self:_generate_debug_metadata(flattened_entities)
         self._debug_metadata = debug_metadata
     end
 
     -- Generate component data and emit CSVs
     local component_counts = {}
     for comp_key, comp_def in pairs(COMPONENTS) do
-        local component_data = self:_extract_component_data(all_entity_data, comp_def)
+        local component_data = self:_extract_component_data(flattened_entities, comp_def)
         component_counts[comp_key .. "_rows"] = #component_data
         self:_emit_component_csv(component_data, comp_def)
     end
@@ -351,37 +360,37 @@ function EntitiesSnapshot:_create_empty_output()
     return self:create_output("snapshot.entities", "v3", empty_data)
 end
 
---- Extract all entity data from surface chunks
-function EntitiesSnapshot:_extract_all_entities(surface, charted_chunks)
-    local all_entities = {}
+--- Extract entity data from a single chunk
+--- @param surface table - game surface
+--- @param chunk table - chunk with x, y, area properties
+--- @return table - array of serialized entities from this chunk
+function EntitiesSnapshot:_extract_entities_from_chunk(surface, chunk)
+    local chunk_entities = {}
+    local filter = { area = chunk.area, force = "player", type = ALLOWED_ENTITY_TYPES }
+    local entities = surface.find_entities_filtered(filter)
 
-    for _, chunk in ipairs(charted_chunks) do
-        local filter = { area = chunk.area, force = "player", type = ALLOWED_ENTITY_TYPES }
-        local entities = surface.find_entities_filtered(filter)
+    if #entities ~= 0 then
+        local chunk_field = { x = chunk.x, y = chunk.y }
+        for i = 1, #entities do
+            local e = entities[i]
+            if e and e.valid and not self:_should_skip_entity(e) then
+                local serialized = nil
+                -- Use belt serialization for belt types, regular serialization for others
+                if BELT_TYPES[e.type] then
+                    serialized = self:_serialize_belt(e)
+                else
+                    serialized = self:_serialize_entity(e)
+                end
 
-        if #entities ~= 0 then
-            local chunk_field = { x = chunk.x, y = chunk.y }
-            for i = 1, #entities do
-                local e = entities[i]
-                if e and e.valid and not self:_should_skip_entity(e) then
-                    local serialized = nil
-                    -- Use belt serialization for belt types, regular serialization for others
-                    if BELT_TYPES[e.type] then
-                        serialized = self:_serialize_belt(e)
-                    else
-                        serialized = self:_serialize_entity(e)
-                    end
-
-                    if serialized then
-                        serialized.chunk = chunk_field
-                        table.insert(all_entities, serialized)
-                    end
+                if serialized then
+                    serialized.chunk = chunk_field
+                    table.insert(chunk_entities, serialized)
                 end
             end
         end
     end
 
-    return all_entities
+    return chunk_entities
 end
 
 --- Check if entity should be skipped
@@ -412,58 +421,20 @@ end
 --- Emit CSV for a specific component
 function EntitiesSnapshot:_emit_component_csv(component_data, component_def)
     local schema_version = component_def.name == "entities_belts" and "snapshot.belts.v3" or "snapshot.entities.v3"
-    self:_emit_csv_by_chunks(component_data, component_def.name, component_def.headers, schema_version)
-end
-
---- Generic method to emit CSV files grouped by chunks
-function EntitiesSnapshot:_emit_csv_by_chunks(data, file_prefix, headers, schema_version)
-    -- Group by chunk
-    local data_by_chunk = {}
-    for _, row in ipairs(data) do
-        local chunk_key = string.format("%d_%d", row.chunk.x, row.chunk.y)
-        if not data_by_chunk[chunk_key] then
-            data_by_chunk[chunk_key] = { chunk_x = row.chunk.x, chunk_y = row.chunk.y, rows = {} }
-        end
-        table.insert(data_by_chunk[chunk_key].rows, row)
-    end
-
-    -- Emit CSV for each chunk
-    for chunk_key, chunk_data in pairs(data_by_chunk) do
-        local flattened_rows = {}
-        for _, row in ipairs(chunk_data.rows) do
-            table.insert(flattened_rows, self:_flatten_entity_data(row))
-        end
-
-        local metadata = { schema_version = schema_version }
+    
+    -- Create custom flatten function that includes debug metadata
+    local flatten_fn = function(row)
+        local flattened = self:_flatten_entity_data(row)
         
         -- Add debug metadata if enabled and available (only for the main entities component)
-        if ENABLE_DEBUG_METADATA and file_prefix == "entities" and self._debug_metadata then
-            metadata.debug = self._debug_metadata
+        if ENABLE_DEBUG_METADATA and component_def.name == "entities" and self._debug_metadata then
+            flattened._debug_metadata = self._debug_metadata
         end
         
-        local opts = {
-            output_dir = "script-output/factoryverse",
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = game and game.tick or 0,
-            metadata = metadata
-        }
-
-        self:emit_csv(opts, file_prefix, self:_array_to_csv(flattened_rows, headers), { headers = headers })
+        return flattened
     end
-end
-
---- Convert array of tables to CSV
-function EntitiesSnapshot:_array_to_csv(data, headers)
-    if #data == 0 then
-        return table.concat(headers, ",") .. "\n"
-    end
-
-    local csv_lines = { table.concat(headers, ",") }
-    for _, row in ipairs(data) do
-        table.insert(csv_lines, self:_table_to_csv_row(row, headers))
-    end
-    return table.concat(csv_lines, "\n") .. "\n"
+    
+    self:emit_csv_by_chunks(component_data, component_def.name, component_def.headers, schema_version, flatten_fn)
 end
 
 --- Flatten entity data for CSV output (unified flattening logic)

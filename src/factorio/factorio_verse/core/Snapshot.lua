@@ -130,4 +130,149 @@ function Snapshot:emit_csv(opts, name, csv_data, metadata)
 	return csv_path
 end
 
+--- Convert table to CSV row, handling nested structures
+--- @param data table - data to convert
+--- @param headers table - column headers
+--- @return string - CSV row
+function Snapshot:_table_to_csv_row(data, headers)
+    local values = {}
+    for _, header in ipairs(headers) do
+        local value = data[header]
+        if value == nil then
+            table.insert(values, "")
+        elseif type(value) == "table" then
+            -- Convert table to JSON string for complex nested data
+            local json_str = helpers.table_to_json(value)
+            table.insert(values, '"' .. json_str:gsub('"', '""') .. '"')
+        elseif type(value) == "string" then
+            -- Regular string, escape quotes and wrap in quotes
+            table.insert(values, '"' .. value:gsub('"', '""') .. '"')
+        else
+            table.insert(values, tostring(value))
+        end
+    end
+    return table.concat(values, ",")
+end
+
+--- Convert array of tables to CSV
+--- @param data table - array of data tables
+--- @param headers table - column headers
+--- @return string - CSV content
+function Snapshot:array_to_csv(data, headers)
+    if #data == 0 then
+        return table.concat(headers, ",") .. "\n"
+    end
+
+    local csv_lines = { table.concat(headers, ",") }
+    for _, row in ipairs(data) do
+        table.insert(csv_lines, self:_table_to_csv_row(row, headers))
+    end
+    return table.concat(csv_lines, "\n") .. "\n"
+end
+
+--- Generic method to emit CSV files grouped by chunks
+--- @param data table - array of data to group by chunks
+--- @param file_prefix string - base filename prefix
+--- @param headers table - CSV column headers
+--- @param schema_version string - schema version for metadata
+--- @param flatten_fn function - optional function to flatten each row before CSV conversion
+function Snapshot:emit_csv_by_chunks(data, file_prefix, headers, schema_version, flatten_fn)
+    -- Group by chunk
+    local data_by_chunk = {}
+    for _, row in ipairs(data) do
+        local chunk_key = string.format("%d_%d", row.chunk.x, row.chunk.y)
+        if not data_by_chunk[chunk_key] then
+            data_by_chunk[chunk_key] = { chunk_x = row.chunk.x, chunk_y = row.chunk.y, rows = {} }
+        end
+        table.insert(data_by_chunk[chunk_key].rows, row)
+    end
+
+    -- Emit CSV for each chunk
+    for chunk_key, chunk_data in pairs(data_by_chunk) do
+        local flattened_rows = {}
+        for _, row in ipairs(chunk_data.rows) do
+            table.insert(flattened_rows, flatten_fn and flatten_fn(row) or row)
+        end
+
+        local metadata = { schema_version = schema_version }
+        local opts = {
+            output_dir = "script-output/factoryverse",
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = game and game.tick or 0,
+            metadata = metadata
+        }
+
+        self:emit_csv(opts, file_prefix, self:array_to_csv(flattened_rows, headers), { headers = headers })
+    end
+end
+
+--- Process all charted chunks with a custom processor function
+--- @param processor_fn function - function to process each chunk, should return data or nil
+--- @return table - array of results from processor function
+function Snapshot:process_charted_chunks(processor_fn)
+    local charted_chunks = self.game_state:get_charted_chunks()
+    local results = {}
+    
+    for _, chunk in ipairs(charted_chunks) do
+        local chunk_result = processor_fn(chunk)
+        if chunk_result then
+            table.insert(results, chunk_result)
+        end
+    end
+    
+    return results
+end
+
+--- Create chunked output structure
+--- @param snapshot_type string - type identifier (e.g. "resources", "entities")
+--- @param version string - schema version
+--- @param data_by_chunk table - data organized by chunks
+--- @return table - standardized chunked output structure
+function Snapshot:create_chunked_output(snapshot_type, version, data_by_chunk)
+    local surface = self.game_state:get_surface()
+    return {
+        schema_version = snapshot_type .. "." .. version,
+        surface = surface and surface.name or "unknown",
+        timestamp = game and game.tick or 0,
+        chunks_processed = #data_by_chunk,
+        data = data_by_chunk
+    }
+end
+
+--- Create a chunk buffer for streaming data
+--- @param chunk_x number - chunk x coordinate
+--- @param chunk_y number - chunk y coordinate
+--- @param surface_id number - surface ID (default 1)
+--- @return table - buffer structure
+function Snapshot:create_chunk_buffer(chunk_x, chunk_y, surface_id)
+    return {
+        rows = {},
+        count = 0,
+        chunk_x = chunk_x,
+        chunk_y = chunk_y,
+        surface = surface_id or 1
+    }
+end
+
+--- Flush a chunk buffer to CSV file
+--- @param buffer table - buffer to flush
+--- @param file_prefix string - base filename prefix
+--- @param schema_version string - schema version for metadata
+--- @param metadata table - optional additional metadata (can include headers)
+function Snapshot:flush_chunk_buffer(buffer, file_prefix, schema_version, metadata)
+    if not buffer or buffer.count == 0 then return end
+    
+    local payload = table.concat(buffer.rows, "", 1, buffer.count)
+    local opts = {
+        output_dir = "script-output/factoryverse",
+        chunk_x = buffer.chunk_x,
+        chunk_y = buffer.chunk_y,
+        tick = game and game.tick or 0,
+        metadata = { schema_version = schema_version }
+    }
+    
+    self:emit_csv(opts, file_prefix, payload, metadata)
+end
+
 return Snapshot
