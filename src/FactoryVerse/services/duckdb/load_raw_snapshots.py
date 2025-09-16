@@ -1,42 +1,49 @@
 """
-DuckDB snapshot loader + view/materialization layer for Factorio snapshots.
+PostgreSQL snapshot loader for Factorio snapshots.
 
 Goals
 -----
 - Ingest raw JSON snapshots into stable staging tables (raw_*).
-- Create gameplay-sensible views & macros that a text-only LLM can query
-  to emulate the Factorio gameplay loop (global dashboards + local queries).
 - Keep it maintainable & DRY: centralized schema, versioned loaders, small helpers.
 
 Usage (example)
 ---------------
-from FactoryVerse.services.duckdb.load_snapshots import (
-    connect_db, ensure_schema, load_snapshot_dir, create_views_and_macros
+from FactoryVerse.services.duckdb.load_raw_snapshots import (
+    connect_db, ensure_schema, load_snapshot_dir
 )
 
-con = connect_db("factoryverse.duckdb")
+con = connect_db()  # uses FACTORYVERSE_PG_DSN or a default DSN
 ensure_schema(con)
 load_snapshot_dir(con, "/path/to/snaps/")
-create_views_and_macros(con)
-
-# Done. Use the SQL views/macros from your agent code.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Sequence
 
-import duckdb  # type: ignore
-import pandas as pd
+import psycopg2  # type: ignore
+from psycopg2.extensions import connection as PGConnection  # type: ignore
+from psycopg2.extras import execute_values  # type: ignore
+
+# Alias for typing consistency
+Connection = PGConnection  # type: ignore
 
 # -----------------------------
 # Constants & helpers
 # -----------------------------
 
-DEFAULT_DB_PATH = os.environ.get("FACTORYVERSE_DUCKDB", "factoryverse.duckdb")
+PG_USER = os.environ.get("PG_USER", "factoryverse")
+PG_PASSWORD = os.environ.get("PG_PASSWORD", "factoryverse")
+PG_HOST = os.environ.get("PG_HOST", "localhost")
+PG_PORT = os.environ.get("PG_PORT", "5432")
+PG_DB = os.environ.get("PG_DB", "factoryverse")
+DEFAULT_PG_DSN = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
+
+print(DEFAULT_PG_DSN)
 
 # Known snapshot schema versions → loader function keys
 SCHEMA_BELTS_V2 = "snapshot.belts.v2"
@@ -60,258 +67,274 @@ BELT_LIKE_NAMES = {
 # Public API
 # -----------------------------
 
-def connect_db(db_path: str = DEFAULT_DB_PATH) -> duckdb.DuckDBPyConnection:
-    """Open or create the DuckDB database."""
-    con = duckdb.connect(db_path)
-    con.execute("PRAGMA threads=8;")
+def connect_db(dsn: str = DEFAULT_PG_DSN) -> Connection:
+    """Open a PostgreSQL connection (autocommit)."""
+    con: Connection = psycopg2.connect(dsn)
+    # For DDL/DML simplicity in this loader
+    con.autocommit = True
     return con
 
 
-def ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Create raw tables (idempotent)."""
-    # raw_belts
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_belts (
-            tick                BIGINT,
-            surface             VARCHAR,
-            unit_number         BIGINT,
-            name                VARCHAR,
-            type                VARCHAR,
-            pos_x               DOUBLE,
-            pos_y               DOUBLE,
-            direction           INTEGER,
-            direction_name      VARCHAR,
-            item_lines          JSON,            -- JSON payload: per-lane items
-            neigh_inputs        INT[],           -- upstream unit_numbers
-            neigh_outputs       INT[],           -- downstream unit_numbers
-            chunk_x             INTEGER,
-            chunk_y             INTEGER
-        );
-        """
-    )
+def clear_raw_tables(con: Connection) -> None:
+    """Clear all existing data from raw tables."""
+    with con.cursor() as cur:
+        # Clear all raw tables in reverse dependency order
+        tables_to_clear = [
+            "raw_entity_inventory",
+            "raw_entity_burner", 
+            "raw_entity_crafting",
+            "raw_entity_electric",
+            "raw_entity_inserter",
+            "raw_entity_fluids",
+            "raw_entities",
+            "raw_belts",
+            "raw_resource_tiles",
+            "raw_resource_patches",
+            "raw_crude_tiles", 
+            "raw_crude_patches",
+            "raw_water_tiles",
+            "raw_water_patches",
+        ]
+        
+        for table in tables_to_clear:
+            cur.execute(f"DELETE FROM {table};")
+            print(f"Cleared table: {table}")
+
+
+def ensure_schema(con: Connection) -> None:
+    """Create raw tables (idempotent) in PostgreSQL."""
+    with con.cursor() as cur:
+        # Enable PostGIS extension
+        cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
+        # raw_belts
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_belts (
+                tick                BIGINT,
+                unit_number         BIGINT,
+                name                VARCHAR,
+                type                VARCHAR,
+                pos_x               INTEGER,
+                pos_y               INTEGER,
+                direction           INTEGER,
+                direction_name      VARCHAR,
+                item_lines          JSONB,           -- JSON payload: per-lane items
+                neigh_inputs        INTEGER[],        -- upstream unit_numbers
+                neigh_outputs       INTEGER[],        -- downstream unit_numbers
+                chunk_x             INTEGER,
+                chunk_y             INTEGER
+            );
+            """
+        )
 
     # raw_entities (base footprint) + auxiliary per-subsystem tables
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_entities (
-            tick                BIGINT,
-            surface             VARCHAR,
-            unit_number         BIGINT,
-            name                VARCHAR,
-            type                VARCHAR,
-            force               VARCHAR,
-            pos_x               DOUBLE,
-            pos_y               DOUBLE,
-            direction           INTEGER,
-            direction_name      VARCHAR,
-            orientation         DOUBLE,
-            orientation_name    VARCHAR,
-            status              INTEGER,
-            status_name         VARCHAR,
-            bbox_min_x          DOUBLE,
-            bbox_min_y          DOUBLE,
-            bbox_max_x          DOUBLE,
-            bbox_max_y          DOUBLE,
-            sel_min_x           DOUBLE,
-            sel_min_y           DOUBLE,
-            sel_max_x           DOUBLE,
-            sel_max_y           DOUBLE,
-            chunk_x             INTEGER,
-            chunk_y             INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_entities (
+                tick                BIGINT,
+                unit_number         BIGINT,
+                name                VARCHAR,
+                type                VARCHAR,
+                force               VARCHAR,
+                pos_x               INTEGER,
+                pos_y               INTEGER,
+                direction           INTEGER,
+                direction_name      VARCHAR,
+                orientation         DOUBLE PRECISION,
+                orientation_name    VARCHAR,
+                status              INTEGER,
+                status_name         VARCHAR,
+                bbox_min_x          DOUBLE PRECISION,
+                bbox_min_y          DOUBLE PRECISION,
+                bbox_max_x          DOUBLE PRECISION,
+                bbox_max_y          DOUBLE PRECISION,
+                sel_min_x           DOUBLE PRECISION,
+                sel_min_y           DOUBLE PRECISION,
+                sel_max_x           DOUBLE PRECISION,
+                sel_max_y           DOUBLE PRECISION,
+                chunk_x             INTEGER,
+                chunk_y             INTEGER
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_entity_fluids (
-            tick            BIGINT,
-            surface         VARCHAR,
-            unit_number     BIGINT,
-            fluids          JSON,      -- list of fluid boxes (name, amount, capacity, temperature)
-            chunk_x         INTEGER,
-            chunk_y         INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_entity_fluids (
+                tick            BIGINT,
+                unit_number     BIGINT,
+                fluids          JSONB,     -- list of fluid boxes (name, amount, capacity, temperature)
+                chunk_x         INTEGER,
+                chunk_y         INTEGER
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_entity_inserter (
-            tick                BIGINT,
-            surface             VARCHAR,
-            unit_number         BIGINT,   -- inserter id
-            pickup_x            DOUBLE,
-            pickup_y            DOUBLE,
-            drop_x              DOUBLE,
-            drop_y              DOUBLE,
-            pickup_target_unit  BIGINT,
-            drop_target_unit    BIGINT,
-            chunk_x             INTEGER,
-            chunk_y             INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_entity_inserter (
+                tick                BIGINT,
+                unit_number         BIGINT,   -- inserter id
+                pickup_x            INTEGER,
+                pickup_y            INTEGER,
+                drop_x              INTEGER,
+                drop_y              INTEGER,
+                pickup_target_unit  BIGINT,
+                drop_target_unit    BIGINT,
+                chunk_x             INTEGER,
+                chunk_y             INTEGER
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_entity_electric (
-            tick                BIGINT,
-            surface             VARCHAR,
-            unit_number         BIGINT,
-            electric_network_id BIGINT,
-            buffer_size         DOUBLE,
-            energy              DOUBLE,
-            chunk_x             INTEGER,
-            chunk_y             INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_entity_electric (
+                tick                BIGINT,
+                unit_number         BIGINT,
+                electric_network_id BIGINT,
+                buffer_size         DOUBLE PRECISION,
+                energy              DOUBLE PRECISION,
+                chunk_x             INTEGER,
+                chunk_y             INTEGER
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_entity_crafting (
-            tick                BIGINT,
-            surface             VARCHAR,
-            unit_number         BIGINT,
-            recipe              VARCHAR,
-            crafting_progress   DOUBLE,
-            chunk_x             INTEGER,
-            chunk_y             INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_entity_crafting (
+                tick                BIGINT,
+                unit_number         BIGINT,
+                recipe              VARCHAR,
+                crafting_progress   DOUBLE PRECISION,
+                chunk_x             INTEGER,
+                chunk_y             INTEGER
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_entity_burner (
-            tick            BIGINT,
-            surface         VARCHAR,
-            unit_number     BIGINT,
-            burner_json     JSON,      -- fuel inventories, etc.
-            chunk_x         INTEGER,
-            chunk_y         INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_entity_burner (
+                tick            BIGINT,
+                unit_number     BIGINT,
+                burner_json     JSONB,     -- fuel inventories, etc.
+                chunk_x         INTEGER,
+                chunk_y         INTEGER
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_entity_inventory (
-            tick            BIGINT,
-            surface         VARCHAR,
-            unit_number     BIGINT,
-            inventories     JSON,
-            chunk_x         INTEGER,
-            chunk_y         INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_entity_inventory (
+                tick            BIGINT,
+                unit_number     BIGINT,
+                inventories     JSONB,
+                chunk_x         INTEGER,
+                chunk_y         INTEGER
+            );
+            """
+        )
 
     # resources (solid)
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_resource_patches (
-            tick            BIGINT,
-            surface         VARCHAR,
-            patch_id        VARCHAR,
-            resource_name   VARCHAR,
-            tiles           INTEGER,
-            total_amount    BIGINT,
-            centroid_x      DOUBLE,
-            centroid_y      DOUBLE,
-            bbox_min_x      DOUBLE,
-            bbox_min_y      DOUBLE,
-            bbox_max_x      DOUBLE,
-            bbox_max_y      DOUBLE
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_resource_patches (
+                tick            BIGINT,
+                patch_id        VARCHAR,
+                resource_name   VARCHAR,
+                tiles           INTEGER,
+                total_amount    BIGINT,
+                centroid_x      DOUBLE PRECISION,
+                centroid_y      DOUBLE PRECISION,
+                bbox_min_x      DOUBLE PRECISION,
+                bbox_min_y      DOUBLE PRECISION,
+                bbox_max_x      DOUBLE PRECISION,
+                bbox_max_y      DOUBLE PRECISION
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_resource_tiles (
-            tick            BIGINT,
-            surface         VARCHAR,
-            patch_id        VARCHAR,
-            resource_name   VARCHAR,
-            tile_x          INTEGER,
-            tile_y          INTEGER,
-            len             INTEGER,
-            tile_count      INTEGER,
-            sum_amount      BIGINT
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_resource_tiles (
+                tick            BIGINT,
+                patch_id        VARCHAR,
+                resource_name   VARCHAR,
+                tile_x          INTEGER,
+                tile_y          INTEGER,
+                len             INTEGER,
+                tile_count      INTEGER,
+                sum_amount      BIGINT
+            );
+            """
+        )
 
     # crude (oil)
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_crude_patches (
-            tick            BIGINT,
-            surface         VARCHAR,
-            patch_id        VARCHAR,
-            tiles           INTEGER,
-            wells           INTEGER,
-            total_amount    BIGINT,
-            centroid_x      DOUBLE,
-            centroid_y      DOUBLE,
-            bbox_min_x      DOUBLE,
-            bbox_min_y      DOUBLE,
-            bbox_max_x      DOUBLE,
-            bbox_max_y      DOUBLE
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_crude_patches (
+                tick            BIGINT,
+                patch_id        VARCHAR,
+                tiles           INTEGER,
+                wells           INTEGER,
+                total_amount    BIGINT,
+                centroid_x      DOUBLE PRECISION,
+                centroid_y      DOUBLE PRECISION,
+                bbox_min_x      DOUBLE PRECISION,
+                bbox_min_y      DOUBLE PRECISION,
+                bbox_max_x      DOUBLE PRECISION,
+                bbox_max_y      DOUBLE PRECISION
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_crude_tiles (
-            tick            BIGINT,
-            surface         VARCHAR,
-            patch_id        VARCHAR,
-            resource_name   VARCHAR,
-            tile_x          INTEGER,
-            tile_y          INTEGER,
-            pos_x           DOUBLE,
-            pos_y           DOUBLE,
-            amount          BIGINT
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_crude_tiles (
+                tick            BIGINT,
+                patch_id        VARCHAR,
+                resource_name   VARCHAR,
+                tile_x          INTEGER,
+                tile_y          INTEGER,
+                pos_x           INTEGER,
+                pos_y           INTEGER,
+                amount          BIGINT
+            );
+            """
+        )
 
     # water
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_water_patches (
-            tick            BIGINT,
-            surface         VARCHAR,
-            patch_id        VARCHAR,
-            tiles           INTEGER,
-            centroid_x      DOUBLE,
-            centroid_y      DOUBLE,
-            bbox_min_x      DOUBLE,
-            bbox_min_y      DOUBLE,
-            bbox_max_x      DOUBLE,
-            bbox_max_y      DOUBLE
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_water_patches (
+                tick            BIGINT,
+                patch_id        VARCHAR,
+                tiles           INTEGER,
+                centroid_x      DOUBLE PRECISION,
+                centroid_y      DOUBLE PRECISION,
+                bbox_min_x      DOUBLE PRECISION,
+                bbox_min_y      DOUBLE PRECISION,
+                bbox_max_x      DOUBLE PRECISION,
+                bbox_max_y      DOUBLE PRECISION
+            );
+            """
+        )
 
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_water_tiles (
-            tick            BIGINT,
-            surface         VARCHAR,
-            patch_id        VARCHAR,
-            tile_x          INTEGER,
-            tile_y          INTEGER,
-            len             INTEGER,
-            tile_count      INTEGER
-        );
-        """
-    )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_water_tiles (
+                tick            BIGINT,
+                patch_id        VARCHAR,
+                tile_x          INTEGER,
+                tile_y          INTEGER,
+                len             INTEGER,
+                tile_count      INTEGER
+            );
+            """
+        )
 
 
 # -----------------------------
@@ -333,69 +356,78 @@ def _listify(x: Any) -> List[int]:
     return []
 
 
-def _load_belts_v2(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+def _execute_values_insert(
+    con: Connection,
+    table: str,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[Any]],
+    jsonb_cols: Optional[Sequence[str]] = None,
+) -> None:
+    if not rows:
+        return
+    jsonb_set = set(jsonb_cols or [])
+    placeholders = ["%s::jsonb" if col in jsonb_set else "%s" for col in columns]
+    template = "(" + ", ".join(placeholders) + ")"
+    with con.cursor() as cur:
+        execute_values(
+            cur,
+            f"INSERT INTO {table} (" + ", ".join(columns) + ") VALUES %s",
+            rows,
+            template=template,
+        )
+
+
+def _load_belts_v2(con: Connection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
     rows = data.get("rows", [])
     if not rows:
         return
     tick = int(meta.get("tick"))
-    surface = str(meta.get("surface"))
 
-    recs: List[Dict[str, Any]] = []
+    rows_out: List[Tuple[Any, ...]] = []
     for r in rows:
         bn = r.get("belt_neighbours", {}) or {}
         inputs = _listify(bn.get("inputs"))
         outputs = _listify(bn.get("outputs"))
         pos = r.get("position", {}) or {}
         chunk = r.get("chunk", {}) or {}
-        recs.append(
-            {
-                "tick": tick,
-                "surface": surface,
-                "unit_number": int(r.get("unit_number")),
-                "name": r.get("name"),
-                "type": r.get("type"),
-                "pos_x": float(pos.get("x")),
-                "pos_y": float(pos.get("y")),
-                "direction": int(r.get("direction", 0)),
-                "direction_name": r.get("direction_name"),
-                # keep item_lines as compact JSON string (DuckDB JSON typed on insert)
-                "item_lines": json.dumps(r.get("item_lines", [])),
-                "neigh_inputs": inputs,
-                "neigh_outputs": outputs,
-                "chunk_x": int(chunk.get("x", 0)),
-                "chunk_y": int(chunk.get("y", 0)),
-            }
+        rows_out.append(
+            (
+                tick,
+                int(r.get("unit_number")),
+                r.get("name"),
+                r.get("type"),
+                int(math.floor(float(pos.get("x")))),
+                int(math.floor(float(pos.get("y")))),
+                int(r.get("direction", 0)),
+                r.get("direction_name"),
+                json.dumps(r.get("item_lines", [])),
+                inputs,
+                outputs,
+                int(chunk.get("x", 0)),
+                int(chunk.get("y", 0)),
+            )
         )
 
-    df = pd.DataFrame.from_records(recs)
-    con.register("_df_belts", df)
-    con.execute(
-        """
-        INSERT INTO raw_belts
-        SELECT
-            tick,
-            surface,
-            unit_number,
-            name,
-            type,
-            pos_x,
-            pos_y,
-            direction,
-            direction_name,
-            item_lines::JSON,
-            neigh_inputs,
-            neigh_outputs,
-            chunk_x,
-            chunk_y
-        FROM _df_belts;
-        """
-    )
-    con.unregister("_df_belts")
+    columns = [
+        "tick",
+        "unit_number",
+        "name",
+        "type",
+        "pos_x",
+        "pos_y",
+        "direction",
+        "direction_name",
+        "item_lines",
+        "neigh_inputs",
+        "neigh_outputs",
+        "chunk_x",
+        "chunk_y",
+    ]
+    _execute_values_insert(con, "raw_belts", columns, rows_out, jsonb_cols=["item_lines"])
 
 
-def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+def _load_entities_v3(con: Connection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
     tick = int(meta.get("tick"))
-    surface = str(meta.get("surface"))
 
     def _entity_rows():
         rows = data.get("entity_rows", [])
@@ -406,13 +438,12 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             chunk = r.get("chunk", {}) or {}
             yield {
                 "tick": tick,
-                "surface": surface,
                 "unit_number": int(r.get("unit_number")),
                 "name": r.get("name"),
                 "type": r.get("type"),
                 "force": r.get("force"),
-                "pos_x": float(pos.get("x")),
-                "pos_y": float(pos.get("y")),
+                "pos_x": int(math.floor(float(pos.get("x", 0.0)))),
+                "pos_y": int(math.floor(float(pos.get("y", 0.0)))),
                 "direction": int(r.get("direction", 0)),
                 "direction_name": r.get("direction_name"),
                 "orientation": float(r.get("orientation", 0.0)),
@@ -437,7 +468,6 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             chunk = r.get("chunk", {}) or {}
             yield {
                 "tick": tick,
-                "surface": surface,
                 "unit_number": int(r.get("unit_number")),
                 "fluids": json.dumps(r.get("fluids", [])),
                 "chunk_x": int(chunk.get("x", 0)),
@@ -453,12 +483,11 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             chunk = r.get("chunk", {}) or {}
             yield {
                 "tick": tick,
-                "surface": surface,
                 "unit_number": int(r.get("unit_number")),
-                "pickup_x": float(pick.get("x", 0.0)),
-                "pickup_y": float(pick.get("y", 0.0)),
-                "drop_x": float(drop.get("x", 0.0)),
-                "drop_y": float(drop.get("y", 0.0)),
+                "pickup_x": int(math.floor(float(pick.get("x", 0.0)))),
+                "pickup_y": int(math.floor(float(pick.get("y", 0.0)))),
+                "drop_x": int(math.floor(float(drop.get("x", 0.0)))),
+                "drop_y": int(math.floor(float(drop.get("y", 0.0)))),
                 "pickup_target_unit": int(ins.get("pickup_target_unit")) if ins.get("pickup_target_unit") is not None else None,
                 "drop_target_unit": int(ins.get("drop_target_unit")) if ins.get("drop_target_unit") is not None else None,
                 "chunk_x": int(chunk.get("x", 0)),
@@ -471,7 +500,6 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             chunk = r.get("chunk", {}) or {}
             yield {
                 "tick": tick,
-                "surface": surface,
                 "unit_number": int(r.get("unit_number")),
                 "electric_network_id": int(r.get("electric_network_id", 0)),
                 "buffer_size": float(r.get("electric_buffer_size", 0.0)),
@@ -486,7 +514,6 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             chunk = r.get("chunk", {}) or {}
             yield {
                 "tick": tick,
-                "surface": surface,
                 "unit_number": int(r.get("unit_number")),
                 "recipe": r.get("recipe"),
                 "crafting_progress": float(r.get("crafting_progress", 0.0)),
@@ -500,7 +527,6 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             chunk = r.get("chunk", {}) or {}
             yield {
                 "tick": tick,
-                "surface": surface,
                 "unit_number": int(r.get("unit_number")),
                 "burner_json": json.dumps(r.get("burner", {})),
                 "chunk_x": int(chunk.get("x", 0)),
@@ -513,7 +539,6 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             chunk = r.get("chunk", {}) or {}
             yield {
                 "tick": tick,
-                "surface": surface,
                 "unit_number": int(r.get("unit_number")),
                 "inventories": json.dumps(r.get("inventories", {})),
                 "chunk_x": int(chunk.get("x", 0)),
@@ -521,193 +546,328 @@ def _load_entities_v3(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str,
             }
 
     # bulk insert helpers
-    def _insert_df(table: str, rows_iter: Iterable[Dict[str, Any]]):
-        lst = list(rows_iter)
-        if not lst:
-            return
-        df = pd.DataFrame.from_records(lst)
-        con.register("_df_tmp", df)
-        cols = ", ".join(df.columns)
-        con.execute(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM _df_tmp;")
-        con.unregister("_df_tmp")
+    def _insert_rows(table: str, columns: Sequence[str], rows_iter: Iterable[Dict[str, Any]], jsonb_cols: Optional[Sequence[str]] = None):
+        buf: List[Tuple[Any, ...]] = []
+        for r in rows_iter:
+            buf.append(tuple(r[c] for c in columns))
+        _execute_values_insert(con, table, columns, buf, jsonb_cols=jsonb_cols)
 
-    _insert_df("raw_entities", _entity_rows())
-    _insert_df("raw_entity_fluids", _fluids_rows())
-    _insert_df("raw_entity_inserter", _inserter_rows())
-    _insert_df("raw_entity_electric", _electric_rows())
-    _insert_df("raw_entity_crafting", _crafting_rows())
-    _insert_df("raw_entity_burner", _burner_rows())
-    _insert_df("raw_entity_inventory", _inventory_rows())
+    _insert_rows(
+        "raw_entities",
+        [
+            "tick",
+            "unit_number",
+            "name",
+            "type",
+            "force",
+            "pos_x",
+            "pos_y",
+            "direction",
+            "direction_name",
+            "orientation",
+            "orientation_name",
+            "status",
+            "status_name",
+            "bbox_min_x",
+            "bbox_min_y",
+            "bbox_max_x",
+            "bbox_max_y",
+            "sel_min_x",
+            "sel_min_y",
+            "sel_max_x",
+            "sel_max_y",
+            "chunk_x",
+            "chunk_y",
+        ],
+        _entity_rows(),
+    )
+
+    _insert_rows(
+        "raw_entity_fluids",
+        ["tick", "unit_number", "fluids", "chunk_x", "chunk_y"],
+        _fluids_rows(),
+        jsonb_cols=["fluids"],
+    )
+
+    _insert_rows(
+        "raw_entity_inserter",
+        [
+            "tick",
+            "unit_number",
+            "pickup_x",
+            "pickup_y",
+            "drop_x",
+            "drop_y",
+            "pickup_target_unit",
+            "drop_target_unit",
+            "chunk_x",
+            "chunk_y",
+        ],
+        _inserter_rows(),
+    )
+
+    _insert_rows(
+        "raw_entity_electric",
+        [
+            "tick",
+            "unit_number",
+            "electric_network_id",
+            "buffer_size",
+            "energy",
+            "chunk_x",
+            "chunk_y",
+        ],
+        _electric_rows(),
+    )
+
+    _insert_rows(
+        "raw_entity_crafting",
+        [
+            "tick",
+            "unit_number",
+            "recipe",
+            "crafting_progress",
+            "chunk_x",
+            "chunk_y",
+        ],
+        _crafting_rows(),
+    )
+
+    _insert_rows(
+        "raw_entity_burner",
+        ["tick", "unit_number", "burner_json", "chunk_x", "chunk_y"],
+        _burner_rows(),
+        jsonb_cols=["burner_json"],
+    )
+
+    _insert_rows(
+        "raw_entity_inventory",
+        ["tick", "unit_number", "inventories", "chunk_x", "chunk_y"],
+        _inventory_rows(),
+        jsonb_cols=["inventories"],
+    )
 
 
-def _load_resources_v1(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+def _load_resources_v1(con: Connection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
     tick = int(meta.get("tick"))
-    surface = str(meta.get("surface"))
 
     patches = data.get("patch", [])
     if patches:
-        recs = []
+        rows_out: List[Tuple[Any, ...]] = []
         for p in patches:
             bbox = p.get("bbox", {}) or {}
             centroid = p.get("centroid", {}) or {}
-            recs.append(
-                {
-                    "tick": tick,
-                    "surface": surface,
-                    "patch_id": p.get("patch_id"),
-                    "resource_name": p.get("resource_name"),
-                    "tiles": int(p.get("tiles", 0)),
-                    "total_amount": int(p.get("total_amount", 0)),
-                    "centroid_x": float(centroid.get("x", 0.0)),
-                    "centroid_y": float(centroid.get("y", 0.0)),
-                    "bbox_min_x": float(bbox.get("min_x", 0.0)),
-                    "bbox_min_y": float(bbox.get("min_y", 0.0)),
-                    "bbox_max_x": float(bbox.get("max_x", 0.0)),
-                    "bbox_max_y": float(bbox.get("max_y", 0.0)),
-                }
+            rows_out.append(
+                (
+                    tick,
+                    p.get("patch_id"),
+                    p.get("resource_name"),
+                    int(p.get("tiles", 0)),
+                    int(p.get("total_amount", 0)),
+                    float(centroid.get("x", 0.0)),
+                    float(centroid.get("y", 0.0)),
+                    float(bbox.get("min_x", 0.0)),
+                    float(bbox.get("min_y", 0.0)),
+                    float(bbox.get("max_x", 0.0)),
+                    float(bbox.get("max_y", 0.0)),
+                )
             )
-        df = pd.DataFrame.from_records(recs)
-        con.register("_df_res_p", df)
-        con.execute(
-            """
-            INSERT INTO raw_resource_patches
-            SELECT * FROM _df_res_p;
-            """
+        _execute_values_insert(
+            con,
+            "raw_resource_patches",
+            [
+                "tick",
+                "patch_id",
+                "resource_name",
+                "tiles",
+                "total_amount",
+                "centroid_x",
+                "centroid_y",
+                "bbox_min_x",
+                "bbox_min_y",
+                "bbox_max_x",
+                "bbox_max_y",
+            ],
+            rows_out,
         )
-        con.unregister("_df_res_p")
 
     rows = data.get("rows", [])
     if rows:
-        recs = []
+        rows_out = []
         for r in rows:
-            recs.append(
-                {
-                    "tick": tick,
-                    "surface": surface,
-                    "patch_id": r.get("patch_id"),
-                    "resource_name": r.get("resource_name"),
-                    "tile_x": int(r.get("x")),
-                    "tile_y": int(r.get("y")),
-                    "len": int(r.get("len", 0)),
-                    "tile_count": int(r.get("tile_count", 0)),
-                    "sum_amount": int(r.get("sum_amount", 0)),
-                }
+            rows_out.append(
+                (
+                    tick,
+                    r.get("patch_id"),
+                    r.get("resource_name"),
+                    int(r.get("x")),
+                    int(r.get("y")),
+                    int(r.get("len", 0)),
+                    int(r.get("tile_count", 0)),
+                    int(r.get("sum_amount", 0)),
+                )
             )
-        df = pd.DataFrame.from_records(recs)
-        con.register("_df_res_r", df)
-        con.execute(
-            """
-            INSERT INTO raw_resource_tiles
-            SELECT * FROM _df_res_r;
-            """
+        _execute_values_insert(
+            con,
+            "raw_resource_tiles",
+            [
+                "tick",
+                "patch_id",
+                "resource_name",
+                "tile_x",
+                "tile_y",
+                "len",
+                "tile_count",
+                "sum_amount",
+            ],
+            rows_out,
         )
-        con.unregister("_df_res_r")
 
 
-def _load_crude_v1(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+def _load_crude_v1(con: Connection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
     tick = int(meta.get("tick"))
-    surface = str(meta.get("surface"))
 
     patches = data.get("patch", [])
     if patches:
-        recs = []
+        rows_out: List[Tuple[Any, ...]] = []
         for p in patches:
             bbox = p.get("bbox", {}) or {}
             centroid = p.get("centroid", {}) or {}
-            recs.append(
-                {
-                    "tick": tick,
-                    "surface": surface,
-                    "patch_id": p.get("patch_id"),
-                    "tiles": int(p.get("tiles", 0)),
-                    "wells": int(p.get("wells", 0)),
-                    "total_amount": int(p.get("total_amount", 0)),
-                    "centroid_x": float(centroid.get("x", 0.0)),
-                    "centroid_y": float(centroid.get("y", 0.0)),
-                    "bbox_min_x": float(bbox.get("min_x", 0.0)),
-                    "bbox_min_y": float(bbox.get("min_y", 0.0)),
-                    "bbox_max_x": float(bbox.get("max_x", 0.0)),
-                    "bbox_max_y": float(bbox.get("max_y", 0.0)),
-                }
+            rows_out.append(
+                (
+                    tick,
+                    p.get("patch_id"),
+                    int(p.get("tiles", 0)),
+                    int(p.get("wells", 0)),
+                    int(p.get("total_amount", 0)),
+                    float(centroid.get("x", 0.0)),
+                    float(centroid.get("y", 0.0)),
+                    float(bbox.get("min_x", 0.0)),
+                    float(bbox.get("min_y", 0.0)),
+                    float(bbox.get("max_x", 0.0)),
+                    float(bbox.get("max_y", 0.0)),
+                )
             )
-        df = pd.DataFrame.from_records(recs)
-        con.register("_df_cru_p", df)
-        con.execute("INSERT INTO raw_crude_patches SELECT * FROM _df_cru_p;")
-        con.unregister("_df_cru_p")
+        _execute_values_insert(
+            con,
+            "raw_crude_patches",
+            [
+                "tick",
+                "patch_id",
+                "tiles",
+                "wells",
+                "total_amount",
+                "centroid_x",
+                "centroid_y",
+                "bbox_min_x",
+                "bbox_min_y",
+                "bbox_max_x",
+                "bbox_max_y",
+            ],
+            rows_out,
+        )
 
     rows = data.get("rows", [])
     if rows:
-        recs = []
+        rows_out = []
         for r in rows:
             tile = r.get("tile", {}) or {}
             pos = r.get("position", {}) or {}
-            recs.append(
-                {
-                    "tick": tick,
-                    "surface": surface,
-                    "patch_id": r.get("patch_id"),
-                    "resource_name": r.get("resource_name"),
-                    "tile_x": int(tile.get("x", 0)),
-                    "tile_y": int(tile.get("y", 0)),
-                    "pos_x": float(pos.get("x", 0.0)),
-                    "pos_y": float(pos.get("y", 0.0)),
-                    "amount": int(r.get("amount", 0)),
-                }
+            rows_out.append(
+                (
+                    tick,
+                    r.get("patch_id"),
+                    r.get("resource_name"),
+                    int(tile.get("x", 0)),
+                    int(tile.get("y", 0)),
+                    int(math.floor(float(pos.get("x", 0.0)))),
+                    int(math.floor(float(pos.get("y", 0.0)))),
+                    int(r.get("amount", 0)),
+                )
             )
-        df = pd.DataFrame.from_records(recs)
-        con.register("_df_cru_r", df)
-        con.execute("INSERT INTO raw_crude_tiles SELECT * FROM _df_cru_r;")
-        con.unregister("_df_cru_r")
+        _execute_values_insert(
+            con,
+            "raw_crude_tiles",
+            [
+                "tick",
+                "patch_id",
+                "resource_name",
+                "tile_x",
+                "tile_y",
+                "pos_x",
+                "pos_y",
+                "amount",
+            ],
+            rows_out,
+        )
 
 
-def _load_water_v1(con: duckdb.DuckDBPyConnection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+def _load_water_v1(con: Connection, path: str, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
     tick = int(meta.get("tick"))
-    surface = str(meta.get("surface"))
 
     patches = data.get("patch", [])
     if patches:
-        recs = []
+        rows_out: List[Tuple[Any, ...]] = []
         for p in patches:
             bbox = p.get("bbox", {}) or {}
             centroid = p.get("centroid", {}) or {}
-            recs.append(
-                {
-                    "tick": tick,
-                    "surface": surface,
-                    "patch_id": p.get("patch_id"),
-                    "tiles": int(p.get("tiles", 0)),
-                    "centroid_x": float(centroid.get("x", 0.0)),
-                    "centroid_y": float(centroid.get("y", 0.0)),
-                    "bbox_min_x": float(bbox.get("min_x", 0.0)),
-                    "bbox_min_y": float(bbox.get("min_y", 0.0)),
-                    "bbox_max_x": float(bbox.get("max_x", 0.0)),
-                    "bbox_max_y": float(bbox.get("max_y", 0.0)),
-                }
+            rows_out.append(
+                (
+                    tick,
+                    p.get("patch_id"),
+                    int(p.get("tiles", 0)),
+                    float(centroid.get("x", 0.0)),
+                    float(centroid.get("y", 0.0)),
+                    float(bbox.get("min_x", 0.0)),
+                    float(bbox.get("min_y", 0.0)),
+                    float(bbox.get("max_x", 0.0)),
+                    float(bbox.get("max_y", 0.0)),
+                )
             )
-        df = pd.DataFrame.from_records(recs)
-        con.register("_df_wat_p", df)
-        con.execute("INSERT INTO raw_water_patches SELECT * FROM _df_wat_p;")
-        con.unregister("_df_wat_p")
+        _execute_values_insert(
+            con,
+            "raw_water_patches",
+            [
+                "tick",
+                "patch_id",
+                "tiles",
+                "centroid_x",
+                "centroid_y",
+                "bbox_min_x",
+                "bbox_min_y",
+                "bbox_max_x",
+                "bbox_max_y",
+            ],
+            rows_out,
+        )
 
     rows = data.get("rows", [])
     if rows:
-        recs = []
+        rows_out = []
         for r in rows:
-            recs.append(
-                {
-                    "tick": tick,
-                    "surface": surface,
-                    "patch_id": r.get("patch_id"),
-                    "tile_x": int(r.get("x", 0)),
-                    "tile_y": int(r.get("y", 0)),
-                    "len": int(r.get("len", 0)),
-                    "tile_count": int(r.get("tile_count", 0)),
-                }
+            rows_out.append(
+                (
+                    tick,
+                    r.get("patch_id"),
+                    int(r.get("x", 0)),
+                    int(r.get("y", 0)),
+                    int(r.get("len", 0)),
+                    int(r.get("tile_count", 0)),
+                )
             )
-        df = pd.DataFrame.from_records(recs)
-        con.register("_df_wat_r", df)
-        con.execute("INSERT INTO raw_water_tiles SELECT * FROM _df_wat_r;")
-        con.unregister("_df_wat_r")
+        _execute_values_insert(
+            con,
+            "raw_water_tiles",
+            [
+                "tick",
+                "patch_id",
+                "tile_x",
+                "tile_y",
+                "len",
+                "tile_count",
+            ],
+            rows_out,
+        )
 
 
 # Dispatch table
@@ -720,7 +880,7 @@ _LOADER_BY_VERSION = {
 }
 
 
-def load_snapshot_file(con: duckdb.DuckDBPyConnection, path: str) -> Optional[str]:
+def load_snapshot_file(con: Connection, path: str) -> Optional[str]:
     """Load a single JSON snapshot. Returns the schema_version used or None."""
     with open(path, "r") as f:
         payload = json.load(f)
@@ -737,8 +897,13 @@ def load_snapshot_file(con: duckdb.DuckDBPyConnection, path: str) -> Optional[st
     return str(version)
 
 
-def load_snapshot_dir(con: duckdb.DuckDBPyConnection, directory: str) -> List[Tuple[str, str]]:
+def load_snapshot_dir(con: Connection, directory: str, clear_existing: bool = True) -> List[Tuple[str, str]]:
     """Load all *.json snapshots from a directory. Returns list of (file, version)."""
+    if clear_existing:
+        print("Clearing existing data from raw tables...")
+        clear_raw_tables(con)
+        print("Existing data cleared.")
+    
     loaded: List[Tuple[str, str]] = []
     for name in sorted(os.listdir(directory)):
         if not name.endswith(".json"):
@@ -757,12 +922,13 @@ def load_snapshot_dir(con: duckdb.DuckDBPyConnection, directory: str) -> List[Tu
 if __name__ == "__main__":
     import argparse
 
-    ap = argparse.ArgumentParser(description="Load Factorio snapshot JSONs into DuckDB and create views/macros.")
+    ap = argparse.ArgumentParser(description="Load Factorio snapshot JSONs into PostgreSQL raw tables.")
     ap.add_argument("snapshot_dir", help="Directory of *.json snapshots")
-    ap.add_argument("--db", dest="db", default=DEFAULT_DB_PATH, help="DuckDB path (default: factoryverse.duckdb)")
+    ap.add_argument("--dsn", dest="dsn", default=DEFAULT_PG_DSN, help="PostgreSQL DSN (default uses PG_* env: user, password, host, port, db)")
+    ap.add_argument("--no-clear", dest="no_clear", action="store_true", help="Skip clearing existing data before loading")
     args = ap.parse_args()
 
-    con = connect_db(args.db)
+    con = connect_db(args.dsn)
     ensure_schema(con)
-    loaded = load_snapshot_dir(con, args.snapshot_dir)
-    print(f"Loaded {len(loaded)} snapshots into {args.db}")
+    loaded = load_snapshot_dir(con, args.snapshot_dir, clear_existing=not args.no_clear)
+    print(f"Loaded {len(loaded)} snapshots into PostgreSQL")

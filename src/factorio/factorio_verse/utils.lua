@@ -231,6 +231,12 @@ function M.orientation_to_name(orientation)
     return names[idx + 1]
 end
 
+function M.triple_print(print_str)
+    game.print(print_str)
+    log(print_str)
+    rcon.print(print_str)
+end
+
 -- SCHEMA-DRIVEN FLATTENING UTILITIES -----------------------------------------
 
 --- Factorio-specific flattening patterns for common data structures

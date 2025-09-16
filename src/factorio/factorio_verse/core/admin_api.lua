@@ -4,12 +4,6 @@ local ResourceSnapshot = require("snapshots.ResourceSnapshot")
 local utils = require("utils")
 
 
-local triple_print = function(print_str)
-    game.print(print_str)
-    log(print_str)
-    rcon.print(print_str)
-end
-
 local M = {}
 M.helpers = {}
 M.commands = {}
@@ -24,18 +18,18 @@ M.helpers.force_clear_agents = function()
 end
 
 M.helpers.test = function()
-    triple_print("Testing say hiii")
+    utils.triple_print("Testing say hiii")
 end
 
 M.helpers.print_agent_inventory = function(agent_index)
     local agent = GameState:new():agent_state():get_agent(agent_index)
     if not agent or not agent.valid then
-        rcon.print('{"error": "Agent character not found or invalid"}')
+        utils.triple_print('{"error": "Agent character not found or invalid"}')
         return
     end
     local inv = agent.get_main_inventory and agent:get_main_inventory()
     if not inv then
-        rcon.print('{"error": "No main inventory for agent"}')
+        utils.triple_print('{"error": "No main inventory for agent"}')
         return
     end
     local items = {}
@@ -48,7 +42,7 @@ M.helpers.print_agent_inventory = function(agent_index)
             })
         end
     end
-    rcon.print(helpers.table_to_json({inventory = items}))
+    utils.triple_print(helpers.table_to_json({inventory = items}))
 end
 
 
@@ -67,9 +61,9 @@ end
 M.helpers.clear_script_output = function()
     local success, _ = pcall(helpers.remove_path, "script-output/factoryverse")
     if success then
-        triple_print("[helpers.clear_script_output] Successfully cleared script-output/factoryverse directory")
+        utils.triple_print("[helpers.clear_script_output] Successfully cleared script-output/factoryverse directory")
     else
-        triple_print("[helpers.clear_script_output] Failed to clear script-output/factoryverse directory (may not exist)")
+        utils.triple_print("[helpers.clear_script_output] Failed to clear script-output/factoryverse directory (may not exist)")
     end
 end
 
@@ -95,7 +89,7 @@ M.helpers.reset_agents_state = function()
     storage.mine_resource_jobs = nil
     storage.agent_selection = nil
 
-    triple_print("[helpers.reset_agents_state] Stopped all agent walking/mining and cleared pending jobs/intents.")
+    utils.triple_print("[helpers.reset_agents_state] Stopped all agent walking/mining and cleared pending jobs/intents.")
 end
 
 M.load_helpers = function()
@@ -135,20 +129,20 @@ end
 M.commands.print_speed = function()
     commands.add_command("print_speed", "Print the game speed", function()
         local print_str = helpers.table_to_json({ speed = game.speed })
-        triple_print(print_str)
+        utils.triple_print(print_str)
     end)
 end
 
 M.commands.is_paused = function()
     commands.add_command("is_paused", "Print if the game is paused", function()
         local print_str = helpers.table_to_json({ paused = game.tick_paused })
-        triple_print(print_str)
+        utils.triple_print(print_str)
     end)
 end
 
 M.commands.reload_scripts = function()
     commands.add_command("reload_scripts", "Reload the scripts", function()
-        triple_print("Reloading scripts")
+        utils.triple_print("Reloading scripts")
         game.reload_script()
     end)
 end
