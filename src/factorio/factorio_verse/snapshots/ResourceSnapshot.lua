@@ -159,11 +159,50 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
                     chunk_tiles = chunk_tiles + 1
                 end
             end
+
+            -- Process tree entities in this chunk
+            local tree_entities = surface.find_entities_filtered({
+                area = chunk.area,
+                type = "tree"
+            })
+            for _, entity in ipairs(tree_entities) do
+                if entity.valid then
+                    -- Create tree data
+                    local tree_data = {
+                        name = entity.name,
+                        position = entity.position,
+                        bounding_box = {
+                            min_x = entity.bounding_box.left_top.x,
+                            min_y = entity.bounding_box.left_top.y,
+                            max_x = entity.bounding_box.right_bottom.x,
+                            max_y = entity.bounding_box.right_bottom.y
+                        }
+                    }
+                    
+                    -- Use existing buffer system with "trees" schema
+                    local flattened = self:flatten_data("trees", tree_data)
+                    local headers = self:get_headers("trees")
+                    local csv_row = self:_table_to_csv_row(flattened, headers)
+                    
+                    -- Add to buffer with special key for trees
+                    local k = "trees_" .. chunk.x .. "_" .. chunk.y
+                    local b = BUFS[k]
+                    if not b then
+                        b = { rows = {}, count = 0, chunk_x = chunk.x, chunk_y = chunk.y, surface = 1, type = "trees" }
+                        BUFS[k] = b
+                    end
+                    b.count = b.count + 1
+                    b.rows[b.count] = csv_row .. "\n"
+                    
+                    chunk_tiles = chunk_tiles + 1
+                end
+            end
         end
 
         -- Flush this chunk's buffer immediately
         self:_flush_chunk_buffer(chunk.x, chunk.y)
         self:_flush_rocks_buffer(chunk.x, chunk.y)
+        self:_flush_trees_buffer(chunk.x, chunk.y)
 
         total_tiles = total_tiles + chunk_tiles
     end
@@ -335,6 +374,40 @@ function ResourceSnapshot:_flush_rocks_buffer(chunk_x, chunk_y)
             tick = game and game.tick or 0,
             metadata = { schema_version = "rocks.raw.v1" }
         }, "rocks", payload, { headers = headers })
+    end
+
+    -- Clear this chunk's buffer
+    BUFS[k] = nil
+end
+
+--- Flush a specific tree chunk's buffer
+--- @param chunk_x number - chunk x coordinate
+--- @param chunk_y number - chunk y coordinate
+function ResourceSnapshot:_flush_trees_buffer(chunk_x, chunk_y)
+    local k = "trees_" .. chunk_x .. "_" .. chunk_y
+    local b = BUFS[k]
+    if not b or b.count == 0 then return end
+
+    -- Get headers and create proper CSV with header row
+    local headers = self:get_headers("trees")
+    local header_row = table.concat(headers, ",") .. "\n"
+    local payload = header_row .. table.concat(b.rows, "", 1, b.count)
+
+    if USE_UDP then
+        -- Split into safe datagrams (~8KB)
+        local chunk_size = 8192
+        for i = 1, #payload, chunk_size do
+            helpers.send_udp(UDP_PORT, string.sub(payload, i, i + chunk_size - 1))
+        end
+    else
+        -- Use emit_csv for direct CSV file writing
+        self:emit_csv({
+            output_dir = "script-output/factoryverse",
+            chunk_x = chunk_x,
+            chunk_y = chunk_y,
+            tick = game and game.tick or 0,
+            metadata = { schema_version = "trees.raw.v1" }
+        }, "trees", payload, { headers = headers })
     end
 
     -- Clear this chunk's buffer

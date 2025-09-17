@@ -176,6 +176,28 @@ local ComponentSchema = {
             chunk = { x = "chunk_x", y = "chunk_y" },
             resources = "resource_json" -- Map to _json suffixed field
         }
+    },
+
+    -- Trees component (for ResourceSnapshot)
+    trees = {
+        fields = {
+            name = "string",
+            position_x = "number",
+            position_y = "number",
+            bounding_box_min_x = "number",
+            bounding_box_min_y = "number",
+            bounding_box_max_x = "number",
+            bounding_box_max_y = "number"
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            bounding_box = {
+                min_x = "bounding_box_min_x",
+                min_y = "bounding_box_min_y",
+                max_x = "bounding_box_max_x",
+                max_y = "bounding_box_max_y"
+            }
+        }
     }
 }
 
