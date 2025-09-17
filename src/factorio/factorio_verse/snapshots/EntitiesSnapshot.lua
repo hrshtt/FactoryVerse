@@ -1,5 +1,29 @@
 local Snapshot = require "core.Snapshot"
+
 local utils = require "utils"
+
+-- Normalize Factorio item identifiers to a plain string name.
+-- Handles: string, LuaItemPrototype, and 2.0 ItemIDAndQualityIDPair (read form).
+local function _item_id_to_name(obj)
+    if obj == nil then return nil end
+    if type(obj) == "string" then return obj end
+    local t = type(obj)
+    if t == "userdata" or t == "table" then
+        -- Direct prototype
+        if obj.object_name == "LuaItemPrototype" and obj.name then
+            return obj.name
+        end
+        -- ItemIDAndQualityIDPair: .name may be string or LuaItemPrototype
+        local n = rawget(obj, "name")
+        if type(n) == "string" then
+            return n
+        end
+        if (type(n) == "userdata" or type(n) == "table") and n.object_name == "LuaItemPrototype" and n.name then
+            return n.name
+        end
+    end
+    return nil
+end
 
 --- EntitiesSnapshot: Dumps raw entities and associated data chunk-wise
 --- Includes inventories, fluidboxes, energy/burner info, and basic metadata
@@ -596,6 +620,8 @@ function EntitiesSnapshot:_array_to_csv(data, headers)
     return table.concat(csv_lines, "\n") .. "\n"
 end
 
+--- @param e LuaEntity
+--- @return table|nil
 function EntitiesSnapshot:_serialize_entity(e)
     if not (e and e.valid) then return nil end
 
@@ -657,8 +683,12 @@ function EntitiesSnapshot:_serialize_entity(e)
             if burner then
                 local b = {}
                 if burner.remaining_burning_fuel ~= nil then b.remaining_burning_fuel = burner.remaining_burning_fuel end
-                if burner.currently_burning and burner.currently_burning.name then
-                    b.currently_burning = burner.currently_burning.name
+                do
+                    local cb = burner.currently_burning
+                    if cb then
+                        local item_name = _item_id_to_name(rawget(cb, "name")) or _item_id_to_name(cb)
+                        if item_name then b.currently_burning = item_name end
+                    end
                 end
                 local inv = {}
                 local fi = burner.inventory
