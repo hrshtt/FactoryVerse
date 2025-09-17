@@ -14,9 +14,9 @@ function EntitiesSnapshot:new()
     local instance = Snapshot:new()
     -- Per-run caches to avoid repeated prototype/method work
     instance._cache = {
-        inv = {},          -- [entity_name] -> { {name, id}, ... } inventory indices that exist
-        fluid = {},        -- [entity_name] -> { [index] = capacity }
-        belt = {},         -- [entity_name] -> max transport line index
+        inv = {},   -- [entity_name] -> { {name, id}, ... } inventory indices that exist
+        fluid = {}, -- [entity_name] -> { [index] = capacity }
+        belt = {},  -- [entity_name] -> max transport line index
     }
     setmetatable(instance, self)
     ---@cast instance EntitiesSnapshot
@@ -33,13 +33,13 @@ function EntitiesSnapshot:take()
 
     -- Engine-side allowlist to avoid creating wrappers for belts/naturals
     local allowed_types = {
-        "assembling-machine","furnace","mining-drill","inserter","lab","roboport","beacon",
-        "electric-pole","radar","pipe","pipe-to-ground","storage-tank","offshore-pump",
-        "chemical-plant","oil-refinery","boiler","generator","pump","pumpjack","rocket-silo",
-        "container","logistic-container","arithmetic-combinator","decider-combinator",
-        "constant-combinator","lamp","reactor","heat-pipe","accumulator",
-        "electric-energy-interface","programmable-speaker","train-stop","rail-signal",
-        "rail-chain-signal","locomotive","cargo-wagon","fluid-wagon"
+        "assembling-machine", "furnace", "mining-drill", "inserter", "lab", "roboport", "beacon",
+        "electric-pole", "radar", "pipe", "pipe-to-ground", "storage-tank", "offshore-pump",
+        "chemical-plant", "oil-refinery", "boiler", "generator", "pump", "pumpjack", "rocket-silo",
+        "container", "logistic-container", "arithmetic-combinator", "decider-combinator",
+        "constant-combinator", "lamp", "reactor", "heat-pipe", "accumulator",
+        "electric-energy-interface", "programmable-speaker", "train-stop", "rail-signal",
+        "rail-chain-signal", "locomotive", "cargo-wagon", "fluid-wagon"
     }
 
     -- Componentized outputs
@@ -257,7 +257,7 @@ function EntitiesSnapshot:take()
     end
 
     -- Emit CSV files for each chunk and component type
-    local base_opts = { 
+    local base_opts = {
         output_dir = "script-output/factoryverse",
         tick = output.timestamp,
         metadata = {
@@ -280,7 +280,8 @@ function EntitiesSnapshot:take()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "entities", self:_array_to_csv(flattened_entities, entity_headers), { headers = entity_headers })
+        self:emit_csv(opts, "entities", self:_array_to_csv(flattened_entities, entity_headers),
+            { headers = entity_headers })
     end
 
     -- Emit electric by chunk
@@ -297,7 +298,8 @@ function EntitiesSnapshot:take()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "entities_electric", self:_array_to_csv(flattened_electric, electric_headers), { headers = electric_headers })
+        self:emit_csv(opts, "entities_electric", self:_array_to_csv(flattened_electric, electric_headers),
+            { headers = electric_headers })
     end
 
     -- Emit crafting by chunk
@@ -314,7 +316,8 @@ function EntitiesSnapshot:take()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "entities_crafting", self:_array_to_csv(flattened_crafting, crafting_headers), { headers = crafting_headers })
+        self:emit_csv(opts, "entities_crafting", self:_array_to_csv(flattened_crafting, crafting_headers),
+            { headers = crafting_headers })
     end
 
     -- Emit burner by chunk
@@ -331,7 +334,8 @@ function EntitiesSnapshot:take()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "entities_burner", self:_array_to_csv(flattened_burner, burner_headers), { headers = burner_headers })
+        self:emit_csv(opts, "entities_burner", self:_array_to_csv(flattened_burner, burner_headers),
+            { headers = burner_headers })
     end
 
     -- Emit inventory by chunk
@@ -348,7 +352,8 @@ function EntitiesSnapshot:take()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "entities_inventory", self:_array_to_csv(flattened_inventory, inventory_headers), { headers = inventory_headers })
+        self:emit_csv(opts, "entities_inventory", self:_array_to_csv(flattened_inventory, inventory_headers),
+            { headers = inventory_headers })
     end
 
     -- Emit fluids by chunk
@@ -365,7 +370,8 @@ function EntitiesSnapshot:take()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "entities_fluids", self:_array_to_csv(flattened_fluids, fluids_headers), { headers = fluids_headers })
+        self:emit_csv(opts, "entities_fluids", self:_array_to_csv(flattened_fluids, fluids_headers),
+            { headers = fluids_headers })
     end
 
     -- Emit inserter by chunk
@@ -382,7 +388,8 @@ function EntitiesSnapshot:take()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "entities_inserter", self:_array_to_csv(flattened_inserter, inserter_headers), { headers = inserter_headers })
+        self:emit_csv(opts, "entities_inserter", self:_array_to_csv(flattened_inserter, inserter_headers),
+            { headers = inserter_headers })
     end
 
     self:print_summary(output, function(out)
@@ -464,12 +471,12 @@ function EntitiesSnapshot:take_belts()
                     if bn then
                         if bn.inputs then
                             for _, n in ipairs(bn.inputs) do
-                                if n and n.valid and n.unit_number then inputs_ids[#inputs_ids+1] = n.unit_number end
+                                if n and n.valid and n.unit_number then inputs_ids[#inputs_ids + 1] = n.unit_number end
                             end
                         end
                         if bn.outputs then
                             for _, n in ipairs(bn.outputs) do
-                                if n and n.valid and n.unit_number then outputs_ids[#outputs_ids+1] = n.unit_number end
+                                if n and n.valid and n.unit_number then outputs_ids[#outputs_ids + 1] = n.unit_number end
                             end
                         end
                     end
@@ -477,7 +484,7 @@ function EntitiesSnapshot:take_belts()
                     local belt_to_ground_type = nil
                     if e.type == "underground-belt" then
                         belt_to_ground_type = e.belt_to_ground_type
-                        local un = e.neighbours  -- for underground belts this is the other end (or nil)
+                        local un = e.neighbours -- for underground belts this is the other end (or nil)
                         if un and un.valid and un.unit_number then underground_other = un.unit_number end
                     end
 
@@ -489,7 +496,8 @@ function EntitiesSnapshot:take_belts()
                         direction = e.direction,
                         direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
                         item_lines = item_lines,
-                        belt_neighbours = ( (#inputs_ids>0 or #outputs_ids>0) and { inputs = inputs_ids, outputs = outputs_ids } ) or nil,
+                        belt_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or
+                        nil,
                         belt_to_ground_type = belt_to_ground_type,
                         underground_neighbour_unit = underground_other,
                         chunk = chunk_field,
@@ -512,7 +520,7 @@ function EntitiesSnapshot:take_belts()
     end
 
     -- Emit CSV for belts by chunk
-    local base_opts = { 
+    local base_opts = {
         output_dir = "script-output/factoryverse",
         tick = output.timestamp,
         metadata = {
@@ -580,25 +588,23 @@ function EntitiesSnapshot:_array_to_csv(data, headers)
     if #data == 0 then
         return table.concat(headers, ",") .. "\n"
     end
-    
-    local csv_lines = {table.concat(headers, ",")}
+
+    local csv_lines = { table.concat(headers, ",") }
     for _, row in ipairs(data) do
         table.insert(csv_lines, self:_table_to_csv_row(row, headers))
     end
     return table.concat(csv_lines, "\n") .. "\n"
 end
 
-
-
 function EntitiesSnapshot:_serialize_entity(e)
     if not (e and e.valid) then return nil end
 
-    local proto = e.prototype
-    local cache_inv  = self._cache and self._cache.inv or nil
+    local proto       = e.prototype
+    local cache_inv   = self._cache and self._cache.inv or nil
     local cache_fluid = self._cache and self._cache.fluid or nil
-    local ename = e.name
+    local ename       = e.name
 
-    local out = {
+    local out         = {
         unit_number = e.unit_number,
         name = e.name,
         type = e.type,
@@ -677,7 +683,7 @@ function EntitiesSnapshot:_serialize_entity(e)
                     local inv = e.get_inventory and e.get_inventory(idx) or nil
                     if inv and inv.valid then
                         local inv_name = (e.get_inventory_name and e.get_inventory_name(idx)) or tostring(idx)
-                        inv_defs[#inv_defs + 1] = {inv_name, idx}
+                        inv_defs[#inv_defs + 1] = { inv_name, idx }
                     end
                 end
             end
@@ -746,15 +752,19 @@ function EntitiesSnapshot:_serialize_entity(e)
         local bb = e.bounding_box
         if bb and bb.left_top and bb.right_bottom then
             out.bounding_box = {
-                min_x = bb.left_top.x, min_y = bb.left_top.y,
-                max_x = bb.right_bottom.x, max_y = bb.right_bottom.y
+                min_x = bb.left_top.x,
+                min_y = bb.left_top.y,
+                max_x = bb.right_bottom.x,
+                max_y = bb.right_bottom.y
             }
         end
         local sb = e.selection_box
         if sb and sb.left_top and sb.right_bottom then
             out.selection_box = {
-                min_x = sb.left_top.x, min_y = sb.left_top.y,
-                max_x = sb.right_bottom.x, max_y = sb.right_bottom.y
+                min_x = sb.left_top.x,
+                min_y = sb.left_top.y,
+                max_x = sb.right_bottom.x,
+                max_y = sb.right_bottom.y
             }
         elseif proto and proto.selection_box then
             local psb = proto.selection_box
@@ -767,8 +777,10 @@ function EntitiesSnapshot:_serialize_entity(e)
                 }
             elseif type(psb) == "table" and psb[1] and psb[2] then
                 out.selection_box = {
-                    min_x = psb[1][1], min_y = psb[1][2],
-                    max_x = psb[2][1], max_y = psb[2][2]
+                    min_x = psb[1][1],
+                    min_y = psb[1][2],
+                    max_x = psb[2][1],
+                    max_y = psb[2][2]
                 }
             end
         end

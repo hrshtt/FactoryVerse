@@ -14,7 +14,7 @@ function InventoryGameState:new(game_state)
     local instance = {
         game_state = game_state,
     }
-    
+
     setmetatable(instance, self)
     return instance
 end
@@ -60,7 +60,7 @@ function InventoryGameState:check_item_in_inventory(entity, item_name, inventory
             return true
         end
     end
-    
+
     return false
 end
 

@@ -16,9 +16,9 @@ local ResourceSnapshot = Snapshot:new()
 ResourceSnapshot.__index = ResourceSnapshot
 
 -- Configuration constants
-local MAX_LINES = 2000          -- ~100 KB CSV per flush
-local UDP_PORT = 27600          -- UDP collector port
-local USE_UDP = false           -- Toggle between UDP and file output
+local MAX_LINES = 2000 -- ~100 KB CSV per flush
+local UDP_PORT = 27600 -- UDP collector port
+local USE_UDP = false  -- Toggle between UDP and file output
 
 -- Global buffers: keyed by "surface:cx:cy:kind" -> buffer table
 local BUFS = {}
@@ -36,23 +36,23 @@ function ResourceSnapshot:take()
 
     local charted_chunks = self.game_state:get_charted_chunks()
     local tile_count = self:_stream_all_tiles_from_chunks(charted_chunks)
-    
+
     -- Flush all remaining buffers immediately
     self:_flush_all()
-    
+
     local output = self:create_output("snapshot.tiles", "v1", {
         tile_count = tile_count,
         buffer_count = 0, -- All flushed now
         flush_mode = USE_UDP and "udp" or "file"
-	})
+    })
 
     self:print_summary(output, function(out)
-        return { 
-            surface = out.surface, 
+        return {
+            surface = out.surface,
             tiles_streamed = out.data.tile_count,
             buffers_active = out.data.buffer_count,
             mode = out.data.flush_mode,
-            tick = out.timestamp 
+            tick = out.timestamp
         }
     end)
 
@@ -105,10 +105,10 @@ end
 --- @return number - total tiles streamed
 function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
     local total_tiles = 0
-    
+
     for _, chunk in ipairs(chunks) do
         local chunk_tiles = 0
-        
+
         -- Process resources in this chunk
         local resources_in_chunk = self.game_state:get_resources_in_chunks({ chunk })
         if resources_in_chunk then
@@ -125,7 +125,7 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
                 end
             end
         end
-        
+
         -- Process water tiles in this chunk
         local water_data = self.game_state:get_water_tiles_in_chunks({ chunk })
         if water_data and water_data.tiles then
@@ -137,13 +137,13 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
                 end
             end
         end
-        
+
         -- Flush this chunk's buffer immediately
         self:_flush_chunk_buffer(chunk.x, chunk.y)
-        
+
         total_tiles = total_tiles + chunk_tiles
     end
-    
+
     return total_tiles
 end
 
@@ -151,24 +151,24 @@ end
 --- @param chunk_x number - chunk x coordinate
 --- @param chunk_y number - chunk y coordinate
 --- @param x number - tile x coordinate
---- @param y number - tile y coordinate  
+--- @param y number - tile y coordinate
 --- @param kind string - tile kind (resource name, water, etc.)
 --- @param amount number - resource yield amount (0 for water)
 function ResourceSnapshot:_enqueue_tile_for_chunk(chunk_x, chunk_y, x, y, kind, amount)
     local k = self:_chunk_buffer_key(chunk_x, chunk_y)
     local b = BUFS[k]
-    
-    if not b then 
+
+    if not b then
         b = {
-            rows = {}, 
-            count = 0, 
-            chunk_x = chunk_x, 
+            rows = {},
+            count = 0,
+            chunk_x = chunk_x,
             chunk_y = chunk_y,
             surface = 1
         }
-        BUFS[k] = b 
+        BUFS[k] = b
     end
-    
+
     -- Create tile data according to schema
     local tile_data = {
         kind = kind,
@@ -176,14 +176,14 @@ function ResourceSnapshot:_enqueue_tile_for_chunk(chunk_x, chunk_y, x, y, kind, 
         y = y,
         amount = amount
     }
-    
+
     -- Flatten using schema manager
     local flattened = self:flatten_data("tiles", tile_data)
-    
+
     -- Convert to CSV row
     local headers = self:get_headers("tiles")
     local csv_row = self:_table_to_csv_row(flattened, headers)
-    
+
     b.count = b.count + 1
     b.rows[b.count] = csv_row .. "\n"
 end
@@ -203,12 +203,12 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
     local k = self:_chunk_buffer_key(chunk_x, chunk_y)
     local b = BUFS[k]
     if not b or b.count == 0 then return end
-    
+
     -- Get headers and create proper CSV with header row
     local headers = self:get_headers("tiles")
     local header_row = table.concat(headers, ",") .. "\n"
     local payload = header_row .. table.concat(b.rows, "", 1, b.count)
-    
+
     if USE_UDP then
         -- Split into safe datagrams (~8KB)
         local chunk_size = 8192
@@ -224,8 +224,8 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
             line_count = b.count,
             headers = headers
         }
-        
-        self:emit_csv({ 
+
+        self:emit_csv({
             output_dir = "script-output/factoryverse",
             chunk_x = chunk_x,
             chunk_y = chunk_y,
@@ -233,7 +233,7 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
             metadata = { schema_version = "tiles.raw.v1" }
         }, "tiles", payload, metadata)
     end
-    
+
     -- Clear this chunk's buffer
     BUFS[k] = nil
 end
@@ -243,9 +243,9 @@ end
 function ResourceSnapshot:_flush_one(k)
     local b = BUFS[k]
     if not b or b.count == 0 then return end
-    
+
     local payload = table.concat(b.rows, "", 1, b.count)
-    
+
     if USE_UDP then
         -- Split into safe datagrams (~8KB)
         local chunk_size = 8192
@@ -261,8 +261,8 @@ function ResourceSnapshot:_flush_one(k)
             surface_id = b.surface,
             line_count = b.count
         }
-        
-        self:emit_csv({ 
+
+        self:emit_csv({
             output_dir = "script-output/factoryverse",
             chunk_x = b.cx,
             chunk_y = b.cy,
@@ -270,14 +270,14 @@ function ResourceSnapshot:_flush_one(k)
             metadata = { schema_version = "tiles.raw.v1" }
         }, "tiles", payload, metadata)
     end
-    
+
     -- Reset buffer
     BUFS[k] = {
-        rows = {}, 
-        count = 0, 
-        cx = b.cx, 
-        cy = b.cy, 
-        kind = b.kind, 
+        rows = {},
+        count = 0,
+        cx = b.cx,
+        cy = b.cy,
+        kind = b.kind,
         surface = b.surface
     }
 end
@@ -298,7 +298,6 @@ function ResourceSnapshot:_get_buffer_count()
     end
     return count
 end
-
 
 --- Convert table to CSV row, handling nested structures
 --- @param data table - data to convert
@@ -332,7 +331,6 @@ function ResourceSnapshot:set_output_mode(use_udp)
     USE_UDP = use_udp
 end
 
-
 --- Set flush parameters
 --- @param max_lines number - max lines per buffer before flush
 function ResourceSnapshot:set_flush_params(max_lines)
@@ -345,7 +343,7 @@ function ResourceSnapshot:render(output)
     -- Simple visualization for streaming mode
     local surface = game.surfaces[1]
     if rendering then rendering.clear() end
-    
+
     -- Show buffer status
     local buffer_count = self:_get_buffer_count()
     if buffer_count > 0 then

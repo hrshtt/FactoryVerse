@@ -6,14 +6,14 @@ local ComponentSchema = {
     entity = {
         fields = {
             unit_number = "number",
-            name = "string", 
+            name = "string",
             type = "string",
             force = "string",
             position_x = "number",
             position_y = "number",
             direction = "number",
             direction_name = "string",
-            orientation = "number", 
+            orientation = "number",
             orientation_name = "string",
             chunk_x = "number",
             chunk_y = "number",
@@ -21,12 +21,12 @@ local ComponentSchema = {
             status = "number",
             status_name = "string",
             bounding_box_min_x = "number",
-            bounding_box_min_y = "number", 
+            bounding_box_min_y = "number",
             bounding_box_max_x = "number",
             bounding_box_max_y = "number",
             selection_box_min_x = "number",
             selection_box_min_y = "number",
-            selection_box_max_x = "number", 
+            selection_box_max_x = "number",
             selection_box_max_y = "number",
             train_id = "number",
             train_state = "string"
@@ -34,24 +34,28 @@ local ComponentSchema = {
         flatten_rules = {
             position = { x = "position_x", y = "position_y" },
             chunk = { x = "chunk_x", y = "chunk_y" },
-            bounding_box = { 
-                min_x = "bounding_box_min_x", min_y = "bounding_box_min_y",
-                max_x = "bounding_box_max_x", max_y = "bounding_box_max_y"
+            bounding_box = {
+                min_x = "bounding_box_min_x",
+                min_y = "bounding_box_min_y",
+                max_x = "bounding_box_max_x",
+                max_y = "bounding_box_max_y"
             },
             selection_box = {
-                min_x = "selection_box_min_x", min_y = "selection_box_min_y", 
-                max_x = "selection_box_max_x", max_y = "selection_box_max_y"
+                min_x = "selection_box_min_x",
+                min_y = "selection_box_min_y",
+                max_x = "selection_box_max_x",
+                max_y = "selection_box_max_y"
             },
             train = { id = "train_id", state = "train_state" }
         }
     },
-    
+
     -- Electric component
     electric = {
         fields = {
             unit_number = "number",
             electric_network_id = "number",
-            electric_buffer_size = "number", 
+            electric_buffer_size = "number",
             energy = "number",
             chunk_x = "number",
             chunk_y = "number"
@@ -60,21 +64,21 @@ local ComponentSchema = {
             chunk = { x = "chunk_x", y = "chunk_y" }
         }
     },
-    
-    -- Crafting component  
+
+    -- Crafting component
     crafting = {
         fields = {
             unit_number = "number",
             recipe = "string",
             crafting_progress = "number",
-            chunk_x = "number", 
+            chunk_x = "number",
             chunk_y = "number"
         },
         flatten_rules = {
             chunk = { x = "chunk_x", y = "chunk_y" }
         }
     },
-    
+
     -- Burner component
     burner = {
         fields = {
@@ -94,11 +98,11 @@ local ComponentSchema = {
             }
         }
     },
-    
+
     -- Inventory component
     inventory = {
         fields = {
-            unit_number = "number", 
+            unit_number = "number",
             inventories_json = "json", -- Complex nested data
             chunk_x = "number",
             chunk_y = "number"
@@ -108,12 +112,12 @@ local ComponentSchema = {
             inventories = "inventories_json" -- Map to _json suffixed field
         }
     },
-    
+
     -- Fluids component
     fluids = {
         fields = {
             unit_number = "number",
-            fluids_json = "json", -- Complex nested data  
+            fluids_json = "json", -- Complex nested data
             chunk_x = "number",
             chunk_y = "number"
         },
@@ -122,13 +126,13 @@ local ComponentSchema = {
             fluids = "fluids_json" -- Map to _json suffixed field
         }
     },
-    
+
     -- Inserter component
     inserter = {
         fields = {
             unit_number = "number",
             pickup_position_x = "number",
-            pickup_position_y = "number", 
+            pickup_position_y = "number",
             drop_position_x = "number",
             drop_position_y = "number",
             pickup_target_unit = "number",
@@ -146,18 +150,18 @@ local ComponentSchema = {
             }
         }
     },
-    
+
     -- Belt component
     belt = {
         fields = {
             unit_number = "number",
             name = "string",
-            type = "string", 
+            type = "string",
             position_x = "number",
             position_y = "number",
             direction = "number",
             direction_name = "string",
-            item_lines_json = "json", -- Complex nested data
+            item_lines_json = "json",      -- Complex nested data
             belt_neighbours_json = "json", -- Complex nested data
             belt_to_ground_type = "string",
             underground_neighbour_unit = "number",
@@ -167,11 +171,11 @@ local ComponentSchema = {
         flatten_rules = {
             position = { x = "position_x", y = "position_y" },
             chunk = { x = "chunk_x", y = "chunk_y" },
-            item_lines = "item_lines_json", -- Map to _json suffixed field
+            item_lines = "item_lines_json",          -- Map to _json suffixed field
             belt_neighbours = "belt_neighbours_json" -- Map to _json suffixed field
         }
     },
-    
+
     -- Tiles component (for ResourceSnapshot)
     tiles = {
         fields = {
@@ -196,12 +200,12 @@ function SchemaManager:get_headers(component_type)
     if not schema then
         error("Unknown component type: " .. tostring(component_type))
     end
-    
+
     local headers = {}
     for field_name, _ in pairs(schema.fields) do
         table.insert(headers, field_name)
     end
-    
+
     -- Sort for consistent ordering
     table.sort(headers)
     return headers
@@ -216,10 +220,10 @@ function SchemaManager:flatten_data(component_type, data)
     if not schema then
         error("Unknown component type: " .. tostring(component_type))
     end
-    
+
     local flattened = {}
     local rules = schema.flatten_rules or {}
-    
+
     for k, v in pairs(data) do
         if rules[k] and type(rules[k]) == "table" then
             -- Apply flattening rules for nested structures
@@ -243,7 +247,7 @@ function SchemaManager:flatten_data(component_type, data)
             flattened[k] = v
         end
     end
-    
+
     return flattened
 end
 
@@ -256,10 +260,10 @@ function SchemaManager:validate_data(component_type, data)
     if not schema then
         return false, "Unknown component type: " .. tostring(component_type)
     end
-    
+
     local flattened = self:flatten_data(component_type, data)
     local expected_fields = schema.fields
-    
+
     for field_name, field_type in pairs(expected_fields) do
         if flattened[field_name] == nil then
             -- Field is missing - this might be okay for optional fields
@@ -270,12 +274,12 @@ function SchemaManager:validate_data(component_type, data)
                 -- JSON fields are stored as tables, converted during CSV generation
                 -- This is fine
             elseif actual_type ~= field_type then
-                return false, string.format("Field %s expected type %s, got %s", 
+                return false, string.format("Field %s expected type %s, got %s",
                     field_name, field_type, actual_type)
             end
         end
     end
-    
+
     return true, nil
 end
 
@@ -287,13 +291,13 @@ function SchemaManager:get_sql_schema(component_type)
     if not schema then
         error("Unknown component type: " .. tostring(component_type))
     end
-    
+
     local sql_fields = {}
     for field_name, field_type in pairs(schema.fields) do
         local sql_type = self:_lua_type_to_sql_type(field_type)
         table.insert(sql_fields, string.format("    %s %s", field_name, sql_type))
     end
-    
+
     return string.format("CREATE TABLE %s (\n%s\n);", component_type, table.concat(sql_fields, ",\n"))
 end
 
@@ -303,7 +307,7 @@ end
 function SchemaManager:_lua_type_to_sql_type(lua_type)
     local type_map = {
         number = "NUMERIC",
-        string = "TEXT", 
+        string = "TEXT",
         json = "JSONB"
     }
     return type_map[lua_type] or "TEXT"
@@ -349,7 +353,7 @@ function Snapshot:print_summary(output, summary_fn)
     if summary_fn then
         summary = summary_fn(output)
     end
-    
+
     local json_str = helpers.table_to_json(summary)
     rcon.print(json_str)
     log(json_str)
@@ -391,31 +395,31 @@ function Snapshot:get_sql_schema(component_type)
 end
 
 function Snapshot:emit_json(opts, name, payload)
-	local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
-	
-	-- Get chunk coordinates from opts or derive from payload
-	local chunk_x = (opts and opts.chunk_x) or 0
-	local chunk_y = (opts and opts.chunk_y) or 0
-	local chunk_dir = string.format("%s/chunks/%d/%d", base_dir, chunk_x, chunk_y)
-	
-	-- Get tick for filename
-	local tick = (opts and opts.tick) or (payload and payload.meta and payload.meta.tick) or (game and game.tick) or 0
+    local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
 
-	-- New filename format: script-output/factoryverse/chunks/<chunkx>/<chunky>/{type}-<tick>.json
-	local file_path = string.format("%s/%s-%d.json", chunk_dir, name, tick)
+    -- Get chunk coordinates from opts or derive from payload
+    local chunk_x = (opts and opts.chunk_x) or 0
+    local chunk_y = (opts and opts.chunk_y) or 0
+    local chunk_dir = string.format("%s/chunks/%d/%d", base_dir, chunk_x, chunk_y)
 
-	-- Ensure a fresh write: try to remove any existing file first
-	if helpers and helpers.remove_path then
-		pcall(helpers.remove_path, file_path)
-	end
+    -- Get tick for filename
+    local tick = (opts and opts.tick) or (payload and payload.meta and payload.meta.tick) or (game and game.tick) or 0
 
-	-- Factorio will create subdirs under script-output if needed.
-	local json_str = helpers.table_to_json(payload)
-	helpers.write_file(file_path, json_str, false)
+    -- New filename format: script-output/factoryverse/chunks/<chunkx>/<chunky>/{type}-<tick>.json
+    local file_path = string.format("%s/%s-%d.json", chunk_dir, name, tick)
 
-	-- Optional: print where it was written
-	log("Wrote snapshot to " .. file_path)
-	return file_path
+    -- Ensure a fresh write: try to remove any existing file first
+    if helpers and helpers.remove_path then
+        pcall(helpers.remove_path, file_path)
+    end
+
+    -- Factorio will create subdirs under script-output if needed.
+    local json_str = helpers.table_to_json(payload)
+    helpers.write_file(file_path, json_str, false)
+
+    -- Optional: print where it was written
+    log("Wrote snapshot to " .. file_path)
+    return file_path
 end
 
 --- Emit CSV data with metadata tracking
@@ -425,50 +429,50 @@ end
 --- @param metadata table - optional metadata for this CSV file
 --- @return string - file path written
 function Snapshot:emit_csv(opts, name, csv_data, metadata)
-	local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
-	
-	-- Get chunk coordinates from opts
-	local chunk_x = (opts and opts.chunk_x) or 0
-	local chunk_y = (opts and opts.chunk_y) or 0
-	local chunk_dir = string.format("%s/chunks/%d/%d", base_dir, chunk_x, chunk_y)
-	
-	-- Get tick for filename
-	local tick = (opts and opts.tick) or (game and game.tick or 0)
-	
-	-- New filename format: script-output/factoryverse/chunks/<chunkx>/<chunky>/{type}-<tick>.csv
-	local csv_path = string.format("%s/%s-%d.csv", chunk_dir, name, tick)
-	helpers.write_file(csv_path, csv_data, false)
-	
-	-- Write metadata JSON file in new structure: script-output/factoryverse/metadata/{tick}/{snap-category}.json
-	local meta_dir = string.format("%s/metadata/%d", base_dir, tick)
-	local meta_path = string.format("%s/%s.json", meta_dir, name)
-	local meta_data = opts.metadata or {}
-	meta_data.tick = tick
-	meta_data.surface = self.game_state:get_surface() and self.game_state:get_surface().name or "unknown"
-	meta_data.timestamp = tick
-	meta_data.files = meta_data.files or {}
-	
-	-- Set headers at top level if provided in metadata
-	if metadata and metadata.headers then
-		meta_data.headers = metadata.headers
-	end
-	
-	-- Add this CSV file to the metadata (simplified structure)
-	table.insert(meta_data.files, {
-		path = csv_path,
-		lines = (function()
-			local count = 0
-			for _ in string.gmatch(csv_data, "\n") do count = count + 1 end
-			return count
-		end)()
-	})
-	
-	-- Write metadata (overwrite each time to accumulate files)
-	local meta_json = helpers.table_to_json(meta_data)
-	helpers.write_file(meta_path, meta_json, false)
-	
-	log("Wrote CSV to " .. csv_path)
-	return csv_path
+    local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
+
+    -- Get chunk coordinates from opts
+    local chunk_x = (opts and opts.chunk_x) or 0
+    local chunk_y = (opts and opts.chunk_y) or 0
+    local chunk_dir = string.format("%s/chunks/%d/%d", base_dir, chunk_x, chunk_y)
+
+    -- Get tick for filename
+    local tick = (opts and opts.tick) or (game and game.tick or 0)
+
+    -- New filename format: script-output/factoryverse/chunks/<chunkx>/<chunky>/{type}-<tick>.csv
+    local csv_path = string.format("%s/%s-%d.csv", chunk_dir, name, tick)
+    helpers.write_file(csv_path, csv_data, false)
+
+    -- Write metadata JSON file in new structure: script-output/factoryverse/metadata/{tick}/{snap-category}.json
+    local meta_dir = string.format("%s/metadata/%d", base_dir, tick)
+    local meta_path = string.format("%s/%s.json", meta_dir, name)
+    local meta_data = opts.metadata or {}
+    meta_data.tick = tick
+    meta_data.surface = self.game_state:get_surface() and self.game_state:get_surface().name or "unknown"
+    meta_data.timestamp = tick
+    meta_data.files = meta_data.files or {}
+
+    -- Set headers at top level if provided in metadata
+    if metadata and metadata.headers then
+        meta_data.headers = metadata.headers
+    end
+
+    -- Add this CSV file to the metadata (simplified structure)
+    table.insert(meta_data.files, {
+        path = csv_path,
+        lines = (function()
+            local count = 0
+            for _ in string.gmatch(csv_data, "\n") do count = count + 1 end
+            return count
+        end)()
+    })
+
+    -- Write metadata (overwrite each time to accumulate files)
+    local meta_json = helpers.table_to_json(meta_data)
+    helpers.write_file(meta_path, meta_json, false)
+
+    log("Wrote CSV to " .. csv_path)
+    return csv_path
 end
 
 return Snapshot

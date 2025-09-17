@@ -14,7 +14,7 @@ function ResearchGameState:new(parent)
     local instance = {
         parent = parent
     }
-    
+
     setmetatable(instance, self)
     return instance
 end
@@ -38,7 +38,7 @@ function ResearchGameState:save_research(agent_id, research_id)
 
     -- Save current research and progress
     if force.current_research then
-        research_state.current_research = "\""..force.current_research.name.."\""
+        research_state.current_research = "\"" .. force.current_research.name .. "\""
         research_state.research_progress = force.research_progress
 
         research_state.progress[force.current_research.name] = force.research_progress or 0
@@ -47,7 +47,7 @@ function ResearchGameState:save_research(agent_id, research_id)
     -- Save research queue if it exists
     if force.research_queue then
         for _, tech in pairs(force.research_queue) do
-            table.insert(research_state.research_queue, "\""..tech.name.."\"")
+            table.insert(research_state.research_queue, "\"" .. tech.name .. "\"")
         end
     end
     return research_state
@@ -58,8 +58,8 @@ function ResearchGameState:get_entity_at_position(position)
     if not surface then
         return nil, GameStateError:new("No surface available")
     end
-    
-    local entities = surface.find_entities_filtered{
+
+    local entities = surface.find_entities_filtered {
         position = position
     }
     return entities[1]
@@ -70,8 +70,8 @@ function ResearchGameState:can_place_entity(entity_name, position)
     if not surface then
         return false, GameStateError:new("No surface available")
     end
-    
-    return surface.can_place_entity{
+
+    return surface.can_place_entity {
         name = entity_name,
         position = position
     }

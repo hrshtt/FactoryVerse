@@ -15,7 +15,7 @@ function EntitiesGameState:new(game_state)
     local instance = {
         game_state = game_state
     }
-    
+
     setmetatable(instance, self)
     return instance
 end
@@ -28,8 +28,8 @@ function EntitiesGameState:get_entities_in_area(area, filter)
     if not surface then
         return {}
     end
-    
-    local entities = surface.find_entities_filtered{
+
+    local entities = surface.find_entities_filtered {
         area = area,
         type = filter
     }
@@ -41,8 +41,8 @@ function EntitiesGameState:get_entity_at_position(position)
     if not surface then
         return GameStateError:new("No surface available")
     end
-    
-    local entities = surface.find_entities_filtered{
+
+    local entities = surface.find_entities_filtered {
         position = position
     }
     return entities[1]
@@ -53,8 +53,8 @@ function EntitiesGameState:can_place_entity(entity_name, position)
     if not surface then
         return GameStateError:new("No surface available")
     end
-    
-    return surface.can_place_entity{
+
+    return surface.can_place_entity {
         name = entity_name,
         position = position
     }

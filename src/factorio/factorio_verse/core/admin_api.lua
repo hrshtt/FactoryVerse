@@ -42,7 +42,7 @@ M.helpers.print_agent_inventory = function(agent_index)
             })
         end
     end
-    utils.triple_print(helpers.table_to_json({inventory = items}))
+    utils.triple_print(helpers.table_to_json({ inventory = items }))
 end
 
 
@@ -63,7 +63,8 @@ M.helpers.clear_script_output = function()
     if success then
         utils.triple_print("[helpers.clear_script_output] Successfully cleared script-output/factoryverse directory")
     else
-        utils.triple_print("[helpers.clear_script_output] Failed to clear script-output/factoryverse directory (may not exist)")
+        utils.triple_print(
+        "[helpers.clear_script_output] Failed to clear script-output/factoryverse directory (may not exist)")
     end
 end
 
