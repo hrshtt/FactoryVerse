@@ -1,4 +1,5 @@
 local GameState = require "core.game_state.GameState":new()
+local utils = require "utils"
 
 --- Component Schema Definition - Single source of truth for all component types
 local ComponentSchema = {
@@ -101,8 +102,6 @@ local ComponentSchema = {
             direction_name = "string",
             fluid_contents_json = "json",      -- Complex nested data
             pipe_neighbours_json = "json",     -- Input/output connections like belts
-            pipe_to_ground_type = "string",
-            underground_neighbour_unit = "number",
             chunk_x = "number",
             chunk_y = "number"
         },
@@ -384,8 +383,7 @@ function Snapshot:print_summary(output, summary_fn)
     end
 
     local json_str = helpers.table_to_json(summary)
-    rcon.print(json_str)
-    log(json_str)
+    utils.triple_print(json_str)
 end
 
 --- Base take method - override in subclasses
@@ -447,7 +445,6 @@ function Snapshot:emit_json(opts, name, payload)
     helpers.write_file(file_path, json_str, false)
 
     -- Optional: print where it was written
-    log("Wrote snapshot to " .. file_path)
     return file_path
 end
 
@@ -500,7 +497,6 @@ function Snapshot:emit_csv(opts, name, csv_data, metadata)
     local meta_json = helpers.table_to_json(meta_data)
     helpers.write_file(meta_path, meta_json, false)
 
-    log("Wrote CSV to " .. csv_path)
     return csv_path
 end
 

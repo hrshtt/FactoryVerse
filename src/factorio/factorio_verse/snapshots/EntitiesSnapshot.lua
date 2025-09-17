@@ -568,16 +568,6 @@ function EntitiesSnapshot:_take_pipes()
 
                     -- Pipe neighbours (similar to belt_neighbours) - categorize as inputs/outputs
                     local inputs_ids, outputs_ids = {}, {}
-                    local underground_other = nil
-                    local pipe_to_ground_type = nil
-
-                    if e.type == "pipe-to-ground" then
-                        -- pipe_to_ground_type = e.pipe_to_ground_type  -- May not be available in all versions
-                        local un = e.neighbours -- for underground pipes this is the other end
-                        if un and un.valid and un.unit_number then 
-                            underground_other = un.unit_number 
-                        end
-                    end
 
                     -- Get connected entities through fluidbox and categorize as inputs/outputs
                     local fb = e.fluidbox
@@ -625,8 +615,6 @@ function EntitiesSnapshot:_take_pipes()
                         direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
                         fluid_contents = fluid_contents,
                         pipe_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or nil,
-                        pipe_to_ground_type = pipe_to_ground_type,
-                        underground_neighbour_unit = underground_other,
                         chunk = chunk_field,
                     }
                 end
