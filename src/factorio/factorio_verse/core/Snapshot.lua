@@ -162,8 +162,8 @@ local ComponentSchema = {
         }
     },
 
-    -- Tiles component (for ResourceSnapshot)
-    tiles = {
+    -- Resources component (for ResourceSnapshot)
+    resources = {
         fields = {
             kind = "string",
             x = "number",
