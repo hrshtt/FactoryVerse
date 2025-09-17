@@ -184,7 +184,10 @@ function EntitiesSnapshot:take()
                         if row.inserter ~= nil then
                             inserter_rows[#inserter_rows + 1] = {
                                 unit_number = row.unit_number,
-                                inserter = row.inserter,
+                                pickup_position = row.inserter.pickup_position,
+                                drop_position = row.inserter.drop_position,
+                                pickup_target_unit = row.inserter.pickup_target_unit,
+                                drop_target_unit = row.inserter.drop_target_unit,
                                 chunk = chunk,
                             }
                         end

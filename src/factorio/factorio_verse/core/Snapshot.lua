@@ -128,12 +128,8 @@ local ComponentSchema = {
         },
         flatten_rules = {
             chunk = { x = "chunk_x", y = "chunk_y" },
-            inserter = {
-                pickup_position = { x = "pickup_position_x", y = "pickup_position_y" },
-                drop_position = { x = "drop_position_x", y = "drop_position_y" },
-                pickup_target_unit = "pickup_target_unit",
-                drop_target_unit = "drop_target_unit"
-            }
+            pickup_position = { x = "pickup_position_x", y = "pickup_position_y" },
+            drop_position = { x = "drop_position_x", y = "drop_position_y" }
         }
     },
 
