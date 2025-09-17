@@ -129,6 +129,9 @@ function EntitiesSnapshot:take()
                         if row.electric_network_id ~= nil then base.electric_network_id = row.electric_network_id end
                         if row.electric_buffer_size ~= nil then base.electric_buffer_size = row.electric_buffer_size end
                         if row.energy ~= nil then base.energy = row.energy end
+                        -- Tile dimensions
+                        if row.tile_width ~= nil then base.tile_width = row.tile_width end
+                        if row.tile_height ~= nil then base.tile_height = row.tile_height end
                         entity_rows[#entity_rows + 1] = base
 
 
@@ -623,6 +626,12 @@ function EntitiesSnapshot:_serialize_entity(e)
     -- Energy buffers
     if e.energy ~= nil then out.energy = e.energy end
     if e.electric_buffer_size ~= nil then out.electric_buffer_size = e.electric_buffer_size end
+
+    -- Tile dimensions from prototype
+    if proto then
+        if proto.tile_width ~= nil then out.tile_width = proto.tile_width end
+        if proto.tile_height ~= nil then out.tile_height = proto.tile_height end
+    end
 
     -- Crafting / recipe (gate to crafting machines only)
     do

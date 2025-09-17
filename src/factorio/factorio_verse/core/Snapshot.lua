@@ -26,7 +26,9 @@ local ComponentSchema = {
             bounding_box_max_y = "number",
             electric_network_id = "number",
             electric_buffer_size = "number",
-            energy = "number"
+            energy = "number",
+            tile_width = "number",
+            tile_height = "number"
         },
         flatten_rules = {
             position = { x = "position_x", y = "position_y" },
