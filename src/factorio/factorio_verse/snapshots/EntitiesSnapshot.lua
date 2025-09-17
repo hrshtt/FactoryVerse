@@ -125,7 +125,6 @@ function EntitiesSnapshot:take()
                         if row.status ~= nil then base.status = row.status end
                         if row.status_name ~= nil then base.status_name = row.status_name end
                         if row.bounding_box ~= nil then base.bounding_box = row.bounding_box end
-                        if row.selection_box ~= nil then base.selection_box = row.selection_box end
                         -- Electric fields now part of main entity
                         if row.electric_network_id ~= nil then base.electric_network_id = row.electric_network_id end
                         if row.electric_buffer_size ~= nil then base.electric_buffer_size = row.electric_buffer_size end
@@ -749,32 +748,6 @@ function EntitiesSnapshot:_serialize_entity(e)
                 max_x = bb.right_bottom.x,
                 max_y = bb.right_bottom.y
             }
-        end
-        local sb = e.selection_box
-        if sb and sb.left_top and sb.right_bottom then
-            out.selection_box = {
-                min_x = sb.left_top.x,
-                min_y = sb.left_top.y,
-                max_x = sb.right_bottom.x,
-                max_y = sb.right_bottom.y
-            }
-        elseif proto and proto.selection_box then
-            local psb = proto.selection_box
-            if psb.left_top and psb.right_bottom then
-                out.selection_box = {
-                    min_x = psb.left_top.x or psb.left_top[1],
-                    min_y = psb.left_top.y or psb.left_top[2],
-                    max_x = psb.right_bottom.x or psb.right_bottom[1],
-                    max_y = psb.right_bottom.y or psb.right_bottom[2]
-                }
-            elseif type(psb) == "table" and psb[1] and psb[2] then
-                out.selection_box = {
-                    min_x = psb[1][1],
-                    min_y = psb[1][2],
-                    max_x = psb[2][1],
-                    max_y = psb[2][2]
-                }
-            end
         end
     end
 

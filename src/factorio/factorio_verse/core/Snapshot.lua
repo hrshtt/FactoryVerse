@@ -24,10 +24,6 @@ local ComponentSchema = {
             bounding_box_min_y = "number",
             bounding_box_max_x = "number",
             bounding_box_max_y = "number",
-            selection_box_min_x = "number",
-            selection_box_min_y = "number",
-            selection_box_max_x = "number",
-            selection_box_max_y = "number",
             electric_network_id = "number",
             electric_buffer_size = "number",
             energy = "number"
@@ -40,12 +36,6 @@ local ComponentSchema = {
                 min_y = "bounding_box_min_y",
                 max_x = "bounding_box_max_x",
                 max_y = "bounding_box_max_y"
-            },
-            selection_box = {
-                min_x = "selection_box_min_x",
-                min_y = "selection_box_min_y",
-                max_x = "selection_box_max_x",
-                max_y = "selection_box_max_y"
             }
         }
     },
