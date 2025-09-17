@@ -211,19 +211,24 @@ function SchemaManager:flatten_data(component_type, data)
     local rules = schema.flatten_rules or {}
 
     for k, v in pairs(data) do
-        if rules[k] and type(rules[k]) == "table" then
-            -- Apply flattening rules for nested structures
-            for nested_key, flattened_key in pairs(rules[k]) do
-                if type(nested_key) == "string" and type(flattened_key) == "string" then
-                    -- Simple field mapping
-                    if v[nested_key] ~= nil then
-                        flattened[flattened_key] = v[nested_key]
-                    end
-                elseif type(nested_key) == "table" and type(flattened_key) == "string" then
-                    -- Nested structure flattening (like position -> position_x, position_y)
-                    for sub_key, sub_flattened_key in pairs(nested_key) do
-                        if v[sub_key] ~= nil then
-                            flattened[sub_flattened_key] = v[sub_key]
+        if rules[k] then
+            if type(rules[k]) == "string" then
+                -- Simple field mapping (e.g., inventories -> inventories_json)
+                flattened[rules[k]] = v
+            elseif type(rules[k]) == "table" then
+                -- Apply flattening rules for nested structures
+                for nested_key, flattened_key in pairs(rules[k]) do
+                    if type(nested_key) == "string" and type(flattened_key) == "string" then
+                        -- Simple field mapping
+                        if v[nested_key] ~= nil then
+                            flattened[flattened_key] = v[nested_key]
+                        end
+                    elseif type(nested_key) == "table" and type(flattened_key) == "string" then
+                        -- Nested structure flattening (like position -> position_x, position_y)
+                        for sub_key, sub_flattened_key in pairs(nested_key) do
+                            if v[sub_key] ~= nil then
+                                flattened[sub_flattened_key] = v[sub_key]
+                            end
                         end
                     end
                 end
