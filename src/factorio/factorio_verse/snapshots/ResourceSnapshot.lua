@@ -32,7 +32,7 @@ function ResourceSnapshot:new()
 end
 
 function ResourceSnapshot:take()
-    log("Taking resource snapshot - streaming all resources including crude oil")
+    log("Taking resource snapshot - streaming all resources including crude oil and rocks")
 
     local charted_chunks = self.game_state:get_charted_chunks()
     local tile_count = self:_stream_all_tiles_from_chunks(charted_chunks)
@@ -97,14 +97,80 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
             end
         end
 
+        -- Process rock entities in this chunk
+        local surface = self.game_state:get_surface()
+        if surface then
+            local rock_entities = surface.find_entities_filtered({
+                area = chunk.area,
+                type = "simple-entity"
+            })
+            for _, entity in ipairs(rock_entities) do
+                local name = entity.name
+                if name and (name:match("rock") or name:match("stone")) and entity.valid then
+                    -- Determine rock size from name
+                    local size = 1
+                    if name:match("huge") then
+                        size = 3
+                    elseif name:match("big") then
+                        size = 2
+                    end
+                    
+                    -- Get mining results as JSON string
+                    local resources = {}
+                    if entity.prototype and entity.prototype.mineable_properties and entity.prototype.mineable_properties.products then
+                        for _, product in pairs(entity.prototype.mineable_properties.products) do
+                            local resource_info = {
+                                name = product.name,
+                                amount = product.amount or product.amount_min or 1,
+                                probability = product.probability or 1
+                            }
+                            if product.amount_max and product.amount_max ~= resource_info.amount then
+                                resource_info.amount_max = product.amount_max
+                            end
+                            table.insert(resources, resource_info)
+                        end
+                    end
+                    
+                    -- Create rock data
+                    local rock_data = {
+                        name = name,
+                        type = entity.type,
+                        position = entity.position,
+                        size = size,
+                        resources = resources,
+                        chunk = { x = chunk.x, y = chunk.y }
+                    }
+                    
+                    -- Use existing buffer system but with "rocks" schema
+                    local flattened = self:flatten_data("rocks", rock_data)
+                    local headers = self:get_headers("rocks")
+                    local csv_row = self:_table_to_csv_row(flattened, headers)
+                    
+                    -- Add to buffer with special key for rocks
+                    local k = "rocks_" .. chunk.x .. "_" .. chunk.y
+                    local b = BUFS[k]
+                    if not b then
+                        b = { rows = {}, count = 0, chunk_x = chunk.x, chunk_y = chunk.y, surface = 1, type = "rocks" }
+                        BUFS[k] = b
+                    end
+                    b.count = b.count + 1
+                    b.rows[b.count] = csv_row .. "\n"
+                    
+                    chunk_tiles = chunk_tiles + 1
+                end
+            end
+        end
+
         -- Flush this chunk's buffer immediately
         self:_flush_chunk_buffer(chunk.x, chunk.y)
+        self:_flush_rocks_buffer(chunk.x, chunk.y)
 
         total_tiles = total_tiles + chunk_tiles
     end
 
     return total_tiles
 end
+
 
 --- Enqueue a tile for a specific chunk
 --- @param chunk_x number - chunk x coordinate
@@ -241,6 +307,40 @@ function ResourceSnapshot:_flush_one(k)
     }
 end
 
+--- Flush a specific rock chunk's buffer
+--- @param chunk_x number - chunk x coordinate
+--- @param chunk_y number - chunk y coordinate
+function ResourceSnapshot:_flush_rocks_buffer(chunk_x, chunk_y)
+    local k = "rocks_" .. chunk_x .. "_" .. chunk_y
+    local b = BUFS[k]
+    if not b or b.count == 0 then return end
+
+    -- Get headers and create proper CSV with header row
+    local headers = self:get_headers("rocks")
+    local header_row = table.concat(headers, ",") .. "\n"
+    local payload = header_row .. table.concat(b.rows, "", 1, b.count)
+
+    if USE_UDP then
+        -- Split into safe datagrams (~8KB)
+        local chunk_size = 8192
+        for i = 1, #payload, chunk_size do
+            helpers.send_udp(UDP_PORT, string.sub(payload, i, i + chunk_size - 1))
+        end
+    else
+        -- Use emit_csv for direct CSV file writing
+        self:emit_csv({
+            output_dir = "script-output/factoryverse",
+            chunk_x = chunk_x,
+            chunk_y = chunk_y,
+            tick = game and game.tick or 0,
+            metadata = { schema_version = "rocks.raw.v1" }
+        }, "rocks", payload, { headers = headers })
+    end
+
+    -- Clear this chunk's buffer
+    BUFS[k] = nil
+end
+
 --- Flush all buffers (time-based trigger)
 function ResourceSnapshot:_flush_all()
     for k, _ in pairs(BUFS) do
@@ -281,6 +381,7 @@ function ResourceSnapshot:_table_to_csv_row(data, headers)
     end
     return table.concat(values, ",")
 end
+
 
 --- CONFIGURATION HELPERS
 

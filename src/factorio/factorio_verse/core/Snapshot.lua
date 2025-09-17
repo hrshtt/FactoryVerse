@@ -171,6 +171,25 @@ local ComponentSchema = {
             amount = "number"
         },
         flatten_rules = {}
+    },
+
+    -- Rocks component (for ResourceSnapshot)
+    rocks = {
+        fields = {
+            name = "string",
+            type = "string",
+            position_x = "number",
+            position_y = "number",
+            size = "number",
+            resource_json = "json",
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            resources = "resource_json" -- Map to _json suffixed field
+        }
     }
 }
 
