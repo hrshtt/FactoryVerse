@@ -68,7 +68,6 @@ function EntitiesSnapshot:take()
 
     -- Componentized outputs
     local entity_rows = {}
-    local electric_rows = {}
     local crafting_rows = {}
     local burner_rows = {}
     local inventory_rows = {}
@@ -79,7 +78,6 @@ function EntitiesSnapshot:take()
     if not surface then
         local empty = self:create_output("snapshot.entities", "v3", {
             entity_rows = {},
-            electric_rows = {},
             crafting_rows = {},
             burner_rows = {},
             inventory_rows = {},
@@ -110,7 +108,7 @@ function EntitiesSnapshot:take()
                     if row then
                         local chunk = chunk_field
 
-                        -- Base entity row (no component payloads)
+                        -- Base entity row (includes electric fields, no component payloads)
                         local base = {
                             unit_number = row.unit_number,
                             name = row.name,
@@ -128,19 +126,12 @@ function EntitiesSnapshot:take()
                         if row.status_name ~= nil then base.status_name = row.status_name end
                         if row.bounding_box ~= nil then base.bounding_box = row.bounding_box end
                         if row.selection_box ~= nil then base.selection_box = row.selection_box end
-                        if row.train ~= nil then base.train = row.train end
+                        -- Electric fields now part of main entity
+                        if row.electric_network_id ~= nil then base.electric_network_id = row.electric_network_id end
+                        if row.electric_buffer_size ~= nil then base.electric_buffer_size = row.electric_buffer_size end
+                        if row.energy ~= nil then base.energy = row.energy end
                         entity_rows[#entity_rows + 1] = base
 
-                        -- Electric component
-                        if row.electric_network_id ~= nil or row.electric_buffer_size ~= nil or row.energy ~= nil then
-                            electric_rows[#electric_rows + 1] = {
-                                unit_number = row.unit_number,
-                                electric_network_id = row.electric_network_id,
-                                electric_buffer_size = row.electric_buffer_size,
-                                energy = row.energy,
-                                chunk = chunk,
-                            }
-                        end
 
                         -- Crafting component
                         if row.recipe ~= nil or row.crafting_progress ~= nil then
@@ -206,7 +197,6 @@ function EntitiesSnapshot:take()
 
     local output = self:create_output("snapshot.entities", "v3", {
         entity_rows = entity_rows,
-        electric_rows = electric_rows,
         crafting_rows = crafting_rows,
         burner_rows = burner_rows,
         inventory_rows = inventory_rows,
@@ -216,7 +206,6 @@ function EntitiesSnapshot:take()
 
     -- Group entities by chunk for chunk-wise CSV emission
     local entities_by_chunk = {}
-    local electric_by_chunk = {}
     local crafting_by_chunk = {}
     local burner_by_chunk = {}
     local inventory_by_chunk = {}
@@ -232,13 +221,6 @@ function EntitiesSnapshot:take()
         table.insert(entities_by_chunk[chunk_key].entities, entity)
     end
 
-    for _, electric in ipairs(electric_rows) do
-        local chunk_key = string.format("%d_%d", electric.chunk.x, electric.chunk.y)
-        if not electric_by_chunk[chunk_key] then
-            electric_by_chunk[chunk_key] = { chunk_x = electric.chunk.x, chunk_y = electric.chunk.y, entities = {} }
-        end
-        table.insert(electric_by_chunk[chunk_key].entities, electric)
-    end
 
     for _, crafting in ipairs(crafting_rows) do
         local chunk_key = string.format("%d_%d", crafting.chunk.x, crafting.chunk.y)
@@ -308,23 +290,6 @@ function EntitiesSnapshot:take()
             { headers = entity_headers })
     end
 
-    -- Emit electric by chunk
-    local electric_headers = self:get_headers("electric")
-    for chunk_key, chunk_data in pairs(electric_by_chunk) do
-        local flattened_electric = {}
-        for _, electric in ipairs(chunk_data.entities) do
-            table.insert(flattened_electric, self:flatten_data("electric", electric))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_electric", self:_array_to_csv(flattened_electric, electric_headers),
-            { headers = electric_headers })
-    end
 
     -- Emit crafting by chunk
     local crafting_headers = self:get_headers("crafting")
@@ -424,7 +389,6 @@ function EntitiesSnapshot:take()
             tick = out.timestamp,
             entities = {
                 entity_rows = c(d.entity_rows),
-                electric_rows = c(d.electric_rows),
                 crafting_rows = c(d.crafting_rows),
                 burner_rows = c(d.burner_rows),
                 inventory_rows = c(d.inventory_rows),
@@ -650,8 +614,9 @@ function EntitiesSnapshot:_serialize_entity(e)
     end
 
     -- Electric network id
-    local ok_enid, enid = pcall(function() return e.electric_network_id end)
-    if ok_enid and enid then out.electric_network_id = enid end
+    if e.electric_network_id ~= nil then
+        out.electric_network_id = e.electric_network_id
+    end
 
     -- Energy buffers
     if e.energy ~= nil then out.energy = e.energy end
@@ -770,12 +735,6 @@ function EntitiesSnapshot:_serialize_entity(e)
         end
     end
 
-    -- Train info (for rolling stock)
-    do
-        if e.train then
-            out.train = { id = e.train.id, state = e.train.state }
-        end
-    end
 
     -- Selection & bounding boxes (runtime first; fall back to prototype)
     do

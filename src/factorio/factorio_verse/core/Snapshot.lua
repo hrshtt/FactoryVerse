@@ -28,8 +28,9 @@ local ComponentSchema = {
             selection_box_min_y = "number",
             selection_box_max_x = "number",
             selection_box_max_y = "number",
-            train_id = "number",
-            train_state = "string"
+            electric_network_id = "number",
+            electric_buffer_size = "number",
+            energy = "number"
         },
         flatten_rules = {
             position = { x = "position_x", y = "position_y" },
@@ -45,25 +46,10 @@ local ComponentSchema = {
                 min_y = "selection_box_min_y",
                 max_x = "selection_box_max_x",
                 max_y = "selection_box_max_y"
-            },
-            train = { id = "train_id", state = "train_state" }
+            }
         }
     },
 
-    -- Electric component
-    electric = {
-        fields = {
-            unit_number = "number",
-            electric_network_id = "number",
-            electric_buffer_size = "number",
-            energy = "number",
-            chunk_x = "number",
-            chunk_y = "number"
-        },
-        flatten_rules = {
-            chunk = { x = "chunk_x", y = "chunk_y" }
-        }
-    },
 
     -- Crafting component
     crafting = {
