@@ -267,11 +267,11 @@ function EntitiesSnapshot:take()
     }
 
     -- Emit entities by chunk
-    local entity_headers = self:_get_entity_headers()
+    local entity_headers = self:get_headers("entity")
     for chunk_key, chunk_data in pairs(entities_by_chunk) do
         local flattened_entities = {}
         for _, entity in ipairs(chunk_data.entities) do
-            table.insert(flattened_entities, self:_flatten_entity_data(entity))
+            table.insert(flattened_entities, self:flatten_data("entity", entity))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -284,11 +284,11 @@ function EntitiesSnapshot:take()
     end
 
     -- Emit electric by chunk
-    local electric_headers = self:_get_electric_headers()
+    local electric_headers = self:get_headers("electric")
     for chunk_key, chunk_data in pairs(electric_by_chunk) do
         local flattened_electric = {}
         for _, electric in ipairs(chunk_data.entities) do
-            table.insert(flattened_electric, self:_flatten_entity_data(electric))
+            table.insert(flattened_electric, self:flatten_data("electric", electric))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -301,11 +301,11 @@ function EntitiesSnapshot:take()
     end
 
     -- Emit crafting by chunk
-    local crafting_headers = self:_get_crafting_headers()
+    local crafting_headers = self:get_headers("crafting")
     for chunk_key, chunk_data in pairs(crafting_by_chunk) do
         local flattened_crafting = {}
         for _, crafting in ipairs(chunk_data.entities) do
-            table.insert(flattened_crafting, self:_flatten_entity_data(crafting))
+            table.insert(flattened_crafting, self:flatten_data("crafting", crafting))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -318,11 +318,11 @@ function EntitiesSnapshot:take()
     end
 
     -- Emit burner by chunk
-    local burner_headers = self:_get_burner_headers()
+    local burner_headers = self:get_headers("burner")
     for chunk_key, chunk_data in pairs(burner_by_chunk) do
         local flattened_burner = {}
         for _, burner in ipairs(chunk_data.entities) do
-            table.insert(flattened_burner, self:_flatten_entity_data(burner))
+            table.insert(flattened_burner, self:flatten_data("burner", burner))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -335,11 +335,11 @@ function EntitiesSnapshot:take()
     end
 
     -- Emit inventory by chunk
-    local inventory_headers = self:_get_inventory_headers()
+    local inventory_headers = self:get_headers("inventory")
     for chunk_key, chunk_data in pairs(inventory_by_chunk) do
         local flattened_inventory = {}
         for _, inventory in ipairs(chunk_data.entities) do
-            table.insert(flattened_inventory, self:_flatten_entity_data(inventory))
+            table.insert(flattened_inventory, self:flatten_data("inventory", inventory))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -352,11 +352,11 @@ function EntitiesSnapshot:take()
     end
 
     -- Emit fluids by chunk
-    local fluids_headers = self:_get_fluids_headers()
+    local fluids_headers = self:get_headers("fluids")
     for chunk_key, chunk_data in pairs(fluids_by_chunk) do
         local flattened_fluids = {}
         for _, fluids in ipairs(chunk_data.entities) do
-            table.insert(flattened_fluids, self:_flatten_entity_data(fluids))
+            table.insert(flattened_fluids, self:flatten_data("fluids", fluids))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -369,11 +369,11 @@ function EntitiesSnapshot:take()
     end
 
     -- Emit inserter by chunk
-    local inserter_headers = self:_get_inserter_headers()
+    local inserter_headers = self:get_headers("inserter")
     for chunk_key, chunk_data in pairs(inserter_by_chunk) do
         local flattened_inserter = {}
         for _, inserter in ipairs(chunk_data.entities) do
-            table.insert(flattened_inserter, self:_flatten_entity_data(inserter))
+            table.insert(flattened_inserter, self:flatten_data("inserter", inserter))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -521,11 +521,11 @@ function EntitiesSnapshot:take_belts()
         }
     }
 
-    local belt_headers = self:_get_belt_headers()
+    local belt_headers = self:get_headers("belt")
     for chunk_key, chunk_data in pairs(belts_by_chunk) do
         local flattened_belts = {}
         for _, belt in ipairs(chunk_data.belts) do
-            table.insert(flattened_belts, self:_flatten_entity_data(belt))
+            table.insert(flattened_belts, self:flatten_data("belt", belt))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -588,121 +588,7 @@ function EntitiesSnapshot:_array_to_csv(data, headers)
     return table.concat(csv_lines, "\n") .. "\n"
 end
 
---- Get headers for entity base data
---- @return table - array of header names
-function EntitiesSnapshot:_get_entity_headers()
-    return {
-        "unit_number", "name", "type", "force", "position_x", "position_y", 
-        "direction", "direction_name", "orientation", "orientation_name",
-        "chunk_x", "chunk_y", "health", "status", "status_name",
-        "bounding_box_min_x", "bounding_box_min_y", "bounding_box_max_x", "bounding_box_max_y",
-        "selection_box_min_x", "selection_box_min_y", "selection_box_max_x", "selection_box_max_y",
-        "train_id", "train_state"
-    }
-end
 
---- Get headers for electric component data
---- @return table - array of header names
-function EntitiesSnapshot:_get_electric_headers()
-    return {"unit_number", "electric_network_id", "electric_buffer_size", "energy", "chunk_x", "chunk_y"}
-end
-
---- Get headers for crafting component data
---- @return table - array of header names
-function EntitiesSnapshot:_get_crafting_headers()
-    return {"unit_number", "recipe", "crafting_progress", "chunk_x", "chunk_y"}
-end
-
---- Get headers for burner component data
---- @return table - array of header names
-function EntitiesSnapshot:_get_burner_headers()
-    return {
-        "unit_number", "remaining_burning_fuel", "currently_burning", "inventories", 
-        "chunk_x", "chunk_y"
-    }
-end
-
---- Get headers for inventory component data
---- @return table - array of header names
-function EntitiesSnapshot:_get_inventory_headers()
-    return {"unit_number", "inventories", "chunk_x", "chunk_y"}
-end
-
---- Get headers for fluids component data
---- @return table - array of header names
-function EntitiesSnapshot:_get_fluids_headers()
-    return {"unit_number", "fluids", "chunk_x", "chunk_y"}
-end
-
---- Get headers for inserter component data
---- @return table - array of header names
-function EntitiesSnapshot:_get_inserter_headers()
-    return {
-        "unit_number", "pickup_position_x", "pickup_position_y", "drop_position_x", "drop_position_y",
-        "pickup_target_unit", "drop_target_unit", "chunk_x", "chunk_y"
-    }
-end
-
---- Get headers for belt data
---- @return table - array of header names
-function EntitiesSnapshot:_get_belt_headers()
-    return {
-        "unit_number", "name", "type", "position_x", "position_y",
-        "direction", "direction_name", "item_lines", "belt_neighbours",
-        "belt_to_ground_type", "underground_neighbour_unit", "chunk_x", "chunk_y"
-    }
-end
-
---- Flatten entity data for CSV output
---- @param entity_data table - entity data row
---- @return table - flattened entity data
-function EntitiesSnapshot:_flatten_entity_data(entity_data)
-    local flattened = {}
-    for k, v in pairs(entity_data) do
-        if k == "position" and type(v) == "table" then
-            flattened.position_x = v.x
-            flattened.position_y = v.y
-        elseif k == "chunk" and type(v) == "table" then
-            flattened.chunk_x = v.x
-            flattened.chunk_y = v.y
-        elseif k == "bounding_box" and type(v) == "table" then
-            flattened.bounding_box_min_x = v.min_x
-            flattened.bounding_box_min_y = v.min_y
-            flattened.bounding_box_max_x = v.max_x
-            flattened.bounding_box_max_y = v.max_y
-        elseif k == "selection_box" and type(v) == "table" then
-            flattened.selection_box_min_x = v.min_x
-            flattened.selection_box_min_y = v.min_y
-            flattened.selection_box_max_x = v.max_x
-            flattened.selection_box_max_y = v.max_y
-        elseif k == "train" and type(v) == "table" then
-            flattened.train_id = v.id
-            flattened.train_state = v.state
-        elseif k == "burner" and type(v) == "table" then
-            -- Flatten simple burner fields, keep inventories as JSON
-            flattened.remaining_burning_fuel = v.remaining_burning_fuel
-            flattened.currently_burning = v.currently_burning
-            if v.inventories then
-                flattened.inventories = v.inventories  -- Keep as table, will be converted to JSON in CSV
-            end
-        elseif k == "inserter" and type(v) == "table" then
-            -- Flatten inserter position fields
-            if v.pickup_position and type(v.pickup_position) == "table" then
-                flattened.pickup_position_x = v.pickup_position.x
-                flattened.pickup_position_y = v.pickup_position.y
-            end
-            if v.drop_position and type(v.drop_position) == "table" then
-                flattened.drop_position_x = v.drop_position.x
-                flattened.drop_position_y = v.drop_position.y
-            end
-            flattened.pickup_target_unit = v.pickup_target_unit
-            flattened.drop_target_unit = v.drop_target_unit
-        else
-            flattened[k] = v
-        end
-    end
-    return flattened
-end
 
 function EntitiesSnapshot:_serialize_entity(e)
     if not (e and e.valid) then return nil end

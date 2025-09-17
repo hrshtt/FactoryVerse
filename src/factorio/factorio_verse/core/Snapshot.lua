@@ -1,9 +1,319 @@
 local GameState = require "core.game_state.GameState":new()
 
+--- Component Schema Definition - Single source of truth for all component types
+local ComponentSchema = {
+    -- Base entity component
+    entity = {
+        fields = {
+            unit_number = "number",
+            name = "string", 
+            type = "string",
+            force = "string",
+            position_x = "number",
+            position_y = "number",
+            direction = "number",
+            direction_name = "string",
+            orientation = "number", 
+            orientation_name = "string",
+            chunk_x = "number",
+            chunk_y = "number",
+            health = "number",
+            status = "number",
+            status_name = "string",
+            bounding_box_min_x = "number",
+            bounding_box_min_y = "number", 
+            bounding_box_max_x = "number",
+            bounding_box_max_y = "number",
+            selection_box_min_x = "number",
+            selection_box_min_y = "number",
+            selection_box_max_x = "number", 
+            selection_box_max_y = "number",
+            train_id = "number",
+            train_state = "string"
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            bounding_box = { 
+                min_x = "bounding_box_min_x", min_y = "bounding_box_min_y",
+                max_x = "bounding_box_max_x", max_y = "bounding_box_max_y"
+            },
+            selection_box = {
+                min_x = "selection_box_min_x", min_y = "selection_box_min_y", 
+                max_x = "selection_box_max_x", max_y = "selection_box_max_y"
+            },
+            train = { id = "train_id", state = "train_state" }
+        }
+    },
+    
+    -- Electric component
+    electric = {
+        fields = {
+            unit_number = "number",
+            electric_network_id = "number",
+            electric_buffer_size = "number", 
+            energy = "number",
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            chunk = { x = "chunk_x", y = "chunk_y" }
+        }
+    },
+    
+    -- Crafting component  
+    crafting = {
+        fields = {
+            unit_number = "number",
+            recipe = "string",
+            crafting_progress = "number",
+            chunk_x = "number", 
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            chunk = { x = "chunk_x", y = "chunk_y" }
+        }
+    },
+    
+    -- Burner component
+    burner = {
+        fields = {
+            unit_number = "number",
+            remaining_burning_fuel = "number",
+            currently_burning = "string",
+            inventories_json = "json", -- Complex nested data
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            burner = {
+                remaining_burning_fuel = "remaining_burning_fuel",
+                currently_burning = "currently_burning",
+                inventories = "inventories_json" -- Map to _json suffixed field
+            }
+        }
+    },
+    
+    -- Inventory component
+    inventory = {
+        fields = {
+            unit_number = "number", 
+            inventories_json = "json", -- Complex nested data
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            inventories = "inventories_json" -- Map to _json suffixed field
+        }
+    },
+    
+    -- Fluids component
+    fluids = {
+        fields = {
+            unit_number = "number",
+            fluids_json = "json", -- Complex nested data  
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            fluids = "fluids_json" -- Map to _json suffixed field
+        }
+    },
+    
+    -- Inserter component
+    inserter = {
+        fields = {
+            unit_number = "number",
+            pickup_position_x = "number",
+            pickup_position_y = "number", 
+            drop_position_x = "number",
+            drop_position_y = "number",
+            pickup_target_unit = "number",
+            drop_target_unit = "number",
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            inserter = {
+                pickup_position = { x = "pickup_position_x", y = "pickup_position_y" },
+                drop_position = { x = "drop_position_x", y = "drop_position_y" },
+                pickup_target_unit = "pickup_target_unit",
+                drop_target_unit = "drop_target_unit"
+            }
+        }
+    },
+    
+    -- Belt component
+    belt = {
+        fields = {
+            unit_number = "number",
+            name = "string",
+            type = "string", 
+            position_x = "number",
+            position_y = "number",
+            direction = "number",
+            direction_name = "string",
+            item_lines_json = "json", -- Complex nested data
+            belt_neighbours_json = "json", -- Complex nested data
+            belt_to_ground_type = "string",
+            underground_neighbour_unit = "number",
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            item_lines = "item_lines_json", -- Map to _json suffixed field
+            belt_neighbours = "belt_neighbours_json" -- Map to _json suffixed field
+        }
+    },
+    
+    -- Tiles component (for ResourceSnapshot)
+    tiles = {
+        fields = {
+            kind = "string",
+            x = "number",
+            y = "number",
+            amount = "number"
+        },
+        flatten_rules = {}
+    }
+}
+
+--- Schema Manager - Centralized schema management for all components
+--- @class SchemaManager
+local SchemaManager = {}
+
+--- Get headers for a component type
+--- @param component_type string - component type name
+--- @return table - array of header names
+function SchemaManager:get_headers(component_type)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        error("Unknown component type: " .. tostring(component_type))
+    end
+    
+    local headers = {}
+    for field_name, _ in pairs(schema.fields) do
+        table.insert(headers, field_name)
+    end
+    
+    -- Sort for consistent ordering
+    table.sort(headers)
+    return headers
+end
+
+--- Flatten data according to component schema rules
+--- @param component_type string - component type name
+--- @param data table - data to flatten
+--- @return table - flattened data
+function SchemaManager:flatten_data(component_type, data)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        error("Unknown component type: " .. tostring(component_type))
+    end
+    
+    local flattened = {}
+    local rules = schema.flatten_rules or {}
+    
+    for k, v in pairs(data) do
+        if rules[k] and type(rules[k]) == "table" then
+            -- Apply flattening rules for nested structures
+            for nested_key, flattened_key in pairs(rules[k]) do
+                if type(nested_key) == "string" and type(flattened_key) == "string" then
+                    -- Simple field mapping
+                    if v[nested_key] ~= nil then
+                        flattened[flattened_key] = v[nested_key]
+                    end
+                elseif type(nested_key) == "table" and type(flattened_key) == "string" then
+                    -- Nested structure flattening (like position -> position_x, position_y)
+                    for sub_key, sub_flattened_key in pairs(nested_key) do
+                        if v[sub_key] ~= nil then
+                            flattened[sub_flattened_key] = v[sub_key]
+                        end
+                    end
+                end
+            end
+        else
+            -- Direct field copy
+            flattened[k] = v
+        end
+    end
+    
+    return flattened
+end
+
+--- Validate data against component schema
+--- @param component_type string - component type name
+--- @param data table - data to validate
+--- @return boolean, string|nil - is_valid, error_message
+function SchemaManager:validate_data(component_type, data)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        return false, "Unknown component type: " .. tostring(component_type)
+    end
+    
+    local flattened = self:flatten_data(component_type, data)
+    local expected_fields = schema.fields
+    
+    for field_name, field_type in pairs(expected_fields) do
+        if flattened[field_name] == nil then
+            -- Field is missing - this might be okay for optional fields
+            -- Could add optional field tracking in schema
+        else
+            local actual_type = type(flattened[field_name])
+            if field_type == "json" and actual_type == "table" then
+                -- JSON fields are stored as tables, converted during CSV generation
+                -- This is fine
+            elseif actual_type ~= field_type then
+                return false, string.format("Field %s expected type %s, got %s", 
+                    field_name, field_type, actual_type)
+            end
+        end
+    end
+    
+    return true, nil
+end
+
+--- Get SQL schema for a component type
+--- @param component_type string - component type name
+--- @return string - SQL CREATE TABLE statement
+function SchemaManager:get_sql_schema(component_type)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        error("Unknown component type: " .. tostring(component_type))
+    end
+    
+    local sql_fields = {}
+    for field_name, field_type in pairs(schema.fields) do
+        local sql_type = self:_lua_type_to_sql_type(field_type)
+        table.insert(sql_fields, string.format("    %s %s", field_name, sql_type))
+    end
+    
+    return string.format("CREATE TABLE %s (\n%s\n);", component_type, table.concat(sql_fields, ",\n"))
+end
+
+--- Convert Lua type to SQL type
+--- @param lua_type string - Lua type name
+--- @return string - SQL type name
+function SchemaManager:_lua_type_to_sql_type(lua_type)
+    local type_map = {
+        number = "NUMERIC",
+        string = "TEXT", 
+        json = "JSONB"
+    }
+    return type_map[lua_type] or "TEXT"
+end
+
 --- Base class for all snapshots with shared functionality
 --- Provides common interface for snapshot operations and output formatting
 --- @class Snapshot
 --- @field game_state GameState
+--- @field schema_manager SchemaManager
 local Snapshot = {}
 Snapshot.__index = Snapshot
 
@@ -12,6 +322,7 @@ function Snapshot:new()
     local instance = {}
     setmetatable(instance, self)
     instance.game_state = GameState
+    instance.schema_manager = SchemaManager
     return instance
 end
 
@@ -47,6 +358,36 @@ end
 --- Base take method - override in subclasses
 function Snapshot:take()
     error("take() method must be implemented by subclass")
+end
+
+--- Get headers for a component type using schema manager
+--- @param component_type string - component type name
+--- @return table - array of header names
+function Snapshot:get_headers(component_type)
+    return self.schema_manager:get_headers(component_type)
+end
+
+--- Flatten data using schema manager
+--- @param component_type string - component type name
+--- @param data table - data to flatten
+--- @return table - flattened data
+function Snapshot:flatten_data(component_type, data)
+    return self.schema_manager:flatten_data(component_type, data)
+end
+
+--- Validate data using schema manager
+--- @param component_type string - component type name
+--- @param data table - data to validate
+--- @return boolean, string|nil - is_valid, error_message
+function Snapshot:validate_data(component_type, data)
+    return self.schema_manager:validate_data(component_type, data)
+end
+
+--- Get SQL schema for a component type
+--- @param component_type string - component type name
+--- @return string - SQL CREATE TABLE statement
+function Snapshot:get_sql_schema(component_type)
+    return self.schema_manager:get_sql_schema(component_type)
 end
 
 function Snapshot:emit_json(opts, name, payload)

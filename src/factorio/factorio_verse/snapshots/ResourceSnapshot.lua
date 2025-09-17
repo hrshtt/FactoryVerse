@@ -169,8 +169,23 @@ function ResourceSnapshot:_enqueue_tile_for_chunk(chunk_x, chunk_y, x, y, kind, 
         BUFS[k] = b 
     end
     
+    -- Create tile data according to schema
+    local tile_data = {
+        kind = kind,
+        x = x,
+        y = y,
+        amount = amount
+    }
+    
+    -- Flatten using schema manager
+    local flattened = self:flatten_data("tiles", tile_data)
+    
+    -- Convert to CSV row
+    local headers = self:get_headers("tiles")
+    local csv_row = self:_table_to_csv_row(flattened, headers)
+    
     b.count = b.count + 1
-    b.rows[b.count] = kind .. "," .. x .. "," .. y .. "," .. tostring(amount) .. "\n"
+    b.rows[b.count] = csv_row .. "\n"
 end
 
 --- Generate buffer key for chunk-based buffering
@@ -189,7 +204,10 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
     local b = BUFS[k]
     if not b or b.count == 0 then return end
     
-    local payload = table.concat(b.rows, "", 1, b.count)
+    -- Get headers and create proper CSV with header row
+    local headers = self:get_headers("tiles")
+    local header_row = table.concat(headers, ",") .. "\n"
+    local payload = header_row .. table.concat(b.rows, "", 1, b.count)
     
     if USE_UDP then
         -- Split into safe datagrams (~8KB)
@@ -203,7 +221,8 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
             chunk_x = chunk_x,
             chunk_y = chunk_y,
             surface_id = b.surface,
-            line_count = b.count
+            line_count = b.count,
+            headers = headers
         }
         
         self:emit_csv({ 
@@ -280,6 +299,30 @@ function ResourceSnapshot:_get_buffer_count()
     return count
 end
 
+
+--- Convert table to CSV row, handling nested structures
+--- @param data table - data to convert
+--- @param headers table - column headers
+--- @return string - CSV row
+function ResourceSnapshot:_table_to_csv_row(data, headers)
+    local values = {}
+    for _, header in ipairs(headers) do
+        local value = data[header]
+        if value == nil then
+            table.insert(values, "")
+        elseif type(value) == "table" then
+            -- Convert table to JSON string for complex nested data
+            local json_str = helpers.table_to_json(value)
+            table.insert(values, '"' .. json_str:gsub('"', '""') .. '"')
+        elseif type(value) == "string" then
+            -- Regular string, escape quotes and wrap in quotes
+            table.insert(values, '"' .. value:gsub('"', '""') .. '"')
+        else
+            table.insert(values, tostring(value))
+        end
+    end
+    return table.concat(values, ",")
+end
 
 --- CONFIGURATION HELPERS
 
