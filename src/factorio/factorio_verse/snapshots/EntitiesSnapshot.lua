@@ -58,7 +58,7 @@ function EntitiesSnapshot:take()
     -- Engine-side allowlist to avoid creating wrappers for belts/naturals
     local allowed_types = {
         "assembling-machine", "furnace", "mining-drill", "inserter", "lab", "roboport", "beacon",
-        "electric-pole", "radar", "pipe", "pipe-to-ground", "storage-tank", "offshore-pump",
+        "electric-pole", "radar", "storage-tank", "offshore-pump",
         "chemical-plant", "oil-refinery", "boiler", "generator", "pump", "pumpjack", "rocket-silo",
         "container", "logistic-container", "arithmetic-combinator", "decider-combinator",
         "constant-combinator", "lamp", "reactor", "heat-pipe", "accumulator",
@@ -71,7 +71,6 @@ function EntitiesSnapshot:take()
     local crafting_rows = {}
     local burner_rows = {}
     local inventory_rows = {}
-    local fluids_rows = {}
     local inserter_rows = {}
 
     local surface = self.game_state:get_surface()
@@ -81,7 +80,6 @@ function EntitiesSnapshot:take()
             crafting_rows = {},
             burner_rows = {},
             inventory_rows = {},
-            fluids_rows = {},
             inserter_rows = {},
         })
         return empty
@@ -173,14 +171,6 @@ function EntitiesSnapshot:take()
                             end
                         end
 
-                        -- Fluids component
-                        if row.fluids ~= nil then
-                            fluids_rows[#fluids_rows + 1] = {
-                                unit_number = row.unit_number,
-                                fluids = row.fluids,
-                                chunk = chunk,
-                            }
-                        end
 
                         -- Inserter component
                         if row.inserter ~= nil then
@@ -205,7 +195,6 @@ function EntitiesSnapshot:take()
         crafting_rows = crafting_rows,
         burner_rows = burner_rows,
         inventory_rows = inventory_rows,
-        fluids_rows = fluids_rows,
         inserter_rows = inserter_rows,
     })
 
@@ -214,7 +203,6 @@ function EntitiesSnapshot:take()
     local crafting_by_chunk = {}
     local burner_by_chunk = {}
     local inventory_by_chunk = {}
-    local fluids_by_chunk = {}
     local inserter_by_chunk = {}
 
     -- Group all entity data by chunk
@@ -251,13 +239,6 @@ function EntitiesSnapshot:take()
         table.insert(inventory_by_chunk[chunk_key].entities, inventory)
     end
 
-    for _, fluids in ipairs(fluids_rows) do
-        local chunk_key = string.format("%d_%d", fluids.chunk.x, fluids.chunk.y)
-        if not fluids_by_chunk[chunk_key] then
-            fluids_by_chunk[chunk_key] = { chunk_x = fluids.chunk.x, chunk_y = fluids.chunk.y, entities = {} }
-        end
-        table.insert(fluids_by_chunk[chunk_key].entities, fluids)
-    end
 
     for _, inserter in ipairs(inserter_rows) do
         local chunk_key = string.format("%d_%d", inserter.chunk.x, inserter.chunk.y)
@@ -350,23 +331,6 @@ function EntitiesSnapshot:take()
             { headers = inventory_headers })
     end
 
-    -- Emit fluids by chunk
-    local fluids_headers = self:get_headers("fluids")
-    for chunk_key, chunk_data in pairs(fluids_by_chunk) do
-        local flattened_fluids = {}
-        for _, fluids in ipairs(chunk_data.entities) do
-            table.insert(flattened_fluids, self:flatten_data("fluids", fluids))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_fluids", self:_array_to_csv(flattened_fluids, fluids_headers),
-            { headers = fluids_headers })
-    end
 
     -- Emit inserter by chunk
     local inserter_headers = self:get_headers("inserter")
@@ -386,9 +350,23 @@ function EntitiesSnapshot:take()
             { headers = inserter_headers })
     end
 
+    -- Process belts
+    local belt_output = self:_take_belts()
+
+    -- Process pipes
+    local pipe_output = self:_take_pipes()
+
     self:print_summary(output, function(out)
         local d = out and out.data or {}
         local c = function(t) return (t and #t) or 0 end
+        local belt_count = 0
+        if belt_output and belt_output.data and belt_output.data.belt_rows then
+            belt_count = #belt_output.data.belt_rows
+        end
+        local pipe_count = 0
+        if pipe_output and pipe_output.data and pipe_output.data.pipe_rows then
+            pipe_count = #pipe_output.data.pipe_rows
+        end
         return {
             surface = out.surface,
             tick = out.timestamp,
@@ -397,8 +375,9 @@ function EntitiesSnapshot:take()
                 crafting_rows = c(d.crafting_rows),
                 burner_rows = c(d.burner_rows),
                 inventory_rows = c(d.inventory_rows),
-                fluids_rows = c(d.fluids_rows),
                 inserter_rows = c(d.inserter_rows),
+                belt_rows = belt_count,
+                pipe_rows = pipe_count,
             },
         }
     end)
@@ -406,10 +385,10 @@ function EntitiesSnapshot:take()
     return output
 end
 
---- Dump only belt-like entities with transport line contents
+--- Internal method to dump only belt-like entities with transport line contents
 --- Dump only belt-like entities with transport line contents as flat rows
 --- Dump only belt-like entities with transport line contents as flat component rows
-function EntitiesSnapshot:take_belts()
+function EntitiesSnapshot:_take_belts()
     log("Taking belts snapshot")
 
     local charted_chunks = self.game_state:get_charted_chunks()
@@ -535,14 +514,163 @@ function EntitiesSnapshot:take_belts()
             tick = base_opts.tick,
             metadata = base_opts.metadata
         }
-        self:emit_csv(opts, "belts", self:_array_to_csv(flattened_belts, belt_headers), { headers = belt_headers })
+        self:emit_csv(opts, "entities_belts", self:_array_to_csv(flattened_belts, belt_headers), { headers = belt_headers })
     end
 
-    self:print_summary(output, function(out)
-        local total = 0
-        if out and out.data and out.data.belt_rows then total = #out.data.belt_rows end
-        return { surface = out.surface, belts = { total = total }, tick = out.timestamp }
-    end)
+    return output
+end
+
+--- Internal method to dump only pipe-like entities with fluidbox contents
+--- Dump only pipe-like entities with fluidbox contents as flat component rows
+function EntitiesSnapshot:_take_pipes()
+    log("Taking pipes snapshot")
+
+    local charted_chunks = self.game_state:get_charted_chunks()
+    local pipe_rows = {}
+
+    local surface = self.game_state:get_surface()
+    if not surface then
+        local empty = self:create_output("snapshot.pipes", "v3", { pipe_rows = {} })
+        return empty
+    end
+
+    local pipe_types = {
+        "pipe", "pipe-to-ground"
+    }
+
+    for _, chunk in ipairs(charted_chunks) do
+        local filter = { area = chunk.area, force = "player", type = pipe_types }
+        local pipes = surface.find_entities_filtered(filter)
+        if #pipes ~= 0 then
+            local chunk_field = { x = chunk.x, y = chunk.y }
+            for i = 1, #pipes do
+                local e = pipes[i]
+                if e and e.valid then
+                    -- Fluid contents (similar to item_lines for belts)
+                    local fluid_contents = {}
+                    local fb = e.fluidbox
+                    if fb then
+                        local len = #fb
+                        for j = 1, len do
+                            local f = fb[j]
+                            if f then
+                                local cap = fb.get_capacity and fb.get_capacity(j) or nil
+                                fluid_contents[#fluid_contents + 1] = {
+                                    index = j,
+                                    name = f.name,
+                                    amount = f.amount,
+                                    temperature = f.temperature,
+                                    capacity = cap,
+                                }
+                            end
+                        end
+                    end
+
+                    -- Pipe neighbours (similar to belt_neighbours) - categorize as inputs/outputs
+                    local inputs_ids, outputs_ids = {}, {}
+                    local underground_other = nil
+                    local pipe_to_ground_type = nil
+
+                    if e.type == "pipe-to-ground" then
+                        -- pipe_to_ground_type = e.pipe_to_ground_type  -- May not be available in all versions
+                        local un = e.neighbours -- for underground pipes this is the other end
+                        if un and un.valid and un.unit_number then 
+                            underground_other = un.unit_number 
+                        end
+                    end
+
+                    -- Get connected entities through fluidbox and categorize as inputs/outputs
+                    local fb = e.fluidbox
+                    if fb then
+                        for k = 1, #fb do
+                            local connections = fb.get_connections and fb.get_connections(k) or {}
+                            for _, conn in ipairs(connections) do
+                                if conn.owner and conn.owner.valid and conn.owner.unit_number then
+                                    local conn_entity = conn.owner
+                                    local conn_unit = conn_entity.unit_number
+                                    
+                                    -- Categorize connections based on entity type and relative position
+                                    -- This is a simplified approach - in practice, you might want more sophisticated logic
+                                    if conn_entity.type == "pipe" or conn_entity.type == "pipe-to-ground" then
+                                        -- For pipe-to-pipe connections, use position to determine flow direction
+                                        -- This is a heuristic - pipes generally flow from higher to lower pressure/position
+                                        if conn_entity.position and e.position then
+                                            local dx = conn_entity.position.x - e.position.x
+                                            local dy = conn_entity.position.y - e.position.y
+                                            -- Simple heuristic: if connected entity is "upstream" (higher x or y), it's input
+                                            if dx > 0 or dy > 0 then
+                                                inputs_ids[#inputs_ids + 1] = conn_unit
+                                            else
+                                                outputs_ids[#outputs_ids + 1] = conn_unit
+                                            end
+                                        else
+                                            -- Fallback: treat as input
+                                            inputs_ids[#inputs_ids + 1] = conn_unit
+                                        end
+                                    else
+                                        -- For non-pipe entities (boilers, engines, etc.), treat as inputs
+                                        inputs_ids[#inputs_ids + 1] = conn_unit
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    pipe_rows[#pipe_rows + 1] = {
+                        unit_number = e.unit_number,
+                        name = e.name,
+                        type = e.type,
+                        position = e.position,
+                        direction = e.direction,
+                        direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
+                        fluid_contents = fluid_contents,
+                        pipe_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or nil,
+                        pipe_to_ground_type = pipe_to_ground_type,
+                        underground_neighbour_unit = underground_other,
+                        chunk = chunk_field,
+                    }
+                end
+            end
+        end
+    end
+
+    local output = self:create_output("snapshot.pipes", "v3", { pipe_rows = pipe_rows })
+
+    -- Group pipes by chunk for chunk-wise CSV emission
+    local pipes_by_chunk = {}
+    for _, pipe in ipairs(pipe_rows) do
+        local chunk_key = string.format("%d_%d", pipe.chunk.x, pipe.chunk.y)
+        if not pipes_by_chunk[chunk_key] then
+            pipes_by_chunk[chunk_key] = { chunk_x = pipe.chunk.x, chunk_y = pipe.chunk.y, pipes = {} }
+        end
+        table.insert(pipes_by_chunk[chunk_key].pipes, pipe)
+    end
+
+    -- Emit CSV for pipes by chunk
+    local base_opts = {
+        output_dir = "script-output/factoryverse",
+        tick = output.timestamp,
+        metadata = {
+            schema_version = "snapshot.pipes.v3",
+            surface = output.surface,
+        }
+    }
+
+    local pipe_headers = self:get_headers("pipe")
+    for chunk_key, chunk_data in pairs(pipes_by_chunk) do
+        local flattened_pipes = {}
+        for _, pipe in ipairs(chunk_data.pipes) do
+            table.insert(flattened_pipes, self:flatten_data("pipe", pipe))
+        end
+        local opts = {
+            output_dir = base_opts.output_dir,
+            chunk_x = chunk_data.chunk_x,
+            chunk_y = chunk_data.chunk_y,
+            tick = base_opts.tick,
+            metadata = base_opts.metadata
+        }
+        self:emit_csv(opts, "entities_pipes", self:_array_to_csv(flattened_pipes, pipe_headers), { headers = pipe_headers })
+    end
 
     return output
 end

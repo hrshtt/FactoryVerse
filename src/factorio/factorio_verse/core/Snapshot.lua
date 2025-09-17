@@ -63,7 +63,6 @@ local ComponentSchema = {
             unit_number = "number",
             remaining_burning_fuel = "number",
             currently_burning = "string",
-            inventories_json = "json", -- Complex nested data
             chunk_x = "number",
             chunk_y = "number"
         },
@@ -72,7 +71,6 @@ local ComponentSchema = {
             burner = {
                 remaining_burning_fuel = "remaining_burning_fuel",
                 currently_burning = "currently_burning",
-                inventories = "inventories_json" -- Map to _json suffixed field
             }
         }
     },
@@ -91,17 +89,28 @@ local ComponentSchema = {
         }
     },
 
-    -- Fluids component
-    fluids = {
+    -- Pipe component
+    pipe = {
         fields = {
             unit_number = "number",
-            fluids_json = "json", -- Complex nested data
+            name = "string",
+            type = "string",
+            position_x = "number",
+            position_y = "number",
+            direction = "number",
+            direction_name = "string",
+            fluid_contents_json = "json",      -- Complex nested data
+            pipe_neighbours_json = "json",     -- Input/output connections like belts
+            pipe_to_ground_type = "string",
+            underground_neighbour_unit = "number",
             chunk_x = "number",
             chunk_y = "number"
         },
         flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
             chunk = { x = "chunk_x", y = "chunk_y" },
-            fluids = "fluids_json" -- Map to _json suffixed field
+            fluid_contents = "fluid_contents_json",          -- Map to _json suffixed field
+            pipe_neighbours = "pipe_neighbours_json"         -- Map to _json suffixed field
         }
     },
 
