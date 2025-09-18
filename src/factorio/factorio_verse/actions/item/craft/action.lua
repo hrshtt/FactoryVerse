@@ -75,7 +75,7 @@ function CraftAction:run(params)
     -- Compute feasible crafts based on inventory
     local feasible = desired
     for name, need in pairs(ingredients) do
-        local have = inv.get_item_count and inv.get_item_count(name) or 0
+        local have = (inv and inv.get_item_count and inv.get_item_count(name)) or 0
         local can = math.floor(have / need)
         if can < feasible then feasible = can end
     end
@@ -86,7 +86,7 @@ function CraftAction:run(params)
     -- Remove ingredients
     for name, need in pairs(ingredients) do
         local to_remove = need * feasible
-        local removed = inv.remove and inv.remove({ name = name, count = to_remove }) or 0
+        local removed = (inv and inv.remove and inv.remove({ name = name, count = to_remove })) or 0
         if removed < to_remove then
             error("Failed to remove ingredients from inventory")
         end
@@ -99,7 +99,7 @@ function CraftAction:run(params)
     local produced = {}
     for name, amount in pairs(products) do
         local total = amount * feasible
-        local inserted = inv.insert and inv.insert({ name = name, count = total }) or 0
+        local inserted = (inv and inv.insert and inv.insert({ name = name, count = total })) or 0
         produced[name] = inserted
         local leftover = total - inserted
         if leftover > 0 and surface and pos then
@@ -113,7 +113,34 @@ function CraftAction:run(params)
         end
     end
 
-    return self:_post_run({ crafted = feasible, recipe = params.recipe, products = produced }, params)
+    -- Create mutation contract result
+    local inventory_changes = {}
+    
+    -- Add consumed ingredients (negative values)
+    for name, amount in pairs(ingredients) do
+        inventory_changes[name] = -(amount * feasible)
+    end
+    
+    -- Add produced items (positive values)
+    for name, amount in pairs(produced) do
+        inventory_changes[name] = (inventory_changes[name] or 0) + amount
+    end
+    
+    local result = {
+        crafted = feasible,
+        recipe = params.recipe,
+        products = produced,
+        affected_inventories = {
+            {
+                owner_type = "agent",
+                owner_id = params.agent_id,
+                inventory_type = "character_main",
+                changes = inventory_changes
+            }
+        }
+    }
+    
+    return self:_post_run(result, params)
 end
 
 return CraftAction

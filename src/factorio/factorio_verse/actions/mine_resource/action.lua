@@ -375,7 +375,26 @@ function MineResourceAction:run(params)
         end
     end
 
-    return self:_post_run(true, p)
+    -- Create mutation contract result
+    local result = {
+        success = true,
+        affected_resources = {
+            {
+                name = p.resource_name,
+                position = { x = p.x, y = p.y },
+                delta = -p.max_count -- Negative because resources are being depleted
+            }
+        },
+        affected_inventories = {
+            {
+                owner_type = "agent",
+                owner_id = p.agent_id,
+                inventory_type = "character_main",
+                changes = { [p.resource_name] = p.max_count } -- Items gained from mining
+            }
+        }
+    }
+    return self:_post_run(result, p)
 end
 
 MineResourceAction.events = {

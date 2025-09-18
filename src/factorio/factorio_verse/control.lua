@@ -17,6 +17,13 @@ local admin_api = require("core.admin_api")
 admin_api.load_helpers()
 admin_api.load_commands()
 
+-- Setup mutation logging
+local MutationConfig = require("core.MutationConfig")
+-- Use "minimal" profile by default - only action-based logging
+-- Change to "full" to enable tick-based autonomous mutation logging
+-- Change to "disabled" to turn off mutation logging entirely
+MutationConfig.setup("minimal")
+
 -- Register remote interface containing all actions' run methods
 local function register_remote_interface()
   action_registry:register_remote_interface()

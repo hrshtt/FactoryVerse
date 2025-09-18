@@ -1,6 +1,8 @@
 local Action = require("core.action.Action")
 local ParamSpec = require("core.action.ParamSpec")
 local GameState = require("core.game_state.GameState")
+local walk = require("core.actions.agent.walk.helper")
+
 local gs = GameState:new()
 
 --- @class PlaceEntityParams : ParamSpec
@@ -102,9 +104,9 @@ function PlaceEntityAction:run(params)
 
     -- Handle walk_if_unreachable logic
     if p.walk_if_unreachable then
-        local placement_reachable = self.walk_helper:is_reachable(agent, p.position)
+        local placement_reachable = walk:is_reachable(agent, p.position)
         if not placement_reachable then
-            local walk_success = self.walk_helper:start_walk_to({
+            local walk_success = walk:start_walk_to({
                 agent_id = p.agent_id,
                 target_position = p.position,
                 walk_if_unreachable = true,
@@ -150,7 +152,17 @@ function PlaceEntityAction:run(params)
         direction = entity.direction,
         unit_number = entity.unit_number,
         type = entity.type,
-        force = entity.force and entity.force.name or nil
+        force = entity.force and entity.force.name or nil,
+        -- Mutation contract fields
+        affected_unit_numbers = { entity.unit_number },
+        affected_inventories = {
+            {
+                owner_type = "agent",
+                owner_id = p.agent_id,
+                inventory_type = "character_main",
+                changes = { [p.entity_name] = -1 } -- Consumed one item
+            }
+        }
     }
     return self:_post_run(result, p)
 end

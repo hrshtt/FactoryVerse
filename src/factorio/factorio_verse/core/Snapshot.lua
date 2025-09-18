@@ -43,7 +43,6 @@ local ComponentSchema = {
         }
     },
 
-
     -- Crafting component
     crafting = {
         fields = {

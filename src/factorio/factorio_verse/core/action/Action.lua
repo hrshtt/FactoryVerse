@@ -114,11 +114,23 @@ function Action:_pre_run(game_state, params)
   return instance
 end
 
---- Post-run hook. Placeholder for future use.
+--- Post-run hook with mutation logging
 --- @param result any
 --- @param params ParamSpec
 --- @return any
 function Action:_post_run(result, params)
+  -- Log mutations if enabled
+  local MutationLogger = require("core.MutationLogger")
+  local logger = MutationLogger.get_instance()
+  
+  -- Convert params to table if it's a ParamSpec instance
+  local params_table = params
+  if params and type(params.get_values) == "function" then
+    params_table = params:get_values()
+  end
+  
+  logger:log_action_mutations(self.name, params_table, result)
+  
   return result
 end
 
