@@ -47,11 +47,11 @@ These visual cues are difficult to capture for text-based LLMs without enabling 
 ## Context on the Table
 
 <p align="center">
-  <img src="docs/fv.svg" width="600" alt="FactoryVerse Overview"/>
+  <img src="docs/fv.svg" width="100%" alt="FactoryVerse Overview"/>
 </p>
 
 
-Rather than relying on visual interpretation, FactoryVerse makes implicit game context explicit through a queryable spatial database approach:
+Rather than relying on visual interpretation or reactive object access, FactoryVerse makes implicit game context explicit through a queryable spatial database approach:
 
 ### Spatial Intelligence
 - **PostGIS Integration**: Leverage mature spatial database capabilities for complex geometric queries
@@ -62,6 +62,8 @@ Rather than relying on visual interpretation, FactoryVerse makes implicit game c
 - **Production Flow Analysis**: Track resource throughput rates, identify bottlenecks, and optimize production ratios
 - **Evolution Tracking**: Monitor pollution spread, enemy base expansion, and defensive coverage over time
 - **Performance Metrics**: Sustained science-per-minute, resource efficiency, and factory growth patterns
+
+This is attempting an opinionated equivelence between the game state mapped onto sql tables.
 
 ### Context Materialization
 Instead of requiring LLMs to infer context from visual cues, FactoryVerse materializes this information as queryable data:
@@ -112,7 +114,16 @@ FactoryVerse enables investigation of several research questions in AI systems:
 - **System Dynamics**: How well can text-based models understand and optimize complex feedback loops?
 - **Long-Horizon Optimization**: What strategies emerge for infinite research and continuous improvement scenarios?
 
-## Contributing
+## Appendix
+
+### Spatial Types
+
+Factorio is a 2d grid based world, the relavant game world precision is integer level, IFF you ignore real player position, vehicle position and mine placement.
+In other words everything else on the map snaps on an integer coordinate grid, with the smallest 1x1 size of this world called a tile.
+
+While entities have centers that can be at half-tile coordinates (e.g., x + 0.5), we can represent them using their bottom-left corner coordinates and dimensions instead. This transformation converts all spatial data to integer coordinates, enabling fast spatial indexing and efficient database queries.
+
+**Spatial Types (ST) Standards**: PostGIS implements the OGC Simple Features specification, providing standardized geometry types for spatial databases. For Factorio's 2D grid world, the most relevant types are: **Point** (entity centers, resource deposits), **Polygon** (building footprints, resource patches), **LineString** (conveyor belts, pipe networks), and **MultiPolygon** (complex resource areas). These types enable precise spatial queries like proximity analysis, coverage calculations, and optimal routing—transforming Factorio's implicit spatial relationships into queryable database operations.
 
 ---
 
