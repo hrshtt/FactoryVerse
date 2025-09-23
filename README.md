@@ -136,8 +136,7 @@ FactoryVerse’s mod treats Factorio as an explicit, serializable game state wit
 
 ### Remote Interface, Invocation, and Queues
 - **Direct remote calls**: `ActionRegistry` registers all actions on a single remote interface (`actions`) so external clients can invoke them individually via `remote.call("actions", "category.action", params)`.
-- **Queue-based batching (experimental)**: `core/action/ActionQueue.lua` exposes an `action_queue` remote interface that lets clients enqueue many actions and process them together (by key or all at once). This reduces per-call overhead (e.g., over argon) and improves stability for multi-agent coordination by validating and sequencing batches. Convenience methods (`queue_category.action`) exist alongside generic `enqueue`, with controls for immediate mode, priorities, sizes, and per-key processing.
-- **Event aggregation**: Any action-supplied event handlers are collected and registered once in `control.lua`, alongside admin helpers and safe on-join defaults.
+- **Queue-based batching (experimental)**: `core/action/ActionQueue.lua` exposes an `action_queue` remote interface that lets clients enqueue many actions and process them together (by key or all at once). This reduces per-call overhead (e.g., over rcon) and improves stability for multi-agent coordination by validating and sequencing batches. Convenience methods (`queue_category.action`) exist alongside generic `enqueue`, with controls for immediate mode, priorities, sizes, and per-key processing.
 
 Together, these pieces form a compact environment interface: snapshots make context explicit and cheap to move; actions apply validated, sensible changes; mutation logs capture what happened for downstream analytics and learning.
 
