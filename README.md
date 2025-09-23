@@ -101,6 +101,46 @@ ORDER BY coast_length DESC;
 2. **Scalable Observation**: Query exactly what's needed rather than loading entire game state
 3. **Flexible Abstraction**: Create novel views and analyses
 
+## Mod Design: Game State, Snapshots, and the Action Interface
+
+FactoryVerse’s mod treats Factorio as an explicit, serializable game state with a small, principled interface for mutation. The design makes the world easy to dump, transmit, validate, and change predictably—so agents can reason over data and apply actions safely.
+
+### Game State and Snapshots
+- **First-class game state**: The world is modeled as a relatively stable state (outside autonomous agents like biters). It can be materialized, compressed, and shipped.
+- **Snapshot base**: `core/Snapshot.lua` defines a standard envelope (schema_version, surface, timestamp, data) plus a component schema that flattens nested structures and pushes complex fields into JSON-like columns for efficient ingestion.
+- **Categories**: Multiple snapshot categories with dedicated implementations:
+  - **Resources** (`snapshots/ResourceSnapshot.lua`): What exists on a fresh map (ores, oil, rocks). High-throughput, chunked CSV streaming with optional UDP, flush thresholds, and compression for bulk ingestion.
+  - **Entities** (`snapshots/EntitiesSnapshot.lua`): Everything that appears through play—placed from saves or by players/agents. Includes derived components (belts, pipes, inventories, crafting state) flattened into a stable, query-ready shape.
+  ... etc.
+- **Upsert-friendly**: Standardized, columnar-oriented output enables efficient storage and straightforward upserts when incrementally updating downstream state.
+
+### Actions: Parameters, Validation, and Context
+- **Action base**: `core/action/Action.lua` provides lifecycle and a uniform contract: a `name`, a typed `params` spec, shared validators, and `run`.
+- **Parameter spec**: `core/action/ParamSpec.lua` declares required/optional fields, types, and defaults. Params normalize from raw tables or JSON, then validate before any mutation.
+- **Context**: Actions execute with an expectation of the current game state plus their own invocation parameters—mirroring how players “intend” sensible operations.
+
+### Validators and Reuse
+- **Nested validators**: Validators live alongside actions and categories (e.g., `actions/validator.lua`, `actions/entity/validator.lua`, `actions/entity/place/validator.lua`) and are shared/composed.
+- **Registry with patterns**: `core/action/ValidatorRegistry.lua` supports wildcards (e.g., `*`, `entity.*`) and exact names, so common constraints apply broadly while specific checks attach to individual actions.
+- **Automatic wiring**: `core/action/ActionRegistry.lua` loads actions, attaches validators, aggregates any event handlers, and exposes a single remote interface.
+
+### Execution Lifecycle and Hooks
+- **Pre-run**: `_pre_run` coerces JSON → params, applies `ParamSpec` checks, then runs logical validators. Any failure surfaces early.
+- **Run**: The action performs a meaningful, game-valid change and returns a small result describing what changed.
+- **Post-run**: `_post_run` funnels results into centralized mutation logging. This yields clean pre/post hooks for cross-cutting behaviors without action-local boilerplate.
+
+### Mutation Logging
+- **Central logger**: `core/mutation/MutationLogger.lua` records incremental changes as JSONL, reusing snapshot serializers where helpful (e.g., entity serialization). Output lands in `script-output/factoryverse/mutations`.
+- **Result contract**: Actions return lightweight hints (e.g., `affected_unit_numbers`, optional `affected_resources`, optional `affected_inventories`) that the logger resolves into rich records. See `docs/action-postrun-logging-plan.md` for the phased plan.
+- **Runtime control**: `core/mutation/MutationConfig.lua` enables minimal/full/disabled profiles. `control.lua` sets a conservative default and can enable future tick-based logging.
+
+### Remote Interface, Invocation, and Queues
+- **Direct remote calls**: `ActionRegistry` registers all actions on a single remote interface (`actions`) so external clients can invoke them individually via `remote.call("actions", "category.action", params)`.
+- **Queue-based batching (experimental)**: `core/action/ActionQueue.lua` exposes an `action_queue` remote interface that lets clients enqueue many actions and process them together (by key or all at once). This reduces per-call overhead (e.g., over argon) and improves stability for multi-agent coordination by validating and sequencing batches. Convenience methods (`queue_category.action`) exist alongside generic `enqueue`, with controls for immediate mode, priorities, sizes, and per-key processing.
+- **Event aggregation**: Any action-supplied event handlers are collected and registered once in `control.lua`, alongside admin helpers and safe on-join defaults.
+
+Together, these pieces form a compact environment interface: snapshots make context explicit and cheap to move; actions apply validated, sensible changes; mutation logs capture what happened for downstream analytics and learning.
+
 ## Getting Started
 
 [Installation and usage instructions would follow here, for sure]
