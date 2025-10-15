@@ -1,32 +1,8 @@
 local Snapshot = require "core.Snapshot"
-
 local utils = require "utils"
 
--- Normalize Factorio item identifiers to a plain string name.
--- Handles: string, LuaItemPrototype, and 2.0 ItemIDAndQualityIDPair (read form).
-local function _item_id_to_name(obj)
-    if obj == nil then return nil end
-    if type(obj) == "string" then return obj end
-    local t = type(obj)
-    if t == "userdata" or t == "table" then
-        -- Direct prototype
-        if obj.object_name == "LuaItemPrototype" and obj.name then
-            return obj.name
-        end
-        -- ItemIDAndQualityIDPair: .name may be string or LuaItemPrototype
-        local n = rawget(obj, "name")
-        if type(n) == "string" then
-            return n
-        end
-        if (type(n) == "userdata" or type(n) == "table") and n.object_name == "LuaItemPrototype" and n.name then
-            return n.name
-        end
-    end
-    return nil
-end
-
 --- EntitiesSnapshot: Dumps raw entities and associated data chunk-wise
---- Includes inventories, fluidboxes, energy/burner info, and basic metadata
+--- Includes basic metadata
 --- @class EntitiesSnapshot : Snapshot
 local EntitiesSnapshot = Snapshot:new()
 EntitiesSnapshot.__index = EntitiesSnapshot
@@ -37,11 +13,6 @@ function EntitiesSnapshot:new()
     ---@field _cache table
     local instance = Snapshot:new()
     -- Per-run caches to avoid repeated prototype/method work
-    instance._cache = {
-        inv = {},   -- [entity_name] -> { {name, id}, ... } inventory indices that exist
-        fluid = {}, -- [entity_name] -> { [index] = capacity }
-        belt = {},  -- [entity_name] -> max transport line index
-    }
     setmetatable(instance, self)
     ---@cast instance EntitiesSnapshot
     return instance
@@ -58,19 +29,17 @@ function EntitiesSnapshot:take()
     -- Engine-side allowlist to avoid creating wrappers for belts/naturals
     local allowed_types = {
         "assembling-machine", "furnace", "mining-drill", "inserter", "lab", "roboport", "beacon",
-        "electric-pole", "radar", "storage-tank", "offshore-pump",
-        "chemical-plant", "oil-refinery", "boiler", "generator", "pump", "pumpjack", "rocket-silo",
-        "container", "logistic-container", "arithmetic-combinator", "decider-combinator",
-        "constant-combinator", "lamp", "reactor", "heat-pipe", "accumulator",
-        "electric-energy-interface", "programmable-speaker", "train-stop", "rail-signal",
-        "rail-chain-signal", "locomotive", "cargo-wagon", "fluid-wagon"
+        "electric-pole", "radar", "storage-tank", "offshore-pump", "chemical-plant", "oil-refinery",
+        "boiler", "generator", "pump", "pumpjack", "rocket-silo", "container", "logistic-container",
+        "arithmetic-combinator", "decider-combinator", "constant-combinator", "lamp", "reactor",
+        "heat-pipe", "accumulator", "electric-energy-interface",
+        -- "programmable-speaker", "train-stop", "rail-signal",
+        -- "rail-chain-signal", "locomotive", "cargo-wagon", "fluid-wagon"
     }
 
     -- Componentized outputs
     local entity_rows = {}
     local crafting_rows = {}
-    local burner_rows = {}
-    local inventory_rows = {}
     local inserter_rows = {}
 
     local surface = self.game_state:get_surface()
@@ -78,8 +47,6 @@ function EntitiesSnapshot:take()
         local empty = self:create_output("snapshot.entities", "v3", {
             entity_rows = {},
             crafting_rows = {},
-            burner_rows = {},
-            inventory_rows = {},
             inserter_rows = {},
         })
         return empty
@@ -143,35 +110,6 @@ function EntitiesSnapshot:take()
                             }
                         end
 
-                        -- Burner component
-                        if row.burner ~= nil then
-                            burner_rows[#burner_rows + 1] = {
-                                unit_number = row.unit_number,
-                                burner = row.burner,
-                                chunk = chunk,
-                            }
-                        end
-
-                        -- Inventory component
-                        if row.inventories ~= nil then
-                            -- Filter out empty mining_drill_modules
-                            local filtered_inventories = {}
-                            for inv_name, inv_data in pairs(row.inventories) do
-                                if inv_name ~= "mining_drill_modules" or (inv_data and next(inv_data) ~= nil) then
-                                    filtered_inventories[inv_name] = inv_data
-                                end
-                            end
-                            -- Only add if there are non-empty inventories
-                            if next(filtered_inventories) ~= nil then
-                                inventory_rows[#inventory_rows + 1] = {
-                                    unit_number = row.unit_number,
-                                    inventories = filtered_inventories,
-                                    chunk = chunk,
-                                }
-                            end
-                        end
-
-
                         -- Inserter component
                         if row.inserter ~= nil then
                             inserter_rows[#inserter_rows + 1] = {
@@ -193,16 +131,12 @@ function EntitiesSnapshot:take()
     local output = self:create_output("snapshot.entities", "v3", {
         entity_rows = entity_rows,
         crafting_rows = crafting_rows,
-        burner_rows = burner_rows,
-        inventory_rows = inventory_rows,
         inserter_rows = inserter_rows,
     })
 
     -- Group entities by chunk for chunk-wise CSV emission
     local entities_by_chunk = {}
     local crafting_by_chunk = {}
-    local burner_by_chunk = {}
-    local inventory_by_chunk = {}
     local inserter_by_chunk = {}
 
     -- Group all entity data by chunk
@@ -222,23 +156,6 @@ function EntitiesSnapshot:take()
         end
         table.insert(crafting_by_chunk[chunk_key].entities, crafting)
     end
-
-    for _, burner in ipairs(burner_rows) do
-        local chunk_key = string.format("%d_%d", burner.chunk.x, burner.chunk.y)
-        if not burner_by_chunk[chunk_key] then
-            burner_by_chunk[chunk_key] = { chunk_x = burner.chunk.x, chunk_y = burner.chunk.y, entities = {} }
-        end
-        table.insert(burner_by_chunk[chunk_key].entities, burner)
-    end
-
-    for _, inventory in ipairs(inventory_rows) do
-        local chunk_key = string.format("%d_%d", inventory.chunk.x, inventory.chunk.y)
-        if not inventory_by_chunk[chunk_key] then
-            inventory_by_chunk[chunk_key] = { chunk_x = inventory.chunk.x, chunk_y = inventory.chunk.y, entities = {} }
-        end
-        table.insert(inventory_by_chunk[chunk_key].entities, inventory)
-    end
-
 
     for _, inserter in ipairs(inserter_rows) do
         local chunk_key = string.format("%d_%d", inserter.chunk.x, inserter.chunk.y)
@@ -295,62 +212,6 @@ function EntitiesSnapshot:take()
             { headers = crafting_headers })
     end
 
-    -- Emit burner by chunk
-    local burner_headers = self:get_headers("burner")
-    for chunk_key, chunk_data in pairs(burner_by_chunk) do
-        local flattened_burner = {}
-        for _, burner in ipairs(chunk_data.entities) do
-            table.insert(flattened_burner, self:flatten_data("burner", burner))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_burner", self:_array_to_csv(flattened_burner, burner_headers),
-            { headers = burner_headers })
-    end
-
-    -- Emit inventory by chunk
-    local inventory_headers = self:get_headers("inventory")
-    for chunk_key, chunk_data in pairs(inventory_by_chunk) do
-        local flattened_inventory = {}
-        for _, inventory in ipairs(chunk_data.entities) do
-            table.insert(flattened_inventory, self:flatten_data("inventory", inventory))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_inventory", self:_array_to_csv(flattened_inventory, inventory_headers),
-            { headers = inventory_headers })
-    end
-
-
-    -- Emit inserter by chunk
-    local inserter_headers = self:get_headers("inserter")
-    for chunk_key, chunk_data in pairs(inserter_by_chunk) do
-        local flattened_inserter = {}
-        for _, inserter in ipairs(chunk_data.entities) do
-            table.insert(flattened_inserter, self:flatten_data("inserter", inserter))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_inserter", self:_array_to_csv(flattened_inserter, inserter_headers),
-            { headers = inserter_headers })
-    end
-
-    -- Process belts
     local belt_output = self:_take_belts()
 
     -- Process pipes
@@ -373,8 +234,6 @@ function EntitiesSnapshot:take()
             entities = {
                 entity_rows = c(d.entity_rows),
                 crafting_rows = c(d.crafting_rows),
-                burner_rows = c(d.burner_rows),
-                inventory_rows = c(d.inventory_rows),
                 inserter_rows = c(d.inserter_rows),
                 belt_rows = belt_count,
                 pipe_rows = pipe_count,
@@ -520,8 +379,7 @@ function EntitiesSnapshot:_take_belts()
     return output
 end
 
---- Internal method to dump only pipe-like entities with fluidbox contents
---- Dump only pipe-like entities with fluidbox contents as flat component rows
+--- Internal method to dump only pipe-like entities
 function EntitiesSnapshot:_take_pipes()
     log("Taking pipes snapshot")
 
@@ -546,26 +404,6 @@ function EntitiesSnapshot:_take_pipes()
             for i = 1, #pipes do
                 local e = pipes[i]
                 if e and e.valid then
-                    -- Fluid contents (similar to item_lines for belts)
-                    local fluid_contents = {}
-                    local fb = e.fluidbox
-                    if fb then
-                        local len = #fb
-                        for j = 1, len do
-                            local f = fb[j]
-                            if f then
-                                local cap = fb.get_capacity and fb.get_capacity(j) or nil
-                                fluid_contents[#fluid_contents + 1] = {
-                                    index = j,
-                                    name = f.name,
-                                    amount = f.amount,
-                                    temperature = f.temperature,
-                                    capacity = cap,
-                                }
-                            end
-                        end
-                    end
-
                     -- Pipe neighbours (similar to belt_neighbours) - categorize as inputs/outputs
                     local inputs_ids, outputs_ids = {}, {}
 
@@ -613,7 +451,6 @@ function EntitiesSnapshot:_take_pipes()
                         position = e.position,
                         direction = e.direction,
                         direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
-                        fluid_contents = fluid_contents,
                         pipe_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or nil,
                         chunk = chunk_field,
                     }
@@ -711,9 +548,6 @@ function EntitiesSnapshot:_serialize_entity(e)
     if not (e and e.valid) then return nil end
 
     local proto       = e.prototype
-    local cache_inv   = self._cache and self._cache.inv or nil
-    local cache_fluid = self._cache and self._cache.fluid or nil
-    local ename       = e.name
 
     local out         = {
         unit_number = e.unit_number,
@@ -767,101 +601,6 @@ function EntitiesSnapshot:_serialize_entity(e)
             end
         end
     end
-
-    -- Burner info (gate by prototype)
-    do
-        if proto and proto.burner_prototype then
-            local burner = e.burner
-            if burner then
-                local b = {}
-                if burner.remaining_burning_fuel ~= nil then b.remaining_burning_fuel = burner.remaining_burning_fuel end
-                do
-                    local cb = burner.currently_burning
-                    if cb then
-                        local item_name = _item_id_to_name(rawget(cb, "name")) or _item_id_to_name(cb)
-                        if item_name then b.currently_burning = item_name end
-                    end
-                end
-                local inv = {}
-                local fi = burner.inventory
-                if fi and fi.valid and not fi.is_empty() then inv.fuel = fi.get_contents() end
-                local bri = burner.burnt_result_inventory
-                if bri and bri.valid and not bri.is_empty() then inv.burnt = bri.get_contents() end
-                if next(inv) ~= nil then b.inventories = inv end
-                if next(b) ~= nil then out.burner = b end
-            end
-        end
-    end
-
-    -- Inventories (enumerate 1..get_max_inventory_index; cache per entity name)
-    do
-        local inventories = {}
-        local inv_defs = cache_inv and cache_inv[ename]
-        if inv_defs == nil then
-            inv_defs = {}
-            local max_idx = (e.get_max_inventory_index and e.get_max_inventory_index()) or 0
-            if max_idx and max_idx > 0 then
-                for idx = 1, max_idx do
-                    local inv = e.get_inventory and e.get_inventory(idx) or nil
-                    if inv and inv.valid then
-                        local inv_name = (e.get_inventory_name and e.get_inventory_name(idx)) or tostring(idx)
-                        inv_defs[#inv_defs + 1] = { inv_name, idx }
-                    end
-                end
-            end
-            if cache_inv then cache_inv[ename] = inv_defs end
-        end
-        for i = 1, #inv_defs do
-            local inv_name, idx = inv_defs[i][1], inv_defs[i][2]
-            local inv = e.get_inventory and e.get_inventory(idx) or nil
-            if inv and inv.valid then
-                if inv.is_empty and inv.is_empty() then
-                    inventories[inv_name] = {}
-                else
-                    local contents = inv.get_contents and inv.get_contents() or nil
-                    inventories[inv_name] = contents or {}
-                end
-            end
-        end
-        if next(inventories) ~= nil then out.inventories = inventories end
-    end
-
-    -- Fluidboxes (use prototype volumes when available; cache per entity name)
-    do
-        local fb = e.fluidbox
-        if fb then
-            local fluids = {}
-            local len = #fb
-            local caps = cache_fluid and cache_fluid[ename]
-            if caps == nil then
-                caps = {}
-                if proto and proto.fluidbox_prototypes then
-                    for idx, fbp in pairs(proto.fluidbox_prototypes) do
-                        if fbp and fbp.volume then caps[idx] = fbp.volume end
-                    end
-                end
-                if cache_fluid then cache_fluid[ename] = caps end
-            end
-            for i = 1, len do
-                local f = fb[i]
-                if f then
-                    local cap = caps[i]
-                    if cap == nil and fb.get_capacity then
-                        cap = fb.get_capacity(i)
-                    end
-                    fluids[#fluids + 1] = {
-                        index = i,
-                        name = f.name,
-                        amount = f.amount,
-                        temperature = f.temperature,
-                        capacity = cap,
-                    }
-                end
-            end
-            if #fluids > 0 then out.fluids = fluids end
-        end
-    end
-
 
     -- Selection & bounding boxes (runtime first; fall back to prototype)
     do

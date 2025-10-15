@@ -120,7 +120,7 @@ end
 --- @return any
 function Action:_post_run(result, params)
   -- Log mutations if enabled
-  local MutationLogger = require("core.MutationLogger")
+  local MutationLogger = require("core.mutation.MutationLogger")
   local logger = MutationLogger.get_instance()
   
   -- Convert params to table if it's a ParamSpec instance

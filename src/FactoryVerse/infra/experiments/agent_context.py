@@ -1,10 +1,21 @@
 """
-AgentContext: Convenience wrapper for agent notebooks.
+AgentContext: Minimal metadata holder for experiments.
 
-Provides a unified interface to:
-- PostgreSQL database queries
-- RCON commands to Factorio
-- Experiment metadata
+TODO: This is a placeholder. The actual action/observation interface
+should be implemented as direct Python functions available in the notebook
+environment (see factorio-verse.md for the vision).
+
+Expected interface (to be implemented):
+    - move_to(position)
+    - place_entity(prototype, position)
+    - craft_item(prototype, count)
+    - harvest_resource(position, amount)
+    - query_db(sql) -> results
+    - connect_entities(unit_number)
+    - etc.
+
+This class only provides experiment metadata and low-level DB/RCON access
+for building the higher-level action/observation wrappers.
 """
 
 import json
@@ -18,30 +29,19 @@ from factorio_rcon import RCONClient
 
 class AgentContext:
     """
-    Context object for agent notebooks.
+    Minimal context for experiment metadata.
 
-    Provides convenient access to:
-    - Database queries (PostgreSQL)
-    - Game commands (RCON)
-    - Experiment metadata
+    Provides:
+    - experiment_id, agent_id
+    - PostgreSQL connection (db_connection, db_query, db_execute)
+    - RCON connection (rcon_call, rcon_command)
 
-    Usage in notebook:
-        ctx = AgentContext(
-            experiment_id='...',
-            agent_id='agent1',
-            factorio_host='localhost',
-            factorio_rcon_port=27000,
-            pg_dsn='postgresql://...'
-        )
+    DOES NOT implement the action/observation interface for agents.
+    That should be separate modules providing direct functions.
 
-        # Query game state
-        with ctx.db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM sp_resource_patches LIMIT 10")
-            resources = cur.fetchall()
-
-        # Execute game command
-        result = ctx.rcon_call('game.print("Hello from agent!")')
+    TODO: Implement action/observation wrappers (see factorio-verse.md):
+        from factorio_actions import move_to, place_entity, craft_item, ...
+        from factorio_observations import query_db, nearest_resource, ...
     """
 
     def __init__(
@@ -150,169 +150,19 @@ class AgentContext:
         """
         return self.rcon.send_command(command)
 
-    def call_action(self, action_name: str, params: Dict[str, Any]) -> Any:
+    def rcon_command(self, command: str) -> str:
         """
-        Call a Factorio action via the action system.
+        Low-level RCON command execution.
 
-        Args:
-            action_name: Action name (e.g., 'agent.walk', 'entity.place')
-            params: Action parameters
-
-        Returns:
-            Action result (parsed from Lua table)
+        For building action/observation wrappers.
+        Agents should NOT use this directly.
         """
-        from ..rcon import _lua2python
-
-        params_json = json.dumps(params)
-        command = f'remote.call("actions", "{action_name}", {params_json})'
-        response = self.rcon_call(command)
-
-        # Parse Lua response
-        result, _ = _lua2python(command, response)
-        return result
-
-    def enqueue_action(
-        self,
-        action_name: str,
-        params: Dict[str, Any],
-        key: Optional[str] = None,
-        priority: int = 0
-    ) -> str:
-        """
-        Enqueue action in the action queue.
-
-        Args:
-            action_name: Action name
-            params: Action parameters
-            key: Queue key (for batching, defaults to agent_id)
-            priority: Action priority (higher = earlier execution)
-
-        Returns:
-            Correlation ID for tracking
-        """
-        from ..rcon import _lua2python
-
-        if key is None:
-            key = self.agent_id
-
-        params_json = json.dumps(params)
-        command = f'remote.call("action_queue", "enqueue", "{action_name}", {params_json}, "{key}", {priority})'
-        response = self.rcon_call(command)
-
-        # Parse correlation ID
-        result, _ = _lua2python(command, response)
-        return result.get('correlation_id') if result else None
-
-    def get_action_result(self, correlation_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get result of a queued action.
-
-        Args:
-            correlation_id: Correlation ID from enqueue_action
-
-        Returns:
-            Action result if available, None if still pending
-        """
-        from ..rcon import _lua2python
-
-        command = f'remote.call("action_queue", "get_result", "{correlation_id}")'
-        response = self.rcon_call(command)
-
-        result, _ = _lua2python(command, response)
-        return result
+        return self.rcon_call(command)
 
     def get_current_tick(self) -> int:
-        """
-        Get current game tick.
-
-        Returns:
-            Current tick number
-        """
+        """Get current game tick via RCON."""
         response = self.rcon_call('/sc return game.tick')
         return int(response.strip())
-
-    def take_snapshot(self, snapshot_type: str = "entities"):
-        """
-        Trigger a snapshot capture in Factorio.
-
-        Args:
-            snapshot_type: 'entities' or 'resource'
-        """
-        if snapshot_type == "entities":
-            self.rcon_call('/c remote.call("admin", "take_entities_snapshot")')
-        elif snapshot_type == "resource":
-            self.rcon_call('/c remote.call("admin", "take_resource_snapshot")')
-        else:
-            raise ValueError(f"Unknown snapshot type: {snapshot_type}")
-
-    def get_experiment_info(self) -> Dict[str, Any]:
-        """
-        Get experiment metadata from database.
-
-        Returns:
-            Experiment info dict
-        """
-        results = self.db_query("""
-            SELECT * FROM experiment_summary
-            WHERE experiment_id = %s
-        """, (self.experiment_id,))
-
-        if not results:
-            raise ValueError(f"Experiment not found: {self.experiment_id}")
-
-        return results[0]
-
-    def get_latest_checkpoint(self) -> Optional[Dict[str, Any]]:
-        """
-        Get latest checkpoint for this experiment.
-
-        Returns:
-            Checkpoint info dict or None
-        """
-        results = self.db_query("""
-            SELECT * FROM latest_checkpoint
-            WHERE experiment_id = %s
-        """, (self.experiment_id,))
-
-        return results[0] if results else None
-
-    def save_metric(self, metric_name: str, metric_value: float, tick: Optional[int] = None):
-        """
-        Save a metric for this experiment.
-
-        Args:
-            metric_name: Metric name (e.g., 'reward', 'items_crafted')
-            metric_value: Numeric value
-            tick: Game tick (defaults to current tick)
-        """
-        if tick is None:
-            tick = self.get_current_tick()
-
-        self.db_execute("""
-            INSERT INTO experiment_metrics (experiment_id, game_tick, metric_name, metric_value)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (experiment_id, game_tick, metric_name)
-            DO UPDATE SET metric_value = EXCLUDED.metric_value
-        """, (self.experiment_id, tick, metric_name, metric_value))
-
-    def get_metrics(self, metric_name: str, limit: int = 100) -> list:
-        """
-        Get historical metrics for this experiment.
-
-        Args:
-            metric_name: Metric name
-            limit: Maximum number of results
-
-        Returns:
-            List of metric records
-        """
-        return self.db_query("""
-            SELECT game_tick, metric_value, created_at
-            FROM experiment_metrics
-            WHERE experiment_id = %s AND metric_name = %s
-            ORDER BY game_tick DESC
-            LIMIT %s
-        """, (self.experiment_id, metric_name, limit))
 
     def __repr__(self) -> str:
         return (

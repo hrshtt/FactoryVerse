@@ -41,19 +41,16 @@ def create_notebook_from_template(
     nb = nbformat.v4.new_notebook()
 
     # Cell 1: Setup and imports
-    setup_cell = nbformat.v4.new_code_cell(f"""# Agent: {agent_id}
+    setup_cell = nbformat.v4.new_code_cell(f"""# FactoryVerse Agent: {agent_id}
 # Experiment: {experiment_id}
-# Created: {{created_at}}
 
 import json
-import dill
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from factorio_rcon import RCONClient
 
+# Experiment context (metadata only)
 from FactoryVerse.infra.experiments import AgentContext
 
-# Auto-configured context
 ctx = AgentContext(
     experiment_id='{experiment_id}',
     agent_id='{agent_id}',
@@ -62,106 +59,86 @@ ctx = AgentContext(
     pg_dsn='{pg_dsn}'
 )
 
+# TODO: Import action/observation interface once implemented
+# from factorio_actions import move_to, place_entity, craft_item, harvest_resource
+# from factorio_observations import query_db, nearest_resource, agent_position
+
 # Agent state (will be checkpointed)
 episode_history = {{
     'actions': [],
     'observations': [],
-    'rewards': [],
     'step': 0
 }}
 
-current_plan = None
-policy_state = {{}}
-
 print(f"Agent {{ctx.agent_id}} initialized")
 print(f"Experiment: {{ctx.experiment_id}}")
-print(f"Factorio: {{ctx.factorio_host}}:{{ctx.factorio_rcon_port}}")
+print(f"PostgreSQL: {{ctx.pg_dsn.split('@')[1]}}")
+print(f"Factorio RCON: {{ctx.factorio_host}}:{{ctx.factorio_rcon_port}}")
+print()
+print("TODO: Implement action/observation wrappers")
 """)
 
-    # Cell 2: Helper functions
-    helpers_cell = nbformat.v4.new_code_cell("""# Helper functions
+    # Cell 2: Database query helpers (temporary until UDFs are implemented)
+    helpers_cell = nbformat.v4.new_code_cell("""# Temporary database query helpers
+# TODO: Replace with proper UDFs (nearest_resource, agent_position, etc.)
 
-def observe_game_state():
-    \"\"\"Query current game state from PostgreSQL.\"\"\"
+def query_db(sql: str, params=None):
+    \"\"\"Execute SQL query and return results.\"\"\"
     with ctx.db_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Get agent position
-            cur.execute(\"\"\"
-                SELECT * FROM raw_agent_state
-                WHERE tick = (SELECT MAX(tick) FROM raw_agent_state)
-                LIMIT 1
-            \"\"\")
-            agent_state = cur.fetchone()
+            cur.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
 
-            # Get nearby resources
-            if agent_state:
-                x, y = agent_state.get('pos_x', 0), agent_state.get('pos_y', 0)
-                cur.execute(\"\"\"
-                    SELECT resource_name, total_amount,
-                           ST_Distance(centroid, ST_Point(%s, %s)) AS distance
-                    FROM sp_resource_patches
-                    WHERE ST_Distance(centroid, ST_Point(%s, %s)) < 50
-                    ORDER BY distance
-                    LIMIT 10
-                \"\"\", (x, y, x, y))
-                nearby_resources = cur.fetchall()
-            else:
-                nearby_resources = []
+# Example queries
+def find_nearest_iron():
+    \"\"\"Find nearest iron ore patch.\"\"\"
+    return query_db(\"\"\"
+        SELECT resource_name, total_amount,
+               ST_X(centroid) as x, ST_Y(centroid) as y,
+               ST_Distance(centroid, ST_Point(0, 0)) AS distance
+        FROM sp_resource_patches
+        WHERE resource_name = 'iron-ore'
+        ORDER BY distance
+        LIMIT 1
+    \"\"\")
 
-            return {
-                'agent': dict(agent_state) if agent_state else {},
-                'nearby_resources': [dict(r) for r in nearby_resources]
-            }
+def get_current_tick():
+    \"\"\"Get current game tick.\"\"\"
+    return ctx.get_current_tick()
 
-def execute_action(action_name: str, params: dict):
-    \"\"\"Execute action in Factorio via RCON.\"\"\"
-    result = ctx.rcon_call(f'remote.call("actions", "{action_name}", {json.dumps(params)})')
-
-    # Log action
-    episode_history['actions'].append({
-        'name': action_name,
-        'params': params,
-        'step': episode_history['step']
-    })
-
-    return result
-
-def save_checkpoint(description: str = None):
-    \"\"\"Save experiment checkpoint.\"\"\"
-    # This will be called by ExperimentManager
-    # For now, just increment step
-    episode_history['step'] += 1
-    print(f"Step {episode_history['step']}")
+print("Helper functions loaded")
+print("Try: find_nearest_iron(), get_current_tick()")
 """)
 
-    # Cell 3: Main agent loop template
-    main_loop_cell = nbformat.v4.new_code_cell("""# Main agent loop
+    # Cell 3: Agent development area
+    main_loop_cell = nbformat.v4.new_code_cell("""# Agent Development Area
 
-# Example: Simple agent that observes and acts
-for step in range(100):
-    # Observe
-    observation = observe_game_state()
-    episode_history['observations'].append(observation)
+# TODO: Once action/observation wrappers are implemented, agent loop will look like:
+#
+# for step in range(100):
+#     # Observe
+#     coal = query_db("SELECT * FROM nearest_resource('coal', 0, 0, 200)")
+#
+#     # Act
+#     move_to(x=coal[0]['x'], y=coal[0]['y'])
+#     harvest_resource(x=coal[0]['x'], y=coal[0]['y'], amount=10)
+#
+#     # Place entity
+#     place_entity('burner-mining-drill', x=10, y=10)
+#
+#     # Track
+#     episode_history['step'] = step
 
-    # Decide action (your agent logic here)
-    # action = your_policy(observation, policy_state)
+# For now, test database queries
+print("Current tick:", get_current_tick())
+print("Nearest iron ore:")
+print(find_nearest_iron())
 
-    # For now, just a placeholder
-    print(f"Step {step}: Agent at position {observation['agent'].get('pos_x', 0)}, {observation['agent'].get('pos_y', 0)}")
-
-    # Execute action
-    # result = execute_action(action['name'], action['params'])
-
-    # Update history
-    episode_history['step'] = step
-
-    # Optional: save checkpoint every N steps
-    if step % 20 == 0 and step > 0:
-        save_checkpoint(f"Step {step}")
-
-    # Wait for game to progress (if needed)
-    import time
-    time.sleep(0.1)
+print()
+print("Next steps:")
+print("1. Implement action wrappers (move_to, place_entity, craft_item, etc.)")
+print("2. Implement observation wrappers (query_db with UDFs)")
+print("3. Build your agent logic using these functions")
 """)
 
     # Add cells to notebook

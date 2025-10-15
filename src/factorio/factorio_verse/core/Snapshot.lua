@@ -32,13 +32,13 @@ local ComponentSchema = {
             tile_height = "number"
         },
         flatten_rules = {
-            position = { x = "position_x", y = "position_y" },
+            position = { x = "pos_x", y = "pos_y" },
             chunk = { x = "chunk_x", y = "chunk_y" },
             bounding_box = {
-                min_x = "bounding_box_min_x",
-                min_y = "bounding_box_min_y",
-                max_x = "bounding_box_max_x",
-                max_y = "bounding_box_max_y"
+                bbox_min_x = "bounding_box_min_x",
+                bbox_min_y = "bounding_box_min_y",
+                bbox_max_x = "bounding_box_max_x",
+                bbox_max_y = "bounding_box_max_y"
             }
         }
     },
@@ -105,7 +105,7 @@ local ComponentSchema = {
             chunk_y = "number"
         },
         flatten_rules = {
-            position = { x = "position_x", y = "position_y" },
+            position = { x = "pos_x", y = "pos_y" },
             chunk = { x = "chunk_x", y = "chunk_y" },
             fluid_contents = "fluid_contents_json",          -- Map to _json suffixed field
             pipe_neighbours = "pipe_neighbours_json"         -- Map to _json suffixed field
@@ -150,7 +150,7 @@ local ComponentSchema = {
             chunk_y = "number"
         },
         flatten_rules = {
-            position = { x = "position_x", y = "position_y" },
+            position = { x = "pos_x", y = "pos_y" },
             chunk = { x = "chunk_x", y = "chunk_y" },
             item_lines = "item_lines_json",          -- Map to _json suffixed field
             belt_neighbours = "belt_neighbours_json" -- Map to _json suffixed field
@@ -181,7 +181,7 @@ local ComponentSchema = {
             chunk_y = "number"
         },
         flatten_rules = {
-            position = { x = "position_x", y = "position_y" },
+            position = { x = "pos_x", y = "pos_y" },
             chunk = { x = "chunk_x", y = "chunk_y" },
             resources = "resource_json" -- Map to _json suffixed field
         }
@@ -199,12 +199,12 @@ local ComponentSchema = {
             bounding_box_max_y = "number"
         },
         flatten_rules = {
-            position = { x = "position_x", y = "position_y" },
+            position = { x = "pos_x", y = "pos_y" },
             bounding_box = {
-                min_x = "bounding_box_min_x",
-                min_y = "bounding_box_min_y",
-                max_x = "bounding_box_max_x",
-                max_y = "bounding_box_max_y"
+                bbox_min_x = "bounding_box_min_x",
+                bbox_min_y = "bounding_box_min_y",
+                bbox_max_x = "bounding_box_max_x",
+                bbox_max_y = "bounding_box_max_y"
             }
         }
     }
@@ -260,7 +260,7 @@ function SchemaManager:flatten_data(component_type, data)
                             flattened[flattened_key] = v[nested_key]
                         end
                     elseif type(nested_key) == "table" and type(flattened_key) == "string" then
-                        -- Nested structure flattening (like position -> position_x, position_y)
+                        -- Nested structure flattening (like position -> pos_x, pos_y)
                         for sub_key, sub_flattened_key in pairs(nested_key) do
                             if v[sub_key] ~= nil then
                                 flattened[sub_flattened_key] = v[sub_key]
