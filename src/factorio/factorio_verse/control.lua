@@ -17,6 +17,10 @@ local admin_api = require("core.admin_api")
 admin_api.load_helpers()
 admin_api.load_commands()
 
+-- Load snapshot modules for event registration
+local EntitiesSnapshot = require("core.snapshot.EntitiesSnapshot")
+local ResourceSnapshot = require("core.snapshot.ResourceSnapshot")
+
 -- Setup mutation logging
 local MutationConfig = require("core.mutation.MutationConfig")
 -- Use "minimal" profile by default - only action-based logging
@@ -41,6 +45,19 @@ end
 
 register_remote_interface()
 register_events()
+
+-- Register snapshot recurring events
+local entities_events = EntitiesSnapshot.get_events()
+if entities_events and entities_events.tick_interval then
+  script.on_nth_tick(entities_events.tick_interval, entities_events.handler)
+  log("Registered entities recurring snapshot (interval: " .. entities_events.tick_interval .. ")")
+end
+
+local resource_events = ResourceSnapshot.get_events()
+if resource_events and resource_events.tick_interval then
+  script.on_nth_tick(resource_events.tick_interval, resource_events.handler)
+  log("Registered resources recurring snapshot (interval: " .. resource_events.tick_interval .. ")")
+end
 
 -- Force players to spectator when they join
 script.on_event(defines.events.on_player_joined_game, function(event)

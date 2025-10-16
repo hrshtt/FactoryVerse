@@ -4,7 +4,7 @@
 --- Outputs JSONL format for efficient downstream processing
 
 local GameState = require("core.game_state.GameState")
-local EntitiesSnapshot = require("snapshots.EntitiesSnapshot")
+local EntitiesSnapshot = require("core.snapshot.EntitiesSnapshot")
 
 --- @class MutationLogger
 --- @field game_state GameState

@@ -1,5 +1,124 @@
-local Snapshot = require "core.Snapshot"
+local Snapshot = require "core.snapshot.Snapshot"
 local utils = require "utils"
+
+--- Component Schema Definition for EntitiesSnapshot
+local ComponentSchema = {
+    -- Base entity component
+    entity = {
+        fields = {
+            unit_number = "number",
+            -- permanent fields
+            name = "string",
+            type = "string",
+            force = "string",
+            -- rarely changing fields
+            direction = "number",
+            direction_name = "string",
+            orientation = "number",
+            orientation_name = "string",
+            electric_network_id = "number",
+            recipe = "string",
+            -- spatial fields
+            position_x = "number",
+            position_y = "number",
+            tile_width = "number",
+            tile_height = "number",
+            bounding_box_min_x = "number",
+            bounding_box_min_y = "number",
+            bounding_box_max_x = "number",
+            bounding_box_max_y = "number",
+            chunk_x = "number",
+            chunk_y = "number",
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            bounding_box = {
+                bbox_min_x = "bounding_box_min_x",
+                bbox_min_y = "bounding_box_min_y",
+                bbox_max_x = "bounding_box_max_x",
+                bbox_max_y = "bounding_box_max_y"
+            }
+        }
+    },
+
+    -- Inserter component
+    inserter = {
+        fields = {
+            unit_number = "number",
+            pickup_target_unit = "number",
+            drop_target_unit = "number",
+            pickup_position_x = "number",
+            pickup_position_y = "number",
+            drop_position_x = "number",
+            drop_position_y = "number",
+            chunk_x = "number",
+            chunk_y = "number",
+        },
+        flatten_rules = {
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            pickup_position = { x = "pickup_position_x", y = "pickup_position_y" },
+            drop_position = { x = "drop_position_x", y = "drop_position_y" }
+        }
+    },
+
+    -- Belt component
+    belt = {
+        fields = {
+            unit_number = "number",
+            name = "string",
+            type = "string",
+            direction = "number",
+            direction_name = "string",
+            belt_neighbours_json = "json", -- Complex nested data
+            belt_to_ground_type = "string",
+            underground_neighbour_unit = "number",
+            -- spatial fields
+            position_x = "number",
+            position_y = "number",
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            belt_neighbours = "belt_neighbours_json" -- Map to _json suffixed field
+        }
+    },
+
+    -- Pipe component
+    pipe = {
+        fields = {
+            unit_number = "number",
+            name = "string",
+            type = "string",
+            direction = "number",
+            direction_name = "string",
+            pipe_neighbours_json = "json", -- Input/output connections like belts
+            position_x = "number",
+            position_y = "number",
+            chunk_x = "number",
+            chunk_y = "number",
+        },
+        flatten_rules = {
+            position = { x = "pos_x", y = "pos_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            pipe_neighbours = "pipe_neighbours_json" -- Map to _json suffixed field
+        }
+    },
+
+    -- Entity status for recurring snapshots
+    entity_status = {
+        fields = {
+            unit_number = "number",
+            status = "number",
+            status_name = "string",
+            health = "number",
+            tick = "number"
+        },
+        flatten_rules = {}
+    }
+}
 
 --- EntitiesSnapshot: Dumps raw entities and associated data chunk-wise
 --- Includes basic metadata
@@ -16,6 +135,81 @@ function EntitiesSnapshot:new()
     setmetatable(instance, self)
     ---@cast instance EntitiesSnapshot
     return instance
+end
+
+--- Get headers for a component type
+--- @param component_type string - component type name
+--- @return table - array of header names
+function EntitiesSnapshot:_get_headers(component_type)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        error("Unknown component type: " .. tostring(component_type))
+    end
+
+    local headers = {}
+    for field_name, _ in pairs(schema.fields) do
+        table.insert(headers, field_name)
+    end
+
+    -- Sort for consistent ordering
+    table.sort(headers)
+    return headers
+end
+
+--- Flatten data according to component schema rules
+--- @param component_type string - component type name
+--- @param data table - data to flatten
+--- @return table - flattened data
+function EntitiesSnapshot:_flatten_data(component_type, data)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        error("Unknown component type: " .. tostring(component_type))
+    end
+
+    local flattened = {}
+    local rules = schema.flatten_rules or {}
+
+    for k, v in pairs(data) do
+        if rules[k] then
+            if type(rules[k]) == "string" then
+                -- Simple field mapping (e.g., inventories -> inventories_json)
+                flattened[rules[k]] = v
+            elseif type(rules[k]) == "table" then
+                -- Apply flattening rules for nested structures
+                for nested_key, flattened_key in pairs(rules[k]) do
+                    if type(nested_key) == "string" and type(flattened_key) == "string" then
+                        -- Simple field mapping
+                        if v[nested_key] ~= nil then
+                            flattened[flattened_key] = v[nested_key]
+                        end
+                    elseif type(nested_key) == "table" and type(flattened_key) == "string" then
+                        -- Nested structure flattening (like position -> pos_x, pos_y)
+                        for sub_key, sub_flattened_key in pairs(nested_key) do
+                            if v[sub_key] ~= nil then
+                                flattened[sub_flattened_key] = v[sub_key]
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            -- Direct field copy
+            flattened[k] = v
+        end
+    end
+
+    return flattened
+end
+
+--- Get events for recurring snapshots
+--- @return table - event configuration
+function EntitiesSnapshot.get_events()
+    return {
+        tick_interval = 60,  -- Every second
+        handler = function(event)
+            EntitiesSnapshot:new():take_recurring()
+        end
+    }
 end
 
 --- Dump all entities chunk-wise with rich per-entity data
@@ -39,14 +233,12 @@ function EntitiesSnapshot:take()
 
     -- Componentized outputs
     local entity_rows = {}
-    local crafting_rows = {}
     local inserter_rows = {}
 
     local surface = self.game_state:get_surface()
     if not surface then
         local empty = self:create_output("snapshot.entities", "v3", {
             entity_rows = {},
-            crafting_rows = {},
             inserter_rows = {},
         })
         return empty
@@ -86,29 +278,14 @@ function EntitiesSnapshot:take()
                             orientation_name = row.orientation_name,
                             chunk = chunk,
                         }
-                        if row.health ~= nil then base.health = row.health end
-                        if row.status ~= nil then base.status = row.status end
-                        if row.status_name ~= nil then base.status_name = row.status_name end
                         if row.bounding_box ~= nil then base.bounding_box = row.bounding_box end
                         -- Electric fields now part of main entity
                         if row.electric_network_id ~= nil then base.electric_network_id = row.electric_network_id end
-                        if row.electric_buffer_size ~= nil then base.electric_buffer_size = row.electric_buffer_size end
-                        if row.energy ~= nil then base.energy = row.energy end
                         -- Tile dimensions
                         if row.tile_width ~= nil then base.tile_width = row.tile_width end
                         if row.tile_height ~= nil then base.tile_height = row.tile_height end
+                        if row.recipe ~= nil then base.recipe = row.recipe end
                         entity_rows[#entity_rows + 1] = base
-
-
-                        -- Crafting component
-                        if row.recipe ~= nil or row.crafting_progress ~= nil then
-                            crafting_rows[#crafting_rows + 1] = {
-                                unit_number = row.unit_number,
-                                recipe = row.recipe,
-                                crafting_progress = row.crafting_progress,
-                                chunk = chunk,
-                            }
-                        end
 
                         -- Inserter component
                         if row.inserter ~= nil then
@@ -130,13 +307,11 @@ function EntitiesSnapshot:take()
 
     local output = self:create_output("snapshot.entities", "v3", {
         entity_rows = entity_rows,
-        crafting_rows = crafting_rows,
         inserter_rows = inserter_rows,
     })
 
     -- Group entities by chunk for chunk-wise CSV emission
     local entities_by_chunk = {}
-    local crafting_by_chunk = {}
     local inserter_by_chunk = {}
 
     -- Group all entity data by chunk
@@ -146,15 +321,6 @@ function EntitiesSnapshot:take()
             entities_by_chunk[chunk_key] = { chunk_x = entity.chunk.x, chunk_y = entity.chunk.y, entities = {} }
         end
         table.insert(entities_by_chunk[chunk_key].entities, entity)
-    end
-
-
-    for _, crafting in ipairs(crafting_rows) do
-        local chunk_key = string.format("%d_%d", crafting.chunk.x, crafting.chunk.y)
-        if not crafting_by_chunk[chunk_key] then
-            crafting_by_chunk[chunk_key] = { chunk_x = crafting.chunk.x, chunk_y = crafting.chunk.y, entities = {} }
-        end
-        table.insert(crafting_by_chunk[chunk_key].entities, crafting)
     end
 
     for _, inserter in ipairs(inserter_rows) do
@@ -176,11 +342,11 @@ function EntitiesSnapshot:take()
     }
 
     -- Emit entities by chunk
-    local entity_headers = self:get_headers("entity")
+    local entity_headers = self:_get_headers("entity")
     for chunk_key, chunk_data in pairs(entities_by_chunk) do
         local flattened_entities = {}
         for _, entity in ipairs(chunk_data.entities) do
-            table.insert(flattened_entities, self:flatten_data("entity", entity))
+            table.insert(flattened_entities, self:_flatten_data("entity", entity))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -193,24 +359,6 @@ function EntitiesSnapshot:take()
             { headers = entity_headers })
     end
 
-
-    -- Emit crafting by chunk
-    local crafting_headers = self:get_headers("crafting")
-    for chunk_key, chunk_data in pairs(crafting_by_chunk) do
-        local flattened_crafting = {}
-        for _, crafting in ipairs(chunk_data.entities) do
-            table.insert(flattened_crafting, self:flatten_data("crafting", crafting))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_crafting", self:_array_to_csv(flattened_crafting, crafting_headers),
-            { headers = crafting_headers })
-    end
 
     local belt_output = self:_take_belts()
 
@@ -233,11 +381,97 @@ function EntitiesSnapshot:take()
             tick = out.timestamp,
             entities = {
                 entity_rows = c(d.entity_rows),
-                crafting_rows = c(d.crafting_rows),
                 inserter_rows = c(d.inserter_rows),
                 belt_rows = belt_count,
                 pipe_rows = pipe_count,
             },
+        }
+    end)
+
+    return output
+end
+
+--- Take recurring snapshot of entity status and health
+--- Overwrites single CSV file with current status of all entities
+function EntitiesSnapshot:take_recurring()
+    log("Taking recurring entities snapshot (status/health)")
+
+    local charted_chunks = self.game_state:get_charted_chunks()
+    local status_rows = {}
+
+    local surface = self.game_state:get_surface()
+    if not surface then
+        local empty = self:create_output("snapshot.entities.recurring", "v1", { status_rows = {} })
+        return empty
+    end
+
+    -- Engine-side allowlist to avoid creating wrappers for belts/naturals
+    local allowed_types = {
+        "assembling-machine", "furnace", "mining-drill", "inserter", "lab", "roboport", "beacon",
+        "electric-pole", "radar", "storage-tank", "offshore-pump", "chemical-plant", "oil-refinery",
+        "boiler", "generator", "pump", "pumpjack", "rocket-silo", "container", "logistic-container",
+        "arithmetic-combinator", "decider-combinator", "constant-combinator", "lamp", "reactor",
+        "heat-pipe", "accumulator", "electric-energy-interface",
+    }
+
+    for _, chunk in ipairs(charted_chunks) do
+        local filter = { area = chunk.area, force = "player", type = allowed_types }
+        local entities = surface.find_entities_filtered(filter)
+        if #entities ~= 0 then
+            for i = 1, #entities do
+                local e = entities[i]
+                if e and e.valid then
+                    -- Filter common rock variants (type "simple-entity") if any
+                    if e.type == "simple-entity" then
+                        local n = e.name
+                        if n == "rock-huge" or n == "rock-big" or n == "sand-rock-big" then
+                            goto continue_entity
+                        end
+                    end
+
+                    local status_data = {
+                        unit_number = e.unit_number,
+                        status = e.status or 0,
+                        status_name = e.status and utils.status_to_name(e.status) or "unknown",
+                        health = e.health or 0,
+                        tick = game and game.tick or 0
+                    }
+
+                    table.insert(status_rows, status_data)
+                end
+                ::continue_entity::
+            end
+        end
+    end
+
+    local output = self:create_output("snapshot.entities.recurring", "v1", {
+        status_rows = status_rows,
+    })
+
+    -- Emit single CSV file (overwrites each time)
+    local headers = self:_get_headers("entity_status")
+    local flattened_rows = {}
+    for _, row in ipairs(status_rows) do
+        table.insert(flattened_rows, self:_flatten_data("entity_status", row))
+    end
+
+    local csv_data = self:_array_to_csv(flattened_rows, headers)
+    local opts = {
+        output_dir = "script-output/factoryverse/recurring",
+        tick = output.timestamp,
+        metadata = {
+            schema_version = "snapshot.entities.recurring.v1",
+            surface = output.surface,
+        }
+    }
+    self:emit_csv(opts, "entity_status", csv_data, { headers = headers })
+
+    self:print_summary(output, function(out)
+        local d = out and out.data or {}
+        return {
+            surface = out.surface,
+            tick = out.timestamp,
+            entities_status = #d.status_rows,
         }
     end)
 
@@ -360,11 +594,11 @@ function EntitiesSnapshot:_take_belts()
         }
     }
 
-    local belt_headers = self:get_headers("belt")
+    local belt_headers = self:_get_headers("belt")
     for chunk_key, chunk_data in pairs(belts_by_chunk) do
         local flattened_belts = {}
         for _, belt in ipairs(chunk_data.belts) do
-            table.insert(flattened_belts, self:flatten_data("belt", belt))
+            table.insert(flattened_belts, self:_flatten_data("belt", belt))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -481,11 +715,11 @@ function EntitiesSnapshot:_take_pipes()
         }
     }
 
-    local pipe_headers = self:get_headers("pipe")
+    local pipe_headers = self:_get_headers("pipe")
     for chunk_key, chunk_data in pairs(pipes_by_chunk) do
         local flattened_pipes = {}
         for _, pipe in ipairs(chunk_data.pipes) do
-            table.insert(flattened_pipes, self:flatten_data("pipe", pipe))
+            table.insert(flattened_pipes, self:_flatten_data("pipe", pipe))
         end
         local opts = {
             output_dir = base_opts.output_dir,
@@ -561,21 +795,10 @@ function EntitiesSnapshot:_serialize_entity(e)
         orientation_name = utils.orientation_to_name(e.orientation),
     }
 
-    -- Health & status
-    if e.health ~= nil then out.health = e.health end
-    if e.status ~= nil then
-        out.status = e.status
-        out.status_name = utils.entity_status_to_name(e.status)
-    end
-
     -- Electric network id
     if e.electric_network_id ~= nil then
         out.electric_network_id = e.electric_network_id
     end
-
-    -- Energy buffers
-    if e.energy ~= nil then out.energy = e.energy end
-    if e.electric_buffer_size ~= nil then out.electric_buffer_size = e.electric_buffer_size end
 
     -- Tile dimensions from prototype
     if proto then
@@ -595,10 +818,6 @@ function EntitiesSnapshot:_serialize_entity(e)
             -- Per docs, LuaEntity::get_recipe() is the supported way to read the current recipe
             local r = e.get_recipe()
             if r then out.recipe = r.name end
-            -- crafting_progress is valid on crafting machines
-            if e.crafting_progress ~= nil then
-                out.crafting_progress = e.crafting_progress
-            end
         end
     end
 

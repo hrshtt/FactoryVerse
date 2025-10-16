@@ -1,5 +1,75 @@
-local Snapshot = require "core.Snapshot"
+local Snapshot = require "core.snapshot.Snapshot"
 local utils = require "utils"
+
+--- Component Schema Definition for ResourceSnapshot
+local ComponentSchema = {
+    -- Resources component
+    resources = {
+        fields = {
+            kind = "string",
+            x = "number",
+            y = "number",
+            amount = "number"
+        },
+        flatten_rules = {}
+    },
+
+    -- Rocks component
+    rocks = {
+        fields = {
+            name = "string",
+            type = "string",
+            resource_json = "json",
+            size = "number",
+            position_x = "number",
+            position_y = "number",
+            chunk_x = "number",
+            chunk_y = "number"
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            resources = "resource_json" -- Map to _json suffixed field
+        }
+    },
+
+    -- Trees component
+    trees = {
+        fields = {
+            name = "string",
+            position_x = "number",
+            position_y = "number",
+            bounding_box_min_x = "number",
+            bounding_box_min_y = "number",
+            bounding_box_max_x = "number",
+            bounding_box_max_y = "number",
+            chunk_x = "number",
+            chunk_y = "number",
+        },
+        flatten_rules = {
+            position = { x = "position_x", y = "position_y" },
+            chunk = { x = "chunk_x", y = "chunk_y" },
+            bounding_box = {
+                bbox_min_x = "bounding_box_min_x",
+                bbox_min_y = "bounding_box_min_y",
+                bbox_max_x = "bounding_box_max_x",
+                bbox_max_y = "bounding_box_max_y"
+            }
+        }
+    },
+
+    -- Resource yields for recurring snapshots
+    resource_yields = {
+        fields = {
+            x = "number",
+            y = "number",
+            kind = "string",
+            amount = "number",
+            tick = "number"
+        },
+        flatten_rules = {}
+    }
+}
 
 --- ResourceSnapshot: High-performance tile streaming to Postgres
 ---
@@ -31,6 +101,81 @@ function ResourceSnapshot:new()
     return instance
 end
 
+--- Get headers for a component type
+--- @param component_type string - component type name
+--- @return table - array of header names
+function ResourceSnapshot:_get_headers(component_type)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        error("Unknown component type: " .. tostring(component_type))
+    end
+
+    local headers = {}
+    for field_name, _ in pairs(schema.fields) do
+        table.insert(headers, field_name)
+    end
+
+    -- Sort for consistent ordering
+    table.sort(headers)
+    return headers
+end
+
+--- Flatten data according to component schema rules
+--- @param component_type string - component type name
+--- @param data table - data to flatten
+--- @return table - flattened data
+function ResourceSnapshot:_flatten_data(component_type, data)
+    local schema = ComponentSchema[component_type]
+    if not schema then
+        error("Unknown component type: " .. tostring(component_type))
+    end
+
+    local flattened = {}
+    local rules = schema.flatten_rules or {}
+
+    for k, v in pairs(data) do
+        if rules[k] then
+            if type(rules[k]) == "string" then
+                -- Simple field mapping (e.g., inventories -> inventories_json)
+                flattened[rules[k]] = v
+            elseif type(rules[k]) == "table" then
+                -- Apply flattening rules for nested structures
+                for nested_key, flattened_key in pairs(rules[k]) do
+                    if type(nested_key) == "string" and type(flattened_key) == "string" then
+                        -- Simple field mapping
+                        if v[nested_key] ~= nil then
+                            flattened[flattened_key] = v[nested_key]
+                        end
+                    elseif type(nested_key) == "table" and type(flattened_key) == "string" then
+                        -- Nested structure flattening (like position -> pos_x, pos_y)
+                        for sub_key, sub_flattened_key in pairs(nested_key) do
+                            if v[sub_key] ~= nil then
+                                flattened[sub_flattened_key] = v[sub_key]
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            -- Direct field copy
+            flattened[k] = v
+        end
+    end
+
+    return flattened
+end
+
+--- Get events for recurring snapshots
+--- @return table - event configuration
+function ResourceSnapshot.get_events()
+    return {
+        tick_interval = 60,  -- Every second
+        handler = function(event)
+            ResourceSnapshot:new():take_recurring()
+        end
+    }
+end
+
 function ResourceSnapshot:take()
     log("Taking resource snapshot - streaming all resources including crude oil and rocks")
 
@@ -57,6 +202,118 @@ function ResourceSnapshot:take()
     end)
 
     return output
+end
+
+--- Take recurring snapshot of resource yields
+--- Overwrites single CSV file with current resource amounts
+function ResourceSnapshot:take_recurring()
+    log("Taking recurring resource snapshot (yields)")
+
+    local charted_chunks = self.game_state:get_charted_chunks()
+    local yield_rows = {}
+
+    local surface = self.game_state:get_surface()
+    if not surface then
+        local empty = self:create_output("snapshot.resources.recurring", "v1", { yield_rows = {} })
+        return empty
+    end
+
+    for _, chunk in ipairs(charted_chunks) do
+        -- Process resources in this chunk
+        local resources_in_chunk = self.game_state:get_resources_in_chunks({ chunk })
+        if resources_in_chunk then
+            for resource_name, entities in pairs(resources_in_chunk) do
+                for _, entity in ipairs(entities) do
+                    local x = utils.floor(entity.position.x)
+                    local y = utils.floor(entity.position.y)
+                    local amount = entity.amount or 0
+                    
+                    local yield_data = {
+                        x = x,
+                        y = y,
+                        kind = resource_name,
+                        amount = amount,
+                        tick = game and game.tick or 0
+                    }
+                    
+                    table.insert(yield_rows, yield_data)
+                end
+            end
+        end
+    end
+
+    local output = self:create_output("snapshot.resources.recurring", "v1", {
+        yield_rows = yield_rows,
+    })
+
+    -- Emit single CSV file (overwrites each time)
+    local headers = self:_get_headers("resource_yields")
+    local flattened_rows = {}
+    for _, row in ipairs(yield_rows) do
+        table.insert(flattened_rows, self:_flatten_data("resource_yields", row))
+    end
+
+    local csv_data = self:_array_to_csv(flattened_rows, headers)
+    local opts = {
+        output_dir = "script-output/factoryverse/recurring",
+        tick = output.timestamp,
+        metadata = {
+            schema_version = "snapshot.resources.recurring.v1",
+            surface = output.surface,
+        }
+    }
+    self:emit_csv(opts, "resource_yields", csv_data, { headers = headers })
+
+    self:print_summary(output, function(out)
+        local d = out and out.data or {}
+        return {
+            surface = out.surface,
+            tick = out.timestamp,
+            resource_yields = #d.yield_rows,
+        }
+    end)
+
+    return output
+end
+
+--- Convert array of tables to CSV
+--- @param data table - array of data rows
+--- @param headers table - column headers
+--- @return string - CSV content
+function ResourceSnapshot:_array_to_csv(data, headers)
+    if #data == 0 then
+        return table.concat(headers, ",") .. "\n"
+    end
+
+    local csv_lines = { table.concat(headers, ",") }
+    for _, row in ipairs(data) do
+        table.insert(csv_lines, self:_table_to_csv_row(row, headers))
+    end
+    return table.concat(csv_lines, "\n") .. "\n"
+end
+
+--- Convert table to CSV row, handling nested structures
+--- @param data table - data to convert
+--- @param headers table - column headers
+--- @return string - CSV row
+function ResourceSnapshot:_table_to_csv_row(data, headers)
+    local values = {}
+    for _, header in ipairs(headers) do
+        local value = data[header]
+        if value == nil then
+            table.insert(values, "")
+        elseif type(value) == "table" then
+            -- Convert table to JSON string for complex nested data
+            local json_str = helpers.table_to_json(value)
+            table.insert(values, '"' .. json_str:gsub('"', '""') .. '"')
+        elseif type(value) == "string" then
+            -- Regular string, escape quotes and wrap in quotes
+            table.insert(values, '"' .. value:gsub('"', '""') .. '"')
+        else
+            table.insert(values, tostring(value))
+        end
+    end
+    return table.concat(values, ",")
 end
 
 
@@ -142,8 +399,8 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
                     }
                     
                     -- Use existing buffer system but with "rocks" schema
-                    local flattened = self:flatten_data("rocks", rock_data)
-                    local headers = self:get_headers("rocks")
+                    local flattened = self:_flatten_data("rocks", rock_data)
+                    local headers = self:_get_headers("rocks")
                     local csv_row = self:_table_to_csv_row(flattened, headers)
                     
                     -- Add to buffer with special key for rocks
@@ -180,8 +437,8 @@ function ResourceSnapshot:_stream_all_tiles_from_chunks(chunks)
                     }
                     
                     -- Use existing buffer system with "trees" schema
-                    local flattened = self:flatten_data("trees", tree_data)
-                    local headers = self:get_headers("trees")
+                    local flattened = self:_flatten_data("trees", tree_data)
+                    local headers = self:_get_headers("trees")
                     local csv_row = self:_table_to_csv_row(flattened, headers)
                     
                     -- Add to buffer with special key for trees
@@ -241,11 +498,11 @@ function ResourceSnapshot:_enqueue_tile_for_chunk(chunk_x, chunk_y, x, y, kind, 
         amount = amount
     }
 
-    -- Flatten using schema manager
-    local flattened = self:flatten_data("resources", tile_data)
+    -- Flatten using local schema
+    local flattened = self:_flatten_data("resources", tile_data)
 
     -- Convert to CSV row
-    local headers = self:get_headers("resources")
+    local headers = self:_get_headers("resources")
     local csv_row = self:_table_to_csv_row(flattened, headers)
 
     b.count = b.count + 1
@@ -269,7 +526,7 @@ function ResourceSnapshot:_flush_chunk_buffer(chunk_x, chunk_y)
     if not b or b.count == 0 then return end
 
     -- Get headers and create proper CSV with header row
-    local headers = self:get_headers("resources")
+    local headers = self:_get_headers("resources")
     local header_row = table.concat(headers, ",") .. "\n"
     local payload = header_row .. table.concat(b.rows, "", 1, b.count)
 
@@ -355,7 +612,7 @@ function ResourceSnapshot:_flush_rocks_buffer(chunk_x, chunk_y)
     if not b or b.count == 0 then return end
 
     -- Get headers and create proper CSV with header row
-    local headers = self:get_headers("rocks")
+    local headers = self:_get_headers("rocks")
     local header_row = table.concat(headers, ",") .. "\n"
     local payload = header_row .. table.concat(b.rows, "", 1, b.count)
 
@@ -389,7 +646,7 @@ function ResourceSnapshot:_flush_trees_buffer(chunk_x, chunk_y)
     if not b or b.count == 0 then return end
 
     -- Get headers and create proper CSV with header row
-    local headers = self:get_headers("trees")
+    local headers = self:_get_headers("trees")
     local header_row = table.concat(headers, ",") .. "\n"
     local payload = header_row .. table.concat(b.rows, "", 1, b.count)
 

@@ -1,6 +1,8 @@
 local GameState = require("core.game_state.GameState")
-local EntitiesSnapshot = require("snapshots.EntitiesSnapshot")
-local ResourceSnapshot = require("snapshots.ResourceSnapshot")
+local EntitiesSnapshot = require("core.snapshot.EntitiesSnapshot")
+local ResourceSnapshot = require("core.snapshot.ResourceSnapshot")
+local EntityInventory = require("core.snapshot.EntityInventory")
+local AgentSnapshot = require("core.snapshot.AgentSnapshot")
 local utils = require("utils")
 
 
@@ -56,6 +58,14 @@ end
 
 M.helpers.take_belts = function()
     EntitiesSnapshot:new():take_belts()
+end
+
+M.helpers.get_entity_inventory = function(unit_number)
+    return EntityInventory:new():take(unit_number)
+end
+
+M.helpers.get_agent_snapshot = function(agent_id)
+    return AgentSnapshot:new():take(agent_id)
 end
 
 M.helpers.clear_script_output = function()
