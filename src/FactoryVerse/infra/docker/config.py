@@ -43,7 +43,7 @@ def _detect_local_mods_path(os_name: str) -> str:
 
 
 class DockerConfig(BaseModel):
-    """Configuration knobs for Factorio headless servers managed by fle.services.docker."""
+    """Configuration knobs for Factorio headless servers managed by FactoryVerse."""
 
     # Core system configuration
     mode: Literal["save-based", "scenario"]

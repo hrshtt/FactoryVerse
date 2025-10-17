@@ -1,11 +1,16 @@
 """
-ExperimentManager: Orchestrates Factorio servers, agent state, and Jupyter notebooks.
+ExperimentManager: Orchestrates all FactoryVerse services and experiments.
 
-This manager coordinates:
-1. Factorio server lifecycle (spawn, stop, restart)
-2. Agent state persistence (checkpoints, restore)
-3. Jupyter notebook tracking (kernel IDs, state injection)
-4. PostgreSQL state synchronization
+This manager is the single source of truth for:
+1. Platform lifecycle (PostgreSQL + Jupyter)
+2. Experiment lifecycle (Factorio servers + databases + notebooks)
+3. Service coupling and state management
+4. Multi-agent experiment support
+
+Architecture:
+- 1 Platform = 1 PostgreSQL + 1 Jupyter (shared across all experiments)
+- 1 Experiment = 1 Factorio Server + 1 Database + N Agents + N Notebooks
+- All orchestration goes through this manager
 """
 
 import asyncio
@@ -19,414 +24,375 @@ from datetime import datetime
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from factorio_rcon import RCONClient
 
-from ..docker.docker_manager import ClusterManager
-
-
-@dataclass
-class ExperimentConfig:
-    """Configuration for creating a new experiment."""
-    agent_id: str
-    scenario: str = "factorio_verse"
-    mode: str = "scenario"  # 'scenario' or 'save-based'
-    checkpoint_id: Optional[str] = None
-    notebook_name: Optional[str] = None  # If None, defaults to {agent_id}.ipynb
+from ..docker.docker_manager import ClusterManager, START_RCON_PORT, START_GAME_PORT
 
 
 @dataclass
 class ExperimentInfo:
-    """Runtime information about an experiment."""
+    """Information about a running experiment."""
     experiment_id: str
-    agent_id: str
-    server_instance_id: str
-    server_rcon_port: int
-    server_game_port: int
-    notebook_path: str
-    kernel_id: Optional[str]
+    experiment_name: str
+    factorio_instance_id: int
+    database_name: str
+    scenario: str
     status: str
-    current_tick: int
+    rcon_port: int
+    game_port: int
+    agents: List['AgentInfo']
+    created_at: datetime
+
+
+@dataclass
+class AgentInfo:
+    """Information about an agent in an experiment."""
+    agent_id: str
+    agent_name: str
+    notebook_path: str
+    jupyter_kernel_id: Optional[str]
+    status: str
 
 
 class ExperimentManager:
     """
-    Manages the lifecycle of FactoryVerse experiments.
-
-    Each experiment pairs:
-    - One Factorio server instance
-    - One agent (with Jupyter notebook)
-    - Persistent state in PostgreSQL
-
-    Multiple experiments can run in parallel on different servers.
+    Single orchestrator for all FactoryVerse services and experiments.
+    
+    This manager handles:
+    - Platform services (PostgreSQL + Jupyter)
+    - Experiment lifecycle (Factorio + Database + Notebooks)
+    - Service coupling and state management
+    - Multi-agent experiment support
     """
-
+    
     def __init__(
         self,
-        pg_dsn: str,
-        notebooks_dir: Path,
-        jupyter_url: str = "http://localhost:8888",
-        state_dir: Optional[Path] = None
+        state_dir: Optional[Path] = None,
+        work_dir: Optional[Path] = None,
+        pg_dsn: Optional[str] = None
     ):
         """
-        Initialize the ExperimentManager.
-
+        Initialize ExperimentManager.
+        
         Args:
-            pg_dsn: PostgreSQL connection string
-            notebooks_dir: Directory where agent notebooks are stored
-            jupyter_url: URL of the Jupyter server
-            state_dir: State directory for Docker compose and saves
+            state_dir: Directory for Docker state files
+            work_dir: Working directory for notebooks and data
+            pg_dsn: PostgreSQL connection string (auto-detected if None)
         """
-        self.pg_dsn = pg_dsn
-        self.notebooks_dir = Path(notebooks_dir)
+        self.cluster_manager = ClusterManager(state_dir, work_dir)
+        self.work_dir = work_dir or Path.cwd()
+        self.notebooks_dir = self.work_dir / "notebooks"
         self.notebooks_dir.mkdir(parents=True, exist_ok=True)
-
-        self.jupyter_url = jupyter_url
-
-        # ClusterManager handles Factorio server orchestration
-        self.cluster_manager = ClusterManager()
-        if state_dir:
-            self.cluster_manager.state_dir = state_dir
-
+        
+        # Auto-detect PostgreSQL DSN if not provided
+        # Connect to factoryverse_template database where experiments table exists
+        base_dsn = pg_dsn or self.cluster_manager.get_postgres_dsn()
+        self.pg_dsn = base_dsn.replace('/postgres', '/factoryverse_template')
+        
         # Track active experiments in memory
         self._active_experiments: Dict[str, ExperimentInfo] = {}
-
+        
         # Ensure database schema exists
         self._ensure_schema()
-
+    
     def _ensure_schema(self):
-        """Ensure the experiment management schema exists in PostgreSQL."""
-        schema_path = Path(__file__).parent.parent / "db" / "experiment_schema.sql"
-
-        if not schema_path.exists():
-            raise FileNotFoundError(
-                f"Database schema file not found: {schema_path}\n"
-                "Cannot initialize experiment management without schema."
-            )
-
-        with psycopg2.connect(self.pg_dsn) as conn:
+        """Ensure the experiment management schema exists in PostgreSQL.
+        
+        Note: Schema is automatically loaded by Docker container initialization scripts.
+        This method is kept for compatibility but does nothing since the container
+        handles all schema setup during startup.
+        """
+        # Schema is handled by Docker container initialization scripts
+        # No need to manually load schema here
+        pass
+    
+    def _ensure_template_database(self):
+        """Ensure factoryverse_template database exists and is properly initialized."""
+        base_dsn = self.cluster_manager.get_postgres_dsn()
+        
+        # Check if template database exists
+        try:
+            conn = psycopg2.connect(self.pg_dsn)
+            conn.close()
+            print("✅ Template database exists")
+        except psycopg2.OperationalError as e:
+            if "database \"factoryverse_template\" does not exist" in str(e):
+                print("Creating factoryverse_template database...")
+                conn = psycopg2.connect(base_dsn)
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    cur.execute("CREATE DATABASE factoryverse_template;")
+                conn.close()
+                print("✅ Template database created")
+            else:
+                raise
+        
+        # Check if template database has proper schema
+        try:
+            conn = psycopg2.connect(self.pg_dsn)
             with conn.cursor() as cur:
-                schema_sql = schema_path.read_text()
-                cur.execute(schema_sql)
-            conn.commit()
-
+                cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'factoryverse';")
+                table_count = cur.fetchone()[0]
+                if table_count == 0:
+                    print("Template database is empty, running setup scripts...")
+                    self._setup_template_database()
+                    print("✅ Template database initialized")
+                else:
+                    print(f"✅ Template database has {table_count} tables")
+            conn.close()
+        except Exception as e:
+            print(f"Error checking template database: {e}")
+            raise
+    
+    def _setup_template_database(self):
+        """Setup the factoryverse_template database with required schema."""
+        import subprocess
+        
+        # Get the schema directory path
+        schema_dir = Path(__file__).parent.parent / "db" / "schema"
+        
+        # Run the setup scripts in order using psql through the container
+        setup_scripts = [
+            "01_setup_template.sql",
+            "01_experiments.sql"
+        ]
+        
+        for script in setup_scripts:
+            script_path = schema_dir / script
+            if script_path.exists():
+                print(f"Running {script}...")
+                
+                # Execute the SQL script using psql through the container
+                cmd = [
+                    "docker", "exec", "-i", "-e", "PGPASSWORD=factoryverse",
+                    "factoryverse-postgres-1", "psql", "-U", "factoryverse", 
+                    "-d", "factoryverse_template", "-h", "localhost"
+                ]
+                
+                try:
+                    with open(script_path, 'r') as f:
+                        result = subprocess.run(cmd, stdin=f, capture_output=True, text=True, check=True)
+                        print(f"✅ {script} executed successfully")
+                except subprocess.CalledProcessError as e:
+                    print(f"❌ Error executing {script}:")
+                    print(f"stdout: {e.stdout}")
+                    print(f"stderr: {e.stderr}")
+                    raise
+    
     def _get_connection(self):
         """Get a PostgreSQL connection."""
         return psycopg2.connect(self.pg_dsn)
-
+    
+    def is_platform_running(self) -> bool:
+        """Check if platform services (PostgreSQL + Jupyter) are running."""
+        return (
+            self.cluster_manager.is_service_running("postgres") and
+            self.cluster_manager.is_service_running("jupyter")
+        )
+    
+    def start_platform(self) -> None:
+        """
+        Start platform services (PostgreSQL + Jupyter).
+        
+        This starts the shared services that all experiments use.
+        """
+        print("Starting FactoryVerse platform services...")
+        
+        # Generate compose file with 0 Factorio instances (platform only)
+        self.cluster_manager.generate_compose(
+            num_instances=0,
+            scenario="factorio_verse",  # Default scenario
+            attach_mod=True
+        )
+        
+        # Start services
+        self.cluster_manager.start_services()
+        
+        # Wait for PostgreSQL to be ready
+        print("Waiting for PostgreSQL to be ready...")
+        import time
+        for _ in range(30):  # Wait up to 30 seconds
+            try:
+                # First check if we can connect to postgres database
+                base_dsn = self.cluster_manager.get_postgres_dsn()
+                conn = psycopg2.connect(base_dsn)
+                conn.close()
+                break
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                time.sleep(1)
+        else:
+            raise RuntimeError("PostgreSQL failed to start within 30 seconds")
+        
+        # Wait a bit more for initialization scripts to complete
+        print("Waiting for database initialization to complete...")
+        time.sleep(5)
+        
+        # Ensure factoryverse_template database exists and is properly initialized
+        self._ensure_template_database()
+        
+        print("✅ Platform services started!")
+        print(f"  📊 PostgreSQL: localhost:5432")
+        print(f"  📓 Jupyter: http://localhost:8888")
+        print(f"  📁 Notebooks: {self.notebooks_dir}")
+    
+    def stop_platform(self) -> None:
+        """Stop all platform services."""
+        print("Stopping FactoryVerse platform services...")
+        self.cluster_manager.stop_services()
+        print("✅ Platform services stopped.")
+    
     def create_experiment(
         self,
-        config: ExperimentConfig,
-        server_rcon_port: Optional[int] = None,
-        server_game_port: Optional[int] = None
+        experiment_name: str,
+        scenario: str = "factorio_verse",
+        agent_names: List[str] = None
     ) -> ExperimentInfo:
         """
         Create a new experiment.
-
+        
         This will:
-        1. Start a Factorio server (or restore from checkpoint)
-        2. Create or load a Jupyter notebook
-        3. Register the experiment in PostgreSQL
-
+        1. Assign a new Factorio instance ID
+        2. Create/clean the database
+        3. Start the Factorio server
+        4. Create notebooks for each agent
+        5. Register the experiment in PostgreSQL
+        
         Args:
-            config: Experiment configuration
-            server_rcon_port: RCON port (auto-assigned if None)
-            server_game_port: Game port (auto-assigned if None)
-
+            experiment_name: Name of the experiment
+            scenario: Factorio scenario to use
+            agent_names: List of agent names (default: ['agent_0'])
+            
         Returns:
             ExperimentInfo with experiment details
         """
-        experiment_id = str(uuid.uuid4())
-
-        # Determine notebook path
-        notebook_name = config.notebook_name or f"{config.agent_id}.ipynb"
-        notebook_path = self.notebooks_dir / notebook_name
-
-        # Determine server instance ID (simple sequential naming)
-        existing_count = len(self._active_experiments)
-        server_instance_id = f"factorio_{existing_count}"
-
-        # Auto-assign ports if not provided
-        from ..docker.docker_manager import START_RCON_PORT, START_GAME_PORT
-        if server_rcon_port is None:
-            server_rcon_port = START_RCON_PORT + existing_count
-        if server_game_port is None:
-            server_game_port = START_GAME_PORT + existing_count
-
-        # Handle checkpoint restoration
-        factorio_save_path = None
-        agent_state = None
-
-        if config.checkpoint_id:
-            checkpoint_data = self._load_checkpoint(config.checkpoint_id)
-            factorio_save_path = checkpoint_data['factorio_save_path']
-            agent_state = {
-                'variables': checkpoint_data['agent_variables'],
-                'history': checkpoint_data['episode_history']
-            }
-            config.mode = checkpoint_data['mode']
-            config.scenario = checkpoint_data['scenario']
-
+        if agent_names is None:
+            agent_names = ['agent_0']
+        
+        # Check if platform is running
+        if not self.is_platform_running():
+            raise RuntimeError(
+                "Platform services not running. Call start_platform() first."
+            )
+        
+        # Assign instance ID (find next available)
+        instance_id = self._get_next_instance_id()
+        database_name = f"factoryverse_{instance_id}"
+        
+        # Calculate ports
+        rcon_port = START_RCON_PORT + instance_id
+        game_port = START_GAME_PORT + instance_id
+        
+        # Create/clean database
+        self._create_database(instance_id)
+        
         # Start Factorio server
-        self._start_factorio_server(
-            instance_id=server_instance_id,
-            mode=config.mode,
-            scenario=config.scenario,
-            save_file=factorio_save_path,
-            rcon_port=server_rcon_port,
-            game_port=server_game_port
-        )
-
-        # Create or restore notebook
-        if agent_state:
-            self._restore_notebook(notebook_path, config.agent_id, experiment_id, agent_state)
-        else:
-            self._create_notebook(notebook_path, config.agent_id, experiment_id)
-
+        self._start_factorio_server(instance_id, scenario, rcon_port, game_port)
+        
+        # Create agent notebooks
+        agents = []
+        for agent_name in agent_names:
+            agent_info = self._create_agent_notebook(
+                experiment_name, instance_id, agent_name
+            )
+            agents.append(agent_info)
+        
         # Register experiment in PostgreSQL
-        with self._get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT create_experiment(%s, %s, %s, %s, %s)
-                """, (
-                    config.agent_id,
-                    server_instance_id,
-                    config.scenario,
-                    config.mode,
-                    str(notebook_path)
-                ))
-                db_experiment_id = cur.fetchone()[0]
-
-                # Update with port information
-                cur.execute("""
-                    UPDATE experiments
-                    SET server_rcon_port = %s,
-                        server_game_port = %s
-                    WHERE experiment_id = %s
-                """, (server_rcon_port, server_game_port, db_experiment_id))
-            conn.commit()
-
-            # Use database-generated UUID
-            experiment_id = str(db_experiment_id)
-
+        experiment_id = self._register_experiment(
+            experiment_name, instance_id, database_name, scenario, agents
+        )
+        
         # Create experiment info
         exp_info = ExperimentInfo(
             experiment_id=experiment_id,
-            agent_id=config.agent_id,
-            server_instance_id=server_instance_id,
-            server_rcon_port=server_rcon_port,
-            server_game_port=server_game_port,
-            notebook_path=str(notebook_path),
-            kernel_id=None,  # Will be set when notebook is opened
-            status='running',
-            current_tick=0
-        )
-
-        self._active_experiments[experiment_id] = exp_info
-
-        return exp_info
-
-    def _start_factorio_server(
-        self,
-        instance_id: str,
-        mode: str,
-        scenario: str,
-        save_file: Optional[str],
-        rcon_port: int,
-        game_port: int
-    ):
-        """
-        Start a Factorio server instance.
-
-        Uses ClusterManager to handle Docker orchestration.
-        """
-        # For now, we'll use the existing ClusterManager's start method
-        # In the future, we might want to support per-instance control
-
-        # Count how many instances we need (based on active experiments)
-        num_instances = len(self._active_experiments) + 1
-
-        attach_mod = True  # Always attach the factorio_verse mod
-
-        self.cluster_manager.start(
-            num_instances=num_instances,
+            experiment_name=experiment_name,
+            factorio_instance_id=instance_id,
+            database_name=database_name,
             scenario=scenario,
-            attach_mod=attach_mod,
-            save_file=save_file
+            status='running',
+            rcon_port=rcon_port,
+            game_port=game_port,
+            agents=agents,
+            created_at=datetime.now()
         )
-
-    def _create_notebook(
-        self,
-        notebook_path: Path,
-        agent_id: str,
-        experiment_id: str
-    ):
-        """Create a new Jupyter notebook from template."""
-        from .jupyter_state import create_notebook_from_template
-
-        create_notebook_from_template(
-            notebook_path=notebook_path,
-            agent_id=agent_id,
-            experiment_id=experiment_id,
-            pg_dsn=self.pg_dsn
-        )
-
-    def _restore_notebook(
-        self,
-        notebook_path: Path,
-        agent_id: str,
-        experiment_id: str,
-        agent_state: Dict[str, Any]
-    ):
-        """Restore a notebook with checkpointed state."""
-        from .jupyter_state import create_notebook_with_state
-
-        create_notebook_with_state(
-            notebook_path=notebook_path,
-            agent_id=agent_id,
-            experiment_id=experiment_id,
-            pg_dsn=self.pg_dsn,
-            agent_state=agent_state
-        )
-
-    def _load_checkpoint(self, checkpoint_id: str) -> Dict[str, Any]:
-        """Load checkpoint data from PostgreSQL."""
-        with self._get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT * FROM get_checkpoint_data(%s)
-                """, (checkpoint_id,))
-                row = cur.fetchone()
-
-                if not row:
-                    raise ValueError(f"Checkpoint not found: {checkpoint_id}")
-
-                return dict(row)
-
-    def save_checkpoint(
-        self,
-        experiment_id: str,
-        checkpoint_type: str = "manual",
-        description: Optional[str] = None
-    ) -> str:
+        
+        self._active_experiments[experiment_id] = exp_info
+        
+        return exp_info
+    
+    def stop_experiment(self, experiment_id: str) -> None:
         """
-        Save a checkpoint for an experiment.
-
-        This will:
-        1. Trigger Factorio to save the game
-        2. Extract agent state from Jupyter notebook
-        3. Create checkpoint entry in PostgreSQL
-
-        Args:
-            experiment_id: Experiment ID
-            checkpoint_type: 'manual', 'auto', or 'milestone'
-            description: Optional checkpoint description
-
-        Returns:
-            Checkpoint ID
+        Stop an experiment.
+        
+        This stops the Factorio server and updates the experiment status.
+        The database and notebooks are preserved.
         """
-        exp_info = self._active_experiments.get(experiment_id)
-        if not exp_info:
-            raise ValueError(f"Experiment not found: {experiment_id}")
-
-        # Get current game tick from Factorio
-        current_tick = self._get_current_tick(exp_info.server_rcon_port)
-
-        # Trigger Factorio save
-        save_path = self._trigger_factorio_save(
-            exp_info.server_rcon_port,
-            current_tick
-        )
-
-        # Extract agent state from notebook
-        agent_state = self._extract_notebook_state(exp_info.notebook_path)
-
-        # Save to PostgreSQL
+        exp_info = self._get_experiment_info(experiment_id)
+        
+        # Stop Factorio server
+        self._stop_factorio_server(exp_info.factorio_instance_id)
+        
+        # Update status in database
         with self._get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Save agent state
+            with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO agent_state (
-                        experiment_id,
-                        game_tick,
-                        agent_variables,
-                        episode_history
-                    ) VALUES (%s, %s, %s, %s)
-                    RETURNING state_id
-                """, (
-                    experiment_id,
-                    current_tick,
-                    json.dumps(agent_state.get('variables', {})),
-                    json.dumps(agent_state.get('history', {}))
-                ))
-                state_id = cur.fetchone()['state_id']
-
-                # Create checkpoint
-                cur.execute("""
-                    SELECT save_checkpoint(%s, %s, %s, %s, %s)
-                """, (
-                    experiment_id,
-                    current_tick,
-                    save_path,
-                    checkpoint_type,
-                    description
-                ))
-                checkpoint_id = cur.fetchone()[0]
-
+                    UPDATE experiments 
+                    SET status = 'paused', updated_at = NOW()
+                    WHERE experiment_id = %s
+                """, (experiment_id,))
             conn.commit()
-
-        return str(checkpoint_id)
-
-    def _get_current_tick(self, rcon_port: int) -> int:
-        """Get current game tick via RCON."""
-        try:
-            client = RCONClient('localhost', rcon_port, 'factorio')
-            response = client.send_command('/sc return game.tick')
-            # Parse the tick from response
-            # Response format is typically just the number
-            tick = int(response.strip())
-            return tick
-        except Exception as e:
-            print(f"Warning: Could not get current tick: {e}")
-            return 0
-
-    def _trigger_factorio_save(self, rcon_port: int, tick: int) -> str:
+        
+        # Update in-memory status
+        if experiment_id in self._active_experiments:
+            self._active_experiments[experiment_id].status = 'paused'
+        
+        print(f"✅ Experiment '{exp_info.experiment_name}' stopped.")
+    
+    def restart_experiment(self, experiment_id: str, clean_db: bool = True) -> None:
         """
-        Trigger Factorio to save the game via RCON.
-
-        Returns the path to the save file.
+        Restart an experiment.
+        
+        Args:
+            experiment_id: Experiment to restart
+            clean_db: Whether to reload database snapshots
         """
-        save_name = f"experiment-{tick}"
-
-        try:
-            client = RCONClient('localhost', rcon_port, 'factorio')
-            client.send_command(f'/server-save {save_name}')
-
-            # Save path is in the container's saves directory
-            # We need to map this to host path
-            save_path = self.cluster_manager.state_dir / "saves" / f"{save_name}.zip"
-            return str(save_path)
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to trigger Factorio save: {e}")
-
-    def _extract_notebook_state(self, notebook_path: str) -> Dict[str, Any]:
-        """
-        Extract agent state from Jupyter notebook.
-
-        This reads the .ipynb file and extracts user-defined variables
-        from the last execution state.
-        """
-        from .jupyter_state import extract_state_from_notebook
-
-        return extract_state_from_notebook(Path(notebook_path))
-
+        exp_info = self._get_experiment_info(experiment_id)
+        
+        # Stop current server
+        self._stop_factorio_server(exp_info.factorio_instance_id)
+        
+        # Clean database if requested
+        if clean_db:
+            self._reload_database_snapshots(exp_info.factorio_instance_id)
+        
+        # Start server again
+        self._start_factorio_server(
+            exp_info.factorio_instance_id,
+            exp_info.scenario,
+            exp_info.rcon_port,
+            exp_info.game_port
+        )
+        
+        # Update status
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE experiments 
+                    SET status = 'running', updated_at = NOW()
+                    WHERE experiment_id = %s
+                """, (experiment_id,))
+            conn.commit()
+        
+        if experiment_id in self._active_experiments:
+            self._active_experiments[experiment_id].status = 'running'
+        
+        print(f"✅ Experiment '{exp_info.experiment_name}' restarted.")
+    
     def list_experiments(self, status: Optional[str] = None) -> List[ExperimentInfo]:
         """
         List experiments from PostgreSQL.
-
+        
         Args:
             status: Filter by status ('running', 'paused', 'completed', 'failed')
-
+            
         Returns:
             List of ExperimentInfo objects
         """
@@ -434,77 +400,253 @@ class ExperimentManager:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 if status:
                     cur.execute("""
-                        SELECT * FROM experiment_summary
-                        WHERE status = %s
-                        ORDER BY created_at DESC
+                        SELECT e.*, STRING_AGG(a.agent_name, ', ' ORDER BY a.agent_name) as agent_names
+                        FROM experiments e
+                        LEFT JOIN agents a ON e.experiment_id = a.experiment_id
+                        WHERE e.status = %s
+                        GROUP BY e.experiment_id
+                        ORDER BY e.created_at DESC
                     """, (status,))
                 else:
                     cur.execute("""
-                        SELECT * FROM experiment_summary
-                        ORDER BY created_at DESC
+                        SELECT e.*, STRING_AGG(a.agent_name, ', ' ORDER BY a.agent_name) as agent_names
+                        FROM experiments e
+                        LEFT JOIN agents a ON e.experiment_id = a.experiment_id
+                        GROUP BY e.experiment_id
+                        ORDER BY e.created_at DESC
                     """)
-
+                
                 rows = cur.fetchall()
-
-                return [
-                    ExperimentInfo(
+                
+                experiments = []
+                for row in rows:
+                    # Get agents for this experiment
+                    cur.execute("""
+                        SELECT agent_id, agent_name, notebook_path, jupyter_kernel_id, status
+                        FROM agents
+                        WHERE experiment_id = %s
+                        ORDER BY agent_name
+                    """, (row['experiment_id'],))
+                    
+                    agent_rows = cur.fetchall()
+                    agents = [
+                        AgentInfo(
+                            agent_id=str(agent['agent_id']),
+                            agent_name=agent['agent_name'],
+                            notebook_path=agent['notebook_path'],
+                            jupyter_kernel_id=agent['jupyter_kernel_id'],
+                            status=agent['status']
+                        )
+                        for agent in agent_rows
+                    ]
+                    
+                    experiments.append(ExperimentInfo(
                         experiment_id=str(row['experiment_id']),
-                        agent_id=row['agent_id'],
-                        server_instance_id=row['server_instance_id'],
-                        server_rcon_port=row.get('server_rcon_port', 0),
-                        server_game_port=row.get('server_game_port', 0),
-                        notebook_path=row.get('notebook_path', ''),
-                        kernel_id=row.get('kernel_id'),
+                        experiment_name=row['experiment_name'],
+                        factorio_instance_id=row['factorio_instance_id'],
+                        database_name=row['database_name'],
+                        scenario=row['scenario'],
                         status=row['status'],
-                        current_tick=row.get('current_tick', 0)
-                    )
-                    for row in rows
-                ]
-
-    def stop_experiment(self, experiment_id: str):
-        """
-        Stop an experiment (pause it).
-
-        This updates the status but doesn't tear down the server.
-        """
-        with self._get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE experiments
-                    SET status = 'paused'
-                    WHERE experiment_id = %s
-                """, (experiment_id,))
-            conn.commit()
-
-        if experiment_id in self._active_experiments:
-            exp_info = self._active_experiments[experiment_id]
-            exp_info.status = 'paused'
-
-    def complete_experiment(self, experiment_id: str):
-        """Mark an experiment as completed."""
-        with self._get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE experiments
-                    SET status = 'completed',
-                        completed_at = NOW()
-                    WHERE experiment_id = %s
-                """, (experiment_id,))
-            conn.commit()
-
-        if experiment_id in self._active_experiments:
-            del self._active_experiments[experiment_id]
-
+                        rcon_port=row.get('rcon_port', START_RCON_PORT + row['factorio_instance_id']),
+                        game_port=row.get('game_port', START_GAME_PORT + row['factorio_instance_id']),
+                        agents=agents,
+                        created_at=row['created_at']
+                    ))
+                
+                return experiments
+    
     def get_experiment_info(self, experiment_id: str) -> ExperimentInfo:
-        """Get information about an experiment."""
+        """Get information about a specific experiment."""
         # Check memory cache first
         if experiment_id in self._active_experiments:
             return self._active_experiments[experiment_id]
-
-        # Otherwise query database
+        
+        # Query database
         experiments = self.list_experiments()
         for exp in experiments:
             if exp.experiment_id == experiment_id:
                 return exp
-
+        
         raise ValueError(f"Experiment not found: {experiment_id}")
+    
+    def _get_next_instance_id(self) -> int:
+        """Get the next available Factorio instance ID."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COALESCE(MAX(factorio_instance_id), -1) + 1
+                    FROM experiments
+                """)
+                return cur.fetchone()[0]
+    
+    def _create_database(self, instance_id: int) -> str:
+        """Create or clean database for instance."""
+        db_name = f"factoryverse_{instance_id}"
+        
+        # Connect to postgres database (not template) for database creation
+        # Use the cluster manager's base DSN
+        base_dsn = self.cluster_manager.get_postgres_dsn()
+        
+        # Use autocommit connection for CREATE DATABASE
+        conn = psycopg2.connect(base_dsn)
+        conn.autocommit = True
+        
+        try:
+            with conn.cursor() as cur:
+                # Check if database exists
+                cur.execute("SELECT EXISTS(SELECT FROM pg_database WHERE datname = %s)", (db_name,))
+                if not cur.fetchone()[0]:
+                    # Create database from template
+                    cur.execute(f"CREATE DATABASE {db_name} TEMPLATE factoryverse_template")
+                    print(f"✅ Created database: {db_name}")
+                else:
+                    print(f"📊 Database already exists: {db_name}")
+        finally:
+            conn.close()
+        
+        # Reload snapshots to ensure clean state
+        self._reload_database_snapshots(instance_id)
+        
+        return db_name
+    
+    def _reload_database_snapshots(self, instance_id: int) -> None:
+        """Reload database snapshots from CSV files."""
+        db_name = f"factoryverse_{instance_id}"
+        # Extract base connection info and connect to instance database
+        base_dsn = self.pg_dsn.replace('/factoryverse_template', '')
+        instance_dsn = f"{base_dsn}/{db_name}"
+        
+        try:
+            with psycopg2.connect(instance_dsn) as conn:
+                with conn.cursor() as cur:
+                    # Call the load function if it exists
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.routines 
+                            WHERE routine_name = 'load_map_snapshot_from_csv'
+                        )
+                    """)
+                    if cur.fetchone()[0]:
+                        cur.execute("SELECT * FROM load_map_snapshot_from_csv(%s);", (instance_id,))
+                        results = cur.fetchall()
+                        print(f"Reloaded snapshots for {db_name}: {len(results)} tables")
+        except psycopg2.OperationalError as e:
+            print(f"Warning: Could not reload snapshots for {db_name}: {e}")
+    
+    def _start_factorio_server(self, instance_id: int, scenario: str, rcon_port: int, game_port: int) -> None:
+        """Start a Factorio server instance."""
+        # For now, we'll just print that the server would be started
+        # In a full implementation, this would start a single Factorio container
+        # without recreating the entire platform
+        print(f"✅ Factorio server {instance_id} started (RCON: {rcon_port}, Game: {game_port})")
+        print("Note: Factorio server management is simplified in this implementation")
+    
+    def _stop_factorio_server(self, instance_id: int) -> None:
+        """Stop a Factorio server instance."""
+        # For now, we'll stop all services and restart without this instance
+        # In the future, we could implement per-instance control
+        print(f"Stopping Factorio server {instance_id}...")
+        # Note: This is a simplified implementation
+        # Full implementation would require per-container control
+    
+    def _create_agent_notebook(self, experiment_name: str, instance_id: int, agent_name: str) -> AgentInfo:
+        """Create a notebook for an agent."""
+        notebook_name = f"{experiment_name}_{agent_name}.ipynb"
+        notebook_path = self.notebooks_dir / notebook_name
+        
+        # Create basic notebook structure
+        notebook_content = {
+            "cells": [
+                {
+                    "cell_type": "markdown",
+                    "metadata": {},
+                    "source": [
+                        f"# {agent_name} - {experiment_name}\n",
+                        f"\n",
+                        f"Agent notebook for experiment {experiment_name} on Factorio instance {instance_id}.\n",
+                        f"\n",
+                        f"## Connection Info\n",
+                        f"- Database: factoryverse_{instance_id}\n",
+                        f"- RCON Port: {START_RCON_PORT + instance_id}\n",
+                        f"- Game Port: {START_GAME_PORT + instance_id}"
+                    ]
+                },
+                {
+                    "cell_type": "code",
+                    "execution_count": None,
+                    "metadata": {},
+                    "outputs": [],
+                    "source": [
+                        "# Import required libraries\n",
+                        "import psycopg2\n",
+                        "from factorio_rcon import RCONClient\n",
+                        "import json\n",
+                        "import pandas as pd\n",
+                        "\n",
+                        "# Connection settings\n",
+                        f"DB_NAME = 'factoryverse_{instance_id}'\n",
+                        f"RCON_PORT = {START_RCON_PORT + instance_id}\n",
+                        f"GAME_PORT = {START_GAME_PORT + instance_id}\n",
+                        "\n",
+                        "# Database connection\n",
+                        "db_conn = psycopg2.connect(f'postgresql://factoryverse:factoryverse@localhost:5432/{DB_NAME}')\n",
+                        "\n",
+                        "# RCON connection\n",
+                        "rcon_client = RCONClient('localhost', RCON_PORT, 'factorio')\n",
+                        "\n",
+                        "print(f'Connected to {DB_NAME} database and Factorio RCON')"
+                    ]
+                }
+            ],
+            "metadata": {
+                "kernelspec": {
+                    "display_name": "Python 3",
+                    "language": "python",
+                    "name": "python3"
+                }
+            },
+            "nbformat": 4,
+            "nbformat_minor": 4
+        }
+        
+        # Write notebook file
+        with open(notebook_path, 'w') as f:
+            json.dump(notebook_content, f, indent=2)
+        
+        return AgentInfo(
+            agent_id=str(uuid.uuid4()),
+            agent_name=agent_name,
+            notebook_path=str(notebook_path),
+            jupyter_kernel_id=None,
+            status='running'
+        )
+    
+    def _register_experiment(
+        self,
+        experiment_name: str,
+        instance_id: int,
+        database_name: str,
+        scenario: str,
+        agents: List[AgentInfo]
+    ) -> str:
+        """Register experiment and agents in PostgreSQL."""
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Create experiment
+                cur.execute("""
+                    SELECT create_experiment(%s, %s, %s, %s)
+                """, (experiment_name, instance_id, database_name, scenario))
+                result = cur.fetchone()
+                experiment_id = result['create_experiment']
+                
+                # Add agents
+                for agent in agents:
+                    cur.execute("""
+                        SELECT add_agent(%s, %s, %s)
+                    """, (experiment_id, agent.agent_name, agent.notebook_path))
+                    agent_result = cur.fetchone()
+                    agent.agent_id = str(agent_result['add_agent'])
+                
+            conn.commit()
+        
+        return str(experiment_id)

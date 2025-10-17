@@ -6,6 +6,7 @@ import subprocess
 import sys
 import socket
 from pathlib import Path
+from typing import List, Optional
 import shutil
 import yaml
 import zipfile
@@ -24,22 +25,22 @@ POSTGRES_DB = "factoryverse"
 def resolve_state_dir() -> Path:
     """Resolve platform-specific state directory with env override.
 
-    Env override: FLE_STATE_DIR
-    Default: platformdirs.user_state_dir("fle")
+    Env override: FACTORYVERSE_STATE_DIR
+    Default: platformdirs.user_state_dir("factoryverse")
     """
-    override = os.environ.get("FLE_STATE_DIR")
+    override = os.environ.get("FACTORYVERSE_STATE_DIR")
     if override:
         return Path(override).expanduser().resolve()
-    return Path(user_state_dir("fle"))
+    return Path(user_state_dir("factoryverse"))
 
 
 def resolve_work_dir() -> Path:
     """Resolve user-visible working directory root with env override.
 
-    Env override: FLE_WORKDIR
+    Env override: FACTORYVERSE_WORKDIR
     Default: current working directory
     """
-    override = os.environ.get("FLE_WORKDIR")
+    override = os.environ.get("FACTORYVERSE_WORKDIR")
     base = Path(override).expanduser().resolve() if override else Path.cwd()
     return base
 
@@ -126,7 +127,7 @@ class ComposeGenerator:
         return " ".join([factorio_bin, launch_command] + args)
 
     def _factorio_mod_path(self):
-        env_override = os.environ.get("FLE_MODS_PATH")
+        env_override = os.environ.get("FACTORYVERSE_MODS_PATH")
         if env_override:
             return Path(env_override).expanduser()
         if self.os_name == "Windows":
@@ -175,26 +176,24 @@ class ComposeGenerator:
             "type": "bind",
         }
 
-    def _factorio_screenshots_volume(self):
-        screenshots_dir = self.work_dir / ".fle" / "data" / "_screenshots"
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
+    def _factorio_snapshots_volume(self, instance_id):
+        snapshots_dir = self.work_dir / ".fv" / "snapshots" / f"factorio_{instance_id}"
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
         return {
-            "source": str(screenshots_dir.resolve()),
+            "source": str(snapshots_dir.resolve()),
             "target": "/opt/factorio/script-output",
             "type": "bind",
         }
 
     def _factorio_scenarios_volume(self):
-        # Resolve from package resources if provided
-        scenarios_dir = self.pkg_scenarios_dir
-        if scenarios_dir is None:
-            pkg_root = ir.files("fle.cluster")
-            scenarios_dir = Path(pkg_root / "scenarios")
-        if not scenarios_dir.exists():
-            raise ValueError(f"Scenarios directory '{scenarios_dir}' does not exist.")
+        # Mount the factorio_verse scenario specifically, like in run-envs.sh
+        pkg_root = ir.files("FactoryVerse")
+        factorio_verse_dir = Path(pkg_root / ".." / "factorio" / "factorio_verse")
+        if not factorio_verse_dir.exists():
+            raise ValueError(f"Factorio verse directory '{factorio_verse_dir}' does not exist.")
         return {
-            "source": str(scenarios_dir.resolve()),
-            "target": "/opt/factorio/scenarios",
+            "source": str(factorio_verse_dir.resolve()),
+            "target": "/opt/factorio/scenarios/factorio_verse",
             "type": "bind",
         }
 
@@ -202,8 +201,8 @@ class ComposeGenerator:
         # Resolve from package resources if provided
         config_dir = self.pkg_config_dir
         if config_dir is None:
-            pkg_root = ir.files("fle.cluster")
-            config_dir = Path(pkg_root / "config")
+            pkg_root = ir.files("FactoryVerse")
+            config_dir = Path(pkg_root / ".." / "factorio" / "config")
         if not config_dir.exists():
             raise ValueError(f"Config directory '{config_dir}' does not exist.")
         return {
@@ -220,7 +219,7 @@ class ComposeGenerator:
             volumes = [
                 self._factorio_scenarios_volume(),
                 self._factorio_config_volume(),
-                self._factorio_screenshots_volume(),
+                self._factorio_snapshots_volume(i),
             ]
             if self.save_file:
                 volumes.append(self._factorio_save_volume())
@@ -243,16 +242,21 @@ class ComposeGenerator:
             }
         return services
     
-    def postgres_services_dict(self):
+    def postgres_services_dict(self, num_factorio_instances=1):
         """Generate PostgreSQL service configuration."""
+        # Mount entire snapshots directory for all instances
+        snapshots_root = self.work_dir / ".fv" / "snapshots"
+        snapshots_root.mkdir(parents=True, exist_ok=True)
+        
         return {
             "postgres": {
-                "image": "postgis/postgis:15-3.3",
+                "image": "kartoza/postgis:latest",
                 "platform": self._docker_platform(),
                 "environment": {
                     "POSTGRES_USER": POSTGRES_USER,
                     "POSTGRES_PASSWORD": POSTGRES_PASSWORD,
-                    "POSTGRES_DB": POSTGRES_DB,
+                    "POSTGRES_DB": "postgres",  # Default, will create instance DBs
+                    "FACTORIO_INSTANCE_COUNT": str(num_factorio_instances),
                 },
                 "ports": [f"{POSTGRES_PORT}:5432/tcp"],
                 "volumes": [
@@ -261,17 +265,23 @@ class ComposeGenerator:
                         "source": "factoryverse_pg_data",
                         "target": "/var/lib/postgresql/data",
                     },
-                    # Auto-initialize experiment schema
+                    # Mount all Factorio snapshot directories
                     {
                         "type": "bind",
-                        "source": str((Path(__file__).parent.parent / "db" / "experiment_schema.sql").resolve()),
-                        "target": "/docker-entrypoint-initdb.d/01-experiment_schema.sql",
+                        "source": str(snapshots_root.resolve()),
+                        "target": "/var/lib/factoryverse/snapshots",
                         "read_only": True,
+                    },
+                    # Schema initialization scripts
+                    {
+                        "type": "bind",
+                        "source": str((Path(__file__).parent.parent / "db" / "schema").resolve()),
+                        "target": "/docker-entrypoint-initdb.d",
                     }
                 ],
-                "restart": "unless-stopped",
+                # "restart": "unless-stopped",
                 "healthcheck": {
-                    "test": ["CMD-SHELL", "pg_isready -U factoryverse -d factoryverse"],
+                    "test": ["CMD-SHELL", f"pg_isready -U {POSTGRES_USER} -d postgres -h localhost"],
                     "interval": "10s",
                     "timeout": "5s",
                     "retries": 5,
@@ -284,7 +294,7 @@ class ComposeGenerator:
         """Generate Jupyter service configuration."""
         return {
             "jupyter": {
-                "image": "jupyter/scipy-notebook:python-3.12",
+                "image": "jupyter/minimal-notebook:latest",
                 "platform": self._docker_platform(),
                 "environment": {
                     "PG_HOST": "postgres",
@@ -321,7 +331,7 @@ class ComposeGenerator:
                 "user": "root",
                 "command": (
                     'bash -c "pip install --no-cache-dir psycopg2-binary factorio-rcon-py dill nbformat '
-                    'aiodocker pyyaml && start-notebook.sh --NotebookApp.token=\'\' --NotebookApp.password=\'\'"'
+                    'aiodocker pyyaml pandas numpy matplotlib && start-notebook.sh --NotebookApp.token=\'\' --NotebookApp.password=\'\'"'
                 ),
                 "depends_on": {
                     "postgres": {
@@ -337,7 +347,7 @@ class ComposeGenerator:
         services = {}
 
         # Always include PostgreSQL and Jupyter
-        services.update(self.postgres_services_dict())
+        services.update(self.postgres_services_dict(num_instances))
         services.update(self.jupyter_services_dict())
 
         # Add Factorio servers if requested
@@ -379,181 +389,126 @@ class ComposeGenerator:
 
 
 class ClusterManager:
-    """Simple class wrapper to manage platform detection, compose, and lifecycle."""
+    """
+    Pure Docker operations wrapper for FactoryVerse services.
+    
+    This class handles only low-level Docker Compose operations.
+    All business logic and orchestration is handled by ExperimentManager.
+    """
 
-    def __init__(self):
+    def __init__(self, state_dir: Optional[Path] = None, work_dir: Optional[Path] = None):
+        """
+        Initialize ClusterManager.
+        
+        Args:
+            state_dir: Directory for Docker state files (default: platform-specific)
+            work_dir: Working directory for notebooks and data (default: current directory)
+        """
         self.compose_cmd = setup_compose_cmd()
-        self.internal_rcon_port = ComposeGenerator.internal_rcon_port
-        self.internal_game_port = ComposeGenerator.internal_game_port
-        # Resolve key paths
-        self.state_dir = resolve_state_dir()
-        self.work_dir = resolve_work_dir()
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir = (state_dir or resolve_state_dir()).resolve()
+        self.work_dir = (work_dir or resolve_work_dir()).resolve()
         self.compose_path = (self.state_dir / "docker-compose.yml").resolve()
-
-        # Ensure necessary directories exist
+        
+        # Ensure directories exist
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         (self.work_dir / "notebooks").mkdir(parents=True, exist_ok=True)
         (self.work_dir / ".fv-output").mkdir(parents=True, exist_ok=True)
 
-        # Package resources (read-only)
-        pkg_root = ir.files("fle.cluster")
-        self.pkg_scenarios_dir = Path(pkg_root / "scenarios")
-        self.pkg_config_dir = Path(pkg_root / "config")
-
     def _run_compose(self, args):
+        """Run docker-compose command."""
         cmd = self.compose_cmd.split() + args
         subprocess.run(cmd, check=True)
 
-    def generate(self, num_instances, scenario, attach_mod=False, save_file=None):
+    def generate_compose(self, num_instances: int, scenario: str, attach_mod: bool = False, save_file: Optional[str] = None):
+        """
+        Generate docker-compose.yml file.
+        
+        Args:
+            num_instances: Number of Factorio instances (0 for platform only)
+            scenario: Factorio scenario name
+            attach_mod: Whether to attach mod directory
+            save_file: Optional save file to load
+        """
+        # Package resources (read-only)
+        pkg_root = ir.files("FactoryVerse")
+        pkg_scenarios_dir = Path(pkg_root / ".." / "factorio" / "factorio_verse")
+        pkg_config_dir = Path(pkg_root / ".." / "factorio" / "config")
+        
         generator = ComposeGenerator(
             attach_mod=attach_mod,
             save_file=save_file,
             scenario=scenario,
             state_dir=self.state_dir,
             work_dir=self.work_dir,
-            pkg_scenarios_dir=self.pkg_scenarios_dir,
-            pkg_config_dir=self.pkg_config_dir,
+            pkg_scenarios_dir=pkg_scenarios_dir,
+            pkg_config_dir=pkg_config_dir,
         )
         generator.write(str(self.compose_path), num_instances)
-        print(
-            f"Generated compose at {self.compose_path} for {num_instances} instance(s) using scenario {scenario}"
-        )
 
-    def _is_tcp_listening(self, port):
-        try:
-            c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            c.settimeout(0.2)
-            c.connect(("127.0.0.1", port))
-            c.close()
-            return True
-        except OSError:
-            return False
-
-    def _find_port_conflicts(self, num_instances):
-        listening = []
-        for i in range(num_instances):
-            tcp_port = START_RCON_PORT + i
-            if self._is_tcp_listening(tcp_port):
-                listening.append(f"tcp/{tcp_port}")
-        return listening
-
-    def start(self, num_instances, scenario, attach_mod=False, save_file=None):
-        listening = self._find_port_conflicts(num_instances)
-        if listening:
-            print("Error: Required ports are in use:")
-            print("  " + ", ".join(listening))
-            print(
-                "It looks like a Factorio cluster (or another service) is running. "
-                "Stop it with 'fle cluster stop' (or 'docker compose -f docker-compose.yml down' in fle/cluster) and retry."
-            )
-            sys.exit(1)
-
-        self.generate(num_instances, scenario, attach_mod, save_file)
-
-        # Path summary
-        print("Paths:")
-        print(f"  state_dir:   {self.state_dir}")
-        print(f"  work_dir:    {self.work_dir}")
-        print(f"  compose:     {self.compose_path}")
-        print(f"  scenarios:   {self.pkg_scenarios_dir}")
-        print(f"  config:      {self.pkg_config_dir}")
-
-        print(
-            f"Starting FactoryVerse platform (PostgreSQL + Jupyter + {num_instances} Factorio instance(s))..."
-        )
+    def start_services(self):
+        """Start all services defined in docker-compose.yml."""
+        if not self.compose_path.exists():
+            raise RuntimeError("docker-compose.yml not found. Run generate_compose() first.")
         self._run_compose(["-f", str(self.compose_path), "up", "-d"])
-        print(
-            f"\n✅ FactoryVerse cluster started!"
-        )
-        print(f"\nServices:")
-        print(f"  📊 PostgreSQL:  localhost:{POSTGRES_PORT}")
-        print(f"  📓 Jupyter:     http://localhost:8888")
-        if num_instances > 0:
-            print(f"  🎮 Factorio:    {num_instances} server(s)")
-            for i in range(num_instances):
-                print(f"     - factorio_{i}: RCON port {START_RCON_PORT + i}, Game port {START_GAME_PORT + i}")
 
-        # Show PostgreSQL connection info
-        generator = ComposeGenerator(
-            attach_mod=attach_mod,
-            save_file=save_file,
-            scenario=scenario,
-            state_dir=self.state_dir,
-            work_dir=self.work_dir,
-            pkg_scenarios_dir=self.pkg_scenarios_dir,
-            pkg_config_dir=self.pkg_config_dir,
-        )
-        postgres_dsn = generator.get_postgres_dsn()
-        print(f"\n🔗 PostgreSQL DSN: {postgres_dsn}")
-        print(f"📁 Notebooks: {self.work_dir / 'notebooks'}")
-        print(f"\n💡 Next: Create an experiment with 'factoryverse experiment create <agent-id>'")
-
-    def stop(self):
+    def stop_services(self):
+        """Stop all services."""
         if not self.compose_path.exists():
-            print(
-                "Error: docker-compose.yml not found in state dir. No cluster to stop."
-            )
-            sys.exit(1)
-        print("Stopping Factorio cluster...")
+            raise RuntimeError("docker-compose.yml not found.")
         self._run_compose(["-f", str(self.compose_path), "down"])
-        print("Cluster stopped.")
 
-    def restart(self):
+    def restart_services(self):
+        """Restart all services."""
         if not self.compose_path.exists():
-            print(
-                "Error: docker-compose.yml not found in state dir. No cluster to restart."
-            )
-            sys.exit(1)
-        print(
-            "Restarting existing Factorio services without regenerating docker-compose..."
-        )
+            raise RuntimeError("docker-compose.yml not found.")
         self._run_compose(["-f", str(self.compose_path), "restart"])
-        print("Factorio services restarted.")
 
-    def logs(self, service: str = "factorio_0"):
+    def get_service_logs(self, service: str):
+        """Get logs for a specific service."""
         if not self.compose_path.exists():
-            print(
-                "Error: docker-compose.yml not found in state dir. Nothing to show logs for."
-            )
-            sys.exit(1)
+            raise RuntimeError("docker-compose.yml not found.")
         self._run_compose(["-f", str(self.compose_path), "logs", service])
 
-    def show(self):
-        # Show both Factorio and PostgreSQL containers
-        ps_cmd = [
-            "docker",
-            "ps",
-            "--filter",
-            "name=factorio_",
-            "--filter",
-            "name=postgres",
-            "--format",
-            "table {{.Names}}\t{{.Ports}}\t{{.Status}}",
-        ]
-        ps = subprocess.run(ps_cmd, capture_output=True, text=True)
-        out = ps.stdout.strip()
-        if not out:
-            print("No FactoryVerse containers found.")
-            return
-        print("FactoryVerse Services:")
-        print(out)
+    def is_service_running(self, service: str) -> bool:
+        """Check if a specific service is running."""
+        try:
+            result = subprocess.run([
+                "docker", "ps", "--filter", f"name={service}", "--format", "{{.Names}}"
+            ], capture_output=True, text=True, check=True)
+            return service in result.stdout
+        except subprocess.CalledProcessError:
+            return False
+
+    def list_running_services(self) -> List[str]:
+        """List all running FactoryVerse services."""
+        try:
+            result = subprocess.run([
+                "docker", "ps", "--filter", "name=factoryverse_", "--format", "{{.Names}}"
+            ], capture_output=True, text=True, check=True)
+            return [name.strip() for name in result.stdout.split('\n') if name.strip()]
+        except subprocess.CalledProcessError:
+            return []
+
+    def get_postgres_dsn(self) -> str:
+        """Get PostgreSQL connection DSN."""
+        return f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/postgres"
 
 
+# Legacy functions for backward compatibility
 def start_cluster(num_instances, scenario, attach_mod=False, save_file=None):
+    """Legacy function - use ExperimentManager instead."""
     manager = ClusterManager()
-    manager.start(
-        num_instances=num_instances,
-        scenario=scenario,
-        attach_mod=attach_mod,
-        save_file=save_file,
-    )
+    manager.generate_compose(num_instances, scenario, attach_mod, save_file)
+    manager.start_services()
 
 
 def stop_cluster():
+    """Legacy function - use ExperimentManager instead."""
     manager = ClusterManager()
-    manager.stop()
+    manager.stop_services()
 
 
 def restart_cluster():
+    """Legacy function - use ExperimentManager instead."""
     manager = ClusterManager()
-    manager.restart()
+    manager.restart_services()

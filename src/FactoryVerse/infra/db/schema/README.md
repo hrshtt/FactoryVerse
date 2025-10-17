@@ -1,89 +1,269 @@
-# FactoryVerse Database Schema
+# PostgreSQL Observation Infrastructure Schema
 
-This directory contains PostgreSQL schema files for the FactoryVerse project, automatically generated from the Factorio mod's snapshot components.
+## Overview
 
-## Files
+This directory contains the PostgreSQL schema for the three-tiered snapshot system that synchronizes Factorio game state into PostgreSQL, enabling parallel, asynchronous access for LLM agents.
 
-- `init.sql` - Main schema initialization file that creates all tables, indexes, views, and functions
+## Architecture
 
-## Schema Overview
+### Multi-Instance Design
 
-The schema is organized into two main categories:
+- **Single PostgreSQL container** with multiple databases: `factoryverse_0`, `factoryverse_1`, ..., `factoryverse_N`
+- **Template database** (`factoryverse_template`) for initializing new instances
+- **Independent data** per Factorio server instance
+- **Shared volume access** to all CSV files from all instances
 
-### Entity Tables (from EntitiesSnapshot.lua)
+### Three-Tier Snapshot System
 
-1. **entities** - Main entity table with basic properties
-2. **entities_crafting** - Crafting entities (assembling machines, furnaces)
-3. **entities_burner** - Entities with fuel consumption
-4. **entities_inventory** - Entities with item storage
-5. **entities_fluids** - Entities with fluid storage
-6. **entities_inserter** - Inserter-specific data
-7. **entities_belts** - Transport belt data
+1. **Map Snapshots (Tier 1)** - One-time bulk load at game start
+2. **Recurring Snapshots (Tier 2)** - Periodic CSV dumps via `file_fdw`
+3. **On-Demand Snapshots (Tier 3)** - Real-time queries via Multicorn FDW
 
-### Resource Tables (from ResourceSnapshot.lua)
+## Schema Files
 
-1. **resource_tiles** - Resource deposits and water tiles
-2. **resource_rocks** - Rock entities
+### Core Setup
+- `00_factory_verse.sql` - Template database creation with extensions
+- `00_init_instances.sh` - Instance database creation script
+- `05_finalize_instances.sh` - Post-creation instance configuration
 
-## Key Features
+### Tier 1: Map Snapshots
+- `01_map_snapshot.sql` - Static map-level tables (entities, resources, etc.)
 
-- **Spatial Support**: Uses PostGIS for spatial queries and indexing
-- **JSONB Storage**: Complex data structures stored as JSONB for flexibility
-- **Performance Indexes**: Optimized indexes for common query patterns
-- **Automatic Timestamps**: Created/updated timestamps with triggers
-- **Referential Integrity**: Foreign key constraints between related tables
+### Tier 2: Recurring Snapshots  
+- `02_recurring_snapshot.sql` - Foreign tables for CSV-based recurring data
 
-## Usage
+### Tier 3: On-Demand Snapshots
+- `03_ondemand_snapshot.sql` - Instance config and placeholder for Multicorn FDW
 
-The schema is automatically initialized when using the `launch-postgres.sh` script:
+### Data Loading
+- `04_load_functions.sql` - Helper functions for bulk CSV loading
 
-```bash
-# Start PostgreSQL with schema initialization
-./scripts/launch-postgres.sh
+## Lua-to-PostgreSQL Schema Mapping
 
-# Or reset and recreate with fresh schema
-./scripts/launch-postgres.sh --reset
+### Map Entities (Tier 1)
+
+**Source:** `EntitiesSnapshot.lua` ComponentSchema
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `unit_number` | `unit_number` | `BIGINT PRIMARY KEY` | Entity identifier |
+| `name` | `name` | `TEXT NOT NULL` | Entity name |
+| `type` | `type` | `TEXT NOT NULL` | Entity type |
+| `force` | `force` | `TEXT` | Force/team |
+| `direction` | `direction` | `SMALLINT` | Direction enum |
+| `direction_name` | `direction_name` | `TEXT` | Human-readable direction |
+| `orientation` | `orientation` | `REAL` | Orientation value |
+| `orientation_name` | `orientation_name` | `TEXT` | Human-readable orientation |
+| `electric_network_id` | `electric_network_id` | `BIGINT` | Electric network ID |
+| `recipe` | `recipe` | `TEXT` | Current recipe (for crafters) |
+| `position_x` | `position_x` | `REAL NOT NULL` | X coordinate |
+| `position_y` | `position_y` | `REAL NOT NULL` | Y coordinate |
+| `tile_width` | `tile_width` | `SMALLINT` | Tile width |
+| `tile_height` | `tile_height` | `SMALLINT` | Tile height |
+| `bounding_box_min_x` | `bounding_box_min_x` | `REAL` | Bounding box min X |
+| `bounding_box_min_y` | `bounding_box_min_y` | `REAL` | Bounding box min Y |
+| `bounding_box_max_x` | `bounding_box_max_x` | `REAL` | Bounding box max X |
+| `bounding_box_max_y` | `bounding_box_max_y` | `REAL` | Bounding box max Y |
+| `chunk_x` | `chunk_x` | `INTEGER NOT NULL` | Chunk X coordinate |
+| `chunk_y` | `chunk_y` | `INTEGER NOT NULL` | Chunk Y coordinate |
+
+### Inserter Components
+
+**Source:** `EntitiesSnapshot.lua` ComponentSchema.inserter
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `unit_number` | `unit_number` | `BIGINT PRIMARY KEY` | References map_entities |
+| `pickup_target_unit` | `pickup_target_unit` | `BIGINT` | Target entity for pickup |
+| `drop_target_unit` | `drop_target_unit` | `BIGINT` | Target entity for drop |
+| `pickup_position_x` | `pickup_position_x` | `REAL` | Pickup position X |
+| `pickup_position_y` | `pickup_position_y` | `REAL` | Pickup position Y |
+| `drop_position_x` | `drop_position_x` | `REAL` | Drop position X |
+| `drop_position_y` | `drop_position_y` | `REAL` | Drop position Y |
+| `chunk_x` | `chunk_x` | `INTEGER NOT NULL` | Chunk X coordinate |
+| `chunk_y` | `chunk_y` | `INTEGER NOT NULL` | Chunk Y coordinate |
+
+### Belt Components
+
+**Source:** `EntitiesSnapshot.lua` ComponentSchema.belt
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `unit_number` | `unit_number` | `BIGINT PRIMARY KEY` | Belt entity ID |
+| `name` | `name` | `TEXT NOT NULL` | Belt name |
+| `type` | `type` | `TEXT NOT NULL` | Belt type |
+| `direction` | `direction` | `SMALLINT` | Direction enum |
+| `direction_name` | `direction_name` | `TEXT` | Human-readable direction |
+| `belt_neighbours_json` | `belt_neighbours_json` | `JSONB` | Neighbor connections |
+| `belt_to_ground_type` | `belt_to_ground_type` | `TEXT` | Underground belt type |
+| `underground_neighbour_unit` | `underground_neighbour_unit` | `BIGINT` | Other end of underground |
+| `position_x` | `position_x` | `REAL NOT NULL` | X coordinate |
+| `position_y` | `position_y` | `REAL NOT NULL` | Y coordinate |
+| `chunk_x` | `chunk_x` | `INTEGER NOT NULL` | Chunk X coordinate |
+| `chunk_y` | `chunk_y` | `INTEGER NOT NULL` | Chunk Y coordinate |
+
+### Pipe Components
+
+**Source:** `EntitiesSnapshot.lua` ComponentSchema.pipe
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `unit_number` | `unit_number` | `BIGINT PRIMARY KEY` | Pipe entity ID |
+| `name` | `name` | `TEXT NOT NULL` | Pipe name |
+| `type` | `type` | `TEXT NOT NULL` | Pipe type |
+| `direction` | `direction` | `SMALLINT` | Direction enum |
+| `direction_name` | `direction_name` | `TEXT` | Human-readable direction |
+| `pipe_neighbours_json` | `pipe_neighbours_json` | `JSONB` | Neighbor connections |
+| `position_x` | `position_x` | `REAL NOT NULL` | X coordinate |
+| `position_y` | `position_y` | `REAL NOT NULL` | Y coordinate |
+| `chunk_x` | `chunk_x` | `INTEGER NOT NULL` | Chunk X coordinate |
+| `chunk_y` | `chunk_y` | `INTEGER NOT NULL` | Chunk Y coordinate |
+
+### Resources
+
+**Source:** `ResourceSnapshot.lua` ComponentSchema.resources
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `x` | `x` | `INTEGER NOT NULL` | X coordinate |
+| `y` | `y` | `INTEGER NOT NULL` | Y coordinate |
+| `kind` | `kind` | `TEXT NOT NULL` | Resource type |
+| `amount` | `amount` | `REAL NOT NULL` | Resource amount |
+
+### Rocks
+
+**Source:** `ResourceSnapshot.lua` ComponentSchema.rocks
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `name` | `name` | `TEXT NOT NULL` | Rock name |
+| `type` | `type` | `TEXT NOT NULL` | Rock type |
+| `resource_json` | `resource_json` | `JSONB` | Mining results |
+| `size` | `size` | `SMALLINT` | Rock size |
+| `position_x` | `position_x` | `REAL NOT NULL` | X coordinate |
+| `position_y` | `position_y` | `REAL NOT NULL` | Y coordinate |
+| `chunk_x` | `chunk_x` | `INTEGER NOT NULL` | Chunk X coordinate |
+| `chunk_y` | `chunk_y` | `INTEGER NOT NULL` | Chunk Y coordinate |
+
+### Trees
+
+**Source:** `ResourceSnapshot.lua` ComponentSchema.trees
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `name` | `name` | `TEXT NOT NULL` | Tree name |
+| `position_x` | `position_x` | `REAL NOT NULL` | X coordinate |
+| `position_y` | `position_y` | `REAL NOT NULL` | Y coordinate |
+| `bounding_box_min_x` | `bounding_box_min_x` | `REAL` | Bounding box min X |
+| `bounding_box_min_y` | `bounding_box_min_y` | `REAL` | Bounding box min Y |
+| `bounding_box_max_x` | `bounding_box_max_x` | `REAL` | Bounding box max X |
+| `bounding_box_max_y` | `bounding_box_max_y` | `REAL` | Bounding box max Y |
+| `chunk_x` | `chunk_x` | `INTEGER NOT NULL` | Chunk X coordinate |
+| `chunk_y` | `chunk_y` | `INTEGER NOT NULL` | Chunk Y coordinate |
+
+### Recurring Snapshots (Tier 2)
+
+**Entity Status** - Source: `EntitiesSnapshot.lua` ComponentSchema.entity_status
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `unit_number` | `unit_number` | `BIGINT NOT NULL` | Entity identifier |
+| `status` | `status` | `INTEGER` | Status enum |
+| `status_name` | `status_name` | `TEXT` | Human-readable status |
+| `health` | `health` | `REAL` | Entity health |
+| `tick` | `tick` | `BIGINT` | Game tick |
+
+**Resource Yields** - Source: `ResourceSnapshot.lua` ComponentSchema.resource_yields
+
+| Lua Field | PostgreSQL Column | Type | Notes |
+|-----------|-------------------|------|-------|
+| `x` | `x` | `INTEGER NOT NULL` | X coordinate |
+| `y` | `y` | `INTEGER NOT NULL` | Y coordinate |
+| `kind` | `kind` | `TEXT NOT NULL` | Resource type |
+| `amount` | `amount` | `REAL NOT NULL` | Current amount |
+| `tick` | `tick` | `BIGINT` | Game tick |
+
+## Volume Structure
+
+```
+.fv/snapshots/
+├── factorio_0/
+│   ├── chunks/
+│   │   ├── 0/0/
+│   │   │   ├── entities-{tick}.csv
+│   │   │   ├── entities_belts-{tick}.csv
+│   │   │   ├── entities_pipes-{tick}.csv
+│   │   │   ├── resources-{tick}.csv
+│   │   │   ├── rocks-{tick}.csv
+│   │   │   └── trees-{tick}.csv
+│   │   └── ...
+│   ├── recurring/
+│   │   ├── entity_status-{tick}.csv
+│   │   └── resource_yields-{tick}.csv
+│   └── metadata/
+│       └── {tick}/
+│           ├── entities.json
+│           └── resources.json
+├── factorio_1/
+│   └── ... (same structure)
+└── ...
 ```
 
-## Table Relationships
+## Docker Mounts
 
 ```
-entities (unit_number) 
-├── entities_crafting (unit_number)
-├── entities_burner (unit_number)
-├── entities_inventory (unit_number)
-├── entities_fluids (unit_number)
-├── entities_inserter (unit_number)
-└── entities_belts (unit_number)
-
-resource_tiles (independent)
-resource_rocks (independent)
+Factorio_0: /opt/factorio/script-output → host:.fv/snapshots/factorio_0/
+Factorio_1: /opt/factorio/script-output → host:.fv/snapshots/factorio_1/
+...
+Postgres: /var/lib/factoryverse/snapshots → host:.fv/snapshots/ (read-only, all instances)
 ```
 
-## Spatial Queries
+## Usage Examples
 
-The schema includes spatial indexes and views for efficient position-based queries:
-
+### Loading Map Snapshot
 ```sql
--- Find entities within a radius
-SELECT * FROM entities_with_position 
-WHERE ST_DWithin(position, ST_Point(100, 200), 50);
+-- Connect to specific instance database
+\c factoryverse_0
 
--- Find resource tiles in a specific area
-SELECT * FROM resource_tiles_with_position 
-WHERE ST_Contains(ST_MakeEnvelope(0, 0, 100, 100), position);
+-- Load map data from CSV files
+SELECT * FROM load_map_snapshot_from_csv(0);
 ```
 
-## JSONB Queries
-
-Complex data stored as JSONB can be queried efficiently:
-
+### Querying Recurring Data
 ```sql
--- Find entities with specific inventory contents
-SELECT * FROM entities_inventory 
-WHERE inventories->'fuel' ? 'coal';
+-- Get current entity status
+SELECT * FROM entity_status_current WHERE status != 0;
 
--- Find belts with items on specific transport lines
-SELECT * FROM entities_belts 
-WHERE item_lines @> '[{"index": 1, "items": {"iron-ore": 5}}]';
+-- Get latest resource yields
+SELECT * FROM recurring_resource_yields ORDER BY tick DESC LIMIT 100;
 ```
+
+### Cross-Instance Queries
+```sql
+-- Query across all instances (if needed)
+SELECT 'instance_0' as instance, COUNT(*) as entity_count 
+FROM factoryverse_0.factoryverse.map_entities
+UNION ALL
+SELECT 'instance_1' as instance, COUNT(*) as entity_count 
+FROM factoryverse_1.factoryverse.map_entities;
+```
+
+## Schema Drift Notes
+
+### Known Mismatches
+- None currently identified - schemas are aligned
+
+### Future Considerations
+- Spatial views and PostGIS features (future iteration)
+- Multicorn FDW implementation for on-demand snapshots
+- Action contracts for upsert operations
+- Cross-instance aggregation views
+
+## File Naming Convention
+
+The Lua mod outputs CSV files with the following patterns:
+- Map snapshots: `{type}-{tick}.csv` in `chunks/{chunk_x}/{chunk_y}/`
+- Recurring snapshots: `{type}-{tick}.csv` in `recurring/`
+- Metadata: `{type}.json` in `metadata/{tick}/`
+
+PostgreSQL functions use `find` commands with glob patterns to locate and load these files.
