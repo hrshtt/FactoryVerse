@@ -171,12 +171,20 @@ M.helpers.take_map_snapshot = function(options_json)
         end
     end
     
-    -- Default: async with both components
-    options.async = options.async ~= false  -- default true
+    -- Default: SYNCHRONOUS with both components (entities will be written immediately)
+    -- Pass {async: true} to use async mode
+    if options.async == nil then
+        options.async = false  -- Default to synchronous for RCON calls
+    end
     options.components = options.components or {"entities", "resources"}
     options.chunks_per_tick = options.chunks_per_tick or 2
     
+    log(string.format("[admin_api.take_map_snapshot] Starting snapshot: async=%s, components=%s", 
+        tostring(options.async), table.concat(options.components, ",")))
+    
     local result = snapshot:take_map_snapshot(options)
+    
+    log(string.format("[admin_api.take_map_snapshot] Snapshot result: %s", helpers.table_to_json(result)))
     rcon.print(helpers.table_to_json(result))
     return result
 end

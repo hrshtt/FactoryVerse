@@ -282,7 +282,7 @@ function Snapshot:emit_entity_json(opts, component_type, unit_number, entity_nam
     return file_path
 end
 
---- Emit status records to JSONL file (append-only)
+--- Emit status records to JSONL file (overwrite on each snapshot)
 --- @param opts table - options {output_dir, chunk_x, chunk_y}
 --- @param status_records table - array of status records
 --- @return string - file path written
@@ -305,8 +305,8 @@ function Snapshot:emit_status_jsonl(opts, status_records)
     end
     local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
 
-    -- Append to file (create if doesn't exist)
-    helpers.write_file(file_path, jsonl_data, true)
+    -- Overwrite file with latest snapshot (not append)
+    helpers.write_file(file_path, jsonl_data, false)
 
     return file_path
 end
@@ -476,6 +476,9 @@ function Snapshot:_process_entities_for_chunk(chunk)
 
     -- Write each component type
     for comp_type, entities in pairs(gathered) do
+        log(string.format("[Snapshot._process_entities_for_chunk] Chunk (%d,%d) - %s: %d entities", 
+            chunk.x, chunk.y, comp_type, #entities))
+        
         for _, entity_data in ipairs(entities) do
             local opts = {
                 output_dir = "script-output/factoryverse",
@@ -500,9 +503,14 @@ function Snapshot:_process_entities_for_chunk(chunk)
     -- Write separate manifest for each component type
     for comp_type, manifest_data in pairs(manifests) do
         if manifest_data.entity_counts and next(manifest_data.entity_counts) then
+            log(string.format("[Snapshot._process_entities_for_chunk] Writing manifest for chunk (%d,%d) %s", 
+                chunk.x, chunk.y, comp_type))
             self:_write_component_manifest(chunk.x, chunk.y, comp_type, manifest_data)
         end
     end
+
+    log(string.format("[Snapshot._process_entities_for_chunk] Chunk (%d,%d) - Total entities written: %d", 
+        chunk.x, chunk.y, total_written))
 
     return total_written
 end
