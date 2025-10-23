@@ -114,23 +114,37 @@ function Action:_pre_run(game_state, params)
   return instance
 end
 
---- Post-run hook with mutation logging
+--- Post-run hook with mutation tracking
 --- @param result any
 --- @param params ParamSpec
 --- @return any
 function Action:_post_run(result, params)
-  -- Log mutations if enabled
-  local MutationLogger = require("core.mutation.MutationLogger")
-  local logger = MutationLogger.get_instance()
-  
-  -- Convert params to table if it's a ParamSpec instance
-  local params_table = params
-  if params and type(params.get_values) == "function" then
-    params_table = params:get_values()
+  -- Handle entity mutations if present in result
+  if result and type(result) == "table" then
+    local Snapshot = require("core.snapshot.Snapshot")
+    local snapshot = Snapshot:get_instance()
+    
+    -- Update affected entities
+    if result.affected_unit_numbers then
+      for _, unit_number in ipairs(result.affected_unit_numbers) do
+        snapshot:update_entity_from_action(unit_number, nil)
+      end
+    end
+    
+    -- Remove deleted entities
+    if result.removed_unit_numbers then
+      -- Extract last position from result if available
+      local last_position = nil
+      if result.removed_entity and result.removed_entity.position then
+        last_position = result.removed_entity.position
+      end
+      
+      for _, unit_number in ipairs(result.removed_unit_numbers) do
+        snapshot:remove_entity_from_action(unit_number, last_position)
+      end
+    end
   end
-  
-  logger:log_action_mutations(self.name, params_table, result)
-  
+
   return result
 end
 

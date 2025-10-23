@@ -153,6 +153,12 @@ function PlaceEntityAction:run(params)
         unit_number = entity.unit_number,
         type = entity.type,
         force = entity.force and entity.force.name or nil,
+        -- Initial entity status for first snapshot
+        entity_status = {
+            status = entity.status,
+            status_name = utils.status_to_name(entity.status),
+            health = entity.health
+        },
         -- Mutation contract fields
         affected_unit_numbers = { entity.unit_number },
         affected_inventories = {

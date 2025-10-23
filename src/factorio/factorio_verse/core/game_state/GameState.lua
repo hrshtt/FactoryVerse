@@ -33,6 +33,45 @@ function GameState:get_surface()
     return g and g.surfaces[1] or nil
 end
 
+--- Register a charted area by converting it to chunk coordinates
+--- Called after force.chart() to ensure snapshot works on headless servers
+--- @param area table - {left_top = {x, y}, right_bottom = {x, y}}
+function GameState:register_charted_area(area)
+    if not area or not area.left_top or not area.right_bottom then
+        return
+    end
+    
+    if not storage.registered_charted_areas then
+        storage.registered_charted_areas = {}
+    end
+    
+    -- Convert world coordinates to chunk coordinates
+    local min_chunk_x = math.floor(area.left_top.x / 32)
+    local min_chunk_y = math.floor(area.left_top.y / 32)
+    local max_chunk_x = math.floor(area.right_bottom.x / 32)
+    local max_chunk_y = math.floor(area.right_bottom.y / 32)
+    
+    -- Register each chunk in the area
+    for cx = min_chunk_x, max_chunk_x do
+        for cy = min_chunk_y, max_chunk_y do
+            local chunk_key = utils.chunk_key(cx, cy)
+            storage.registered_charted_areas[chunk_key] = { x = cx, y = cy }
+        end
+    end
+end
+
+--- Check if a chunk was registered as charted (fallback for headless servers)
+--- @param chunk_x number
+--- @param chunk_y number
+--- @return boolean
+function GameState:is_registered_charted(chunk_x, chunk_y)
+    if not storage.registered_charted_areas then
+        return false
+    end
+    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
+    return storage.registered_charted_areas[chunk_key] ~= nil
+end
+
 --- @return LuaForce
 function GameState:get_player_force()
     return game.forces["player"]
@@ -64,14 +103,35 @@ function GameState:get_charted_chunks(sort_by_distance)
     local surface = self:get_surface()
     local force = self:get_player_force()
     local charted_chunks = {}
+    local generated_count = 0
 
     if not (surface and force) then
         return charted_chunks
     end
 
+    -- NOTE: Factorio behavior - is_chunk_charted() only returns true for chunks charted by a connected player
+    -- On headless servers without connected players, force.chart() is called but is_chunk_charted() returns false
+    -- This is a known limitation in Factorio: charting requires an active player connection to the force
+    -- When a player connects (with Lua controller or character), charting becomes visible/registered
     for chunk in surface.get_chunks() do
+        generated_count = generated_count + 1
         if force.is_chunk_charted(surface, chunk) then
             table.insert(charted_chunks, { x = chunk.x, y = chunk.y, area = chunk.area })
+        end
+    end
+
+    -- Fallback: if no chunks are charted but we have registered areas, use those
+    -- This handles the headless server case where is_chunk_charted() returns false
+    if #charted_chunks == 0 and storage.registered_charted_areas then
+        for _, chunk_data in pairs(storage.registered_charted_areas) do
+            if chunk_data then
+                -- Reconstruct area for registered chunk
+                local area = {
+                    left_top = { x = chunk_data.x * 32, y = chunk_data.y * 32 },
+                    right_bottom = { x = (chunk_data.x + 1) * 32, y = (chunk_data.y + 1) * 32 }
+                }
+                table.insert(charted_chunks, { x = chunk_data.x, y = chunk_data.y, area = area })
+            end
         end
     end
 
@@ -79,7 +139,9 @@ function GameState:get_charted_chunks(sort_by_distance)
         utils.sort_coordinates_by_distance(charted_chunks)
     end
 
-    -- log("Charted chunks: " .. helpers.table_to_json(charted_chunks))
+    -- Log summary for debugging
+    log(string.format("Charted chunks: %d out of %d generated chunks (registered: %d)", 
+        #charted_chunks, generated_count, storage.registered_charted_areas and next(storage.registered_charted_areas) and #storage.registered_charted_areas or 0))
 
     return charted_chunks
 end

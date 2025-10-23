@@ -3,6 +3,7 @@
 
 local GameStateError = require("core.Error")
 local utils = require("utils")
+local MapDiscovery = require("core.MapDiscovery")
 
 --- @param h number
 --- @param s number
@@ -109,7 +110,10 @@ function AgentGameState:create_agent(agent_id, position, color)
         force = g.forces.player,
         color = color
     }
-    utils.chart_native_start_area(surface, g.forces.player, position)
+    -- Chart the starting area (safe now - doesn't force sync chunk generation)
+    utils.chart_native_start_area(surface, g.forces.player, position, self.game_state)
+    -- Initialize map discovery for ongoing discovery
+    MapDiscovery.initialize(surface, g.forces.player, position)
     return char
 end
 

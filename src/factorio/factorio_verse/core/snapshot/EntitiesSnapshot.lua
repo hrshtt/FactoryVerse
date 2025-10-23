@@ -1,4 +1,4 @@
-local Snapshot = require "core.snapshot.Snapshot"
+local GameState = require "core.game_state.GameState"
 local utils = require "utils"
 
 --- Component Schema Definition for EntitiesSnapshot
@@ -120,670 +120,230 @@ local ComponentSchema = {
     }
 }
 
---- EntitiesSnapshot: Dumps raw entities and associated data chunk-wise
---- Includes basic metadata
---- @class EntitiesSnapshot : Snapshot
-local EntitiesSnapshot = Snapshot:new()
-EntitiesSnapshot.__index = EntitiesSnapshot
+--- EntitiesSnapshot: View module for entity data
+--- @class EntitiesSnapshot
+local EntitiesSnapshot = {}
 
----@return EntitiesSnapshot
-function EntitiesSnapshot:new()
-    ---@class EntitiesSnapshot : Snapshot
-    ---@field _cache table
-    local instance = Snapshot:new()
-    -- Per-run caches to avoid repeated prototype/method work
-    setmetatable(instance, self)
-    ---@cast instance EntitiesSnapshot
-    return instance
+--- Determine component type for an entity
+--- @param entity_type string - entity type from Factorio API
+--- @param entity_name string - entity prototype name
+--- @return string - component type ("belts", "pipes", "poles", "entities")
+function EntitiesSnapshot._determine_component_type(entity_type, entity_name)
+    -- Belt types
+    if entity_type == "transport-belt" or entity_type == "underground-belt" or 
+       entity_type == "splitter" or entity_type == "loader" or 
+       entity_type == "loader-1x1" or entity_type == "linked-belt" then
+        return "belts"
+    end
+    
+    -- Pipe types
+    if entity_type == "pipe" or entity_type == "pipe-to-ground" then
+        return "pipes"
+    end
+    
+    -- Electric pole types
+    if entity_type == "electric-pole" or entity_type == "power-switch" or 
+       entity_type == "substation" then
+        return "poles"
+    end
+    
+    -- Default to entities for all other player-placed entities
+    return "entities"
 end
 
---- Get headers for a component type
---- @param component_type string - component type name
---- @return table - array of header names
-function EntitiesSnapshot:_get_headers(component_type)
-    local schema = ComponentSchema[component_type]
-    if not schema then
-        error("Unknown component type: " .. tostring(component_type))
-    end
+--- Dump all entities chunk-wise as individual JSON files
+--- ⚠️ WARNING: Entities whose bounding box intersects chunk boundaries will be written to MULTIPLE chunk directories.
+--- This is expected behavior due to Factorio's find_entities_filtered API - downstream systems must deduplicate by unit_number.
+-- ============================================================================
+-- VIEW METHODS (called by Snapshot orchestrator)
+-- ============================================================================
 
-    local headers = {}
-    for field_name, _ in pairs(schema.fields) do
-        table.insert(headers, field_name)
-    end
+--- Gather all entities for a specific chunk
+--- @param chunk table - {x, y, area}
+--- @param options table - {component_filter = nil|"entities"|"belts"|"pipes"|"poles"}
+--- @return table - {entities = {...}, belts = {...}, pipes = {...}, poles = {...}}
+function EntitiesSnapshot.gather_entities_for_chunk(chunk, options)
+    local gs = GameState:new()
+    local surface = gs:get_surface()
+    if not surface then return { entities = {}, belts = {}, pipes = {}, poles = {} } end
 
-    -- Sort for consistent ordering
-    table.sort(headers)
-    return headers
-end
+    local force = gs:get_player_force()
+    if not force then return { entities = {}, belts = {}, pipes = {}, poles = {} } end
 
---- Flatten data according to component schema rules
---- @param component_type string - component type name
---- @param data table - data to flatten
---- @return table - flattened data
-function EntitiesSnapshot:_flatten_data(component_type, data)
-    local schema = ComponentSchema[component_type]
-    if not schema then
-        error("Unknown component type: " .. tostring(component_type))
-    end
+    local filter = { area = chunk.area, force = force, type = EntitiesSnapshot.get_allowed_entity_types() }
+    local entities_raw = surface.find_entities_filtered(filter)
 
-    local flattened = {}
-    local rules = schema.flatten_rules or {}
+    local categorized = { entities = {}, belts = {}, pipes = {}, poles = {} }
 
-    for k, v in pairs(data) do
-        if rules[k] then
-            if type(rules[k]) == "string" then
-                -- Simple field mapping (e.g., inventories -> inventories_json)
-                flattened[rules[k]] = v
-            elseif type(rules[k]) == "table" then
-                -- Apply flattening rules for nested structures
-                for nested_key, flattened_key in pairs(rules[k]) do
-                    if type(nested_key) == "string" and type(flattened_key) == "string" then
-                        -- Simple field mapping
-                        if v[nested_key] ~= nil then
-                            flattened[flattened_key] = v[nested_key]
-                        end
-                    elseif type(nested_key) == "table" and type(flattened_key) == "string" then
-                        -- Nested structure flattening (like position -> pos_x, pos_y)
-                        for sub_key, sub_flattened_key in pairs(nested_key) do
-                            if v[sub_key] ~= nil then
-                                flattened[sub_flattened_key] = v[sub_key]
-                            end
-                        end
-                    end
+    for _, entity in ipairs(entities_raw) do
+        if entity and entity.valid then
+            -- Filter rocks
+            if entity.type == "simple-entity" and (entity.name == "rock-huge" or entity.name == "rock-big" or entity.name == "sand-rock-big") then
+                goto continue
+            end
+
+            local component_type = EntitiesSnapshot.determine_component_type(entity.type, entity.name)
+
+            -- Apply component filter if specified
+            if not options.component_filter or options.component_filter == component_type then
+                local serialized = EntitiesSnapshot.serialize_entity(entity, options)
+                if serialized then
+                    table.insert(categorized[component_type], serialized)
                 end
             end
-        else
-            -- Direct field copy
-            flattened[k] = v
         end
+        ::continue::
     end
 
-    return flattened
+    return categorized
 end
 
---- Get events for recurring snapshots
---- @return table - event configuration
-function EntitiesSnapshot.get_events()
+--- Get status view for entities in a chunk
+--- @param chunk table - {x, y, area}
+--- @return table - array of {unit_number, status, status_name, health, tick}
+function EntitiesSnapshot.get_status_view_for_chunk(chunk)
+    local gs = GameState:new()
+    local surface = gs:get_surface()
+    if not surface then return {} end
+
+    local force = gs:get_player_force()
+    if not force then return {} end
+
+    local allowed_types = EntitiesSnapshot.get_allowed_entity_types()
+    local filter = { area = chunk.area, force = force, type = allowed_types }
+        local entities = surface.find_entities_filtered(filter)
+        
+            local status_records = {}
+    for _, entity in ipairs(entities) do
+        if entity and entity.valid then
+            -- Filter rocks
+            if entity.type == "simple-entity" then
+                local n = entity.name
+                        if n == "rock-huge" or n == "rock-big" or n == "sand-rock-big" then
+                    goto continue
+                end
+            end
+
+            table.insert(status_records, {
+                unit_number = entity.unit_number,
+                status = entity.status or 0,
+                status_name = utils.status_to_name(entity.status),
+                health = entity.health or 0,
+                tick = game.tick or 0
+            })
+        end
+        ::continue::
+    end
+
+    return status_records
+end
+
+--- Get inventory view for a specific entity
+--- @param unit_number number - entity unit number
+--- @return table - {unit_number, tick, inventories} or {error, unit_number, tick}
+function EntitiesSnapshot.get_inventory_view(unit_number)
+    local entity = game.get_entity_by_unit_number(unit_number)
+    if not entity or not entity.valid then
+        return {
+            error = "Entity not found",
+            unit_number = unit_number,
+            tick = game.tick or 0
+        }
+    end
+
+    local inventories = EntitiesSnapshot._get_entity_inventories(entity)
     return {
-        tick_interval = 60,  -- Every second
-        handler = function(event)
-            EntitiesSnapshot:new():take_recurring()
-        end
+        unit_number = unit_number,
+        tick = game.tick or 0,
+        inventories = inventories
     }
 end
 
---- Dump all entities chunk-wise with rich per-entity data
---- Dump all entities as flat rows (no chunk grouping). Each row includes its chunk coords
---- Dump all entities as componentized flat rows (no chunk grouping)
-function EntitiesSnapshot:take()
-    log("Taking entities snapshot")
+--- Get inventory views for multiple entities
+--- @param unit_numbers table - array of entity unit numbers
+--- @return table - map of unit_number -> inventory data
+function EntitiesSnapshot.get_inventory_views(unit_numbers)
+    local results = {}
+    for _, unit_number in ipairs(unit_numbers) do
+        results[unit_number] = EntitiesSnapshot.get_inventory_view(unit_number)
+    end
+    return results
+end
 
-    local charted_chunks = self.game_state:get_charted_chunks()
+--- Get all inventories for a single entity (private helper)
+--- @param entity LuaEntity - the entity to get inventories for
+--- @return table - inventory contents by inventory type
+function EntitiesSnapshot._get_entity_inventories(entity)
+    local inventories = {}
+    local inventory_types = {
+        chest = defines.inventory.chest,
+        fuel = defines.inventory.fuel,
+        burnt_result = defines.inventory.burnt_result,
+        input = defines.inventory.assembling_machine_input,
+        output = defines.inventory.assembling_machine_output,
+        modules = defines.inventory.assembling_machine_modules,
+        ammo = defines.inventory.turret_ammo,
+        trunk = defines.inventory.car_trunk,
+        cargo = defines.inventory.cargo_wagon,
+    }
 
-    -- Engine-side allowlist to avoid creating wrappers for belts/naturals
-    local allowed_types = {
+    for inventory_name, inventory_type in pairs(inventory_types) do
+        local success, inventory = pcall(function()
+            return entity.get_inventory(inventory_type)
+        end)
+
+        if success and inventory and inventory.valid then
+            local contents = inventory.get_contents()
+            if contents and next(contents) ~= nil then
+                inventories[inventory_name] = contents
+            end
+        end
+    end
+
+    return inventories
+end
+
+--- Serialize a single entity (public method for orchestrator)
+--- @param entity LuaEntity - the entity to serialize
+--- @param options table - optional serialization options
+--- @return table|nil - serialized entity data or nil if invalid
+function EntitiesSnapshot.serialize_entity(entity, options)
+    return EntitiesSnapshot._serialize_entity(entity)
+end
+
+--- Determine component type for an entity (public method for orchestrator)
+--- @param entity_type string - entity type
+--- @param entity_name string - entity name
+--- @return string - component type ("entities", "belts", "pipes", "poles")
+function EntitiesSnapshot.determine_component_type(entity_type, entity_name)
+    return EntitiesSnapshot._determine_component_type(entity_type, entity_name)
+end
+
+--- Get allowed entity types (public method for orchestrator)
+--- @return table - array of allowed entity types
+function EntitiesSnapshot.get_allowed_entity_types()
+    return {
         "assembling-machine", "furnace", "mining-drill", "inserter", "lab", "roboport", "beacon",
         "electric-pole", "radar", "storage-tank", "offshore-pump", "chemical-plant", "oil-refinery",
         "boiler", "generator", "pump", "pumpjack", "rocket-silo", "container", "logistic-container",
         "arithmetic-combinator", "decider-combinator", "constant-combinator", "lamp", "reactor",
         "heat-pipe", "accumulator", "electric-energy-interface",
-        -- "programmable-speaker", "train-stop", "rail-signal",
-        -- "rail-chain-signal", "locomotive", "cargo-wagon", "fluid-wagon"
+        "transport-belt", "underground-belt", "splitter", "loader", "loader-1x1", "linked-belt",
+        "pipe", "pipe-to-ground", "power-switch", "substation"
     }
-
-    -- Componentized outputs
-    local entity_rows = {}
-    local inserter_rows = {}
-
-    local surface = self.game_state:get_surface()
-    if not surface then
-        local empty = self:create_output("snapshot.entities", "v3", {
-            entity_rows = {},
-            inserter_rows = {},
-        })
-        return empty
-    end
-
-    for _, chunk in ipairs(charted_chunks) do
-        -- Use engine filter for force and allowed types only
-        local filter = { area = chunk.area, force = "player", type = allowed_types }
-        local entities = surface.find_entities_filtered(filter)
-        if #entities ~= 0 then
-            local chunk_field = { x = chunk.x, y = chunk.y }
-            for i = 1, #entities do
-                local e = entities[i]
-                if e and e.valid then
-                    -- Filter common rock variants (type "simple-entity") if any
-                    if e.type == "simple-entity" then
-                        local n = e.name
-                        if n == "rock-huge" or n == "rock-big" or n == "sand-rock-big" then
-                            goto continue_entity
-                        end
-                    end
-
-                    local row = self:_serialize_entity(e)
-                    if row then
-                        local chunk = chunk_field
-
-                        -- Base entity row (includes electric fields, no component payloads)
-                        local base = {
-                            unit_number = row.unit_number,
-                            name = row.name,
-                            type = row.type,
-                            force = row.force,
-                            position = row.position,
-                            direction = row.direction,
-                            direction_name = row.direction_name,
-                            orientation = row.orientation,
-                            orientation_name = row.orientation_name,
-                            chunk = chunk,
-                        }
-                        if row.bounding_box ~= nil then base.bounding_box = row.bounding_box end
-                        -- Electric fields now part of main entity
-                        if row.electric_network_id ~= nil then base.electric_network_id = row.electric_network_id end
-                        -- Tile dimensions
-                        if row.tile_width ~= nil then base.tile_width = row.tile_width end
-                        if row.tile_height ~= nil then base.tile_height = row.tile_height end
-                        if row.recipe ~= nil then base.recipe = row.recipe end
-                        entity_rows[#entity_rows + 1] = base
-
-                        -- Inserter component
-                        if row.inserter ~= nil then
-                            inserter_rows[#inserter_rows + 1] = {
-                                unit_number = row.unit_number,
-                                pickup_position = row.inserter.pickup_position,
-                                drop_position = row.inserter.drop_position,
-                                pickup_target_unit = row.inserter.pickup_target_unit,
-                                drop_target_unit = row.inserter.drop_target_unit,
-                                chunk = chunk,
-                            }
-                        end
-                    end
-                end
-                ::continue_entity::
-            end
-        end
-    end
-
-    local output = self:create_output("snapshot.entities", "v3", {
-        entity_rows = entity_rows,
-        inserter_rows = inserter_rows,
-    })
-
-    -- Group entities by chunk for chunk-wise CSV emission
-    local entities_by_chunk = {}
-    local inserter_by_chunk = {}
-
-    -- Group all entity data by chunk
-    for _, entity in ipairs(entity_rows) do
-        local chunk_key = string.format("%d_%d", entity.chunk.x, entity.chunk.y)
-        if not entities_by_chunk[chunk_key] then
-            entities_by_chunk[chunk_key] = { chunk_x = entity.chunk.x, chunk_y = entity.chunk.y, entities = {} }
-        end
-        table.insert(entities_by_chunk[chunk_key].entities, entity)
-    end
-
-    for _, inserter in ipairs(inserter_rows) do
-        local chunk_key = string.format("%d_%d", inserter.chunk.x, inserter.chunk.y)
-        if not inserter_by_chunk[chunk_key] then
-            inserter_by_chunk[chunk_key] = { chunk_x = inserter.chunk.x, chunk_y = inserter.chunk.y, entities = {} }
-        end
-        table.insert(inserter_by_chunk[chunk_key].entities, inserter)
-    end
-
-    -- Emit CSV files for each chunk and component type
-    local base_opts = {
-        output_dir = "script-output/factoryverse",
-        tick = output.timestamp,
-        metadata = {
-            schema_version = "snapshot.entities.v3",
-            surface = output.surface,
-        }
-    }
-
-    -- Emit entities by chunk
-    local entity_headers = self:_get_headers("entity")
-    for chunk_key, chunk_data in pairs(entities_by_chunk) do
-        local flattened_entities = {}
-        for _, entity in ipairs(chunk_data.entities) do
-            table.insert(flattened_entities, self:_flatten_data("entity", entity))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities", self:_array_to_csv(flattened_entities, entity_headers),
-            { headers = entity_headers })
-    end
-
-
-    local belt_output = self:_take_belts()
-
-    -- Process pipes
-    local pipe_output = self:_take_pipes()
-
-    self:print_summary(output, function(out)
-        local d = out and out.data or {}
-        local c = function(t) return (t and #t) or 0 end
-        local belt_count = 0
-        if belt_output and belt_output.data and belt_output.data.belt_rows then
-            belt_count = #belt_output.data.belt_rows
-        end
-        local pipe_count = 0
-        if pipe_output and pipe_output.data and pipe_output.data.pipe_rows then
-            pipe_count = #pipe_output.data.pipe_rows
-        end
-        return {
-            surface = out.surface,
-            tick = out.timestamp,
-            entities = {
-                entity_rows = c(d.entity_rows),
-                inserter_rows = c(d.inserter_rows),
-                belt_rows = belt_count,
-                pipe_rows = pipe_count,
-            },
-        }
-    end)
-
-    return output
-end
-
---- Take recurring snapshot of entity status and health
---- Overwrites single CSV file with current status of all entities
-function EntitiesSnapshot:take_recurring()
-    log("Taking recurring entities snapshot (status/health)")
-
-    local charted_chunks = self.game_state:get_charted_chunks()
-    local status_rows = {}
-
-    local surface = self.game_state:get_surface()
-    if not surface then
-        local empty = self:create_output("snapshot.entities.recurring", "v1", { status_rows = {} })
-        return empty
-    end
-
-    -- Engine-side allowlist to avoid creating wrappers for belts/naturals
-    local allowed_types = {
-        "assembling-machine", "furnace", "mining-drill", "inserter", "lab", "roboport", "beacon",
-        "electric-pole", "radar", "storage-tank", "offshore-pump", "chemical-plant", "oil-refinery",
-        "boiler", "generator", "pump", "pumpjack", "rocket-silo", "container", "logistic-container",
-        "arithmetic-combinator", "decider-combinator", "constant-combinator", "lamp", "reactor",
-        "heat-pipe", "accumulator", "electric-energy-interface",
-    }
-
-    for _, chunk in ipairs(charted_chunks) do
-        local filter = { area = chunk.area, force = "player", type = allowed_types }
-        local entities = surface.find_entities_filtered(filter)
-        if #entities ~= 0 then
-            for i = 1, #entities do
-                local e = entities[i]
-                if e and e.valid then
-                    -- Filter common rock variants (type "simple-entity") if any
-                    if e.type == "simple-entity" then
-                        local n = e.name
-                        if n == "rock-huge" or n == "rock-big" or n == "sand-rock-big" then
-                            goto continue_entity
-                        end
-                    end
-
-                    local status_data = {
-                        unit_number = e.unit_number,
-                        status = e.status or 0,
-                        status_name = e.status and utils.status_to_name(e.status) or "unknown",
-                        health = e.health or 0,
-                        tick = game and game.tick or 0
-                    }
-
-                    table.insert(status_rows, status_data)
-                end
-                ::continue_entity::
-            end
-        end
-    end
-
-    local output = self:create_output("snapshot.entities.recurring", "v1", {
-        status_rows = status_rows,
-    })
-
-    -- Emit single CSV file (overwrites each time)
-    local headers = self:_get_headers("entity_status")
-    local flattened_rows = {}
-    for _, row in ipairs(status_rows) do
-        table.insert(flattened_rows, self:_flatten_data("entity_status", row))
-    end
-
-    local csv_data = self:_array_to_csv(flattened_rows, headers)
-    local opts = {
-        output_dir = "script-output/factoryverse/recurring",
-        tick = output.timestamp,
-        metadata = {
-            schema_version = "snapshot.entities.recurring.v1",
-            surface = output.surface,
-        }
-    }
-    self:emit_csv(opts, "entity_status", csv_data, { headers = headers })
-
-    self:print_summary(output, function(out)
-        local d = out and out.data or {}
-        return {
-            surface = out.surface,
-            tick = out.timestamp,
-            entities_status = #d.status_rows,
-        }
-    end)
-
-    return output
-end
-
---- Internal method to dump only belt-like entities with transport line contents
---- Dump only belt-like entities with transport line contents as flat rows
---- Dump only belt-like entities with transport line contents as flat component rows
-function EntitiesSnapshot:_take_belts()
-    log("Taking belts snapshot")
-
-    local charted_chunks = self.game_state:get_charted_chunks()
-    local belt_rows = {}
-
-    local surface = self.game_state:get_surface()
-    if not surface then
-        local empty = self:create_output("snapshot.belts", "v3", { belt_rows = {} })
-        return empty
-    end
-
-    local belt_types = {
-        "transport-belt", "underground-belt", "splitter",
-        "loader", "loader-1x1", "linked-belt"
-    }
-
-    for _, chunk in ipairs(charted_chunks) do
-        local filter = { area = chunk.area, force = "player", type = belt_types }
-        local belts = surface.find_entities_filtered(filter)
-        if #belts ~= 0 then
-            local chunk_field = { x = chunk.x, y = chunk.y }
-            for i = 1, #belts do
-                local e = belts[i]
-                if e and e.valid then
-                    local item_lines = {}
-                    local max_index = 0
-                    do
-                        local name = e.name
-                        local cache = self._cache and self._cache.belt or nil
-                        if cache and cache[name] ~= nil then
-                            max_index = cache[name]
-                        else
-                            local v = (e.get_max_transport_line_index and e.get_max_transport_line_index()) or 0
-                            max_index = (type(v) == "number" and v > 0) and v or 0
-                            if cache then cache[name] = max_index end
-                        end
-                    end
-
-                    for li = 1, max_index do
-                        local tl = e.get_transport_line and e.get_transport_line(li) or nil
-                        if tl then
-                            local contents = tl.get_contents and tl.get_contents() or nil
-                            if contents and next(contents) ~= nil then
-                                item_lines[#item_lines + 1] = { index = li, items = contents }
-                            end
-                        end
-                    end
-
-                    -- Belt neighbours (inputs/outputs) and underground pairing
-                    local inputs_ids, outputs_ids = {}, {}
-                    local bn = e.belt_neighbours
-                    if bn then
-                        if bn.inputs then
-                            for _, n in ipairs(bn.inputs) do
-                                if n and n.valid and n.unit_number then inputs_ids[#inputs_ids + 1] = n.unit_number end
-                            end
-                        end
-                        if bn.outputs then
-                            for _, n in ipairs(bn.outputs) do
-                                if n and n.valid and n.unit_number then outputs_ids[#outputs_ids + 1] = n.unit_number end
-                            end
-                        end
-                    end
-                    local underground_other = nil
-                    local belt_to_ground_type = nil
-                    if e.type == "underground-belt" then
-                        belt_to_ground_type = e.belt_to_ground_type
-                        local un = e.neighbours -- for underground belts this is the other end (or nil)
-                        if un and un.valid and un.unit_number then underground_other = un.unit_number end
-                    end
-
-                    belt_rows[#belt_rows + 1] = {
-                        unit_number = e.unit_number,
-                        name = e.name,
-                        type = e.type,
-                        position = e.position,
-                        direction = e.direction,
-                        direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
-                        item_lines = item_lines,
-                        belt_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or
-                        nil,
-                        belt_to_ground_type = belt_to_ground_type,
-                        underground_neighbour_unit = underground_other,
-                        chunk = chunk_field,
-                    }
-                end
-            end
-        end
-    end
-
-    local output = self:create_output("snapshot.belts", "v3", { belt_rows = belt_rows })
-
-    -- Group belts by chunk for chunk-wise CSV emission
-    local belts_by_chunk = {}
-    for _, belt in ipairs(belt_rows) do
-        local chunk_key = string.format("%d_%d", belt.chunk.x, belt.chunk.y)
-        if not belts_by_chunk[chunk_key] then
-            belts_by_chunk[chunk_key] = { chunk_x = belt.chunk.x, chunk_y = belt.chunk.y, belts = {} }
-        end
-        table.insert(belts_by_chunk[chunk_key].belts, belt)
-    end
-
-    -- Emit CSV for belts by chunk
-    local base_opts = {
-        output_dir = "script-output/factoryverse",
-        tick = output.timestamp,
-        metadata = {
-            schema_version = "snapshot.belts.v3",
-            surface = output.surface,
-        }
-    }
-
-    local belt_headers = self:_get_headers("belt")
-    for chunk_key, chunk_data in pairs(belts_by_chunk) do
-        local flattened_belts = {}
-        for _, belt in ipairs(chunk_data.belts) do
-            table.insert(flattened_belts, self:_flatten_data("belt", belt))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_belts", self:_array_to_csv(flattened_belts, belt_headers), { headers = belt_headers })
-    end
-
-    return output
-end
-
---- Internal method to dump only pipe-like entities
-function EntitiesSnapshot:_take_pipes()
-    log("Taking pipes snapshot")
-
-    local charted_chunks = self.game_state:get_charted_chunks()
-    local pipe_rows = {}
-
-    local surface = self.game_state:get_surface()
-    if not surface then
-        local empty = self:create_output("snapshot.pipes", "v3", { pipe_rows = {} })
-        return empty
-    end
-
-    local pipe_types = {
-        "pipe", "pipe-to-ground"
-    }
-
-    for _, chunk in ipairs(charted_chunks) do
-        local filter = { area = chunk.area, force = "player", type = pipe_types }
-        local pipes = surface.find_entities_filtered(filter)
-        if #pipes ~= 0 then
-            local chunk_field = { x = chunk.x, y = chunk.y }
-            for i = 1, #pipes do
-                local e = pipes[i]
-                if e and e.valid then
-                    -- Pipe neighbours (similar to belt_neighbours) - categorize as inputs/outputs
-                    local inputs_ids, outputs_ids = {}, {}
-
-                    -- Get connected entities through fluidbox and categorize as inputs/outputs
-                    local fb = e.fluidbox
-                    if fb then
-                        for k = 1, #fb do
-                            local connections = fb.get_connections and fb.get_connections(k) or {}
-                            for _, conn in ipairs(connections) do
-                                if conn.owner and conn.owner.valid and conn.owner.unit_number then
-                                    local conn_entity = conn.owner
-                                    local conn_unit = conn_entity.unit_number
-                                    
-                                    -- Categorize connections based on entity type and relative position
-                                    -- This is a simplified approach - in practice, you might want more sophisticated logic
-                                    if conn_entity.type == "pipe" or conn_entity.type == "pipe-to-ground" then
-                                        -- For pipe-to-pipe connections, use position to determine flow direction
-                                        -- This is a heuristic - pipes generally flow from higher to lower pressure/position
-                                        if conn_entity.position and e.position then
-                                            local dx = conn_entity.position.x - e.position.x
-                                            local dy = conn_entity.position.y - e.position.y
-                                            -- Simple heuristic: if connected entity is "upstream" (higher x or y), it's input
-                                            if dx > 0 or dy > 0 then
-                                                inputs_ids[#inputs_ids + 1] = conn_unit
-                                            else
-                                                outputs_ids[#outputs_ids + 1] = conn_unit
-                                            end
-                                        else
-                                            -- Fallback: treat as input
-                                            inputs_ids[#inputs_ids + 1] = conn_unit
-                                        end
-                                    else
-                                        -- For non-pipe entities (boilers, engines, etc.), treat as inputs
-                                        inputs_ids[#inputs_ids + 1] = conn_unit
-                                    end
-                                end
-                            end
-                        end
-                    end
-
-                    pipe_rows[#pipe_rows + 1] = {
-                        unit_number = e.unit_number,
-                        name = e.name,
-                        type = e.type,
-                        position = e.position,
-                        direction = e.direction,
-                        direction_name = utils.direction_to_name(e.direction and tonumber(tostring(e.direction)) or nil),
-                        pipe_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or nil,
-                        chunk = chunk_field,
-                    }
-                end
-            end
-        end
-    end
-
-    local output = self:create_output("snapshot.pipes", "v3", { pipe_rows = pipe_rows })
-
-    -- Group pipes by chunk for chunk-wise CSV emission
-    local pipes_by_chunk = {}
-    for _, pipe in ipairs(pipe_rows) do
-        local chunk_key = string.format("%d_%d", pipe.chunk.x, pipe.chunk.y)
-        if not pipes_by_chunk[chunk_key] then
-            pipes_by_chunk[chunk_key] = { chunk_x = pipe.chunk.x, chunk_y = pipe.chunk.y, pipes = {} }
-        end
-        table.insert(pipes_by_chunk[chunk_key].pipes, pipe)
-    end
-
-    -- Emit CSV for pipes by chunk
-    local base_opts = {
-        output_dir = "script-output/factoryverse",
-        tick = output.timestamp,
-        metadata = {
-            schema_version = "snapshot.pipes.v3",
-            surface = output.surface,
-        }
-    }
-
-    local pipe_headers = self:_get_headers("pipe")
-    for chunk_key, chunk_data in pairs(pipes_by_chunk) do
-        local flattened_pipes = {}
-        for _, pipe in ipairs(chunk_data.pipes) do
-            table.insert(flattened_pipes, self:_flatten_data("pipe", pipe))
-        end
-        local opts = {
-            output_dir = base_opts.output_dir,
-            chunk_x = chunk_data.chunk_x,
-            chunk_y = chunk_data.chunk_y,
-            tick = base_opts.tick,
-            metadata = base_opts.metadata
-        }
-        self:emit_csv(opts, "entities_pipes", self:_array_to_csv(flattened_pipes, pipe_headers), { headers = pipe_headers })
-    end
-
-    return output
 end
 
 -- Internal helpers -----------------------------------------------------------
 
---- Convert table to CSV row, handling nested structures
---- @param data table - data to convert
---- @param headers table - column headers
---- @return string - CSV row
-function EntitiesSnapshot:_table_to_csv_row(data, headers)
-    local values = {}
-    for _, header in ipairs(headers) do
-        local value = data[header]
-        if value == nil then
-            table.insert(values, "")
-        elseif type(value) == "table" then
-            -- Convert table to JSON string for complex nested data
-            local json_str = helpers.table_to_json(value)
-            table.insert(values, '"' .. json_str:gsub('"', '""') .. '"')
-        elseif type(value) == "string" then
-            -- Regular string, escape quotes and wrap in quotes
-            table.insert(values, '"' .. value:gsub('"', '""') .. '"')
-        else
-            table.insert(values, tostring(value))
-        end
-    end
-    return table.concat(values, ",")
-end
-
---- Convert array of tables to CSV
---- @param data table - array of data rows
---- @param headers table - column headers
---- @return string - CSV content
-function EntitiesSnapshot:_array_to_csv(data, headers)
-    if #data == 0 then
-        return table.concat(headers, ",") .. "\n"
-    end
-
-    local csv_lines = { table.concat(headers, ",") }
-    for _, row in ipairs(data) do
-        table.insert(csv_lines, self:_table_to_csv_row(row, headers))
-    end
-    return table.concat(csv_lines, "\n") .. "\n"
-end
-
+--- Serialize entity data for JSON storage
 --- @param e LuaEntity
 --- @return table|nil
-function EntitiesSnapshot:_serialize_entity(e)
+function EntitiesSnapshot._serialize_entity(e)
     if not (e and e.valid) then return nil end
 
-    local proto       = e.prototype
+    local proto = e.prototype
 
-    local out         = {
+    local out = {
         unit_number = e.unit_number,
         name = e.name,
         type = e.type,
@@ -834,19 +394,111 @@ function EntitiesSnapshot:_serialize_entity(e)
         end
     end
 
-    -- Inserter IO (pickup/drop positions and resolved targets)
-    do
-        if e.type == "inserter" then
-            local ins = {
-                pickup_position = e.pickup_position,
-                drop_position   = e.drop_position,
-            }
-            local pt = e.pickup_target
-            if pt and pt.valid and pt.unit_number then ins.pickup_target_unit = pt.unit_number end
-            local dt = e.drop_target
-            if dt and dt.valid and dt.unit_number then ins.drop_target_unit = dt.unit_number end
-            if next(ins) ~= nil then out.inserter = ins end
+    -- Component-specific data for specialized entity types
+    local component_type = EntitiesSnapshot._determine_component_type(e.type, e.name)
+    
+    if component_type == "belts" then
+        -- Belt-specific data
+        local item_lines = {}
+        local max_index = 0
+        do
+            local name = e.name
+            -- Note: cache removed for static method - could be added back if needed
+                local v = (e.get_max_transport_line_index and e.get_max_transport_line_index()) or 0
+                max_index = (type(v) == "number" and v > 0) and v or 0
         end
+
+        for li = 1, max_index do
+            local tl = e.get_transport_line and e.get_transport_line(li) or nil
+            if tl then
+                local contents = tl.get_contents and tl.get_contents() or nil
+                if contents and next(contents) ~= nil then
+                    item_lines[#item_lines + 1] = { index = li, items = contents }
+                end
+            end
+        end
+
+        -- Belt neighbours (inputs/outputs) and underground pairing
+        local inputs_ids, outputs_ids = {}, {}
+        local bn = e.belt_neighbours
+        if bn then
+            if bn.inputs then
+                for _, n in ipairs(bn.inputs) do
+                    if n and n.valid and n.unit_number then inputs_ids[#inputs_ids + 1] = n.unit_number end
+                end
+            end
+            if bn.outputs then
+                for _, n in ipairs(bn.outputs) do
+                    if n and n.valid and n.unit_number then outputs_ids[#outputs_ids + 1] = n.unit_number end
+                end
+            end
+        end
+        
+        local underground_other = nil
+        local belt_to_ground_type = nil
+        if e.type == "underground-belt" then
+            belt_to_ground_type = e.belt_to_ground_type
+            local un = e.neighbours -- for underground belts this is the other end (or nil)
+            if un and un.valid and un.unit_number then underground_other = un.unit_number end
+        end
+
+        out.belt_data = {
+            item_lines = item_lines,
+            belt_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or
+            nil,
+            belt_to_ground_type = belt_to_ground_type,
+            underground_neighbour_unit = underground_other
+        }
+    elseif component_type == "pipes" then
+        -- Pipe-specific data
+        local inputs_ids, outputs_ids = {}, {}
+        local fb = e.fluidbox
+        if fb then
+            for k = 1, #fb do
+                local connections = fb.get_connections and fb.get_connections(k) or {}
+                for _, conn in ipairs(connections) do
+                    if conn.owner and conn.owner.valid and conn.owner.unit_number then
+                        local conn_entity = conn.owner
+                        local conn_unit = conn_entity.unit_number
+                        
+                        -- Categorize connections based on entity type and relative position
+                        if conn_entity.type == "pipe" or conn_entity.type == "pipe-to-ground" then
+                            if conn_entity.position and e.position then
+                                local dx = conn_entity.position.x - e.position.x
+                                local dy = conn_entity.position.y - e.position.y
+                                if dx > 0 or dy > 0 then
+                                    inputs_ids[#inputs_ids + 1] = conn_unit
+                                else
+                                    outputs_ids[#outputs_ids + 1] = conn_unit
+                                end
+                            else
+                                inputs_ids[#inputs_ids + 1] = conn_unit
+                            end
+                        else
+                            inputs_ids[#inputs_ids + 1] = conn_unit
+                        end
+                    end
+                end
+            end
+        end
+
+        out.pipe_data = {
+            pipe_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or
+            nil
+        }
+    end
+
+    -- Inserter IO (pickup/drop positions and resolved targets) - for entities component
+    if e.type == "inserter" then
+        local ins = {
+            pickup_position = e.pickup_position,
+            drop_position   = e.drop_position,
+        }
+        local pt = e.pickup_target
+        if pt and pt.valid and pt.unit_number then ins.pickup_target_unit = pt.unit_number end
+        local dt = e.drop_target
+        if dt and dt.valid and dt.unit_number then ins.drop_target_unit = dt.unit_number end
+        if next(ins) ~= nil then out.inserter = ins end
     end
 
     return out

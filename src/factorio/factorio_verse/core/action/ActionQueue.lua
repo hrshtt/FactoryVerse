@@ -485,7 +485,7 @@ end
 --- Persist internal state into Factorio's global table
 function ActionQueue:save_to_global()
   if not global then return end
-  global.factoryverse_action_queue = {
+  storage.factoryverse_action_queue = {
     queue = self.queue,
     queues_by_key = self.queues_by_key,
     immediate_mode = self.immediate_mode,
@@ -501,7 +501,7 @@ end
 --- Restore internal state from Factorio's global table
 function ActionQueue:load_from_global()
   if not global then return end
-  local data = global.factoryverse_action_queue
+  local data = storage.factoryverse_action_queue
   if not data then return end
   self.queue = data.queue or {}
   self.queues_by_key = data.queues_by_key or {}
