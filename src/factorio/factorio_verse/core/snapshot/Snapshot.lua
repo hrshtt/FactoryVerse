@@ -575,14 +575,6 @@ function Snapshot:_create_snapshot_session(chunks, components, chunks_per_tick)
         stats = { chunks_done = 0, entities = 0, resources = 0 }
     }
 
-    -- Register tick handler if not already active
-    if not storage._snapshot_tick_handler_registered then
-        script.on_nth_tick(1, function(event)
-            Snapshot:_process_snapshot_sessions()
-        end)
-        storage._snapshot_tick_handler_registered = true
-    end
-
     return { status = "queued", session_id = session_id, total_chunks = #chunks }
 end
 
@@ -707,6 +699,44 @@ function Snapshot:_update_component_manifest(chunk_x, chunk_y, component_type)
     end
 
     self:_write_component_manifest(chunk_x, chunk_y, component_type, manifest_data)
+end
+
+--- Get events for snapshot module (follows dispatcher pattern)
+--- @return table - {event_id -> handler, ...}
+function Snapshot:get_events()
+    local snapshot = self
+    return {
+        -- Resource depletion event
+        [defines.events.on_resource_depleted] = function(event)
+            if event.entity and event.entity.valid then
+                local chunk_x = math.floor(event.entity.position.x / 32)
+                local chunk_y = math.floor(event.entity.position.y / 32)
+                snapshot:take_chunk_snapshot(chunk_x, chunk_y, {components = {"resources"}})
+            end
+        end,
+        -- Chunk charted event
+        [defines.events.on_chunk_charted] = function(event)
+            local chunk_x = event.area.left_top.x / 32
+            local chunk_y = event.area.left_top.y / 32
+            snapshot:take_chunk_snapshot(chunk_x, chunk_y, {components = {"entities", "resources"}})
+        end,
+    }
+end
+
+--- Get nth_tick handlers for snapshot module
+--- @return table - {tick_interval -> handler, ...}
+function Snapshot:get_nth_tick_handlers()
+    local snapshot = self
+    return {
+        -- Process snapshot sessions every tick
+        [1] = function(event)
+            snapshot:_process_snapshot_sessions()
+        end,
+        -- Take recurring status every 60 ticks
+        [60] = function(event)
+            snapshot:take_recurring_status()
+        end,
+    }
 end
 
 return Snapshot

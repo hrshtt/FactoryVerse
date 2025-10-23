@@ -500,7 +500,7 @@ end
 
 --- Restore internal state from Factorio's global table
 function ActionQueue:load_from_global()
-  if not global then return end
+  if not storage then return end
   local data = storage.factoryverse_action_queue
   if not data then return end
   self.queue = data.queue or {}

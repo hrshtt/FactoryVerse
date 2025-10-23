@@ -3,16 +3,15 @@ local Config = require("core.Config")
 
 local MapDiscovery = {}
 
--- Get events for map discovery (follows snapshot/action pattern)
-function MapDiscovery.get_events()
+-- Get nth_tick handlers for map discovery (follows dispatcher pattern)
+function MapDiscovery.get_nth_tick_handlers()
     local scan_interval = Config.MAP_DISCOVERY.scan_interval_ticks
     if not scan_interval then
-        return nil -- No ongoing discovery
+        return {} -- No ongoing discovery
     end
     
     return {
-        tick_interval = scan_interval,
-        handler = function(event)
+        [scan_interval] = function(event)
             MapDiscovery.scan_and_discover()
         end
     }
@@ -38,6 +37,8 @@ function MapDiscovery.initialize(surface, force, center_position)
             left_top = { x = area[1].x, y = area[1].y },
             right_bottom = { x = area[2].x, y = area[2].y }
         })
+        log(string.format("[MapDiscovery.initialize] Registered initial charted area: (%d to %d, %d to %d)", 
+            area[1].x, area[2].x, area[1].y, area[2].y))
     end
     
     -- Don't force generate chunks synchronously - this causes crashes when called from RCON
@@ -80,6 +81,8 @@ function MapDiscovery.scan_and_discover()
                 if GameStateModule then
                     local gs = GameStateModule:new()
                     gs:register_charted_area(area)
+                    log(string.format("[MapDiscovery.scan_and_discover] Agent moved - registered new charted area around chunk (%d, %d)", 
+                        chunk_x, chunk_y))
                 end
                 
                 -- Only chart, don't force generate - let Factorio handle chunk generation naturally

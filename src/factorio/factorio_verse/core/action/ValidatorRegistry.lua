@@ -105,15 +105,9 @@ function ValidatorRegistry:build_registry()
         "actions.entity.remove.validator",
         "actions.entity.move.validator",
         "actions.entity.set_recipe.validator",
-        "actions.entity.connect.validator",
         "actions.item.craft.validator",
         "actions.item.transfer.validator",
 
-        -- Sub-action validators (use "category.action.*" patterns)
-        "actions.entity.connect.belts.validator",
-        "actions.entity.connect.pipes.validator", 
-        "actions.entity.connect.poles.validator",
-        
         -- Flat actions
         "actions.start_research.validator",
         "actions.mine_resource.validator"

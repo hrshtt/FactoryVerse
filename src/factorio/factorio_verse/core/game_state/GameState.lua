@@ -139,9 +139,9 @@ function GameState:get_charted_chunks(sort_by_distance)
         utils.sort_coordinates_by_distance(charted_chunks)
     end
 
-    -- Log summary for debugging
-    log(string.format("Charted chunks: %d out of %d generated chunks (registered: %d)", 
-        #charted_chunks, generated_count, storage.registered_charted_areas and next(storage.registered_charted_areas) and #storage.registered_charted_areas or 0))
+    -- -- Log summary for debugging
+    -- log(string.format("Charted chunks: %d out of %d generated chunks (registered: %d)", 
+    --     #charted_chunks, generated_count, storage.registered_charted_areas and next(storage.registered_charted_areas) and #storage.registered_charted_areas or 0))
 
     return charted_chunks
 end

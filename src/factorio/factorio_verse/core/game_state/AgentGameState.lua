@@ -118,14 +118,20 @@ function AgentGameState:create_agent(agent_id, position, color)
 end
 
 --- @param agent_id number
---- @return LuaEntity
+--- @return LuaEntity|nil
 function AgentGameState:get_agent(agent_id)
     agent_id = agent_id or self.agent_id
     if not storage.agent_characters then
         storage.agent_characters = {}
         return nil
     end
-    return storage.agent_characters[agent_id]
+    local agent = storage.agent_characters[agent_id]
+    -- Clean up invalid references (can happen when loading saves)
+    if agent and not agent.valid then
+        storage.agent_characters[agent_id] = nil
+        return nil
+    end
+    return agent
 end
 
 --- @param num_agents number

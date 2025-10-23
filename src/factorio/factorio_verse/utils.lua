@@ -193,6 +193,13 @@ function M.entity_status_to_name(status)
     return string.lower(string.gsub(name, "_", "-"))
 end
 
+--- Alias for entity_status_to_name (for backward compatibility)
+--- @param status any
+--- @return string|nil
+function M.status_to_name(status)
+    return M.entity_status_to_name(status)
+end
+
 --- Map orientation [0,1) to 8-way compass name
 --- @param orientation number|nil
 --- @return string|nil

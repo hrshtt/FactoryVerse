@@ -1,7 +1,7 @@
 local Action = require("core.action.Action")
 local ParamSpec = require("core.action.ParamSpec")
 local GameState = require("core.game_state.GameState")
-local walk = require("core.actions.agent.walk.helper")
+local walk = require("actions.agent.walk.helper")
 
 local gs = GameState:new()
 

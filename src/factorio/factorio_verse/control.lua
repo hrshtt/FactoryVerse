@@ -1,4 +1,6 @@
--- control.lua: registers action run methods on a remote interface and hooks events
+-- control.lua: Central event dispatcher using aggregation pattern
+-- All modules export get_events() which returns {event_id -> handler}
+-- This file aggregates them and registers each event once with script.on_event
 
 local action_registry = require("core.action.ActionRegistry")
 local action_queue = require("core.action.ActionQueue")
@@ -9,7 +11,7 @@ local admin_api = require("core.admin_api")
 admin_api.load_helpers()
 admin_api.load_commands()
 
--- Load snapshot modules for event registration
+-- Load modules that export events
 local Snapshot = require("core.snapshot.Snapshot")
 local MapDiscovery = require("core.MapDiscovery")
 
@@ -24,69 +26,121 @@ local function on_player_created(e)
   end
 end
 
--- Register remote interface containing all actions' run methods
-local function register_remote_interface()
-  action_registry:register_remote_interface()
-  action_queue:register_queue_remote_interface()
+-- ============================================================================
+-- EVENT DISPATCHER PATTERN
+-- ============================================================================
+-- Central place to aggregate events from all modules and register them once
+
+local function count_keys(tbl)
+    local count = 0
+    for _ in pairs(tbl or {}) do
+        count = count + 1
+    end
+    return count
 end
 
--- Hook any events exposed by actions (e.g., on_tick runners)
-local function register_events()
-  local events = action_registry:get_events()
-  for event_id, handler in pairs(events) do
-    -- Register one aggregated handler per event id
-    script.on_event(event_id, handler)
-  end
+local function aggregate_all_events()
+    local all_handlers = {} -- {event_id -> [handler1, handler2, ...], ...}
+    local nth_tick_handlers = {} -- {tick_interval -> [handler1, handler2, ...], ...}
+    
+    local function add_event_handler(event_id, handler)
+        if event_id and handler then
+            all_handlers[event_id] = all_handlers[event_id] or {}
+            table.insert(all_handlers[event_id], handler)
+        end
+    end
+    
+    local function add_nth_tick_handler(tick_interval, handler)
+        if tick_interval and handler then
+            nth_tick_handlers[tick_interval] = nth_tick_handlers[tick_interval] or {}
+            table.insert(nth_tick_handlers[tick_interval], handler)
+        end
+    end
+    
+    -- 1. Action Registry Events
+    local action_events = action_registry:get_events()
+    for event_id, handler in pairs(action_events or {}) do
+        add_event_handler(event_id, handler)
+    end
+    
+    -- 2. Snapshot Events (resource depletion, chunk charted)
+    local snapshot = Snapshot:get_instance()
+    local snapshot_events = snapshot:get_events()
+    for event_id, handler in pairs(snapshot_events or {}) do
+        add_event_handler(event_id, handler)
+    end
+    
+    -- 2b. Snapshot nth_tick Events (recurring snapshots)
+    local snapshot_nth_tick_events = snapshot:get_nth_tick_handlers()
+    for tick_interval, handler in pairs(snapshot_nth_tick_events or {}) do
+        add_nth_tick_handler(tick_interval, handler)
+    end
+    
+    -- 3. Map Discovery nth_tick Events
+    local map_discovery_nth_tick_events = MapDiscovery.get_nth_tick_handlers()
+    for tick_interval, handler in pairs(map_discovery_nth_tick_events or {}) do
+        add_nth_tick_handler(tick_interval, handler)
+    end
+    
+    -- 4. Player Events (custom handlers)
+    add_event_handler(defines.events.on_player_created, on_player_created)
+    add_event_handler(defines.events.on_player_joined_game, function(event)
+        log("hello from on_player_joined_game")
+        utils.players_to_spectators()
+    end)
+    
+    return all_handlers, nth_tick_handlers
 end
 
-register_remote_interface()
-register_events()
-
--- Register snapshot recurring events
-local snapshot = Snapshot:get_instance()
-
--- Recurring entity status (every 60 ticks)
-script.on_nth_tick(60, function(event)
-  snapshot:take_recurring_status()
-end)
-
--- Resource depletion event
-script.on_event(defines.events.on_resource_depleted, function(event)
-  if event.entity and event.entity.valid then
-    local chunk_x = math.floor(event.entity.position.x / 32)
-    local chunk_y = math.floor(event.entity.position.y / 32)
-    snapshot:take_chunk_snapshot(chunk_x, chunk_y, {components = {"resources"}})
-  end
-end)
-
--- Chunk charted event
-script.on_event(defines.events.on_chunk_charted, function(event)
-  local chunk_x = event.area.left_top.x / 32
-  local chunk_y = event.area.left_top.y / 32
-  snapshot:take_chunk_snapshot(chunk_x, chunk_y, {components = {"entities", "resources"}})
-end)
-
--- Register map discovery events
-local map_discovery_events = MapDiscovery.get_events()
-if map_discovery_events and map_discovery_events.tick_interval then
-  script.on_nth_tick(map_discovery_events.tick_interval, map_discovery_events.handler)
-  log("Registered map discovery (interval: " .. map_discovery_events.tick_interval .. ")")
+local function register_all_events()
+    local all_handlers, nth_tick_handlers = aggregate_all_events()
+    
+    -- Register standard events (event_id -> aggregated handler)
+    for event_id, handlers_list in pairs(all_handlers) do
+        script.on_event(event_id, function(event)
+            for _, handler in ipairs(handlers_list) do
+                local ok, err = pcall(handler, event)
+                if not ok then
+                    log("Error in event handler for " .. tostring(event_id) .. ": " .. tostring(err))
+                end
+            end
+        end)
+    end
+    
+    -- Register on_nth_tick events
+    for tick_interval, handlers_list in pairs(nth_tick_handlers) do
+        script.on_nth_tick(tick_interval, function(event)
+            for _, handler in ipairs(handlers_list) do
+                local ok, err = pcall(handler, event)
+                if not ok then
+                    log("Error in nth_tick handler (interval=" .. tostring(tick_interval) .. "): " .. tostring(err))
+                end
+            end
+        end)
+    end
+    
+    log("Event dispatcher initialized: registered " .. 
+        count_keys(all_handlers) .. " standard events and " .. 
+        count_keys(nth_tick_handlers) .. " nth_tick event groups")
 end
 
+-- ============================================================================
+-- REGISTER REMOTE INTERFACES
+-- ============================================================================
 
--- Force players to spectator when they join
-script.on_event(defines.events.on_player_joined_game, function(event)
-  log("hello from on_player_joined_game")
-  utils.players_to_spectators()
-end)
+action_registry:register_remote_interface()
+action_queue:register_queue_remote_interface()
 
--- script.on_nth_tick(15, function()
---   utils.chart_scanners()
--- end)
+-- ============================================================================
+-- REGISTER ALL EVENTS USING DISPATCHER
+-- ============================================================================
 
-script.on_event(defines.events.on_player_created, on_player_created)
+register_all_events()
 
--- Perform registrations at different lifecycle points to be safe on reloads
+-- ============================================================================
+-- LIFECYCLE CALLBACKS
+-- ============================================================================
+
 script.on_init(function()
   log("hello from on_init")
   -- Configure action queue for non-blocking intent ingestion
@@ -94,6 +148,11 @@ script.on_init(function()
   action_queue:set_max_queue_size(10000)
   -- Restore any persisted state
   action_queue:load_from_global()
+  -- Initialize agent_characters storage
+  if not storage.agent_characters then
+    storage.agent_characters = {}
+    log("Initialized empty agent_characters storage for new game")
+  end
   
   -- Take initial snapshot asynchronously
   local snapshot = Snapshot:get_instance()
@@ -109,7 +168,7 @@ script.on_load(function()
   admin_api.load_helpers()
   admin_api.load_commands()
   -- Restore persisted queue state after load
-  action_queue:load_from_global()
+  -- action_queue:load_from_global()
 end)
 
 script.on_configuration_changed(function()
