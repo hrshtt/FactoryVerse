@@ -34,7 +34,7 @@ local function validate_params(params)
     return true
 end
 
-validator_registry:register("item.craft", validate_params)
+validator_registry:register("crafting.craft_sync", validate_params)
 
 return validator_registry
 

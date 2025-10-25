@@ -2,11 +2,11 @@ local Action = require("core.action.Action")
 local ParamSpec = require("core.action.ParamSpec")
 local game_state = require("core.game_state.GameState")
 
---- @class StartResearchParams : ParamSpec
+--- @class EnqueueResearchParams : ParamSpec
 --- @field agent_id number
 --- @field technology_name string
 --- @field cancel_current_research boolean
-local StartResearchParams = ParamSpec:new({
+local EnqueueResearchParams = ParamSpec:new({
     agent_id = {
         type = "number",
         required = true
@@ -22,13 +22,13 @@ local StartResearchParams = ParamSpec:new({
     }
 })
 
---- @class StartResearchAction : Action
-local StartResearchAction = Action:new("start_research", StartResearchParams)
+--- @class EnqueueResearchAction : Action
+local EnqueueResearchAction = Action:new("enqueue_research", EnqueueResearchParams)
 
---- @param params StartResearchParams
+--- @param params EnqueueResearchParams
 --- @return table
-function StartResearchAction:run(params)
-    ---@type StartResearchParams
+function EnqueueResearchAction:run(params)
+    ---@type EnqueueResearchParams
     local p = self:_pre_run(game_state, params)
     local technology_name = p.technology_name
     local agent = game_state:agent_state():get_agent(p.agent_id)
@@ -71,4 +71,4 @@ function StartResearchAction:run(params)
     return self:_post_run(ingredients, p)
 end
 
-return { action = StartResearchAction, StartResearchParams = StartResearchParams }
+return { action = EnqueueResearchAction, EnqueueResearchParams = EnqueueResearchParams }
