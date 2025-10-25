@@ -21,7 +21,7 @@ local ACTION_MODULES = {
   -- "actions.entity.connect.action",
 
   -- item
-  "actions.item.craft.action",
+  "actions.item.craft_sync.action",
   -- "actions.item.transfer.action",
 
   -- resources / research

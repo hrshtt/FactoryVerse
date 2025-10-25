@@ -71,12 +71,38 @@ end
 ---   chunks_per_tick = 2                     -- optional, defaults to 2 when async=true
 --- }
 --- @return table - {status, session_id} or {status, stats} for sync
+---
+--- CHUNK SELECTION LOGIC:
+--- This function snapshots "charted chunks" - chunks that have been explored/revealed.
+--- There are TWO sources of charted chunks:
+---
+--- 1. PLAYER-CHARTED (Primary, most reliable)
+---    - Chunks explored by LuaPlayer characters (connected players)
+---    - Retrieved via force.is_chunk_charted() - works reliably
+---    - Available on saves with player exploration history
+---
+--- 2. AGENT-TRACKED (Fallback, headless servers)
+---    - Chunks explored by agent LuaEntity characters (which don't naturally chart)
+---    - Manually registered via GameState:register_charted_area()
+---    - Tracked in storage.registered_charted_areas
+---    - Used as fallback when is_chunk_charted() returns empty (Factorio limitation)
+---
+--- Decision Tree (see GameState:get_charted_chunks()):
+---   - Try is_chunk_charted() first
+---   - If empty AND registered_charted_areas exists → use that
+---   - If both empty → NO CHUNKS (snapshot is empty but valid)
+---
+--- PRACTICAL IMPLICATIONS:
+--- - Snapshot at server startup captures player-explored areas
+--- - Agent-only exploration requires agents to move first (to trigger map discovery)
+--- - Empty snapshot is normal for fresh servers until exploration happens
 function Snapshot:take_map_snapshot(options)
     options = options or {}
     local components = options.components or { "entities", "resources" }
     local async = options.async or false
     local chunks_per_tick = options.chunks_per_tick or 2
 
+    -- Get chunks: priority is is_chunk_charted(), fallback to registered_charted_areas
     local charted_chunks = self.game_state:get_charted_chunks()
 
     if not async then
@@ -270,14 +296,17 @@ function Snapshot:emit_entity_json(opts, component_type, unit_number, entity_nam
     -- Filename format: {unit_number}-{entity_name}.json
     local file_path = string.format("%s/%d-%s.json", component_dir, unit_number, entity_name)
 
-    -- Atomic write: remove existing file first, then write new one
-    if helpers and helpers.remove_path then
-        pcall(helpers.remove_path, file_path)
-    end
+    -- Only write to disk on server (prevent client writes)
+    if rcon then
+        -- Atomic write: remove existing file first, then write new one
+        if helpers and helpers.remove_path then
+            pcall(helpers.remove_path, file_path)
+        end
 
-    -- Factorio will create subdirs under script-output if needed
-    local json_str = helpers.table_to_json(payload)
-    helpers.write_file(file_path, json_str, false)
+        -- Factorio will create subdirs under script-output if needed
+        local json_str = helpers.table_to_json(payload)
+        helpers.write_file(file_path, json_str, false)
+    end
 
     return file_path
 end
@@ -298,15 +327,18 @@ function Snapshot:emit_status_jsonl(opts, status_records)
     local entities_dir = string.format("%s/entities", chunk_dir)
     local file_path = string.format("%s/status.jsonl", entities_dir)
 
-    -- Convert records to JSONL format
-    local jsonl_lines = {}
-    for _, record in ipairs(status_records) do
-        table.insert(jsonl_lines, helpers.table_to_json(record))
-    end
-    local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
+    -- Only write to disk on server (prevent client writes)
+    if rcon then
+        -- Convert records to JSONL format
+        local jsonl_lines = {}
+        for _, record in ipairs(status_records) do
+            table.insert(jsonl_lines, helpers.table_to_json(record))
+        end
+        local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
 
-    -- Overwrite file with latest snapshot (not append)
-    helpers.write_file(file_path, jsonl_data, false)
+        -- Overwrite file with latest snapshot (not append)
+        helpers.write_file(file_path, jsonl_data, false)
+    end
 
     return file_path
 end
@@ -327,15 +359,18 @@ function Snapshot:emit_resource_jsonl(opts, resource_type, resource_data)
     local resource_dir = string.format("%s/%s", chunk_dir, resource_type)
     local file_path = string.format("%s/%s.jsonl", resource_dir, resource_type)
 
-    -- Convert records to JSONL format
-    local jsonl_lines = {}
-    for _, record in ipairs(resource_data) do
-        table.insert(jsonl_lines, helpers.table_to_json(record))
-    end
-    local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
+    -- Only write to disk on server (prevent client writes)
+    if rcon then
+        -- Convert records to JSONL format
+        local jsonl_lines = {}
+        for _, record in ipairs(resource_data) do
+            table.insert(jsonl_lines, helpers.table_to_json(record))
+        end
+        local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
 
-    -- Append to file (create if doesn't exist)
-    helpers.write_file(file_path, jsonl_data, true)
+        -- Append to file (create if doesn't exist)
+        helpers.write_file(file_path, jsonl_data, true)
+    end
 
     return file_path
 end
@@ -361,14 +396,17 @@ function Snapshot:emit_manifest_json(opts, manifest_data)
     manifest_data.tick = tick
     manifest_data.chunk = { x = chunk_x, y = chunk_y }
 
-    -- Atomic write: remove existing file first, then write new one
-    if helpers and helpers.remove_path then
-        pcall(helpers.remove_path, file_path)
-    end
+    -- Only write to disk on server (prevent client writes)
+    if rcon then
+        -- Atomic write: remove existing file first, then write new one
+        if helpers and helpers.remove_path then
+            pcall(helpers.remove_path, file_path)
+        end
 
-    -- Factorio will create subdirs under script-output if needed
-    local json_str = helpers.table_to_json(manifest_data)
-    helpers.write_file(file_path, json_str, false)
+        -- Factorio will create subdirs under script-output if needed
+        local json_str = helpers.table_to_json(manifest_data)
+        helpers.write_file(file_path, json_str, false)
+    end
 
     return file_path
 end
@@ -393,35 +431,39 @@ function Snapshot:emit_csv(opts, name, csv_data, metadata)
 
     -- New filename format: script-output/factoryverse/chunks/<chunkx>/<chunky>/{type}-<tick>.csv
     local csv_path = string.format("%s/%s-%d.csv", chunk_dir, name, tick)
-    helpers.write_file(csv_path, csv_data, false)
+    
+    -- Only write to disk on server (prevent client writes)
+    if rcon then
+        helpers.write_file(csv_path, csv_data, false)
 
-    -- Write metadata JSON file in new structure: script-output/factoryverse/metadata/{tick}/{snap-category}.json
-    local meta_dir = string.format("%s/metadata/%d", base_dir, tick)
-    local meta_path = string.format("%s/%s.json", meta_dir, name)
-    local meta_data = opts.metadata or {}
-    meta_data.tick = tick
-    meta_data.surface = self.game_state:get_surface() and self.game_state:get_surface().name or "unknown"
-    meta_data.timestamp = tick
-    meta_data.files = meta_data.files or {}
+        -- Write metadata JSON file in new structure: script-output/factoryverse/metadata/{tick}/{snap-category}.json
+        local meta_dir = string.format("%s/metadata/%d", base_dir, tick)
+        local meta_path = string.format("%s/%s.json", meta_dir, name)
+        local meta_data = opts.metadata or {}
+        meta_data.tick = tick
+        meta_data.surface = self.game_state:get_surface() and self.game_state:get_surface().name or "unknown"
+        meta_data.timestamp = tick
+        meta_data.files = meta_data.files or {}
 
-    -- Set headers at top level if provided in metadata
-    if metadata and metadata.headers then
-        meta_data.headers = metadata.headers
+        -- Set headers at top level if provided in metadata
+        if metadata and metadata.headers then
+            meta_data.headers = metadata.headers
+        end
+
+        -- Add this CSV file to the metadata (simplified structure)
+        table.insert(meta_data.files, {
+            path = csv_path,
+            lines = (function()
+                local count = 0
+                for _ in string.gmatch(csv_data, "\n") do count = count + 1 end
+                return count
+            end)()
+        })
+
+        -- Write metadata (overwrite each time to accumulate files)
+        local meta_json = helpers.table_to_json(meta_data)
+        helpers.write_file(meta_path, meta_json, false)
     end
-
-    -- Add this CSV file to the metadata (simplified structure)
-    table.insert(meta_data.files, {
-        path = csv_path,
-        lines = (function()
-            local count = 0
-            for _ in string.gmatch(csv_data, "\n") do count = count + 1 end
-            return count
-        end)()
-    })
-
-    -- Write metadata (overwrite each time to accumulate files)
-    local meta_json = helpers.table_to_json(meta_data)
-    helpers.write_file(meta_path, meta_json, false)
 
     return csv_path
 end
@@ -523,7 +565,7 @@ function Snapshot:_process_resources_for_chunk(chunk)
 
     local total_written = 0
 
-    -- Write resources as JSONL
+    -- Write resources as JSONL (mineable resources: iron, copper, coal, crude-oil, etc.)
     if #gathered.resources > 0 then
         local opts = {
             output_dir = "script-output/factoryverse",
@@ -535,28 +577,38 @@ function Snapshot:_process_resources_for_chunk(chunk)
         total_written = total_written + #gathered.resources
     end
 
-    -- Write rocks as JSONL
-    if #gathered.rocks > 0 then
+    -- Write water as JSONL
+    if #gathered.water > 0 then
         local opts = {
             output_dir = "script-output/factoryverse",
             chunk_x = chunk.x,
             chunk_y = chunk.y,
             tick = game.tick or 0
         }
-        self:emit_resource_jsonl(opts, "rocks", gathered.rocks)
-        total_written = total_written + #gathered.rocks
+        self:emit_resource_jsonl(opts, "water", gathered.water)
+        total_written = total_written + #gathered.water
     end
 
-    -- Write trees as JSONL
-    if #gathered.trees > 0 then
+    -- Combine rocks and trees into resource_entities
+    local resource_entities = {}
+    for _, rock in ipairs(gathered.rocks) do
+        rock.entity_type = "rock"
+        table.insert(resource_entities, rock)
+    end
+    for _, tree in ipairs(gathered.trees) do
+        tree.entity_type = "tree"
+        table.insert(resource_entities, tree)
+    end
+
+    if #resource_entities > 0 then
         local opts = {
             output_dir = "script-output/factoryverse",
             chunk_x = chunk.x,
             chunk_y = chunk.y,
             tick = game.tick or 0
         }
-        self:emit_resource_jsonl(opts, "trees", gathered.trees)
-        total_written = total_written + #gathered.trees
+        self:emit_resource_jsonl(opts, "resource_entities", resource_entities)
+        total_written = total_written + #resource_entities
     end
 
     return total_written

@@ -109,10 +109,16 @@ function GameState:get_charted_chunks(sort_by_distance)
         return charted_chunks
     end
 
-    -- NOTE: Factorio behavior - is_chunk_charted() only returns true for chunks charted by a connected player
-    -- On headless servers without connected players, force.chart() is called but is_chunk_charted() returns false
-    -- This is a known limitation in Factorio: charting requires an active player connection to the force
-    -- When a player connects (with Lua controller or character), charting becomes visible/registered
+    -- ========================================================================
+    -- SOURCE 1: PLAYER-CHARTED CHUNKS (Primary method - most reliable)
+    -- ========================================================================
+    -- Try to get chunks charted by LuaPlayer characters via force.is_chunk_charted()
+    -- This works reliably on:
+    --   - Saves where players have explored the map
+    --   - Any server with connected LuaPlayer characters
+    -- This does NOT work reliably on:
+    --   - Headless servers with no connected players (known Factorio limitation)
+    --   - force.chart() called but is_chunk_charted() still returns false
     for chunk in surface.get_chunks() do
         generated_count = generated_count + 1
         if force.is_chunk_charted(surface, chunk) then
@@ -120,8 +126,15 @@ function GameState:get_charted_chunks(sort_by_distance)
         end
     end
 
-    -- Fallback: if no chunks are charted but we have registered areas, use those
-    -- This handles the headless server case where is_chunk_charted() returns false
+    -- ========================================================================
+    -- SOURCE 2: AGENT-TRACKED CHUNKS (Fallback - headless servers)
+    -- ========================================================================
+    -- If is_chunk_charted() returned empty, fall back to manually registered areas
+    -- This is populated by:
+    --   - MapDiscovery:scan_and_discover() (on agent movement)
+    --   - MapDiscovery.initialize() (on initial setup)
+    -- We explicitly call gs:register_charted_area() because LuaEntity agents
+    -- don't auto-chart chunks like LuaPlayer does
     if #charted_chunks == 0 and storage.registered_charted_areas then
         for _, chunk_data in pairs(storage.registered_charted_areas) do
             if chunk_data then
@@ -138,10 +151,6 @@ function GameState:get_charted_chunks(sort_by_distance)
     if sort_by_distance == true then
         utils.sort_coordinates_by_distance(charted_chunks)
     end
-
-    -- -- Log summary for debugging
-    -- log(string.format("Charted chunks: %d out of %d generated chunks (registered: %d)", 
-    --     #charted_chunks, generated_count, storage.registered_charted_areas and next(storage.registered_charted_areas) and #storage.registered_charted_areas or 0))
 
     return charted_chunks
 end

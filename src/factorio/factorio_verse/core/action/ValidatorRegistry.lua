@@ -95,22 +95,27 @@ function ValidatorRegistry:build_registry()
         
         -- Category level validators (use "category.*" patterns)
         "actions.agent.validator",
-        "actions.entity.validator", 
-        "actions.item.validator",
+        "actions.entity.validator",
+        "actions.crafting.validator",
+        "actions.research.validator",
+        "actions.entity.inventory.validator",
         
         -- Specific action validators (use exact action names)
         "actions.agent.walk.validator",
         "actions.agent.send_message.validator",
         "actions.entity.place.validator",
-        "actions.entity.remove.validator",
-        "actions.entity.move.validator",
         "actions.entity.set_recipe.validator",
-        "actions.item.craft.validator",
-        "actions.item.transfer.validator",
+        "actions.crafting.craft_sync.validator",
+        "actions.crafting.craft_enqueue.validator",
+        "actions.crafting.craft_cancel.validator",
+        "actions.research.enqueue_research.validator",
+        "actions.research.cancel_research.validator",
 
-        -- Flat actions
-        "actions.start_research.validator",
-        "actions.mine_resource.validator"
+        "actions.entity.inventory.set_item.validator",
+        "actions.entity.inventory.get_item.validator",
+        "actions.entity.inventory.set_limit.validator",
+
+        "actions.mine_resource.validator",
     }
     
     -- Load each validator module

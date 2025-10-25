@@ -138,6 +138,20 @@ action_queue:register_queue_remote_interface()
 register_all_events()
 
 -- ============================================================================
+-- ACTION QUEUE HANDLER (called by on_load after snapshot, and at init)
+-- ============================================================================
+
+local MAX_ACTIONS_PER_TICK = 10
+
+local function register_action_queue_handler()
+  script.on_nth_tick(1, function(event)
+    if action_queue and action_queue.process_some then
+      action_queue:process_some(MAX_ACTIONS_PER_TICK)
+    end
+  end)
+end
+
+-- ============================================================================
 -- LIFECYCLE CALLBACKS
 -- ============================================================================
 
@@ -167,18 +181,46 @@ script.on_load(function()
   log("hello from on_load")
   admin_api.load_helpers()
   admin_api.load_commands()
-  -- Restore persisted queue state after load
-  -- action_queue:load_from_global()
+  
+  -- Register a one-time tick handler for initial snapshot
+  local handler_registered = false
+  local function check_and_snapshot(event)
+    if handler_registered then return end
+    handler_registered = true
+    
+    -- Take snapshot ONLY on server startup with no clients
+    if game.is_multiplayer() and #game.connected_players == 0 then
+      log("Server startup detected - taking initial map snapshot")
+      local surface = game.surfaces[1]
+      if surface and #surface.find_entities() > 0 then
+        log("Existing entities found - taking snapshot")
+        local snapshot = Snapshot:get_instance()
+        snapshot:take_map_snapshot({
+          async = true,
+          chunks_per_tick = 2,
+          components = {"entities", "resources"}
+        })
+      else
+        log("No entities found - skipping snapshot")
+      end
+    else
+      log("Client load or players present - skipping snapshot")
+    end
+    
+    -- Unregister this handler - it will never fire again
+    script.on_nth_tick(1, nil)
+    
+    -- Re-register the action queue processing handler for tick 1
+    register_action_queue_handler()
+  end
+  
+  -- Register handler to fire on next tick
+  script.on_nth_tick(1, check_and_snapshot)
 end)
 
 script.on_configuration_changed(function()
   log("hello from on_configuration_changed")
 end)
 
--- Bounded action processing each tick (deterministic, fair executor)
-local MAX_ACTIONS_PER_TICK = 10
-script.on_nth_tick(1, function(event)
-  if action_queue and action_queue.process_some then
-    action_queue:process_some(MAX_ACTIONS_PER_TICK)
-  end
-end)
+-- Register action queue handler for tick 1 processing
+register_action_queue_handler()
