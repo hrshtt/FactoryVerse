@@ -1,7 +1,5 @@
---- @class TestRunner
 --- Test execution engine for FactoryVerse actions
-local TestRunner = {}
-TestRunner.__index = TestRunner
+--- Uses functional approach to avoid metatable issues across script boundaries
 
 --- @class TestResult
 --- @field test_name string
@@ -19,21 +17,20 @@ TestRunner.__index = TestRunner
 --- @field failures table<TestResult>
 
 --- Create a new TestRunner instance
---- @return TestRunner
-function TestRunner:new()
-    local instance = {
+--- @return table
+local function create_test_runner()
+    return {
         results = {},
         current_test = nil,
         current_context = nil
     }
-    setmetatable(instance, self)
-    return instance
 end
 
 --- Run a complete test suite
+--- @param test_runner table Test runner instance
 --- @param test_suite table Test suite structure
 --- @return TestSuite
-function TestRunner:run_suite(test_suite)
+local function run_suite(test_runner, test_suite)
     local start_time = game.tick
     local suite_result = {
         total = 0,
@@ -44,7 +41,7 @@ function TestRunner:run_suite(test_suite)
         failures = {}
     }
     
-    self.results = {}
+    test_runner.results = {}
     
     -- Run tests by category
     for category_name, category_tests in pairs(test_suite) do
@@ -52,7 +49,7 @@ function TestRunner:run_suite(test_suite)
             for test_name, test_module in pairs(category_tests) do
                 if type(test_module) == "table" and test_module.tests then
                     local full_test_name = category_name .. "." .. test_name
-                    local result = self:run_test_module(full_test_name, test_module)
+                    local result = run_test_module(test_runner, full_test_name, test_module)
                     
                     suite_result.total = suite_result.total + 1
                     table.insert(suite_result.results, result)
@@ -69,14 +66,16 @@ function TestRunner:run_suite(test_suite)
     end
     
     suite_result.duration = game.tick - start_time
+    suite_result.success_rate = suite_result.total > 0 and (suite_result.passed / suite_result.total * 100) or 0
     return suite_result
 end
 
 --- Run a single test module
+--- @param test_runner table Test runner instance
 --- @param test_name string Full test name (category.test)
 --- @param test_module table Test module with setup, tests, teardown
 --- @return TestResult
-function TestRunner:run_test_module(test_name, test_module)
+local function run_test_module(test_runner, test_name, test_module)
     local start_time = game.tick
     local result = {
         test_name = test_name,
@@ -86,12 +85,12 @@ function TestRunner:run_test_module(test_name, test_module)
         assertions = 0
     }
     
-    self.current_test = test_name
-    self.current_context = {}
+    test_runner.current_test = test_name
+    test_runner.current_context = {}
     
     -- Setup
     if test_module.setup then
-        local ok, err = pcall(test_module.setup, self.current_context)
+        local ok, err = pcall(test_module.setup, test_runner.current_context)
         if not ok then
             result.error = "Setup failed: " .. tostring(err)
             result.duration = game.tick - start_time
@@ -107,7 +106,7 @@ function TestRunner:run_test_module(test_name, test_module)
         if type(test_function) == "function" then
             total_test_cases = total_test_cases + 1
             
-            local case_ok, case_err = pcall(test_function, self.current_context)
+            local case_ok, case_err = pcall(test_function, test_runner.current_context)
             if case_ok then
                 test_cases_passed = test_cases_passed + 1
             else
@@ -119,7 +118,7 @@ function TestRunner:run_test_module(test_name, test_module)
     
     -- Teardown
     if test_module.teardown then
-        local ok, err = pcall(test_module.teardown, self.current_context)
+        local ok, err = pcall(test_module.teardown, test_runner.current_context)
         if not ok and not result.error then
             result.error = "Teardown failed: " .. tostring(err)
         end
@@ -132,10 +131,11 @@ function TestRunner:run_test_module(test_name, test_module)
 end
 
 --- Run a specific test by name
+--- @param test_runner table Test runner instance
 --- @param test_name string Test name (category.test)
 --- @param test_suite table Test suite structure
 --- @return TestResult|nil
-function TestRunner:run_test(test_name, test_suite)
+local function run_test(test_runner, test_name, test_suite)
     local parts = {}
     for part in string.gmatch(test_name, "[^%.]+") do
         table.insert(parts, part)
@@ -155,7 +155,7 @@ function TestRunner:run_test(test_name, test_suite)
     local test = parts[2]
     
     if test_suite[category] and test_suite[category][test] then
-        return self:run_test_module(test_name, test_suite[category][test])
+        return run_test_module(test_runner, test_name, test_suite[category][test])
     else
         return {
             test_name = test_name,
@@ -168,10 +168,11 @@ function TestRunner:run_test(test_name, test_suite)
 end
 
 --- Run all tests in a category
+--- @param test_runner table Test runner instance
 --- @param category string Category name
 --- @param test_suite table Test suite structure
 --- @return TestSuite
-function TestRunner:run_category(category, test_suite)
+local function run_category(test_runner, category, test_suite)
     local start_time = game.tick
     local suite_result = {
         total = 0,
@@ -186,7 +187,7 @@ function TestRunner:run_category(category, test_suite)
         for test_name, test_module in pairs(test_suite[category]) do
             if type(test_module) == "table" and test_module.tests then
                 local full_test_name = category .. "." .. test_name
-                local result = self:run_test_module(full_test_name, test_module)
+                local result = run_test_module(test_runner, full_test_name, test_module)
                 
                 suite_result.total = suite_result.total + 1
                 table.insert(suite_result.results, result)
@@ -202,26 +203,30 @@ function TestRunner:run_category(category, test_suite)
     end
     
     suite_result.duration = game.tick - start_time
+    suite_result.success_rate = suite_result.total > 0 and (suite_result.passed / suite_result.total * 100) or 0
     return suite_result
 end
 
 --- Get current test results
+--- @param test_runner table Test runner instance
 --- @return table
-function TestRunner:get_results()
-    return self.results
+local function get_results(test_runner)
+    return test_runner.results
 end
 
 --- Get current test context (for assertions)
+--- @param test_runner table Test runner instance
 --- @return table|nil
-function TestRunner:get_current_context()
-    return self.current_context
+local function get_current_context(test_runner)
+    return test_runner.current_context
 end
 
 --- Increment assertion count for current test
-function TestRunner:increment_assertions()
-    if self.current_test then
-        for _, result in ipairs(self.results) do
-            if result.test_name == self.current_test then
+--- @param test_runner table Test runner instance
+local function increment_assertions(test_runner)
+    if test_runner.current_test then
+        for _, result in ipairs(test_runner.results) do
+            if result.test_name == test_runner.current_test then
                 result.assertions = result.assertions + 1
                 break
             end
@@ -229,4 +234,13 @@ function TestRunner:increment_assertions()
     end
 end
 
-return TestRunner:new()
+-- Export functional API
+return {
+    create_test_runner = create_test_runner,
+    run_suite = run_suite,
+    run_test = run_test,
+    run_category = run_category,
+    get_results = get_results,
+    get_current_context = get_current_context,
+    increment_assertions = increment_assertions
+}

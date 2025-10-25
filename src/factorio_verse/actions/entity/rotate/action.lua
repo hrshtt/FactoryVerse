@@ -6,11 +6,15 @@ local gs = GameState:new()
 
 --- @class RotateEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field unit_number number Unique identifier for the target entity
+--- @field position_x number X coordinate of the target entity
+--- @field position_y number Y coordinate of the target entity
+--- @field entity_name string Entity prototype name
 --- @field direction string|number|nil Optional direction; accepts alias from GameState.aliases.direction or defines.direction value
 local RotateEntityParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
-    unit_number = { type = "number", required = true },
+    position_x = { type = "number", required = true },
+    position_y = { type = "number", required = true },
+    entity_name = { type = "string", required = true },
     direction = { type = "any", required = false }
 })
 
@@ -23,7 +27,8 @@ function RotateEntityAction:run(params)
     local p = self:_pre_run(gs, params)
     ---@cast p RotateEntityParams
 
-    local entity = game.get_entity_by_unit_number(p.unit_number)
+    local position = { x = p.position_x, y = p.position_y }
+    local entity = game.surfaces[1].find_entity(p.entity_name, position)
     if not entity or not entity.valid then
         error("Entity not found or invalid")
     end
@@ -57,13 +62,14 @@ function RotateEntityAction:run(params)
         -- Check if already in target direction (no-op)
         if original_direction == target_direction then
             return self:_post_run({
-                unit_number = entity.unit_number,
+                position = position,
+                entity_name = p.entity_name,
                 direction = entity.direction,
                 original_direction = original_direction,
                 new_direction = new_direction,
                 no_op = true,
                 message = "Entity already in requested direction",
-                affected_unit_numbers = { entity.unit_number }
+                affected_positions = { { position = position, entity_name = p.entity_name } }
             }, p)
         end
 
@@ -77,11 +83,12 @@ function RotateEntityAction:run(params)
     end
 
     local result = {
-        unit_number = entity.unit_number,
+        position = position,
+        entity_name = p.entity_name,
         direction = entity.direction,
         original_direction = original_direction,
         new_direction = new_direction,
-        affected_unit_numbers = { entity.unit_number }
+        affected_positions = { { position = position, entity_name = p.entity_name, entity_type = entity.type } }
     }
     
     return self:_post_run(result, p)

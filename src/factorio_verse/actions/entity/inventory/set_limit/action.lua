@@ -6,12 +6,16 @@ local gs = GameState:new()
 
 --- @class SetLimitParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field unit_number number Unique identifier for the target entity
+--- @field position_x number X coordinate of the target entity
+--- @field position_y number Y coordinate of the target entity
+--- @field entity_name string Entity prototype name
 --- @field inventory_type string Inventory type string (e.g., "chest", "input", "output")
 --- @field limit number Maximum number of slots to allow (0 = unlimited)
 local SetLimitParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
-    unit_number = { type = "number", required = true },
+    position_x = { type = "number", required = true },
+    position_y = { type = "number", required = true },
+    entity_name = { type = "string", required = true },
     inventory_type = { type = "string", required = true },
     limit = { type = "number", required = true }
 })
@@ -25,7 +29,8 @@ function SetLimitAction:run(params)
     local p = self:_pre_run(gs, params)
     ---@cast p SetLimitParams
 
-    local entity = game.get_entity_by_unit_number(p.unit_number)
+    local position = { x = p.position_x, y = p.position_y }
+    local entity = game.surfaces[1].find_entity(p.entity_name, position)
     if not entity or not entity.valid then
         error("Entity not found or invalid")
     end
@@ -66,7 +71,7 @@ function SetLimitAction:run(params)
     local current_limit = target_inventory.get_bar()
     if current_limit == p.limit then
         return self:_post_run({
-            unit_number = entity.unit_number,
+            position = position,
             entity_name = entity.name,
             entity_type = entity.type,
             inventory_type = p.inventory_type,
@@ -74,7 +79,7 @@ function SetLimitAction:run(params)
             new_limit = p.limit,
             action = "no_op",
             message = "Inventory already has this limit",
-            affected_unit_numbers = { entity.unit_number }
+            affected_positions = { { position = position, entity_name = p.entity_name, entity_type = entity.type } }
         }, p)
     end
 
@@ -82,14 +87,14 @@ function SetLimitAction:run(params)
     target_inventory.set_bar(p.limit)
 
     local result = {
-        unit_number = entity.unit_number,
+        position = position,
         entity_name = entity.name,
         entity_type = entity.type,
         inventory_type = p.inventory_type,
         previous_limit = current_limit,
         new_limit = p.limit,
         action = "set",
-        affected_unit_numbers = { entity.unit_number }
+        affected_positions = { { position = position, entity_name = p.entity_name, entity_type = entity.type } }
     }
     
     return self:_post_run(result, p)

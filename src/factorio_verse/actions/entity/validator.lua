@@ -4,15 +4,33 @@ local GameState = require("core.game_state.GameState")
 local validator_registry = ValidatorRegistry:new()
 
 --- Validate that entity exists and is valid
---- @param params table
+--- @param params table - must include position_x, position_y or position table
 --- @return boolean, string|nil
 local function validate_entity_exists(params)
-    if type(params.unit_number) ~= "number" then
-        return false, "unit_number must be a number"
+    -- Support both position_x/position_y and position table
+    local pos_x = params.position_x or (params.position and params.position.x)
+    local pos_y = params.position_y or (params.position and params.position.y)
+    
+    if type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+        return false, "position_x and position_y must be numbers"
     end
     
-    local entity = game.get_entity_by_unit_number(params.unit_number)
+    -- Support optional entity_name parameter for more precise lookup
+    local entity_name = params.entity_name
+    
+    local position = { x = pos_x, y = pos_y }
+    local entity
+    
+    if entity_name then
+        entity = game.surfaces[1].find_entity(entity_name, position)
+    else
+        -- Find any entity at position (less precise, fallback)
+        local entities = game.surfaces[1].find_entities_filtered({ position = position, limit = 1 })
+        entity = entities and entities[1] or nil
+    end
+    
     if not entity or not entity.valid then
+        log("DEBUG: Entity at position {" .. pos_x .. "," .. pos_y .. "} not found or invalid")
         return false, "Entity not found or invalid"
     end
     
@@ -20,14 +38,28 @@ local function validate_entity_exists(params)
 end
 
 --- Validate that agent can reach the entity (optional check)
---- @param params table
+--- @param params table - must include position_x, position_y and agent_id
 --- @return boolean, string|nil
 local function validate_entity_reachable(params)
-    if not params.agent_id or not params.unit_number then
+    -- Support both position_x/position_y and position table
+    local pos_x = params.position_x or (params.position and params.position.x)
+    local pos_y = params.position_y or (params.position and params.position.y)
+    
+    if not params.agent_id or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
         return true -- Skip if parameters not provided
     end
     
-    local entity = game.get_entity_by_unit_number(params.unit_number)
+    local position = { x = pos_x, y = pos_y }
+    local entity_name = params.entity_name
+    local entity
+    
+    if entity_name then
+        entity = game.surfaces[1].find_entity(entity_name, position)
+    else
+        local entities = game.surfaces[1].find_entities_filtered({ position = position, limit = 1 })
+        entity = entities and entities[1] or nil
+    end
+    
     if not entity or not entity.valid then
         return true -- Let validate_entity_exists handle this
     end
@@ -40,7 +72,7 @@ local function validate_entity_reachable(params)
     
     -- Use WalkHelper for reachability check
     local walk_helper = require("actions.agent.walk.helper")
-    local reachable = walk_helper:is_reachable(agent, {x = entity.position.x, y = entity.position.y})
+    local reachable = walk_helper:is_reachable(agent, position)
     if not reachable then
         return false, "Agent cannot reach entity"
     end

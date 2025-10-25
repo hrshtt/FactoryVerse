@@ -74,12 +74,13 @@ function TestAssertions.assert_contains(str, substring, message)
 end
 
 --- Factorio-specific: entity exists and is valid
---- @param unit_number number
+--- @param position table - {x, y} entity position
+--- @param entity_name string - entity prototype name
 --- @param message string|nil
-function TestAssertions.assert_entity_exists(unit_number, message)
-    local entity = game.get_entity_by_unit_number(unit_number)
+function TestAssertions.assert_entity_exists(position, entity_name, message)
+    local entity = game.surfaces[1].find_entity(entity_name, position)
     if not entity or not entity.valid then
-        local error_msg = message or ("Entity with unit_number " .. tostring(unit_number) .. " does not exist or is invalid")
+        local error_msg = message or ("Entity '" .. tostring(entity_name) .. "' at position {" .. tostring(position.x) .. ", " .. tostring(position.y) .. "} does not exist or is invalid")
         error(error_msg)
     end
 end

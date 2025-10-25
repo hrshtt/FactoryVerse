@@ -184,17 +184,20 @@ function Snapshot:take_recurring_status()
 end
 
 --- Update single entity after action mutation (called from Action:_post_run)
---- @param unit_number number
---- @param last_position table|nil - {x, y} if entity was moved/removed
+--- @param position table - {x, y} position of entity
+--- @param entity_name string - name of the entity
+--- @param entity_type string|nil - optional entity type for component determination
 --- @return boolean - success
-function Snapshot:update_entity_from_action(unit_number, last_position)
-    local entity = game.get_entity_by_unit_number(unit_number)
+function Snapshot:update_entity_from_action(position, entity_name, entity_type)
+    if not position or not entity_name then return false end
+    
+    local entity = game.surfaces[1].find_entity(entity_name, position)
     if not entity or not entity.valid then
-        return self:remove_entity_from_action(unit_number, last_position)
+        return self:remove_entity_from_action(position, entity_name)
     end
 
     local chunks = self:_get_entity_chunks(entity)
-    local component_type = EntitiesSnapshot.determine_component_type(entity.type, entity.name)
+    local component_type = entity_type or EntitiesSnapshot.determine_component_type(entity.type, entity.name)
     local serialized = EntitiesSnapshot.serialize_entity(entity, {})
     if not serialized then
         return false
@@ -209,7 +212,7 @@ function Snapshot:update_entity_from_action(unit_number, last_position)
             tick = game.tick or 0
         }
 
-        self:emit_entity_json(opts, component_type, unit_number, entity.name, serialized)
+        self:emit_entity_json(opts, component_type, position, entity_name, serialized)
         self:_update_component_manifest(chunk.x, chunk.y, component_type)
     end
 
@@ -217,20 +220,21 @@ function Snapshot:update_entity_from_action(unit_number, last_position)
 end
 
 --- Remove entity files after action removal (called from Action:_post_run)
---- @param unit_number number
---- @param last_position table|nil - {x, y} for chunk calculation
+--- @param position table - {x, y} for chunk calculation
+--- @param entity_name string - entity prototype name
 --- @return boolean - success
-function Snapshot:remove_entity_from_action(unit_number, last_position)
-    if not last_position then return false end
+function Snapshot:remove_entity_from_action(position, entity_name)
+    if not position or not entity_name then return false end
 
-    local chunk_x = math.floor(last_position.x / 32)
-    local chunk_y = math.floor(last_position.y / 32)
+    local chunk_x = math.floor(position.x / 32)
+    local chunk_y = math.floor(position.y / 32)
 
     -- Remove from all component directories
     local component_types = { "entities", "belts", "pipes", "poles" }
     for _, comp_type in ipairs(component_types) do
-        local file_pattern = string.format("script-output/factoryverse/chunks/%d/%d/%s/%d-*.json",
-            chunk_x, chunk_y, comp_type, unit_number)
+        -- Updated file pattern to match new format: {x}_{y}_{entity_name}.json
+        local file_pattern = string.format("script-output/factoryverse/chunks/%d/%d/%s/%s_%s_%s.json",
+            chunk_x, chunk_y, comp_type, "%.+", "%.+", entity_name)
         pcall(helpers.remove_path, file_pattern)
     end
 
@@ -272,11 +276,11 @@ end
 --- Emit entity JSON file for a specific entity
 --- @param opts table - options {output_dir, chunk_x, chunk_y, tick}
 --- @param component_type string - component type ("entities", "belts", "pipes", "poles")
---- @param unit_number number - entity unit number
+--- @param position table - {x, y} entity position for filename
 --- @param entity_name string - entity prototype name
 --- @param payload table - entity data to serialize
 --- @return string - file path written
-function Snapshot:emit_entity_json(opts, component_type, unit_number, entity_name, payload)
+function Snapshot:emit_entity_json(opts, component_type, position, entity_name, payload)
     local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
 
     -- Get chunk coordinates from opts
@@ -293,8 +297,10 @@ function Snapshot:emit_entity_json(opts, component_type, unit_number, entity_nam
     -- Add tick to payload for tracking
     payload.tick = tick
 
-    -- Filename format: {unit_number}-{entity_name}.json
-    local file_path = string.format("%s/%d-%s.json", component_dir, unit_number, entity_name)
+    -- Filename format: {x}_{y}_{entity_name}.json (position-based instead of unit_number)
+    local x = math.floor(position.x * 10) / 10  -- Round to 1 decimal place for filename safety
+    local y = math.floor(position.y * 10) / 10
+    local file_path = string.format("%s/%s_%s_%s.json", component_dir, x, y, entity_name)
 
     -- Only write to disk on server (prevent client writes)
     if rcon then
@@ -312,8 +318,9 @@ function Snapshot:emit_entity_json(opts, component_type, unit_number, entity_nam
 end
 
 --- Emit status records to JSONL file (overwrite on each snapshot)
+--- Status records now include position_x and position_y instead of unit_number
 --- @param opts table - options {output_dir, chunk_x, chunk_y}
---- @param status_records table - array of status records
+--- @param status_records table - array of status records (should have position_x, position_y fields)
 --- @return string - file path written
 function Snapshot:emit_status_jsonl(opts, status_records)
     local base_dir = (opts and opts.output_dir) or "script-output/factoryverse"
@@ -529,14 +536,18 @@ function Snapshot:_process_entities_for_chunk(chunk)
                 tick = game.tick or 0
             }
 
-            self:emit_entity_json(opts, comp_type, entity_data.unit_number, entity_data.name, entity_data)
+            self:emit_entity_json(opts, comp_type, entity_data.position, entity_data.name, entity_data)
 
-            -- Track for manifest
+            -- Track for manifest (now using positions instead of unit_numbers)
             manifests[comp_type].entity_counts = manifests[comp_type].entity_counts or {}
             manifests[comp_type].entity_counts[entity_data.name] =
                 (manifests[comp_type].entity_counts[entity_data.name] or 0) + 1
-            manifests[comp_type].unit_numbers = manifests[comp_type].unit_numbers or {}
-            table.insert(manifests[comp_type].unit_numbers, entity_data.unit_number)
+            manifests[comp_type].positions = manifests[comp_type].positions or {}
+            table.insert(manifests[comp_type].positions, {
+                x = entity_data.position_x or (entity_data.position and entity_data.position.x),
+                y = entity_data.position_y or (entity_data.position and entity_data.position.y),
+                name = entity_data.name
+            })
 
             total_written = total_written + 1
         end

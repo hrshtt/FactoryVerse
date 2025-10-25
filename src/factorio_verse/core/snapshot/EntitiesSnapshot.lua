@@ -199,8 +199,9 @@ function EntitiesSnapshot.gather_entities_for_chunk(chunk, options)
 end
 
 --- Get status view for entities in a chunk
+--- Status records now use position instead of unit_number
 --- @param chunk table - {x, y, area}
---- @return table - array of {unit_number, status, status_name, health, tick}
+--- @return table - array of {position_x, position_y, entity_name, status, status_name, health, tick}
 function EntitiesSnapshot.get_status_view_for_chunk(chunk)
     local gs = GameState:new()
     local surface = gs:get_surface()
@@ -211,21 +212,23 @@ function EntitiesSnapshot.get_status_view_for_chunk(chunk)
 
     local allowed_types = EntitiesSnapshot.get_allowed_entity_types()
     local filter = { area = chunk.area, force = force, type = allowed_types }
-        local entities = surface.find_entities_filtered(filter)
-        
-            local status_records = {}
+    local entities = surface.find_entities_filtered(filter)
+    
+    local status_records = {}
     for _, entity in ipairs(entities) do
         if entity and entity.valid then
             -- Filter rocks
             if entity.type == "simple-entity" then
                 local n = entity.name
-                        if n == "rock-huge" or n == "rock-big" or n == "sand-rock-big" then
+                if n == "rock-huge" or n == "rock-big" or n == "sand-rock-big" then
                     goto continue
                 end
             end
 
             table.insert(status_records, {
-                unit_number = entity.unit_number,
+                position_x = entity.position.x,
+                position_y = entity.position.y,
+                entity_name = entity.name,
                 status = entity.status or 0,
                 status_name = utils.status_to_name(entity.status),
                 health = entity.health or 0,
@@ -239,33 +242,40 @@ function EntitiesSnapshot.get_status_view_for_chunk(chunk)
 end
 
 --- Get inventory view for a specific entity
---- @param unit_number number - entity unit number
---- @return table - {unit_number, tick, inventories} or {error, unit_number, tick}
-function EntitiesSnapshot.get_inventory_view(unit_number)
-    local entity = game.get_entity_by_unit_number(unit_number)
+--- @param position table - {x, y} entity position
+--- @param entity_name string - entity prototype name
+--- @return table - {position_x, position_y, entity_name, tick, inventories} or {error, position_x, position_y, entity_name, tick}
+function EntitiesSnapshot.get_inventory_view(position, entity_name)
+    local entity = game.surfaces[1].find_entity(entity_name, position)
     if not entity or not entity.valid then
         return {
             error = "Entity not found",
-            unit_number = unit_number,
+            position_x = position.x,
+            position_y = position.y,
+            entity_name = entity_name,
             tick = game.tick or 0
         }
     end
 
     local inventories = EntitiesSnapshot._get_entity_inventories(entity)
     return {
-        unit_number = unit_number,
+        position_x = position.x,
+        position_y = position.y,
+        entity_name = entity_name,
         tick = game.tick or 0,
         inventories = inventories
     }
 end
 
 --- Get inventory views for multiple entities
---- @param unit_numbers table - array of entity unit numbers
---- @return table - map of unit_number -> inventory data
-function EntitiesSnapshot.get_inventory_views(unit_numbers)
+--- @param positions table - array of {position, entity_name} objects
+--- @return table - array of inventory data
+function EntitiesSnapshot.get_inventory_views(positions)
     local results = {}
-    for _, unit_number in ipairs(unit_numbers) do
-        results[unit_number] = EntitiesSnapshot.get_inventory_view(unit_number)
+    for _, pos_info in ipairs(positions) do
+        local pos = pos_info.position or pos_info
+        local entity_name = pos_info.entity_name
+        table.insert(results, EntitiesSnapshot.get_inventory_view(pos, entity_name))
     end
     return results
 end

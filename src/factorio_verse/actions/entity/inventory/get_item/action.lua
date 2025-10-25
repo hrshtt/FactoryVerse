@@ -6,13 +6,17 @@ local gs = GameState:new()
 
 --- @class GetItemParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field unit_number number Unique identifier for the target entity
+--- @field position_x number X coordinate of the target entity
+--- @field position_y number Y coordinate of the target entity
+--- @field entity_name string Entity prototype name
 --- @field item string|table Item name to get, or table of {item_name = count}, or "ALL_ITEMS"
 --- @field count number|nil Number of items to get (ignored if item is table or "ALL_ITEMS")
 --- @field inventory_type string|nil Inventory type string (e.g., "chest", "modules", "fuel")
 local GetItemParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
-    unit_number = { type = "number", required = true },
+    position_x = { type = "number", required = true },
+    position_y = { type = "number", required = true },
+    entity_name = { type = "string", required = true },
     item = { type = "any", required = true },
     count = { type = "number", required = false, default = 1 },
     inventory_type = { type = "string", required = false }
@@ -72,7 +76,8 @@ function GetItemAction:run(params)
     local p = self:_pre_run(gs, params)
     ---@cast p GetItemParams
 
-    local entity = game.get_entity_by_unit_number(p.unit_number)
+    local position = { x = p.position_x, y = p.position_y }
+    local entity = game.surfaces[1].find_entity(p.entity_name, position)
     if not entity or not entity.valid then
         error("Entity not found or invalid")
     end
@@ -206,14 +211,14 @@ function GetItemAction:run(params)
     end
 
     local result = {
-        unit_number = entity.unit_number,
+        position = position,
         entity_name = entity.name,
         entity_type = entity.type,
         inventory_type = inventory_type_name,
         items_requested = items_to_get,
         transfer_results = transfer_results,
         total_transferred = total_transferred,
-        affected_unit_numbers = { entity.unit_number },
+        affected_positions = { { position = position, entity_name = p.entity_name, entity_type = entity.type } },
         affected_inventories = {
             {
                 owner_type = "agent",
@@ -223,7 +228,8 @@ function GetItemAction:run(params)
             },
             {
                 owner_type = "entity",
-                owner_id = p.unit_number,
+                owner_position = position,
+                owner_name = p.entity_name,
                 inventory_type = inventory_type_name,
                 changes = inventory_changes_entity
             }

@@ -136,7 +136,7 @@ end
 
 --- @param num_agents number
 --- @param destroy_existing boolean|nil
---- @return boolean
+--- @return table agents created
 function AgentGameState:create_agent_characters(num_agents, destroy_existing)
     if not storage.agent_characters then
         storage.agent_characters = {}
@@ -150,13 +150,15 @@ function AgentGameState:create_agent_characters(num_agents, destroy_existing)
         storage.agent_characters = {}
     end
 
+    local created_agents = {}
     for i = 1, num_agents do
         log("Creating agent character " .. i .. " of " .. num_agents)
         position = { x = 0, y = (i - 1) * 2 }
         local char = self:create_agent(i, position, generate_agent_color(i, num_agents))
         storage.agent_characters[i] = char
+        table.insert(created_agents, char)
     end
-    return true
+    return created_agents
 end
 
 --- @param agent_id number

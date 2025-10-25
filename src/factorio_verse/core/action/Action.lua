@@ -124,23 +124,37 @@ function Action:_post_run(result, params)
     local Snapshot = require("core.snapshot.Snapshot")
     local snapshot = Snapshot:get_instance()
     
-    -- Update affected entities
-    if result.affected_unit_numbers then
-      for _, unit_number in ipairs(result.affected_unit_numbers) do
-        snapshot:update_entity_from_action(unit_number, nil)
+    -- Update affected entities (now using positions instead of unit_numbers)
+    if result.affected_positions then
+      for _, position_info in ipairs(result.affected_positions) do
+        local position = position_info.position or position_info
+        local entity_name = position_info.entity_name
+        local entity_type = position_info.entity_type
+        snapshot:update_entity_from_action(position, entity_name, entity_type)
       end
     end
     
-    -- Remove deleted entities
-    if result.removed_unit_numbers then
-      -- Extract last position from result if available
-      local last_position = nil
-      if result.removed_entity and result.removed_entity.position then
-        last_position = result.removed_entity.position
+    -- Remove deleted entities (now using positions instead of unit_numbers)
+    if result.removed_positions then
+      for _, position_info in ipairs(result.removed_positions) do
+        local position = position_info.position or position_info
+        local entity_name = position_info.entity_name
+        snapshot:remove_entity_from_action(position, entity_name)
       end
-      
-      for _, unit_number in ipairs(result.removed_unit_numbers) do
-        snapshot:remove_entity_from_action(unit_number, last_position)
+    end
+    
+    -- Legacy support: if affected_unit_numbers is provided, convert to positions
+    if result.affected_unit_numbers then
+      log("WARNING: affected_unit_numbers is deprecated, use affected_positions instead")
+      -- Note: Cannot convert unit_numbers to positions without entity lookup, so we skip these
+    end
+    
+    -- Legacy support: if removed_unit_numbers is provided, convert to positions
+    if result.removed_unit_numbers then
+      log("WARNING: removed_unit_numbers is deprecated, use removed_positions instead")
+      -- Extract position from result if available
+      if result.removed_entity and result.removed_entity.position then
+        snapshot:remove_entity_from_action(result.removed_entity.position, result.removed_entity.name)
       end
     end
   end

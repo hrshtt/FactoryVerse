@@ -34,11 +34,16 @@ end
 --- @param params table
 --- @return boolean, string|nil
 local function validate_inventory_space(params)
-    if not params.unit_number or not params.item or not params.count or not params.inventory_type then
+    -- Support both position_x/position_y and position table
+    local pos_x = params.position_x or (params.position and params.position.x)
+    local pos_y = params.position_y or (params.position and params.position.y)
+    
+    if not params.item or not params.count or not params.inventory_type or not params.entity_name or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
         return true -- Let other validators handle missing parameters
     end
     
-    local entity = game.get_entity_by_unit_number(params.unit_number)
+    local position = { x = pos_x, y = pos_y }
+    local entity = game.surfaces[1].find_entity(params.entity_name, position)
     if not entity or not entity.valid then
         return true -- Let validate_entity_exists handle this
     end

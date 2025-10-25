@@ -6,10 +6,14 @@ local gs = GameState:new()
 
 --- @class PickupEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field unit_number number Unique identifier for the target entity
+--- @field position_x number X coordinate of the target entity
+--- @field position_y number Y coordinate of the target entity
+--- @field entity_name string Entity prototype name
 local PickupEntityParams = ParamSpec:new({
     agent_id = { type = "number", required = true },
-    unit_number = { type = "number", required = true }
+    position_x = { type = "number", required = true },
+    position_y = { type = "number", required = true },
+    entity_name = { type = "string", required = true }
 })
 
 --- @class PickupEntityAction : Action
@@ -58,7 +62,8 @@ function PickupEntityAction:run(params)
     local p = self:_pre_run(gs, params)
     ---@cast p PickupEntityParams
 
-    local entity = game.get_entity_by_unit_number(p.unit_number)
+    local position = { x = p.position_x, y = p.position_y }
+    local entity = game.surfaces[1].find_entity(p.entity_name, position)
     if not entity or not entity.valid then
         error("Entity not found or invalid")
     end
@@ -118,6 +123,8 @@ function PickupEntityAction:run(params)
 
     -- Store entity position for removal tracking
     local entity_position = entity.position
+    local entity_name = entity.name
+    local entity_type = entity.type
 
     -- Mine the entity (this destroys it and returns items)
     local mined_items = entity.mine({inventory = agent_inventory, force = true})
@@ -138,7 +145,7 @@ function PickupEntityAction:run(params)
             actual_items[item_name] = count
         end
     end
-    actual_items[entity.name] = 1 -- Add the entity itself
+    actual_items[entity_name] = 1 -- Add the entity itself
 
     -- Calculate inventory changes for mutation contract
     local inventory_changes = {}
@@ -147,13 +154,12 @@ function PickupEntityAction:run(params)
     end
 
     local result = {
-        unit_number = p.unit_number,
-        entity_name = entity.name,
-        entity_type = entity.type,
         position = entity_position,
+        entity_name = entity_name,
+        entity_type = entity_type,
         items_obtained = actual_items,
-        removed_unit_numbers = { p.unit_number },
-        removed_entity = { position = entity_position },
+        removed_positions = { { position = entity_position, entity_name = entity_name } },
+        removed_entity = { position = entity_position, name = entity_name },
         affected_inventories = {
             {
                 owner_type = "agent",
