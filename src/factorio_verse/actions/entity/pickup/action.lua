@@ -1,0 +1,170 @@
+local Action = require("core.action.Action")
+local ParamSpec = require("core.action.ParamSpec")
+local GameState = require("core.game_state.GameState")
+
+local gs = GameState:new()
+
+--- @class PickupEntityParams : ParamSpec
+--- @field agent_id number Agent id executing the action
+--- @field unit_number number Unique identifier for the target entity
+local PickupEntityParams = ParamSpec:new({
+    agent_id = { type = "number", required = true },
+    unit_number = { type = "number", required = true }
+})
+
+--- @class PickupEntityAction : Action
+local PickupEntityAction = Action:new("entity.pickup", PickupEntityParams)
+
+--- Extract all inventories from an entity before mining
+--- @param entity LuaEntity
+--- @return table All items from all inventories
+local function extract_entity_inventories(entity)
+    local all_items = {}
+    
+    -- Inventory types to check (from EntitiesSnapshot.lua)
+    local inventory_types = {
+        chest = defines.inventory.chest,
+        fuel = defines.inventory.fuel,
+        burnt_result = defines.inventory.burnt_result,
+        input = defines.inventory.assembling_machine_input,
+        output = defines.inventory.assembling_machine_output,
+        modules = defines.inventory.assembling_machine_modules,
+        ammo = defines.inventory.turret_ammo,
+        trunk = defines.inventory.car_trunk,
+        cargo = defines.inventory.cargo_wagon,
+    }
+    
+    for inventory_name, inventory_type in pairs(inventory_types) do
+        local success, inventory = pcall(function()
+            return entity.get_inventory(inventory_type)
+        end)
+        
+        if success and inventory and inventory.valid then
+            local contents = inventory.get_contents()
+            if contents and next(contents) ~= nil then
+                for item_name, count in pairs(contents) do
+                    all_items[item_name] = (all_items[item_name] or 0) + count
+                end
+            end
+        end
+    end
+    
+    return all_items
+end
+
+--- @param params PickupEntityParams
+--- @return table result Data about the picked up entity and items
+function PickupEntityAction:run(params)
+    local p = self:_pre_run(gs, params)
+    ---@cast p PickupEntityParams
+
+    local entity = game.get_entity_by_unit_number(p.unit_number)
+    if not entity or not entity.valid then
+        error("Entity not found or invalid")
+    end
+
+    -- Check if entity is minable
+    if not entity.minable then
+        error("Entity is not minable")
+    end
+
+    local agent = gs:agent_state():get_agent(p.agent_id)
+    if not agent then
+        error("Agent not found")
+    end
+    local agent_inventory = agent.get_inventory(defines.inventory.character_main)
+    if not agent_inventory then
+        error("Agent inventory not found")
+    end
+
+    -- Extract all items from entity inventories before mining
+    local entity_items = extract_entity_inventories(entity)
+    
+    -- Calculate total items that will be obtained (entity + contents)
+    local total_items = {}
+    -- Add the entity itself
+    total_items[entity.name] = 1
+    -- Add all inventory contents
+    for item_name, count in pairs(entity_items) do
+        total_items[item_name] = (total_items[item_name] or 0) + count
+    end
+
+    -- Check if agent has enough space for all items
+    local can_fit_all = true
+    local space_check = {}
+    for item_name, count in pairs(total_items) do
+        local can_insert = agent_inventory.can_insert({name = item_name, count = count})
+        space_check[item_name] = can_insert
+        if can_insert < count then
+            can_fit_all = false
+        end
+    end
+
+    if not can_fit_all then
+        local missing_items = {}
+        for item_name, count in pairs(total_items) do
+            local can_insert = space_check[item_name]
+            if can_insert < count then
+                missing_items[item_name] = count - can_insert
+            end
+        end
+        local missing_str = ""
+        for item_name, count in pairs(missing_items) do
+            if missing_str ~= "" then missing_str = missing_str .. ", " end
+            missing_str = missing_str .. item_name .. ":" .. count
+        end
+        error("Agent inventory insufficient space for entity pickup. Missing space for: " .. missing_str)
+    end
+
+    -- Store entity position for removal tracking
+    local entity_position = entity.position
+
+    -- Mine the entity (this destroys it and returns items)
+    local mined_items = entity.mine({inventory = agent_inventory, force = true})
+    if not mined_items then
+        error("Failed to mine entity")
+    end
+
+    -- Insert the entity itself into agent inventory
+    local entity_inserted = agent_inventory.insert({name = entity.name, count = 1})
+    if entity_inserted < 1 then
+        error("Failed to insert entity into agent inventory")
+    end
+
+    -- Calculate actual items obtained
+    local actual_items = {}
+    if mined_items then
+        for item_name, count in pairs(mined_items) do
+            actual_items[item_name] = count
+        end
+    end
+    actual_items[entity.name] = 1 -- Add the entity itself
+
+    -- Calculate inventory changes for mutation contract
+    local inventory_changes = {}
+    for item_name, count in pairs(actual_items) do
+        inventory_changes[item_name] = count -- Positive: items gained
+    end
+
+    local result = {
+        unit_number = p.unit_number,
+        entity_name = entity.name,
+        entity_type = entity.type,
+        position = entity_position,
+        items_obtained = actual_items,
+        removed_unit_numbers = { p.unit_number },
+        removed_entity = { position = entity_position },
+        affected_inventories = {
+            {
+                owner_type = "agent",
+                owner_id = p.agent_id,
+                inventory_type = "character_main",
+                changes = inventory_changes
+            }
+        }
+    }
+    
+    return self:_post_run(result, p)
+end
+
+return PickupEntityAction
