@@ -28,16 +28,16 @@ return {
                 position_x = context.position.x,
                 position_y = context.position.y,
                 entity_name = context.entity_name,
-                recipe = "iron-plate"
+                recipe = "electronic-circuit"
             })
             
             if not result then
                 error("set_recipe returned nil")
             end
-            if result.new_recipe ~= "iron-plate" then
-                error("Expected new_recipe to be iron-plate, got: " .. tostring(result.new_recipe))
+            if result.new_recipe ~= "electronic-circuit" then
+                error("Expected new_recipe to be electronic-circuit, got: " .. tostring(result.new_recipe))
             end
-            if context.assembler.get_recipe().name ~= "iron-plate" then
+            if context.assembler.get_recipe().name ~= "electronic-circuit" then
                 error("Assembler recipe not actually set")
             end
         end,
@@ -60,8 +60,8 @@ return {
         end,
         
         test_overwrite_protection = function(context)
-            -- Set initial recipe
-            context.assembler.set_recipe("iron-plate")
+            -- Set initial recipe (crafting recipe compatible with assembler)
+            context.assembler.set_recipe("electronic-circuit")
             
             -- Try setting different recipe without overwrite
             local success, error = pcall(function()
@@ -70,7 +70,7 @@ return {
                     position_x = context.position.x,
                     position_y = context.position.y,
                     entity_name = context.entity_name,
-                    recipe = "copper-plate"
+                    recipe = "copper-cable"
                 })
             end)
             
@@ -80,8 +80,8 @@ return {
         end,
         
         test_overwrite_allowed = function(context)
-            -- Set initial recipe
-            context.assembler.set_recipe("iron-plate")
+            -- Set initial recipe (crafting recipe)
+            context.assembler.set_recipe("electronic-circuit")
             
             -- Set different recipe with overwrite
             local result = remote.call("actions", "entity.set_recipe", {
@@ -89,18 +89,18 @@ return {
                 position_x = context.position.x,
                 position_y = context.position.y,
                 entity_name = context.entity_name,
-                recipe = "copper-plate",
+                recipe = "copper-cable",
                 overwrite = true
             })
             
             if not result then
                 error("set_recipe with overwrite returned nil")
             end
-            if result.previous_recipe ~= "iron-plate" then
-                error("Expected previous_recipe to be iron-plate")
+            if result.previous_recipe ~= "electronic-circuit" then
+                error("Expected previous_recipe to be electronic-circuit")
             end
-            if result.new_recipe ~= "copper-plate" then
-                error("Expected new_recipe to be copper-plate")
+            if result.new_recipe ~= "copper-cable" then
+                error("Expected new_recipe to be copper-cable")
             end
         end
     },

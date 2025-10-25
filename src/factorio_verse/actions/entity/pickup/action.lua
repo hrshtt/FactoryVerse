@@ -46,8 +46,13 @@ local function extract_entity_inventories(entity)
         if success and inventory and inventory.valid then
             local contents = inventory.get_contents()
             if contents and next(contents) ~= nil then
-                for item_name, count in pairs(contents) do
-                    all_items[item_name] = (all_items[item_name] or 0) + count
+                -- get_contents() returns an array of {name, count, quality} objects
+                for _, item in pairs(contents) do
+                    local item_name = item.name or item[1]
+                    local count = item.count or item[2]
+                    if item_name and count then
+                        all_items[item_name] = (all_items[item_name] or 0) + count
+                    end
                 end
             end
         end
@@ -100,7 +105,7 @@ function PickupEntityAction:run(params)
     for item_name, count in pairs(total_items) do
         local can_insert = agent_inventory.can_insert({name = item_name, count = count})
         space_check[item_name] = can_insert
-        if can_insert < count then
+        if not can_insert then
             can_fit_all = false
         end
     end
@@ -109,8 +114,8 @@ function PickupEntityAction:run(params)
         local missing_items = {}
         for item_name, count in pairs(total_items) do
             local can_insert = space_check[item_name]
-            if can_insert < count then
-                missing_items[item_name] = count - can_insert
+            if not can_insert then
+                missing_items[item_name] = count - (agent_inventory.get_item_count(item_name) or 0) -- Calculate missing count
             end
         end
         local missing_str = ""
@@ -127,25 +132,29 @@ function PickupEntityAction:run(params)
     local entity_type = entity.type
 
     -- Mine the entity (this destroys it and returns items)
-    local mined_items = entity.mine({inventory = agent_inventory, force = true})
-    if not mined_items then
+    local mine_success = entity.mine({inventory = agent_inventory, force = true})
+    if not mine_success then
         error("Failed to mine entity")
     end
 
-    -- Insert the entity itself into agent inventory
-    local entity_inserted = agent_inventory.insert({name = entity.name, count = 1})
+    -- entity is now invalid after mining, don't access it
+    
+    -- The entity itself may not be automatically inserted, so insert it manually
+    local entity_inserted = agent_inventory.insert({name = entity_name, count = 1})
     if entity_inserted < 1 then
         error("Failed to insert entity into agent inventory")
     end
 
     -- Calculate actual items obtained
+    -- entity.mine() with inventory parameter auto-inserts all mined items into the inventory
+    -- So we use our pre-extracted entity_items as the record
     local actual_items = {}
-    if mined_items then
-        for item_name, count in pairs(mined_items) do
-            actual_items[item_name] = count
-        end
+    -- Add the entity itself
+    actual_items[entity_name] = 1
+    -- Add all inventory contents that were extracted before mining
+    for item_name, count in pairs(entity_items) do
+        actual_items[item_name] = count
     end
-    actual_items[entity_name] = 1 -- Add the entity itself
 
     -- Calculate inventory changes for mutation contract
     local inventory_changes = {}

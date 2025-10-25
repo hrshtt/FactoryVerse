@@ -156,8 +156,8 @@ function SetItemAction:run(params)
 
     -- Check if inventory can accept the item
     local can_insert = target_inventory.can_insert({name = p.item, count = p.count})
-    if can_insert < p.count then
-        error("Inventory cannot accept " .. p.count .. " items. Can only accept: " .. can_insert)
+    if not can_insert then
+        error("Inventory cannot accept " .. p.count .. " items of: " .. p.item)
     end
 
     -- Remove items from agent inventory

@@ -67,7 +67,29 @@ end
 --- @return table Items with counts
 local function get_all_items_from_inventory(inventory)
     local contents = inventory.get_contents()
-    return contents or {}
+    if not contents then return {} end
+    
+    local items = {}
+    -- get_contents() returns an array of {name, count, quality} objects or {item_name = count} depending on version
+    for _, item in pairs(contents) do
+        local item_name
+        local count
+        
+        if type(item) == "table" then
+            -- Handle both object format {name, count, quality} and possibly {item_name = count}
+            item_name = item.name or item[1]
+            count = item.count or item[2]
+        else
+            -- Shouldn't happen but be defensive
+            item_name = tostring(item)
+            count = 1
+        end
+        
+        if item_name and count then
+            items[item_name] = count
+        end
+    end
+    return items
 end
 
 --- @param params GetItemParams
@@ -143,8 +165,10 @@ function GetItemAction:run(params)
 
     -- Process each item
     for item_name, requested_count in pairs(items_to_get) do
-        -- Get available count in entity inventory
-        local available_count = target_inventory.get_item_count(item_name)
+        -- Get available count in entity inventory (item_name should be a string)
+        -- In case of quality-based items, just use the item name
+        local item_key = type(item_name) == "string" and item_name or tostring(item_name)
+        local available_count = target_inventory.get_item_count(item_key)
         if available_count == 0 then
             transfer_results[item_name] = {
                 requested = requested_count,
@@ -159,15 +183,15 @@ function GetItemAction:run(params)
         local count_to_transfer = math.min(requested_count, available_count)
         
         -- Check how many the agent can accept
-        local can_accept = agent_inventory.can_insert({name = item_name, count = count_to_transfer})
-        local actual_transfer = math.min(count_to_transfer, can_accept or 0)
+        local can_accept = agent_inventory.can_insert({name = item_key, count = count_to_transfer})
+        local actual_transfer = can_accept and count_to_transfer or 0
         
         if actual_transfer > 0 then
             -- Remove from entity inventory
-            local removed = target_inventory.remove({name = item_name, count = actual_transfer})
+            local removed = target_inventory.remove({name = item_key, count = actual_transfer})
             if removed > 0 then
                 -- Insert into agent inventory
-                local inserted = agent_inventory.insert({name = item_name, count = removed})
+                local inserted = agent_inventory.insert({name = item_key, count = removed})
                 if inserted > 0 then
                     transfer_results[item_name] = {
                         requested = requested_count,
@@ -215,6 +239,7 @@ function GetItemAction:run(params)
         entity_name = entity.name,
         entity_type = entity.type,
         inventory_type = inventory_type_name,
+        item = p.item or nil, -- For single item requests
         items_requested = items_to_get,
         transfer_results = transfer_results,
         total_transferred = total_transferred,

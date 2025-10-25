@@ -1,6 +1,10 @@
 --- factorio_verse/core/action/Action.lua
 --- Base class for all actions.
 
+local ParamSpec = require("core.action.ParamSpec")
+local GameState = require("core.game_state.GameState")
+local Snapshot = require("core.snapshot.Snapshot")
+
 --- @class Action
 --- @field name string
 --- @field params ParamSpec
@@ -121,7 +125,6 @@ end
 function Action:_post_run(result, params)
   -- Handle entity mutations if present in result
   if result and type(result) == "table" then
-    local Snapshot = require("core.snapshot.Snapshot")
     local snapshot = Snapshot:get_instance()
     
     -- Update affected entities (now using positions instead of unit_numbers)

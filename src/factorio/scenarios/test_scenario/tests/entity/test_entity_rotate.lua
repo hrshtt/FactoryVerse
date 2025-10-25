@@ -81,22 +81,34 @@ return {
         end,
         
         test_rotate_cycle = function(context)
-            -- Test rotation cycle (45 degrees)
+            -- Test rotation to specific direction
             local original_direction = context.entity.direction
+            log("TEST: Original direction = " .. tostring(original_direction))
+            
+            -- Rotate to south (opposite of north)
+            local target_direction = (original_direction + 4) % 8  -- 4 is opposite direction
             
             local result = remote.call("actions", "entity.rotate", {
                 agent_id = 1,
                 position_x = context.position.x,
                 position_y = context.position.y,
-                entity_name = context.entity_name
+                entity_name = context.entity_name,
+                direction = target_direction
             })
             
-            -- Should rotate 45 degrees clockwise
             if not result then
                 error("Rotate returned nil")
             end
-            if context.entity.direction == original_direction then
-                error("Entity direction did not change")
+            log("TEST: Result new_direction = " .. tostring(result.new_direction))
+            
+            -- Look up entity again after action to check direction
+            local updated_entity = context.surface.find_entity(context.entity_name, context.position)
+            if not updated_entity then
+                error("Entity not found after rotate action")
+            end
+            log("TEST: Updated entity direction = " .. tostring(updated_entity.direction))
+            if updated_entity.direction ~= target_direction then
+                error("Entity direction not set to target (target=" .. target_direction .. ", actual=" .. updated_entity.direction .. ")")
             end
         end,
         

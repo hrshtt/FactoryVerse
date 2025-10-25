@@ -69,8 +69,8 @@ local function validate_inventory_space(params)
     end
     
     local can_insert = target_inventory.can_insert({name = params.item, count = params.count})
-    if can_insert < params.count then
-        return false, "Inventory cannot accept " .. params.count .. " items. Can only accept: " .. can_insert
+    if not can_insert then
+        return false, "Inventory cannot accept " .. params.count .. " of item: " .. params.item
     end
     
     return true
