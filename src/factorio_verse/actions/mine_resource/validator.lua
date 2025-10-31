@@ -1,6 +1,3 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
-
-local validator_registry = ValidatorRegistry:new()
 local GameState = require("core.game_state.GameState")
 
 --- Validate that the given (x, y) is a resource tile of the correct type
@@ -31,7 +28,4 @@ local function validate_resource_tile(params)
     error(string.format("No resource tile of type '%s' at (%d, %d)", resource_name, params.x, params.y))
 end
 
-validator_registry:register("mine_resource", validate_resource_tile)
-
-
-return validator_registry
+return { validate_resource_tile }

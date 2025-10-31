@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- Validate that entity type supports recipes
 --- @param params table
@@ -128,9 +125,4 @@ local function validate_overwrite_permission(params)
     return true
 end
 
--- Register validators for entity.set_recipe
-validator_registry:register("entity.set_recipe", validate_entity_supports_recipes)
-validator_registry:register("entity.set_recipe", validate_recipe_compatibility)
-validator_registry:register("entity.set_recipe", validate_overwrite_permission)
-
-return validator_registry
+return { validate_entity_supports_recipes, validate_recipe_compatibility, validate_overwrite_permission }

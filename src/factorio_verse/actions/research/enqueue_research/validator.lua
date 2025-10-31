@@ -1,11 +1,9 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
+local GameState = require("core.game_state.GameState")
 
-local validator_registry = ValidatorRegistry:new()
-
---- @param game_state GameState
---- @param params StartResearchParams
+--- @param params table
 --- @return boolean
-local function can_research_technology(game_state, params)
+local function can_research_technology(params)
+    local game_state = GameState:new()
     local agent = game_state:agent():get_agent(params.agent_id)
     local force = agent.force
     local tech_name = params.technology_name
@@ -44,6 +42,4 @@ local function can_research_technology(game_state, params)
     return true
 end
 
-validator_registry:register("start_research", can_research_technology)
-
-return validator_registry
+return { can_research_technology }

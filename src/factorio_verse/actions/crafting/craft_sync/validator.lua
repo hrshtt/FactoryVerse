@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
-local GameState = require("core.game_state.GameState"):new()
-
-local validator_registry = ValidatorRegistry:new()
+local GameState = require("core.game_state.GameState")
 
 local function is_hand_craftable(recipe_proto)
     if not recipe_proto then return false end
@@ -26,7 +23,8 @@ local function validate_params(params)
     end
 
     -- Ensure recipe is enabled for the agent's force
-    local agent = GameState:agent():get_agent(params.agent_id)
+    local gs = GameState:new()
+    local agent = gs:agent():get_agent(params.agent_id)
     local force_recipe = agent.force and agent.force.recipes and agent.force.recipes[params.recipe] or nil
     if not (force_recipe and force_recipe.enabled) then
         error("Recipe not enabled for force: " .. params.recipe)
@@ -34,8 +32,6 @@ local function validate_params(params)
     return true
 end
 
-validator_registry:register("crafting.craft_sync", validate_params)
-
-return validator_registry
+return { validate_params }
 
 

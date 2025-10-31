@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- Validate that inventory supports bar/limit
 --- @param params table
@@ -100,8 +97,5 @@ local function validate_limit_value(params)
     return true
 end
 
--- Register validators for entity.inventory.set_limit
-validator_registry:register("entity.inventory.set_limit", validate_inventory_supports_bar)
-validator_registry:register("entity.inventory.set_limit", validate_limit_value)
-
-return validator_registry
+-- Validators for entity.inventory.set_limit action
+return { validate_inventory_supports_bar, validate_limit_value }

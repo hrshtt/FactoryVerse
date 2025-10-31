@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- Validate that entity supports rotation
 --- @param params table
@@ -59,8 +56,4 @@ local function validate_direction(params)
     return true
 end
 
--- Register validators for entity.rotate
-validator_registry:register("entity.rotate", validate_entity_rotatable)
-validator_registry:register("entity.rotate", validate_direction)
-
-return validator_registry
+return { validate_entity_rotatable, validate_direction }

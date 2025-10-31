@@ -1,5 +1,5 @@
-local Action = require("core.action.Action")
-local ParamSpec = require("core.action.ParamSpec")
+local Action = require("core.Action")
+local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()

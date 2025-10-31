@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 local function validate_params(params)
     if type(params) ~= "table" then
@@ -80,10 +77,6 @@ local function validate_item_in_inventory(params)
     return true
 end
 
-validator_registry:register("entity.place", validate_params)
-validator_registry:register("entity.place", can_place_at_location)
-validator_registry:register("entity.place", validate_item_in_inventory)
-
-return validator_registry
+return { validate_params, can_place_at_location, validate_item_in_inventory }
 
 

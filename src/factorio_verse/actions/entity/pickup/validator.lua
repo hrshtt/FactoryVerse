@@ -1,8 +1,5 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
 local walk_helper = require("actions.agent.walk.helper")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- Validate that entity is minable
 --- @param params table
@@ -101,10 +98,7 @@ local function validate_agent_inventory_space(params)
     return true
 end
 
--- Register validators for entity.pickup
-validator_registry:register("entity.pickup", validate_entity_minable)
+-- Return validators for entity.pickup
+return { validate_entity_minable, validate_agent_inventory_space }
 -- TODO: Re-enable reachability check once entity placement in tests is optimized
--- validator_registry:register("entity.pickup", validate_agent_reachable)
-validator_registry:register("entity.pickup", validate_agent_inventory_space)
-
-return validator_registry
+-- return { validate_entity_minable, validate_agent_reachable, validate_agent_inventory_space }

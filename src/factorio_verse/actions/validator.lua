@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- @param params table
 --- @return boolean
@@ -19,6 +16,4 @@ local function validate_agent(params)
     return true
 end
 
-validator_registry:register("*", validate_agent)
-
-return validator_registry
+return { validate_agent }

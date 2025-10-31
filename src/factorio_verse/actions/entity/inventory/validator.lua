@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- Inventory type mapping from string names to defines.inventory constants
 local INVENTORY_TYPE_MAP = {
@@ -155,9 +152,5 @@ local function validate_item_inventory_compatibility(params)
     return true
 end
 
--- Register validators for all inventory actions
-validator_registry:register("entity.inventory.*", validate_inventory_type)
-validator_registry:register("entity.inventory.*", validate_entity_has_inventory)
-validator_registry:register("entity.inventory.*", validate_item_inventory_compatibility)
-
-return validator_registry
+-- Validators for all inventory actions (loaded automatically for entity.inventory.* actions)
+return { validate_inventory_type, validate_entity_has_inventory, validate_item_inventory_compatibility }

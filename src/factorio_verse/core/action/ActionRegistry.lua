@@ -1,8 +1,6 @@
 -- factorio_verse/core/action/ActionRegistry.lua
 -- Simple utilities to load action modules and expose their run methods for remote interface
 
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
-
 local ActionRegistry = {}
 ActionRegistry.__index = ActionRegistry
 
@@ -48,26 +46,84 @@ function ActionRegistry:new()
   return instance
 end
 
+--- Generate all possible validator module paths for an action
+--- For "entity.inventory.set_item", returns:
+---   {"actions.validator", "actions.entity.validator", "actions.entity.inventory.validator", "actions.entity.inventory.set_item.validator"}
+--- @param action_name string Action name like "entity.place"
+--- @return table<string> Array of validator module paths
+local function get_validator_paths_for_action(action_name)
+  local paths = {}
+  
+  -- Always include root validator
+  table.insert(paths, "actions.validator")
+  
+  -- Split action name by dots
+  local parts = {}
+  for part in string.gmatch(action_name, "[^.]+") do
+    table.insert(parts, part)
+  end
+  
+  -- Build progressively longer paths
+  -- For "entity.inventory.set_item":
+  --   "actions.entity.validator"
+  --   "actions.entity.inventory.validator"
+  --   "actions.entity.inventory.set_item.validator"
+  local current_path = "actions"
+  for i = 1, #parts do
+    current_path = current_path .. "." .. parts[i]
+    table.insert(paths, current_path .. ".validator")
+  end
+  
+  return paths
+end
+
+--- Load validators for an action from directory structure
+--- @param action_name string Action name like "entity.place"
+--- @return table<function> Array of validator functions
+local function load_validators_for_action(action_name)
+  local validators = {}
+  local validator_paths = get_validator_paths_for_action(action_name)
+  
+  for _, validator_path in ipairs(validator_paths) do
+    local ok, validator_module = pcall(require, validator_path)
+    if ok and type(validator_module) == "table" then
+      -- Validator module can return:
+      -- 1. Array of functions {func1, func2, ...}
+      -- 2. Table with numeric indices (treated as array)
+      if type(validator_module[1]) == "function" or 
+         (type(validator_module) == "table" and #validator_module > 0) then
+        -- It's an array of validators
+        for _, validator_func in ipairs(validator_module) do
+          if type(validator_func) == "function" then
+            table.insert(validators, validator_func)
+          end
+        end
+      end
+    end
+  end
+  
+  return validators
+end
+
 --- Load all actions listed in ACTION_MODULES. Safe to call multiple times.
 function ActionRegistry:load()
   if self.loaded then return end
-
-  local validator_registry = ValidatorRegistry:new()
-
-  validator_registry:build_registry()
-
 
   -- Helper to register a single action instance
   local function register_action(action)
     if not (type(action) == "table" and type(action.name) == "string" and type(action.run) == "function") then
       return
     end
+    
+    -- Load validators from directory structure
     local ok2, err = pcall(function()
-      action:attach_validators(validator_registry:get_validations(action.name))
+      local validators = load_validators_for_action(action.name)
+      action:attach_validators(validators)
+      if #validators > 0 then
+        log("Attached " .. #validators .. " validator(s) to action: " .. tostring(action.name))
+      end
     end)
-    if ok2 then
-      log("Attached validator to action: " .. tostring(action.name))
-    else
+    if not ok2 then
       log("Error attaching validator to action: " .. tostring(action.name))
       log(err)
     end

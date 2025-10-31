@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- Validate that items exist in entity inventory
 --- @param params table
@@ -113,8 +110,4 @@ local function validate_agent_inventory_space(params)
     return true
 end
 
--- Register validators for entity.inventory.get_item
-validator_registry:register("entity.inventory.get_item", validate_items_exist_in_entity)
-validator_registry:register("entity.inventory.get_item", validate_agent_inventory_space)
-
-return validator_registry
+return { validate_items_exist_in_entity, validate_agent_inventory_space }

@@ -1,7 +1,4 @@
-local ValidatorRegistry = require("core.action.ValidatorRegistry")
 local GameState = require("core.game_state.GameState")
-
-local validator_registry = ValidatorRegistry:new()
 
 --- Validate that entity exists and is valid
 --- @param params table - must include position_x, position_y or position table
@@ -80,9 +77,7 @@ local function validate_entity_reachable(params)
     return true
 end
 
--- Register validators for all entity actions
-validator_registry:register("entity.*", validate_entity_exists)
+-- Return validators for all entity actions
+return { validate_entity_exists }
 -- Note: reachability check is optional and can be enabled per action if needed
--- validator_registry:register("entity.*", validate_entity_reachable)
-
-return validator_registry
+-- return { validate_entity_exists, validate_entity_reachable }
