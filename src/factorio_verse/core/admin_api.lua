@@ -8,12 +8,12 @@ M.helpers = {}
 M.commands = {}
 
 M.helpers.create_agent_characters = function(num_agents, destroy_existing)
-    return GameState:new():agent_state():create_agent_characters(num_agents, destroy_existing)
+    return GameState:new():agent():create_agent_characters(num_agents, destroy_existing)
 end
 
 M.helpers.force_clear_agents = function()
     utils.players_to_spectators()
-    return GameState:new():agent_state():force_destroy_agents()
+    return GameState:new():agent():force_destroy_agents()
 end
 
 M.helpers.test = function()
@@ -21,7 +21,7 @@ M.helpers.test = function()
 end
 
 M.helpers.print_agent_inventory = function(agent_index)
-    local agent = GameState:new():agent_state():get_agent(agent_index)
+    local agent = GameState:new():agent():get_agent(agent_index)
     if not agent or not agent.valid then
         utils.triple_print('{"error": "Agent character not found or invalid"}')
         return
@@ -138,7 +138,7 @@ end
 -- Forcefully stop all agent activities and flush pending intents/jobs
 M.helpers.reset_agents_state = function()
     local gs = GameState:new()
-    local agent_state = gs:agent_state()
+    local agent_state = gs:agent()
 
     -- Stop walking/mining on all agent characters
     if storage.agent_characters then

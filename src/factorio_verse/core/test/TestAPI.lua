@@ -3,6 +3,7 @@
 
 local TestRunner = require("__factorio_verse__.core.test.TestRunner")
 local TestReporter = require("__factorio_verse__.core.test.TestReporter")
+local GameState = require("__factorio_verse__.core.game_state.GameState")
 
 local M = {}
 M.test_helpers = {}
@@ -39,14 +40,13 @@ end
 
 -- Spawn test agents
 M.test_helpers.spawn_agent = function(count, destroy_existing)
-    local GameState = require("__factorio_verse__.core.game_state.GameState")
-    return GameState:new():agent_state():create_agent_characters(count or 1, destroy_existing or false)
+    return GameState:new():agent():create_agent_characters(count or 1, destroy_existing or false)
 end
 
 -- Get agent info
 M.test_helpers.get_agent = function(agent_id)
     local GameState = require("__factorio_verse__.core.game_state.GameState")
-    local agent = GameState:new():agent_state():get_agent(agent_id)
+    local agent = GameState:new():agent():get_agent(agent_id)
     if agent and agent.valid then
         return {
             valid = true,
@@ -58,8 +58,7 @@ end
 
 -- Clear all agents
 M.test_helpers.clear_agents = function()
-    local GameState = require("__factorio_verse__.core.game_state.GameState")
-    return GameState:new():agent_state():force_destroy_agents()
+    return GameState:new():agent():force_destroy_agents()
 end
 
 -- Run all tests

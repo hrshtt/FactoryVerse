@@ -10,7 +10,7 @@ local AgentSnapshot = {}
 --- @return table - {agent_id, tick, position_x, position_y, inventory} or {error, agent_id, tick}
 function AgentSnapshot.get_agent_view(agent_id)
     local gs = GameState:new()
-    local agent = gs:agent_state():get_agent(agent_id)
+    local agent = gs:agent():get_agent(agent_id)
 
     if not agent or not agent.valid then
         return {

@@ -71,7 +71,7 @@ end
 -- Lazy getter for player
 function AgentGameState:player()
     if not self._player then
-        local g = self.game_state:get_game()
+        local g = game
         if g and g.players[self.agent_id] then
             self._player = g.players[self.agent_id]
         end
@@ -81,7 +81,7 @@ end
 
 function AgentGameState:force_destroy_agents()
     -- Destroy all character entities on the surface, excluding those controlled by connected players
-    for _, entity in pairs(self.game_state:get_surface().find_entities_filtered { name = "character" }) do
+    for _, entity in pairs(game.surfaces[1].find_entities_filtered { name = "character" }) do
         if entity and entity.valid then
             local associated_player = entity.associated_player
             -- Only destroy if not controlled by a connected player
@@ -102,12 +102,11 @@ function AgentGameState:create_agent(agent_id, position, color)
         position = { x = 0, y = (agent_id - 1) * 2 }
     end
 
-    local surface = self.game_state:get_surface()
-    local g = self.game_state:get_game()
+    local surface = game.surfaces[1]
     local char = surface.create_entity {
         name = "character",
         position = position,
-        force = g.forces.player,
+        force = game.forces.player,
         color = color
     }
     -- Chart the starting area (safe now - doesn't force sync chunk generation)
@@ -175,7 +174,7 @@ function AgentGameState:get_surrounding_entities(agent_id, radius, filter)
         { agent.position.x - radius, agent.position.y - radius },
         { agent.position.x + radius, agent.position.y + radius }
     }
-    return self.game_state:entities_state():get_entities_in_area(area, filter)
+    return self.game_state:entities():get_entities_in_area(area, filter)
 end
 
 --- @param agent_id number
@@ -185,7 +184,7 @@ function AgentGameState:get_inventory_contents(agent_id)
     if not agent then
         return GameStateError:new("Agent not found", { agent_id = agent_id })
     end
-    return self.game_state:inventory_state():get_inventory_contents(agent, agent_inventory_type)
+    return self.game_state:inventory():get_inventory_contents(agent, agent_inventory_type)
 end
 
 function AgentGameState:check_item_in_inventory(agent_id, item_name)
@@ -194,7 +193,7 @@ function AgentGameState:check_item_in_inventory(agent_id, item_name)
         return GameStateError:new("Agent not found", { agent_id = agent_id })
     end
 
-    return self.game_state:inventory_state():check_item_in_inventory(agent, item_name, agent_inventory_type)
+    return self.game_state:inventory():check_item_in_inventory(agent, item_name, agent_inventory_type)
 end
 
 function AgentGameState:to_json()

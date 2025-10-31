@@ -13,7 +13,7 @@ admin_api.load_commands()
 
 -- Load modules that export events
 local Snapshot = require("core.snapshot.Snapshot")
-local MapDiscovery = require("core.MapDiscovery")
+local GameState = require("core.game_state.GameState"):new()
 
 local function on_player_created(e)
   local player = game.get_player(e.player_index)
@@ -77,7 +77,7 @@ local function aggregate_all_events()
     end
     
     -- 3. Map Discovery nth_tick Events
-    local map_discovery_nth_tick_events = MapDiscovery.get_nth_tick_handlers()
+    local map_discovery_nth_tick_events = GameState:map_discovery_nth_tick_handlers()
     for tick_interval, handler in pairs(map_discovery_nth_tick_events or {}) do
         add_nth_tick_handler(tick_interval, handler)
     end

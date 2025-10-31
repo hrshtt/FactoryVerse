@@ -221,70 +221,90 @@ Client Tick N:     Logic A → Logic B → Logic C
                    ↑ Must match exactly ↑
 ```
 
-### The Challenge: on_load Fires Everywhere
+### The Challenge: `on_load` Runs On Server and All Clients
 
-`script.on_load()` fires on:
-- Server when loading a save
-- Each client when connecting to server
-- Each client when rejoining
+`script.on_load()` is always called:
+- On the server (when save is loaded)
+- On every client, whenever it connects or reconnects
 
 ```lua
 script.on_load(function()
   -- This runs on SERVER
-  -- AND on EVERY CONNECTING CLIENT
+  -- AND on EVERY CLIENT that connects to the game
 end)
 ```
 
-### How to Detect Server vs Client
+### There is No Reliable Way to Check "Server or Client"
 
-**Option 1: Check for `rcon` object** (Most Reliable)
+Forget checking `rcon`: in modern Factorio modding (v2.0+), **the `rcon` object exists everywhere** and is never `nil`. On clients, its methods are defined as no-ops—they do nothing, but are still valid functions. You cannot use this for any "is server" logic.
+
+You also can't reliably infer "server or client" from `game.connected_players` or other API tricks. Anything conditional on which instance is "server" versus "client" will be unreliable, future-incompatible, or possibly desync-inducing.
+
+### The Correct Solution: Use `for_player` (or 0) for "Server-only" Actions
+
+If you want to do server-only behavior (for example, write a file that should not exist for each connecting client), always use the `for_player` argument provided by Factorio. This is the only supported way to perform logic only-for-server or only-for-individual-players:
+
+- `for_player = <index>` — affects *only* that player's save data/file.
+- `for_player = 0` — affects *only* the shared/server save data/file.
+
+**Example:** Only write a file for the headless/server context:
 ```lua
-if rcon then
-  -- Running on SERVER (rcon only exists on server)
-else
-  -- Running on CLIENT
-end
+-- This file will exist only on the server/save, not on each client:
+helpers.write_file(path, data, false, 0)
+```
+If you omit `for_player`, Factorio treats it as `for_player=0` (server/global-only).
+
+**Summary:**  
+- Never check for `rcon` to detect server: it’s present and a no-op everywhere.
+- Never try to branch code for "server"/"client" using `on_load` or connected players.
+- Use the official Factorio mechanism (`for_player=0` for server, or a player index for client)
+  whenever you want to run code or save data in only one context.
+
+**Both server and every client will run your logic identically. Only the output location is controlled by `for_player`.**
 ```
 
-**Option 2: Check connected players** (With Caveats)
+### Disk Writes: Use `for_player=0` for Server-Only
+
+Disk I/O should **only** happen for the intended user:  
+- To write data *server-wide* (not for a specific client), always use `for_player=0` when calling file write helpers.
+- If you want to save a file specifically for one player (e.g. for per-player blueprint books etc), pass their player index as `for_player`.
+
+Factorio v2 modding:  
+- Both server and all clients have the `rcon` object; it is never `nil` on either side.
+- On clients, all `rcon` methods are implemented as no-ops (do nothing). There is no longer any way to detect you’re on the server by checking `if rcon then ...`.
+
+**The correct robust way** is to use the `for_player` argument to control who the file save targets, not any "is server" detection.
+
 ```lua
-if game.is_multiplayer() and #game.connected_players == 0 then
-  -- Likely on SERVER with no clients
-else
-  -- Likely on CLIENT or server with players
-end
+-- Save file for the server only:
+helpers.write_file(path, data, false, 0)
 ```
+If you omit `for_player`, Factorio effectively behaves as if you’d passed 0 (server).
 
-### Why We Use These Checks
+### Never Register Events Conditionally
 
-Disk I/O is **server-only**. Clients should never write files:
+Do NOT register events conditionally, regardless of logic about server or client -- both must run the same event handlers, always. All conditional code should be inside the event handler, not around event registration. If external write methods must behave differently, always use the explicit API provided by Factorio (`for_player`).
 
-```lua
-if rcon then
-  -- Safe: only runs on server
-  helpers.write_file(path, data, false)
-end
-```
-
-### Avoiding Desyncs with Conditional Logic
-
-✅ **CORRECT**: Conditional logic INSIDE handlers
+✅ **CORRECT**: All logic inside the universal event handler
 ```lua
 script.on_event(defines.events.on_tick, function(event)
-  if rcon then
-    -- Server-only logic
-  end
-  -- Both server and client run this handler
+  -- Optionally check for_player, player presence, etc, *inside* handler if you need special behavior
+  helpers.write_file(path, data, false, 0)    -- server/global write only
 end)
 ```
 
-❌ **WRONG**: Conditional event registration
+❌ **WRONG**: Registering events only sometimes
 ```lua
-if rcon then
+if is_server then   -- DON'T DO THIS, there is no reliable 'is_server'
   script.on_event(defines.events.on_tick, handler)
 end
--- Server registers event, client doesn't → DESYNC!
+-- This will cause desyncs: events must be registered *identically* everywhere!
 ```
+
+**Summary:**  
+- Use `helpers.write_file(..., ..., ..., 0)` for server-only writes.
+- Never assume `rcon` indicates server; it exists everywhere.
+- Never do conditional event registration for server/client split logic.
 
 ---
 

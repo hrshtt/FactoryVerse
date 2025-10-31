@@ -104,7 +104,7 @@ function GetItemAction:run(params)
         error("Entity not found or invalid")
     end
 
-    local agent = gs:agent_state():get_agent(p.agent_id)
+    local agent = gs:agent():get_agent(p.agent_id)
     if not agent then
         error("Agent not found")
     end

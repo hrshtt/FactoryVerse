@@ -26,7 +26,7 @@ local function validate_params(params)
     end
 
     -- Ensure recipe is enabled for the agent's force
-    local agent = GameState:agent_state():get_agent(params.agent_id)
+    local agent = GameState:agent():get_agent(params.agent_id)
     local force_recipe = agent.force and agent.force.recipes and agent.force.recipes[params.recipe] or nil
     if not (force_recipe and force_recipe.enabled) then
         error("Recipe not enabled for force: " .. params.recipe)

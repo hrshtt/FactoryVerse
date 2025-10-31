@@ -164,7 +164,7 @@ end
 --- @return table - {entities = {...}, belts = {...}, pipes = {...}, poles = {...}}
 function EntitiesSnapshot.gather_entities_for_chunk(chunk, options)
     local gs = GameState:new()
-    local surface = gs:get_surface()
+    local surface = game.surfaces[1]
     if not surface then return { entities = {}, belts = {}, pipes = {}, poles = {} } end
 
     local force = gs:get_player_force()
@@ -204,7 +204,7 @@ end
 --- @return table - array of {position_x, position_y, entity_name, status, status_name, health, tick}
 function EntitiesSnapshot.get_status_view_for_chunk(chunk)
     local gs = GameState:new()
-    local surface = gs:get_surface()
+    local surface = game.surfaces[1]
     if not surface then return {} end
 
     local force = gs:get_player_force()

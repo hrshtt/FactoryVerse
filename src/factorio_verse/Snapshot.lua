@@ -38,7 +38,7 @@ end
 --- @param data table - the actual snapshot data
 --- @return table - standardized output structure
 function Snapshot:create_output(snapshot_type, version, data)
-    local surface = self.game_state:get_surface()
+    local surface = game.surfaces[1]
     return {
         schema_version = snapshot_type .. "." .. version,
         surface = surface and surface.name or "unknown",
@@ -157,7 +157,7 @@ end
 function Snapshot:take_recurring_status()
     local charted_chunks = self.game_state:get_charted_chunks()
 
-    if not self.game_state:get_surface() then
+    if not game.surfaces[1] then
         return { chunks_processed = 0, status_records = 0 }
     end
 
@@ -302,17 +302,14 @@ function Snapshot:emit_entity_json(opts, component_type, position, entity_name, 
     local y = math.floor(position.y * 10) / 10
     local file_path = string.format("%s/%s_%s_%s.json", component_dir, x, y, entity_name)
 
-    -- Only write to disk on server (prevent client writes)
-    if rcon then
-        -- Atomic write: remove existing file first, then write new one
-        if helpers and helpers.remove_path then
-            pcall(helpers.remove_path, file_path)
-        end
-
-        -- Factorio will create subdirs under script-output if needed
-        local json_str = helpers.table_to_json(payload)
-        helpers.write_file(file_path, json_str, false)
+    -- Atomic write: remove existing file first, then write new one
+    if helpers and helpers.remove_path then
+        pcall(helpers.remove_path, file_path)
     end
+
+    -- Factorio will create subdirs under script-output if needed
+    local json_str = helpers.table_to_json(payload)
+    helpers.write_file(file_path, json_str, false, 0)
 
     return file_path
 end
@@ -335,17 +332,15 @@ function Snapshot:emit_status_jsonl(opts, status_records)
     local file_path = string.format("%s/status.jsonl", entities_dir)
 
     -- Only write to disk on server (prevent client writes)
-    if rcon then
-        -- Convert records to JSONL format
-        local jsonl_lines = {}
-        for _, record in ipairs(status_records) do
-            table.insert(jsonl_lines, helpers.table_to_json(record))
-        end
-        local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
-
-        -- Overwrite file with latest snapshot (not append)
-        helpers.write_file(file_path, jsonl_data, false)
+    -- Convert records to JSONL format
+    local jsonl_lines = {}
+    for _, record in ipairs(status_records) do
+        table.insert(jsonl_lines, helpers.table_to_json(record))
     end
+    local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
+
+    -- Overwrite file with latest snapshot (not append)
+    helpers.write_file(file_path, jsonl_data, false, 0)
 
     return file_path
 end
@@ -367,17 +362,15 @@ function Snapshot:emit_resource_jsonl(opts, resource_type, resource_data)
     local file_path = string.format("%s/%s.jsonl", resource_dir, resource_type)
 
     -- Only write to disk on server (prevent client writes)
-    if rcon then
-        -- Convert records to JSONL format
-        local jsonl_lines = {}
-        for _, record in ipairs(resource_data) do
-            table.insert(jsonl_lines, helpers.table_to_json(record))
-        end
-        local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
-
-        -- Append to file (create if doesn't exist)
-        helpers.write_file(file_path, jsonl_data, true)
+    -- Convert records to JSONL format
+    local jsonl_lines = {}
+    for _, record in ipairs(resource_data) do
+        table.insert(jsonl_lines, helpers.table_to_json(record))
     end
+    local jsonl_data = table.concat(jsonl_lines, "\n") .. "\n"
+
+    -- Append to file (create if doesn't exist)
+    helpers.write_file(file_path, jsonl_data, true, 0)
 
     return file_path
 end
@@ -404,16 +397,14 @@ function Snapshot:emit_manifest_json(opts, manifest_data)
     manifest_data.chunk = { x = chunk_x, y = chunk_y }
 
     -- Only write to disk on server (prevent client writes)
-    if rcon then
-        -- Atomic write: remove existing file first, then write new one
-        if helpers and helpers.remove_path then
-            pcall(helpers.remove_path, file_path)
-        end
-
-        -- Factorio will create subdirs under script-output if needed
-        local json_str = helpers.table_to_json(manifest_data)
-        helpers.write_file(file_path, json_str, false)
+    -- Atomic write: remove existing file first, then write new one
+    if helpers and helpers.remove_path then
+        pcall(helpers.remove_path, file_path)
     end
+
+    -- Factorio will create subdirs under script-output if needed
+    local json_str = helpers.table_to_json(manifest_data)
+    helpers.write_file(file_path, json_str, false, 0)
 
     return file_path
 end
@@ -440,37 +431,35 @@ function Snapshot:emit_csv(opts, name, csv_data, metadata)
     local csv_path = string.format("%s/%s-%d.csv", chunk_dir, name, tick)
     
     -- Only write to disk on server (prevent client writes)
-    if rcon then
-        helpers.write_file(csv_path, csv_data, false)
+    helpers.write_file(csv_path, csv_data, false, 0)
 
-        -- Write metadata JSON file in new structure: script-output/factoryverse/metadata/{tick}/{snap-category}.json
-        local meta_dir = string.format("%s/metadata/%d", base_dir, tick)
-        local meta_path = string.format("%s/%s.json", meta_dir, name)
-        local meta_data = opts.metadata or {}
-        meta_data.tick = tick
-        meta_data.surface = self.game_state:get_surface() and self.game_state:get_surface().name or "unknown"
-        meta_data.timestamp = tick
-        meta_data.files = meta_data.files or {}
+    -- Write metadata JSON file in new structure: script-output/factoryverse/metadata/{tick}/{snap-category}.json
+    local meta_dir = string.format("%s/metadata/%d", base_dir, tick)
+    local meta_path = string.format("%s/%s.json", meta_dir, name)
+    local meta_data = opts.metadata or {}
+    meta_data.tick = tick
+    meta_data.surface = game.surfaces[1] and game.surfaces[1].name or "unknown"
+    meta_data.timestamp = tick
+    meta_data.files = meta_data.files or {}
 
-        -- Set headers at top level if provided in metadata
-        if metadata and metadata.headers then
-            meta_data.headers = metadata.headers
-        end
-
-        -- Add this CSV file to the metadata (simplified structure)
-        table.insert(meta_data.files, {
-            path = csv_path,
-            lines = (function()
-                local count = 0
-                for _ in string.gmatch(csv_data, "\n") do count = count + 1 end
-                return count
-            end)()
-        })
-
-        -- Write metadata (overwrite each time to accumulate files)
-        local meta_json = helpers.table_to_json(meta_data)
-        helpers.write_file(meta_path, meta_json, false)
+    -- Set headers at top level if provided in metadata
+    if metadata and metadata.headers then
+        meta_data.headers = metadata.headers
     end
+
+    -- Add this CSV file to the metadata (simplified structure)
+    table.insert(meta_data.files, {
+        path = csv_path,
+        lines = (function()
+            local count = 0
+            for _ in string.gmatch(csv_data, "\n") do count = count + 1 end
+            return count
+        end)()
+    })
+
+    -- Write metadata (overwrite each time to accumulate files)
+    local meta_json = helpers.table_to_json(meta_data)
+    helpers.write_file(meta_path, meta_json, false, 0)
 
     return csv_path
 end

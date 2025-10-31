@@ -64,4 +64,42 @@ function InventoryGameState:check_item_in_inventory(entity, item_name, inventory
     return false
 end
 
+--- Serialize all inventories for an entity (snapshot helper).
+--- Collects contents from all inventory types the entity supports.
+--- @param entity LuaEntity|LuaPlayer|LuaControl The entity to serialize inventories for
+--- @return table|GameStateError - inventory contents by type name (e.g., {chest = {...}, input = {...}}) or error
+function InventoryGameState:serialize_entity_inventories(entity)
+    if not (entity and entity.valid) then
+        return GameStateError:new("Invalid entity")
+    end
+
+    local inventories = {}
+    local inventory_types = {
+        chest = defines.inventory.chest,
+        fuel = defines.inventory.fuel,
+        burnt_result = defines.inventory.burnt_result,
+        input = defines.inventory.assembling_machine_input,
+        output = defines.inventory.assembling_machine_output,
+        modules = defines.inventory.assembling_machine_modules,
+        ammo = defines.inventory.turret_ammo,
+        trunk = defines.inventory.car_trunk,
+        cargo = defines.inventory.cargo_wagon,
+    }
+
+    for inventory_name, inventory_type in pairs(inventory_types) do
+        local success, inventory = pcall(function()
+            return entity.get_inventory(inventory_type)
+        end)
+
+        if success and inventory and inventory.valid then
+            local contents = inventory.get_contents()
+            if contents and next(contents) ~= nil then
+                inventories[inventory_name] = contents
+            end
+        end
+    end
+
+    return inventories
+end
+
 return InventoryGameState

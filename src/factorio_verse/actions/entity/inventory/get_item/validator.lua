@@ -76,7 +76,7 @@ local function validate_agent_inventory_space(params)
     end
     
     local gs = GameState:new()
-    local agent = gs:agent_state():get_agent(params.agent_id)
+    local agent = gs:agent():get_agent(params.agent_id)
     if not agent then
         return true -- Let other validators handle agent validation
     end

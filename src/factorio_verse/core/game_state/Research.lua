@@ -53,34 +53,4 @@ function ResearchGameState:save_research(agent_id, research_id)
     return research_state
 end
 
-function ResearchGameState:get_entity_at_position(position)
-    local surface = self.parent:get_surface()
-    if not surface then
-        return nil, GameStateError:new("No surface available")
-    end
-
-    local entities = surface.find_entities_filtered {
-        position = position
-    }
-    return entities[1]
-end
-
-function ResearchGameState:can_place_entity(entity_name, position)
-    local surface = self.parent:get_surface()
-    if not surface then
-        return false, GameStateError:new("No surface available")
-    end
-
-    return surface.can_place_entity {
-        name = entity_name,
-        position = position
-    }
-end
-
-function ResearchGameState:to_json()
-    return {
-        -- Placeholder for entities data
-    }
-end
-
 return ResearchGameState

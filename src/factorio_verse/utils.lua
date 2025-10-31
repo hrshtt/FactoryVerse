@@ -17,7 +17,7 @@ function M.chart_native_start_area(surface, force, position, game_state)
     
     -- Register charted area for headless server fallback (if game_state provided)
     if game_state then
-        game_state:register_charted_area({
+        game_state:map():register_charted_area({
             left_top = { x = area[1].x, y = area[1].y },
             right_bottom = { x = area[2].x, y = area[2].y }
         })

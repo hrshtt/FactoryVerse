@@ -140,7 +140,7 @@ end
 --- @return table - {resources = {...}, rocks = {...}, trees = {...}, water = {...}}
 function ResourceSnapshot.gather_resources_for_chunk(chunk)
     local gs = GameState:new()
-    local surface = gs:get_surface()
+    local surface = game.surfaces[1]
 
     local gathered = {
         resources = {}, -- Mineable resources (iron, copper, coal, crude-oil, etc.)

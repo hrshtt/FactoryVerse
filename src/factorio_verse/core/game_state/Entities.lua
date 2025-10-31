@@ -24,7 +24,7 @@ end
 --- @param filter string
 --- @return table
 function EntitiesGameState:get_entities_in_area(area, filter)
-    local surface = self.game_state:get_surface()
+    local surface = game.surfaces[1]
     if not surface then
         return {}
     end
@@ -37,7 +37,7 @@ function EntitiesGameState:get_entities_in_area(area, filter)
 end
 
 function EntitiesGameState:get_entity_at_position(position)
-    local surface = self.game_state:get_surface()
+    local surface = game.surfaces[1]
     if not surface then
         return GameStateError:new("No surface available")
     end
@@ -49,7 +49,7 @@ function EntitiesGameState:get_entity_at_position(position)
 end
 
 function EntitiesGameState:can_place_entity(entity_name, position)
-    local surface = self.game_state:get_surface()
+    local surface = game.surfaces[1]
     if not surface then
         return GameStateError:new("No surface available")
     end

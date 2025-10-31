@@ -31,7 +31,7 @@ function MapDiscovery.initialize(surface, force, center_position)
     force.chart(surface, area)
     
     -- Register charted area for headless server fallback
-    local GameStateModule = package.loaded["core.game_state.GameState"]
+    local GameStateModule = package.loaded["core.GameState"]
     if GameStateModule then
         local gs = GameStateModule:new()
         gs:map():register_charted_area({
@@ -78,10 +78,10 @@ function MapDiscovery.scan_and_discover()
                 agent.force.chart(agent.surface, area)
                 
                 -- Register charted area for headless server fallback
-                local GameStateModule = package.loaded["core.game_state.GameState"]
+                local GameStateModule = package.loaded["core.GameState"]
                 if GameStateModule then
                     local gs = GameStateModule:new()
-                    gs:register_charted_area(area)
+                    gs:map():register_charted_area(area)
                     log(string.format("[MapDiscovery.scan_and_discover] Agent moved - registered new charted area around chunk (%d, %d)", 
                         chunk_x, chunk_y))
                 end

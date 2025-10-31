@@ -30,8 +30,8 @@ function PlaceEntityAction:run(params)
     local p = self:_pre_run(gs, params)
     ---@cast p PlaceEntityParams
 
-    local agent = gs:agent_state():get_agent(p.agent_id)
-    local surface = gs:get_surface()
+    local agent = gs:agent():get_agent(p.agent_id)
+    local surface = game.surfaces[1]
 
     local placement = {
         name = p.entity_name,

@@ -15,7 +15,7 @@ local function validate_resource_tile(params)
     --     error("Missing required params: x and y")
     -- end
 
-    local surface = GameState:new():get_surface()
+    local surface = game.surfaces[1]
 
     local tile_entities = surface.find_entities_filtered{
         area = {{params.x, params.y}, {params.x + 1, params.y + 1}},
