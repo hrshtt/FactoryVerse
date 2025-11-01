@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()
@@ -10,7 +9,7 @@ local gs = GameState:new()
 --- @field position_y number Y coordinate of the target entity
 --- @field entity_name string Entity prototype name
 --- @field direction string|number Direction to rotate to (required) - accepts alias from GameState.aliases.direction or defines.direction value (0-7)
-local RotateEntityParams = ParamSpec:new({
+local RotateEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     position_x = { type = "number", required = true },
     position_y = { type = "number", required = true },
@@ -97,4 +96,4 @@ function RotateEntityAction:run(params)
     return self:_post_run(result, p)
 end
 
-return RotateEntityAction
+return { action = RotateEntityAction, params = RotateEntityParams }

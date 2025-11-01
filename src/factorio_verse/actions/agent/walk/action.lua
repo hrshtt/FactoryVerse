@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local game_state = require("core.game_state.GameState")
 
 --- @class WalkParams : ParamSpec
@@ -7,7 +6,7 @@ local game_state = require("core.game_state.GameState")
 --- @field direction string|number
 --- @field walking boolean|nil
 --- @field ticks number|nil
-local WalkParams = ParamSpec:new({
+local WalkParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     direction = { type = "string", required = true },
     walking = { type = "boolean", required = false },
@@ -25,7 +24,7 @@ local WalkParams = ParamSpec:new({
 --- @field prefer_cardinal boolean|nil
 --- @field diag_band number|nil
 --- @field snap_axis_eps number|nil
-local WalkToParams = ParamSpec:new({
+local WalkToParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     goal = { type = "table", required = true },
     arrive_radius = { type = "number", required = false },

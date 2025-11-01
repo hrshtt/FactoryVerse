@@ -5,10 +5,10 @@ local GameStateError = require("core.Error")
 
 --- @class PowerGameState
 --- @field parent GameState
-local PowerGameState = {}
-PowerGameState.__index = PowerGameState
+local M = {}
+M.__index = M
 
-function PowerGameState:new(parent)
+function M:new(parent)
     local instance = {
         parent = parent
     }
@@ -17,27 +17,32 @@ function PowerGameState:new(parent)
     return instance
 end
 
-function PowerGameState:get_power_production()
+function M:get_power_production()
     -- Placeholder for power production logic
     return 0
 end
 
-function PowerGameState:get_power_consumption()
+function M:get_power_consumption()
     -- Placeholder for power consumption logic
     return 0
 end
 
-function PowerGameState:get_power_networks()
+function M:get_power_networks()
     -- Placeholder for power network analysis
     return {}
 end
 
-function PowerGameState:to_json()
-    return {
+function M:inspect_power()
+    rcon.print(helpers.table_to_json({
         production = self:get_power_production(),
         consumption = self:get_power_consumption(),
         networks = self:get_power_networks()
-    }
+    }))
 end
 
-return PowerGameState
+M.on_demand_snapshots = { inspect_power = M.inspect_power }
+M.admin_api = {
+    inspect_power = M.inspect_power,
+}
+
+return M

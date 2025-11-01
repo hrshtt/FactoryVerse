@@ -6,12 +6,12 @@ local utils = require("utils")
 
 --- @class ResourceGameState
 --- @field game_state GameState
-local ResourceGameState = {}
-ResourceGameState.__index = ResourceGameState
+local M = {}
+M.__index = M
 
 --- @param game_state GameState
 --- @return ResourceGameState
-function ResourceGameState:new(game_state)
+function M:new(game_state)
     local instance = {
         game_state = game_state
     }
@@ -24,7 +24,7 @@ end
 --- @param entity LuaEntity - the resource entity
 --- @param resource_name string - the resource name
 --- @return table - serialized resource data
-function ResourceGameState:serialize_resource_tile(entity, resource_name)
+function M:serialize_resource_tile(entity, resource_name)
     return {
         kind = resource_name,
         x = utils.floor(entity.position.x),
@@ -37,7 +37,7 @@ end
 --- @param entity LuaEntity - the rock entity
 --- @param chunk table - {x, y, area}
 --- @return table - serialized rock data
-function ResourceGameState:serialize_rock(entity, chunk)
+function M:serialize_rock(entity, chunk)
     local size = 1
     if entity.name:match("huge") then
         size = 3
@@ -70,7 +70,7 @@ end
 --- @param entity LuaEntity - the tree entity
 --- @param chunk table - {x, y, area}
 --- @return table - serialized tree data
-function ResourceGameState:serialize_tree(entity, chunk)
+function M:serialize_tree(entity, chunk)
     return {
         name = entity.name,
         position = entity.position,
@@ -84,5 +84,7 @@ function ResourceGameState:serialize_tree(entity, chunk)
     }
 end
 
-return ResourceGameState
+
+
+return M
 

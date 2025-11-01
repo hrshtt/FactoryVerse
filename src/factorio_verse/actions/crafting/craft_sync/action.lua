@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()
@@ -8,7 +7,7 @@ local gs = GameState:new()
 --- @field agent_id number
 --- @field recipe string            -- recipe prototype name
 --- @field count number|nil         -- desired crafts; defaults to 1
-local CraftParams = ParamSpec:new({
+local CraftParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     recipe = { type = "string", required = true },
     count = { type = "number", required = false }

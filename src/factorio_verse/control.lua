@@ -12,8 +12,8 @@ admin_api.load_helpers()
 admin_api.load_commands()
 
 -- Load modules that export events
-local Snapshot = require("core.snapshot.Snapshot")
-local GameState = require("core.game_state.GameState"):new()
+local Snapshot = require("core.Snapshot")
+local GameState = require("core.GameState"):new()
 
 local function on_player_created(e)
   local player = game.get_player(e.player_index)

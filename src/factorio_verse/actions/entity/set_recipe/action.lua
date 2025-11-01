@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()
@@ -11,7 +10,7 @@ local gs = GameState:new()
 --- @field entity_name string Entity prototype name
 --- @field recipe string|nil Recipe name to set (nil to clear recipe)
 --- @field overwrite boolean|nil Whether to allow overwriting existing recipe
-local SetRecipeParams = ParamSpec:new({
+local SetRecipeParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     position_x = { type = "number", required = true },
     position_y = { type = "number", required = true },
@@ -151,4 +150,4 @@ function SetRecipeAction:run(params)
     return self:_post_run(result, p)
 end
 
-return SetRecipeAction
+return { action = SetRecipeAction, params = SetRecipeParams }

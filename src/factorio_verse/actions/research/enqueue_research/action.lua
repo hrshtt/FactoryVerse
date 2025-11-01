@@ -1,12 +1,11 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local game_state = require("core.game_state.GameState")
 
 --- @class EnqueueResearchParams : ParamSpec
 --- @field agent_id number
 --- @field technology_name string
 --- @field cancel_current_research boolean
-local EnqueueResearchParams = ParamSpec:new({
+local EnqueueResearchParams = Action.ParamSpec:new({
     agent_id = {
         type = "number",
         required = true
@@ -71,4 +70,4 @@ function EnqueueResearchAction:run(params)
     return self:_post_run(ingredients, p)
 end
 
-return { action = EnqueueResearchAction, EnqueueResearchParams = EnqueueResearchParams }
+return { action = EnqueueResearchAction, params = EnqueueResearchParams }

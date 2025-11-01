@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()
@@ -12,7 +11,7 @@ local gs = GameState:new()
 --- @field item string|table Item name to get, or table of {item_name = count}, or "ALL_ITEMS"
 --- @field count number|nil Number of items to get (ignored if item is table or "ALL_ITEMS")
 --- @field inventory_type string|nil Inventory type string (e.g., "chest", "modules", "fuel")
-local GetItemParams = ParamSpec:new({
+local GetItemParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     position_x = { type = "number", required = true },
     position_y = { type = "number", required = true },

@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()
@@ -9,7 +8,7 @@ local gs = GameState:new()
 --- @field position_x number X coordinate of the target entity
 --- @field position_y number Y coordinate of the target entity
 --- @field entity_name string Entity prototype name
-local PickupEntityParams = ParamSpec:new({
+local PickupEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     position_x = { type = "number", required = true },
     position_y = { type = "number", required = true },
@@ -182,4 +181,4 @@ function PickupEntityAction:run(params)
     return self:_post_run(result, p)
 end
 
-return PickupEntityAction
+return { action = PickupEntityAction, params = PickupEntityParams }

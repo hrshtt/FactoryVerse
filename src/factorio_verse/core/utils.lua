@@ -317,4 +317,42 @@ function M.get_flatten_pattern_names()
     return patterns
 end
 
+function M.blueprint_to_table(blueprint_string)
+    local version=string.sub(blueprint_string,1,1)
+    local body=string.sub(blueprint_string,2)
+    local json_str=helpers.decode_string(body)
+    if not json_str then return nil end
+    local output=helpers.json_to_table(json_str)
+    if not output then return nil end
+    return output
+end
+
+--- Converts a Lua table describing blueprint data into a valid Factorio blueprint string.
+--- Factorio expects blueprint strings in the format: "<version><base64-encoded json>"
+--- See: https://lua-api.factorio.com/latest/LuaBlueprint.html and https://wiki.factorio.com/Blueprint_string_format
+--- @param blueprint_table table - The table representing the blueprint (should contain "blueprint" or "blueprint_book" as the root key)
+--- @return string|nil - The blueprint string, or nil on error
+function M.table_to_blueprint(blueprint_table)
+    -- Validate: The top-level key must be "blueprint" or "blueprint_book"
+    if type(blueprint_table) ~= "table" or (not blueprint_table.blueprint and not blueprint_table.blueprint_book) then
+        return nil
+    end
+
+    -- Encode table to JSON string (Factorio supports pretty-printed and minified)
+    local ok, json_str = pcall(helpers.table_to_json, blueprint_table)
+    if not ok or not json_str then
+        return nil
+    end
+
+    -- Base64 encode (Factorio expects a URL-safe base64 (A-Za-z0-9-_) with no padding, standard output is usually fine)
+    local ok2, encoded = pcall(helpers.encode_string, json_str)
+    if not ok2 or not encoded then
+        return nil
+    end
+
+    -- Prepend version ("0" or "1". Factorio 1.1+ uses "1" for blueprints and blueprint books.)
+    local version = "1"
+    return version .. encoded
+end
+
 return M

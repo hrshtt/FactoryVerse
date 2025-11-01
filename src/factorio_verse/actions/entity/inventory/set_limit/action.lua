@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()
@@ -11,7 +10,7 @@ local gs = GameState:new()
 --- @field entity_name string Entity prototype name
 --- @field inventory_type string Inventory type string (e.g., "chest", "input", "output")
 --- @field limit number Maximum number of slots to allow (0 = unlimited)
-local SetLimitParams = ParamSpec:new({
+local SetLimitParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     position_x = { type = "number", required = true },
     position_y = { type = "number", required = true },
@@ -100,4 +99,4 @@ function SetLimitAction:run(params)
     return self:_post_run(result, p)
 end
 
-return SetLimitAction
+return { action = SetLimitAction, params = SetLimitParams }

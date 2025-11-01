@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local game_state = require("core.game_state.GameState")
 local action_registry = require("core.action.ActionRegistry")
 
@@ -11,7 +10,7 @@ local action_registry = require("core.action.ActionRegistry")
 --- @field max_count number
 --- @field walk_if_unreachable boolean|nil
 --- @field debug boolean|nil
-local MineResourceParams = ParamSpec:new({
+local MineResourceParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     x = { type = "number", required = true },
     y = { type = "number", required = true },
@@ -401,4 +400,4 @@ MineResourceAction.events = {
     [defines.events.on_tick] = _tick_mine_jobs,
 }
 
-return { action = MineResourceAction, MineResourceParams = MineResourceParams }
+return { action = MineResourceAction, params = MineResourceParams }

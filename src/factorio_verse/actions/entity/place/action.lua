@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 local walk = require("actions.agent.walk.helper")
 
@@ -12,7 +11,7 @@ local gs = GameState:new()
 --- @field direction string|number|nil Optional direction; accepts alias from GameState.aliases.direction or defines.direction value
 --- @field orient_towards table|nil Optional orientation hint: { entity_name = string|nil, position = {x:number,y:number}|nil }
 --- @field walk_if_unreachable boolean|nil Optional walk_if_unreachable hint
-local PlaceEntityParams = ParamSpec:new({
+local PlaceEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     entity_name = { type = "string", required = true },
     position = { type = "table", required = true },
@@ -173,6 +172,6 @@ function PlaceEntityAction:run(params)
     return self:_post_run(result, p)
 end
 
-return PlaceEntityAction
+return { action = PlaceEntityAction, params = PlaceEntityParams }
 
 

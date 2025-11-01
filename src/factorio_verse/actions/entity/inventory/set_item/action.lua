@@ -1,5 +1,4 @@
 local Action = require("core.Action")
-local ParamSpec = Action.ParamSpec
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()
@@ -12,7 +11,7 @@ local gs = GameState:new()
 --- @field item string Name of the item to insert
 --- @field count number|nil Number of items to insert (defaults to 1)
 --- @field inventory_type string|nil Inventory type string (e.g., "chest", "modules", "fuel")
-local SetItemParams = ParamSpec:new({
+local SetItemParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     position_x = { type = "number", required = true },
     position_y = { type = "number", required = true },
@@ -205,4 +204,4 @@ function SetItemAction:run(params)
     return self:_post_run(result, p)
 end
 
-return SetItemAction
+return { action = SetItemAction, params = SetItemParams }

@@ -5,12 +5,12 @@ local GameStateError = require("core.Error")
 
 --- @class ResearchGameState
 --- @field parent GameState
-local ResearchGameState = {}
-ResearchGameState.__index = ResearchGameState
+local M = {}
+M.__index = M
 
 --- @param parent GameState
 --- @return ResearchGameState
-function ResearchGameState:new(parent)
+function M:new(parent)
     local instance = {
         parent = parent
     }
@@ -19,7 +19,7 @@ function ResearchGameState:new(parent)
     return instance
 end
 
-function ResearchGameState:save_research(agent_id, research_id)
+function M:save_research(agent_id, research_id)
     local player = storage.agent_characters[agent_id]
     local force = player.force
 
@@ -53,4 +53,23 @@ function ResearchGameState:save_research(agent_id, research_id)
     return research_state
 end
 
-return ResearchGameState
+function M:reset_research(input)
+    local agent_id = input.agent_id
+    local player = storage.agent_characters[agent_id]
+    local force = player.force
+    force.cancel_current_research()
+    force.research_queue = {}
+    force.research_progress = 0
+end
+
+function M:inspect_research(agent_id)
+end
+
+M.admin_api = {
+    reset_research = M.reset_research,
+    inspect_research = M.inspect_research,
+}
+
+M.on_demand_snapshots = { inspect_research = M.inspect_research }
+
+return M

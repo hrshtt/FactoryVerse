@@ -51,14 +51,14 @@ end
 --- @field agent_id number
 --- @field agent_inventory_type string
 --- Methods: player()
-local AgentGameState = {}
-AgentGameState.__index = AgentGameState
+local M = {}
+M.__index = M
 
 local agent_inventory_type = defines.inventory.character_main
 
 --- @param game_state GameState
 --- @return AgentGameState
-function AgentGameState:new(game_state)
+function M:new(game_state)
     local instance = {
         game_state = game_state,
         -- agent_id = agent_id or 1
@@ -69,7 +69,7 @@ function AgentGameState:new(game_state)
 end
 
 -- Lazy getter for player
-function AgentGameState:player()
+function M:player()
     if not self._player then
         local g = game
         if g and g.players[self.agent_id] then
@@ -79,7 +79,7 @@ function AgentGameState:player()
     return self._player
 end
 
-function AgentGameState:force_destroy_agents()
+function M:force_destroy_agents()
     -- Destroy all character entities on the surface, excluding those controlled by connected players
     for _, entity in pairs(game.surfaces[1].find_entities_filtered { name = "character" }) do
         if entity and entity.valid then
@@ -97,7 +97,7 @@ end
 --- @param agent_id number
 --- @param position table
 --- @return LuaEntity?
-function AgentGameState:create_agent(agent_id, position, color)
+function M:create_agent(agent_id, position, color)
     if not position then
         position = { x = 0, y = (agent_id - 1) * 2 }
     end
@@ -118,7 +118,7 @@ end
 
 --- @param agent_id number
 --- @return LuaEntity|nil
-function AgentGameState:get_agent(agent_id)
+function M:get_agent(agent_id)
     agent_id = agent_id or self.agent_id
     if not storage.agent_characters then
         storage.agent_characters = {}
@@ -136,7 +136,7 @@ end
 --- @param num_agents number
 --- @param destroy_existing boolean|nil
 --- @return table agents created
-function AgentGameState:create_agent_characters(num_agents, destroy_existing)
+function M:create_agent_characters(num_agents, destroy_existing)
     if not storage.agent_characters then
         storage.agent_characters = {}
     end
@@ -164,7 +164,7 @@ end
 --- @param radius number
 --- @param filter string
 --- @return table<LuaEntity>|GameStateError
-function AgentGameState:get_surrounding_entities(agent_id, radius, filter)
+function M:get_surrounding_entities(agent_id, radius, filter)
     local agent = self:get_agent(agent_id)
     if not agent then
         return GameStateError:new("Agent not found", { agent_id = agent_id })
@@ -179,7 +179,7 @@ end
 
 --- @param agent_id number
 --- @return table|GameStateError
-function AgentGameState:get_inventory_contents(agent_id)
+function M:get_inventory_contents(agent_id)
     local agent = self:get_agent(agent_id)
     if not agent then
         return GameStateError:new("Agent not found", { agent_id = agent_id })
@@ -187,7 +187,7 @@ function AgentGameState:get_inventory_contents(agent_id)
     return self.game_state:inventory():get_inventory_contents(agent, agent_inventory_type)
 end
 
-function AgentGameState:check_item_in_inventory(agent_id, item_name)
+function M:check_item_in_inventory(agent_id, item_name)
     local agent = self:get_agent(agent_id)
     if not agent then
         return GameStateError:new("Agent not found", { agent_id = agent_id })
@@ -196,7 +196,7 @@ function AgentGameState:check_item_in_inventory(agent_id, item_name)
     return self.game_state:inventory():check_item_in_inventory(agent, item_name, agent_inventory_type)
 end
 
-function AgentGameState:to_json()
+function M:to_json()
     local player = self:player()
     return {
         agent_id = self.agent_id,
@@ -216,7 +216,7 @@ end
 
 -- Hard exclusivity policy: only one activity active at a time for stability
 -- Stop all walking-related activities (intents and immediate walking state)
-function AgentGameState:stop_walking(agent_id)
+function M:stop_walking(agent_id)
     agent_id = agent_id or self.agent_id
     -- Clear sustained intents
     if storage.walk_intents then
@@ -231,7 +231,7 @@ function AgentGameState:stop_walking(agent_id)
 end
 
 -- Start or stop walking for this tick. Enforces exclusivity with mining when starting.
-function AgentGameState:set_walking(agent_id, direction, walking)
+function M:set_walking(agent_id, direction, walking)
     agent_id = agent_id or self.agent_id
     local control = _get_control_for_agent(agent_id)
     if not (control and control.valid) then return end
@@ -247,7 +247,7 @@ function AgentGameState:set_walking(agent_id, direction, walking)
 end
 
 -- Sustain walking for a number of ticks; immediately applies for current tick as well
-function AgentGameState:sustain_walking(agent_id, direction, ticks)
+function M:sustain_walking(agent_id, direction, ticks)
     agent_id = agent_id or self.agent_id
     if not ticks or ticks <= 0 then return end
     storage.walk_intents = storage.walk_intents or {}
@@ -262,7 +262,7 @@ function AgentGameState:sustain_walking(agent_id, direction, ticks)
 end
 
 -- Clear any sustained walking intent for the agent, without changing walk_to jobs
-function AgentGameState:clear_walking_intent(agent_id)
+function M:clear_walking_intent(agent_id)
     agent_id = agent_id or self.agent_id
     if storage.walk_intents then
         storage.walk_intents[agent_id] = nil
@@ -270,7 +270,7 @@ function AgentGameState:clear_walking_intent(agent_id)
 end
 
 -- Cancel any active walk_to jobs for the agent (without touching walking intents)
-function AgentGameState:cancel_walk_to(agent_id)
+function M:cancel_walk_to(agent_id)
     agent_id = agent_id or self.agent_id
     if not storage.walk_to_jobs then return end
     for id, job in pairs(storage.walk_to_jobs) do
@@ -282,7 +282,7 @@ end
 
 -- Start/stop mining on the entity; when starting, enforce exclusivity by stopping walking
 -- target may be a position {x,y} or an entity with .position
-function AgentGameState:set_mining(agent_id, mining, target)
+function M:set_mining(agent_id, mining, target)
     agent_id = agent_id or self.agent_id
     local control = _get_control_for_agent(agent_id)
     if not (control and control.valid) then return end
@@ -303,22 +303,77 @@ function AgentGameState:set_mining(agent_id, mining, target)
 end
 
 -- Transient selection handling ------------------------------------------------
-function AgentGameState:set_selected(agent_id, selected)
+function M:set_selected(agent_id, selected)
     agent_id = agent_id or self.agent_id
     storage.agent_selection = storage.agent_selection or {}
     storage.agent_selection[agent_id] = selected
 end
 
-function AgentGameState:get_selected(agent_id)
+function M:get_selected(agent_id)
     agent_id = agent_id or self.agent_id
     return storage.agent_selection and storage.agent_selection[agent_id] or nil
 end
 
-function AgentGameState:clear_selected(agent_id)
+function M:clear_selected(agent_id)
     agent_id = agent_id or self.agent_id
     if storage.agent_selection then
         storage.agent_selection[agent_id] = nil
     end
 end
 
-return AgentGameState
+--- Inspect agent details
+--- @param agent_id number - agent ID (required)
+--- @param attach_inventory boolean - whether to include inventory (default false)
+--- @return table - {agent_id, tick, position {x, y}, inventory?} or {error, agent_id, tick}
+local function inspect_agent(agent_id, attach_inventory)
+    attach_inventory = attach_inventory or false
+    
+    local agent = M:get_agent(agent_id)
+    if not agent or not agent.valid then
+        return {
+            error = "Agent not found or invalid",
+            agent_id = agent_id,
+            tick = game.tick or 0
+        }
+    end
+
+    local position = agent.position
+    if not position then
+        return {
+            error = "Agent has no position",
+            agent_id = agent_id,
+            tick = game.tick or 0
+        }
+    end
+
+    local result = {
+        agent_id = agent_id,
+        tick = game.tick or 0,
+        position = { x = position.x, y = position.y }
+    }
+
+    -- Get agent inventory only if requested
+    if attach_inventory then
+        local inventory = {}
+        local main_inventory = agent.get_main_inventory and agent:get_main_inventory()
+        if main_inventory then
+            local contents = main_inventory.get_contents()
+            if contents and next(contents) ~= nil then
+                inventory = contents
+            end
+        end
+        result.inventory = inventory
+    end
+
+    return result
+end
+
+M.on_demand_snapshots = { inspect_agent = inspect_agent }
+
+M.admin_api = {
+    inspect_agent = inspect_agent,
+    create_agents = M.create_agent_characters,
+    destroy_agents = M.force_destroy_agents,
+}
+
+return M
