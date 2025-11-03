@@ -125,8 +125,8 @@ function GameState:get_event_based_snapshot_events()
     }
     
     for _, submod in ipairs(submodules) do
-        if submod.instance and submod.instance.event_based_snapshot then
-            local event_snapshot = submod.instance.event_based_snapshot
+        if submod.instance and submod.instance.get_event_based_snapshot_events then
+            local event_snapshot = submod.instance:get_event_based_snapshot_events()
             
             -- Handle defined events (defines.events.*)
             if event_snapshot.events then

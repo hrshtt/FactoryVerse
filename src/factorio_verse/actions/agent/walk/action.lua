@@ -481,5 +481,6 @@ end
 
 -- Event handlers removed - now handled by AgentGameState:get_activity_events()
 -- WalkAction is kept internal-only (not exposed via remote interface)
+-- while WalkToAction & WalkCancelAction are exposed via remote interface
 
-return { WalkAction, WalkToAction, WalkCancelAction }
+return { WalkToAction, WalkCancelAction }

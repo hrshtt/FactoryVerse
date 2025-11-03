@@ -1,5 +1,4 @@
 -- Module-level local references for global lookups (performance optimization)
-local game = game
 local pairs = pairs
 local ipairs = ipairs
 
@@ -250,6 +249,10 @@ function M:clear_map_area(bounding_box)
 end
 
 function M:track_chunk_charting()
+end
+
+function M:get_player_force()
+    return game.forces["player"]
 end
 
 M.admin_api = {

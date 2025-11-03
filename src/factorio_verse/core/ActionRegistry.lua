@@ -13,7 +13,7 @@ local Action = require("types.Action")
 
 local ACTION_MODULES = {
   -- agent
-  -- Note: actions.agent.walk.action is kept internal-only (not exposed via remote interface)
+  "actions.agent.walk.action",
 
   -- crafting
   "actions.crafting.craft_sync.action",
@@ -261,7 +261,7 @@ function ActionRegistry:get_action_interface()
       return action:run(params)
     end
 
-    interface[action_name] = runner
+    -- interface[action_name] = runner
     interface[safe_name] = interface[safe_name] or runner
   end
   return interface

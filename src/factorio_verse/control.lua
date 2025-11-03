@@ -145,10 +145,7 @@ local function register_all_events()
     for tick_interval, handlers_list in pairs(aggregated.nth_tick) do
         script.on_nth_tick(tick_interval, function(event)
             for _, handler in ipairs(handlers_list) do
-                local ok, err = pcall(handler, event)
-                if not ok then
-                    log("Error in nth_tick handler (interval=" .. tostring(tick_interval) .. "): " .. tostring(err))
-                end
+                handler(event)
             end
         end)
     end

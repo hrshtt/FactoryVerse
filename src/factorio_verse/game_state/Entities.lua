@@ -2,7 +2,6 @@
 --- EntitiesGameState sub-module for managing entity-related functionality.
 
 -- Module-level local references for global lookups (performance optimization)
-local game = game
 local pairs = pairs
 local ipairs = ipairs
 
@@ -390,12 +389,14 @@ function M:track_all_charted_chunk_entity_status()
     end
 end
 
-M.event_based_snapshot = {
-    nth_tick = {
-        [10] = function()
-            M:track_all_charted_chunk_entity_status()
-        end
+function M:get_event_based_snapshot_events()
+    return {
+        nth_tick = {
+            [10] = function()
+                self:track_all_charted_chunk_entity_status()
+            end
+        }
     }
-}
+end
 
 return M
