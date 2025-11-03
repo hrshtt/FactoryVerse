@@ -1,6 +1,7 @@
-local Action = require("core.Action")
+local Action = require("types.Action")
 local GameState = require("core.game_state.GameState")
 local walk = require("actions.agent.walk.helper")
+local utils = require("core.utils")
 
 local gs = GameState:new()
 
@@ -159,6 +160,7 @@ function PlaceEntityAction:run(params)
             health = entity.health
         },
         -- Mutation contract fields
+        -- TBD: remove this and use affected_positions instead
         affected_unit_numbers = { entity.unit_number },
         affected_inventories = {
             {

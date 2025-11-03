@@ -1,4 +1,4 @@
-local game_state = require("core.game_state.GameState")
+local game_state = require("GameState")
 
 --- @param params WalkParams
 --- @return boolean

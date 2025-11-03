@@ -1,6 +1,11 @@
 --- factorio_verse/core/game_state/EntitiesGameState.lua
 --- EntitiesGameState sub-module for managing entity-related functionality.
 
+-- Module-level local references for global lookups (performance optimization)
+local game = game
+local pairs = pairs
+local ipairs = ipairs
+
 local GameStateError = require("core.Error")
 local utils = require("utils")
 
@@ -14,7 +19,9 @@ M.__index = M
 --- @return EntitiesGameState
 function M:new(game_state)
     local instance = {
-        game_state = game_state
+        game_state = game_state,
+        -- Cache frequently-used sibling modules (constructor-level caching for performance)
+        map = game_state.map,
     }
 
     setmetatable(instance, self)
@@ -25,7 +32,7 @@ end
 --- @param filter string
 --- @return table
 function M:get_entities_in_area(area, filter)
-    local surface = game.surfaces[1]
+    local surface = game.surfaces[1]  -- Uses module-level local 'game'
     if not surface then
         return {}
     end
@@ -365,8 +372,7 @@ end
 
 --- Run track_chunk_entity_status on all charted chunks
 function M:track_all_charted_chunk_entity_status()
-    local map_state = self.game_state:map()
-    local charted_chunks = map_state:get_charted_chunks()
+    local charted_chunks = self.map:get_charted_chunks()
     local all_status_records = {}
 
     for _, chunk in ipairs(charted_chunks) do

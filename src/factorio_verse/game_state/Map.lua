@@ -1,19 +1,31 @@
+-- Module-level local references for global lookups (performance optimization)
+local game = game
+local pairs = pairs
+local ipairs = ipairs
+
 local Config = require("core.Config")
 local utils = require("utils")
 
 local M = {}
 M.__index = M
 
+--- @class MapGameState
+--- @field game_state GameState
+--- @field resource_state ResourceGameState
+--- @field on_demand_snapshots table
+--- @field admin_api table
 function M:new(game_state)
     local instance = {
-        game_state = game_state
+        game_state = game_state,
+        -- Cache frequently-used sibling modules (constructor-level caching for performance)
+        resource_state = game_state.resource_state,
     }
     setmetatable(instance, self)
     return instance
 end
 
 function M:get_charted_chunks(sort_by_distance)
-    local surface = game.surfaces[1]
+    local surface = game.surfaces[1]  -- Uses module-level local 'game'
     local force = self:get_player_force()
     local charted_chunks = {}
     local generated_count = 0
@@ -77,6 +89,145 @@ function M:to_chunk_coordinates(position)
     local chunk_x = math.floor(x / 32)
     local chunk_y = math.floor(y / 32)
     return { x = chunk_x, y = chunk_y }
+end
+
+--- Get all resource entities in specified chunks
+--- @param chunks table - list of chunk areas
+--- @return table - entities grouped by resource name
+function M:get_resources_in_chunks(chunks)
+    local surface = game.surfaces[1]
+    if not surface then return {} end
+
+    local resources_by_name = {}
+
+    for _, chunk in ipairs(chunks) do
+        local entities = surface.find_entities_filtered {
+            area = chunk.area,
+            type = "resource"
+        }
+
+        for _, entity in ipairs(entities) do
+            local name = entity.name
+            if not resources_by_name[name] then
+                resources_by_name[name] = {}
+            end
+            table.insert(resources_by_name[name], entity)
+        end
+    end
+
+    return resources_by_name
+end
+
+--- Get water tiles using prototype detection for mod compatibility
+--- @param chunks table - list of chunk areas
+--- @return table - water tiles and tile names
+function M:get_water_tiles_in_chunks(chunks)
+    local surface = game.surfaces[1]
+    if not surface then return { tiles = {}, tile_names = {} } end
+
+    -- Detect water tile names via prototypes for mod compatibility
+    local water_tile_names = {}
+    local ok_proto, tiles_or_err = pcall(function()
+        return prototypes.get_tile_filtered({ { filter = "collision-mask", mask = "water-tile" } })
+    end)
+
+    if ok_proto and tiles_or_err then
+        for _, t in pairs(tiles_or_err) do
+            table.insert(water_tile_names, t.name)
+        end
+    else
+        -- fallback to vanilla names
+        water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
+    end
+
+    local all_tiles = {}
+    for _, chunk in ipairs(chunks) do
+        local tiles = surface.find_tiles_filtered {
+            area = chunk.area,
+            name = water_tile_names
+        }
+        for _, tile in ipairs(tiles) do
+            table.insert(all_tiles, tile)
+        end
+    end
+
+    return {
+        tiles = all_tiles,
+        tile_names = water_tile_names
+    }
+end
+
+--- Get connected water tiles from a starting position using flood fill
+--- @param position table - starting position {x, y}
+--- @param water_tile_names table - list of water tile names
+--- @return table - connected tiles or empty table if error
+function M:get_connected_water_tiles(position, water_tile_names)
+    local surface = game.surfaces[1]
+    if not surface then return {} end
+
+    local ok, connected = pcall(function()
+        return surface.get_connected_tiles(position, water_tile_names, true)
+    end)
+
+    if not ok or not connected then
+        -- Fallback: try without diagonal parameter
+        ok, connected = pcall(function()
+            return surface.get_connected_tiles(position, water_tile_names)
+        end)
+    end
+
+    return (ok and connected) or {}
+end
+
+--- Gather all resources for a specific chunk
+--- @param chunk table - {x, y, area}
+--- @return table - {resources = {...}, rocks = {...}, trees = {...}, water = {...}}
+function M:gather_resources_for_chunk(chunk)
+    local surface = game.surfaces[1]
+
+    local gathered = {
+        resources = {}, -- Mineable resources (iron, copper, coal, crude-oil, etc.)
+        rocks = {},     -- Simple entities (rock-huge, rock-big, etc.)
+        trees = {},     -- Tree entities
+        water = {}      -- Water tiles
+    }
+
+    -- Resources (including crude oil)
+    local resources_in_chunk = self:get_resources_in_chunks({ chunk })
+    if resources_in_chunk then
+        for resource_name, entities in pairs(resources_in_chunk) do
+            for _, entity in ipairs(entities) do
+                table.insert(gathered.resources, self.resource_state:serialize_resource_tile(entity, resource_name))
+            end
+        end
+    end
+
+    -- Rocks
+    local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
+    for _, entity in ipairs(rock_entities) do
+        if entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
+            table.insert(gathered.rocks, self.resource_state:serialize_rock(entity, chunk))
+        end
+    end
+
+    -- Trees
+    local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
+    for _, entity in ipairs(tree_entities) do
+        table.insert(gathered.trees, self.resource_state:serialize_tree(entity, chunk))
+    end
+
+    -- Water
+    local water_data = self:get_water_tiles_in_chunks({ chunk })
+    if water_data and water_data.tiles then
+        for _, tile in ipairs(water_data.tiles) do
+            local x, y = utils.extract_position(tile)
+            if x and y then
+                table.insert(gathered.water, { kind = "water", x = x, y = y, amount = 0 })
+            end
+        end
+    end
+
+    return gathered
 end
 
 --- Prints to rcon (as JSON string) or writes to a file the comprehensive state of the map area.

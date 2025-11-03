@@ -1,0 +1,302 @@
+-- factorio_verse/RemoteRegistry.lua
+-- Central registry for all remote interfaces: actions, admin APIs, and snapshots
+
+-- ============================================================================
+-- TOP-LEVEL REQUIRES (must be at module scope)
+-- ============================================================================
+
+local Action = require("types.Action")
+local GameState = require("GameState")
+
+-- Note: We no longer need module classes at top level since we access instances directly via game_state
+
+-- ============================================================================
+-- ACTION MODULE LIST
+-- ============================================================================
+
+local ACTION_MODULES = {
+  -- agent
+  "actions.agent.walk.action",
+
+  -- crafting
+  "actions.crafting.craft_sync.action",
+
+  -- entity
+  "actions.entity.place.action",
+  "actions.entity.place_line.action",
+  "actions.entity.rotate.action",
+  "actions.entity.pickup.action",
+  "actions.entity.set_recipe.action",
+
+  -- entity inventory
+  "actions.entity.inventory.set_item.action",
+  "actions.entity.inventory.get_item.action",
+  "actions.entity.inventory.set_limit.action",
+
+  -- resources
+  "actions.mining.action",
+
+  -- research
+  "actions.research.enqueue_research.action",
+  "actions.research.dequeue_research.action",
+}
+
+-- ============================================================================
+-- VALIDATOR PRE-LOADING (hierarchical loading based on action name nesting)
+-- ============================================================================
+
+--- Extract action name from action module path
+--- "actions.entity.inventory.set_item.action" -> "entity.inventory.set_item"
+--- @param module_path string Action module path
+--- @return string Action name
+local function extract_action_name(module_path)
+  -- Remove "actions." prefix and ".action" suffix
+  local name = string.gsub(module_path, "^actions%.", "")
+  name = string.gsub(name, "%.action$", "")
+  return name
+end
+
+--- Generate hierarchical validator paths for an action name
+--- For "entity.inventory.set_item", returns:
+---   {"actions.validator", "actions.entity.validator", 
+---    "actions.entity.inventory.validator", "actions.entity.inventory.set_item.validator"}
+--- @param action_name string Action name like "entity.place"
+--- @return table<string> Array of validator module paths
+local function get_validator_paths(action_name)
+  local paths = {}
+  table.insert(paths, "actions.validator") -- Root validator always included
+  
+  -- Split action name by dots and build progressively longer paths
+  local parts = {}
+  for part in string.gmatch(action_name, "[^.]+") do
+    table.insert(parts, part)
+  end
+  
+  local current_path = "actions"
+  for i = 1, #parts do
+    current_path = current_path .. "." .. parts[i]
+    table.insert(paths, current_path .. ".validator")
+  end
+  
+  return paths
+end
+
+--- Pre-load all validator modules at top level
+--- Maps validator_path -> validator_module (table of functions)
+local VALIDATORS_BY_PATH = {}
+
+do
+  -- Collect all unique validator paths from all actions
+  local validator_paths_set = {}
+  
+  -- Always include root validator
+  validator_paths_set["actions.validator"] = true
+  
+  -- Generate paths for each action module
+  for _, module_path in ipairs(ACTION_MODULES) do
+    local action_name = extract_action_name(module_path)
+    local paths = get_validator_paths(action_name)
+    for _, path in ipairs(paths) do
+      validator_paths_set[path] = true
+    end
+  end
+  
+  -- Require all validator modules at top level
+  for validator_path, _ in pairs(validator_paths_set) do
+    local ok, validator_module = pcall(require, validator_path)
+    if ok and type(validator_module) == "table" then
+      log("Loaded validator module: " .. validator_path)
+      VALIDATORS_BY_PATH[validator_path] = validator_module
+    end
+  end
+end
+
+--- Load validators for an action from pre-loaded validator modules
+--- Validator modules always return an array of functions
+--- @param action_name string Action name like "entity.place"
+--- @return table<function> Array of validator functions
+local function load_validators(action_name)
+  local validators = {}
+  local validator_paths = get_validator_paths(action_name)
+  
+  for _, validator_path in ipairs(validator_paths) do
+    local validator_module = VALIDATORS_BY_PATH[validator_path]
+    if validator_module then
+      -- Validator modules always return an array of functions
+      for _, validator_func in ipairs(validator_module) do
+        table.insert(validators, validator_func)
+      end
+    end
+  end
+  
+  return validators
+end
+
+-- ============================================================================
+-- REMOTE REGISTRY CLASS
+-- ============================================================================
+
+local RemoteRegistry = {}
+RemoteRegistry.__index = RemoteRegistry
+
+--- Create a new registry instance
+--- @return table
+function RemoteRegistry:new()
+  local instance = {
+    loaded = false,
+    actions = {},          -- array of action instances
+    actions_by_name = {},  -- name -> action instance
+    events = {},          -- event_id -> {handler, ...}
+  }
+  setmetatable(instance, self)
+  return instance
+end
+
+--- Load all actions listed in ACTION_MODULES. Safe to call multiple times.
+function RemoteRegistry:load()
+  if self.loaded then return end
+
+  -- Helper to register a single action instance
+  local function register_action(action)
+    if not (type(action) == "table" and type(action.name) == "string" and type(action.run) == "function") then
+      return
+    end
+    
+    -- Load validators hierarchically
+    local ok, err = pcall(function()
+      local validators = load_validators(action.name)
+      action:attach_validators(validators)
+      if #validators > 0 then
+        log("Attached " .. #validators .. " validator(s) to action: " .. tostring(action.name))
+      end
+    end)
+    if not ok then
+      log("Error attaching validator to action: " .. tostring(action.name))
+      log(err)
+    end
+
+    table.insert(self.actions, action)
+    self.actions_by_name[action.name] = action
+
+    -- Collect event handlers
+    if type(action.events) == "table" then
+      for event_id, handler in pairs(action.events) do
+        if handler ~= nil then
+          self.events[event_id] = self.events[event_id] or {}
+          table.insert(self.events[event_id], handler)
+        end
+      end
+    end
+  end
+
+  -- Load all action modules
+  for _, module_name in ipairs(ACTION_MODULES) do
+    local ok, action_or_err = pcall(require, module_name)
+    if ok and type(action_or_err) == "table" then
+      -- Handle different return formats:
+      -- 1) Single action table with name/run
+      -- 2) Array of actions {action1, action2, ...}
+      -- 3) Table with field `action`
+      if type(action_or_err.name) == "string" and type(action_or_err.run) == "function" then
+        register_action(action_or_err)
+      elseif type(action_or_err[1]) == "table" then
+        for _, a in ipairs(action_or_err) do
+          register_action(a)
+        end
+      elseif type(action_or_err.action) == "table" then
+        register_action(action_or_err.action)
+      else
+        log("Module did not return an action: " .. module_name)
+      end
+    else
+      log("Error loading action: " .. module_name)
+      log(action_or_err)
+    end
+  end
+
+  self.loaded = true
+end
+
+
+--- Return action remote interface mapping
+--- Keys are action names (e.g., "agent.walk"); values call action:run(params)
+--- For convenience, also expose underscore versions (e.g., "agent_walk").
+--- @return table<string, function>
+function RemoteRegistry:get_action_interface()
+  self:load()
+
+  local interface = {}
+  for _, action in ipairs(self.actions) do
+    local action_name = action.name
+    local safe_name = string.gsub(action_name, "%.", "_")
+
+    local runner = function(params)
+      return action:run(params)
+    end
+
+    interface[action_name] = runner
+    interface[safe_name] = interface[safe_name] or runner
+  end
+  return interface
+end
+
+--- Return aggregated event handlers defined by actions (if any)
+--- @return table<number, function>
+function RemoteRegistry:get_events()
+  self:load()
+  local aggregated = {}
+  for event_id, handlers in pairs(self.events) do
+    if type(handlers) == "table" and #handlers > 0 then
+      aggregated[event_id] = function(event)
+        for _, handler in ipairs(handlers) do
+          handler(event)
+        end
+      end
+    end
+  end
+  return aggregated
+end
+
+--- Register all remote interfaces: action, admin, snapshot
+--- Safe to call multiple times; Factorio will error if an interface already exists,
+--- so prefer calling this once from control.lua.
+--- @param game_state GameState instance (required)
+function RemoteRegistry:register_all_interfaces(game_state)
+  
+  if not remote or not remote.add_interface then
+    return
+  end
+  
+  -- Register action interface
+  local action_iface = self:get_action_interface()
+  if remote.interfaces["action"] then
+    log("Removing existing 'action' interface")
+    remote.remove_interface("action")
+  end
+  log("Registering 'action' interface with " .. #self.actions .. " actions")
+  remote.add_interface("action", action_iface)
+  
+  -- Register admin interface
+  local admin_iface = game_state:get_admin_api()
+  if remote.interfaces["admin"] then
+    log("Removing existing 'admin' interface")
+    remote.remove_interface("admin")
+  end
+  local admin_count = 0
+  for _ in pairs(admin_iface) do admin_count = admin_count + 1 end
+  log("Registering 'admin' interface with " .. admin_count .. " methods")
+  remote.add_interface("admin", admin_iface)
+  
+  -- Register snapshot interface
+  local snapshot_iface = game_state:get_snapshot_api()
+  if remote.interfaces["snapshot"] then
+    log("Removing existing 'snapshot' interface")
+    remote.remove_interface("snapshot")
+  end
+  local snapshot_count = 0
+  for _ in pairs(snapshot_iface) do snapshot_count = snapshot_count + 1 end
+  log("Registering 'snapshot' interface with " .. snapshot_count .. " methods")
+  remote.add_interface("snapshot", snapshot_iface)
+end
+
+return RemoteRegistry:new()

@@ -1,5 +1,5 @@
-local Action = require("core.Action")
-local game_state = require("core.game_state.GameState")
+local Action = require("types.Action")
+local game_state = require("GameState")
 
 --- @class EnqueueResearchParams : ParamSpec
 --- @field agent_id number
@@ -30,7 +30,7 @@ function EnqueueResearchAction:run(params)
     ---@type EnqueueResearchParams
     local p = self:_pre_run(game_state, params)
     local technology_name = p.technology_name
-    local agent = game_state:agent():get_agent(p.agent_id)
+    local agent = game_state.agent:get_agent(p.agent_id)
     local force = agent.force
 
     if force.current_research then

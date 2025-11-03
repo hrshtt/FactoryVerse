@@ -4,7 +4,7 @@ local GameState = require("core.game_state.GameState")
 --- @return boolean
 local function can_research_technology(params)
     local game_state = GameState:new()
-    local agent = game_state:agent():get_agent(params.agent_id)
+    local agent = game_state.agent:get_agent(params.agent_id)
     local force = agent.force
     local tech_name = params.technology_name
     local tech = force.technologies[tech_name]

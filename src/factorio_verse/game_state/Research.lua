@@ -1,18 +1,20 @@
---- factorio_verse/core/game_state/EntitiesGameState.lua
---- EntitiesGameState sub-module for managing entity-related functionality.
+--- factorio_verse/core/game_state/ResearchGameState.lua
+--- ResearchGameState sub-module for managing research-related functionality.
 
 local GameStateError = require("core.Error")
 
 --- @class ResearchGameState
---- @field parent GameState
+--- @field game_state GameState
+--- @field on_demand_snapshots table
+--- @field admin_api table
 local M = {}
 M.__index = M
 
---- @param parent GameState
+--- @param game_state GameState
 --- @return ResearchGameState
-function M:new(parent)
+function M:new(game_state)
     local instance = {
-        parent = parent
+        game_state = game_state
     }
 
     setmetatable(instance, self)

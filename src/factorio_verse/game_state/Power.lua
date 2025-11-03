@@ -1,10 +1,15 @@
 --- factorio_verse/core/game_state/PowerGameState.lua
 --- PowerGameState sub-module for managing power-related functionality.
 
+-- Module-level local references for global lookups (performance optimization)
+-- (This module currently doesn't use many globals, but kept for consistency)
+
 local GameStateError = require("core.Error")
 
 --- @class PowerGameState
 --- @field parent GameState
+--- @field on_demand_snapshots table
+--- @field admin_api table
 local M = {}
 M.__index = M
 

@@ -5,7 +5,7 @@ local GameState = require("core.game_state.GameState")
 local function validate_agent(params)
     if params.agent_id then
         local game_state = GameState:new()
-        local agent = game_state:agent():get_agent(params.agent_id)
+        local agent = game_state.agent:get_agent(params.agent_id)
         if not agent then
             error("Agent '" .. tostring(params.agent_id) .. "' not found")
         end

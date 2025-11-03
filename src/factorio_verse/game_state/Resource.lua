@@ -1,11 +1,16 @@
 --- factorio_verse/core/game_state/ResourceGameState.lua
 --- ResourceGameState sub-module for managing resource-related functionality.
 
+-- Module-level local references for global lookups (performance optimization)
+local pairs = pairs
+
 local GameStateError = require("core.Error")
 local utils = require("utils")
 
 --- @class ResourceGameState
 --- @field game_state GameState
+--- @field on_demand_snapshots table
+--- @field admin_api table
 local M = {}
 M.__index = M
 

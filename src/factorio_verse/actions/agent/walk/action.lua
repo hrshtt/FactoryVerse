@@ -1,5 +1,5 @@
-local Action = require("core.Action")
-local game_state = require("core.game_state.GameState")
+local Action = require("types.Action")
+local game_state = require("GameState")
 
 --- @class WalkParams : ParamSpec
 --- @field agent_id number
@@ -309,7 +309,7 @@ local function _tick_follow(job, control)
 
     -- arrival check
     if dist_sq(pos, job.goal) <= (job.arrive_radius * job.arrive_radius) then
-        local agent_state = game_state:agent()
+        local agent_state = game_state.agent
         agent_state:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
         job.state = "arrived"
         return
@@ -330,7 +330,7 @@ local function _tick_follow(job, control)
     local next_dir = hysteresis_octant(job.current_dir, desired_oct)
     job.current_dir = next_dir
 
-    local agent_state = game_state:agent()
+    local agent_state = game_state.agent
     agent_state:set_walking(job.agent_id, next_dir, true)
 
     -- motion-based stuck detection (hard collision or tight alley)
@@ -444,7 +444,7 @@ function WalkAction:run(params)
         return false
     end
 
-    local agent_state = game_state:agent()
+    local agent_state = game_state.agent
     local agent = agent_state:get_agent(agent_id)
 
     -- If ticks specified, register an intent to sustain walking each tick
@@ -473,7 +473,7 @@ local function on_tick_walk_intents(event)
         if intent.end_tick and current_tick >= intent.end_tick then
             storage.walk_intents[agent_id] = nil
         else
-            local agent_state = game_state:agent()
+            local agent_state = game_state.agent
             agent_state:set_walking(agent_id, intent.direction, (intent.walking ~= false))
         end
     end
@@ -523,7 +523,7 @@ function WalkCancelAction:run(params)
     local agent_id = p.agent_id
 
     -- Delegate to AgentGameState for centralized state management
-    local agent_state = game_state:agent()
+    local agent_state = game_state.agent
     agent_state:stop_walking(agent_id)
 
     return self:_post_run(true, p)

@@ -1,4 +1,4 @@
-local Action = require("core.Action")
+local Action = require("types.Action")
 local GameState = require("core.game_state.GameState")
 
 local gs = GameState:new()

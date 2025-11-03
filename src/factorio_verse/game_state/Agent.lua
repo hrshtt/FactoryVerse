@@ -1,40 +1,13 @@
 --- factorio_verse/core/game_state/AgentGameState.lua
 --- AgentGameState sub-module for managing agent-related functionality.
 
+-- Module-level local references for global lookups (performance optimization)
+local game = game
+local pairs = pairs
+
 local GameStateError = require("core.Error")
 local utils = require("utils")
 local MapDiscovery = require("core.MapDiscovery")
-
---- @param h number
---- @param s number
---- @param v number
---- @return table
-local function hsv_to_rgb(h, s, v)
-    local r, g, b
-    local i = math.floor(h * 6)
-    local f = h * 6 - i
-    local p = v * (1 - s)
-    local q = v * (1 - f * s)
-    local t = v * (1 - (1 - f) * s)
-
-    i = i % 6
-
-    if i == 0 then
-        r, g, b = v, t, p
-    elseif i == 1 then
-        r, g, b = q, v, p
-    elseif i == 2 then
-        r, g, b = p, v, t
-    elseif i == 3 then
-        r, g, b = p, q, v
-    elseif i == 4 then
-        r, g, b = t, p, v
-    elseif i == 5 then
-        r, g, b = v, p, q
-    end
-
-    return { r = r, g = g, b = b, a = 1.0 }
-end
 
 --- @param index number
 --- @param total_agents number
@@ -43,14 +16,12 @@ local function generate_agent_color(index, total_agents)
     local hue = (index - 1) / total_agents
     local saturation = 1.0
     local value = 1.0
-    return hsv_to_rgb(hue, saturation, value)
+    return utils.hsv_to_rgb(hue, saturation, value)
 end
 
---- @class AgentGameState
---- @field game_state GameState
---- @field agent_id number
---- @field agent_inventory_type string
---- Methods: player()
+--- @class AgentGameState : GameStateModule
+--- @field entities EntitiesGameState
+--- @field inventory InventoryGameState
 local M = {}
 M.__index = M
 
@@ -61,22 +32,13 @@ local agent_inventory_type = defines.inventory.character_main
 function M:new(game_state)
     local instance = {
         game_state = game_state,
-        -- agent_id = agent_id or 1
+        -- Cache frequently-used sibling modules (constructor-level caching for performance)
+        entities = game_state.entities,
+        inventory = game_state.inventory,
     }
 
     setmetatable(instance, self)
     return instance
-end
-
--- Lazy getter for player
-function M:player()
-    if not self._player then
-        local g = game
-        if g and g.players[self.agent_id] then
-            self._player = g.players[self.agent_id]
-        end
-    end
-    return self._player
 end
 
 function M:force_destroy_agents()
@@ -110,16 +72,15 @@ function M:create_agent(agent_id, position, color)
         color = color
     }
     -- Chart the starting area (safe now - doesn't force sync chunk generation)
-    utils.chart_native_start_area(surface, g.forces.player, position, self.game_state)
+    utils.chart_native_start_area(surface, game.forces.player, position, self.game_state)
     -- Initialize map discovery for ongoing discovery
-    MapDiscovery.initialize(surface, g.forces.player, position)
+    MapDiscovery.initialize(surface, game.forces.player, position)
     return char
 end
 
 --- @param agent_id number
 --- @return LuaEntity|nil
 function M:get_agent(agent_id)
-    agent_id = agent_id or self.agent_id
     if not storage.agent_characters then
         storage.agent_characters = {}
         return nil
@@ -174,7 +135,7 @@ function M:get_surrounding_entities(agent_id, radius, filter)
         { agent.position.x - radius, agent.position.y - radius },
         { agent.position.x + radius, agent.position.y + radius }
     }
-    return self.game_state:entities():get_entities_in_area(area, filter)
+    return self.entities:get_entities_in_area(area, filter)
 end
 
 --- @param agent_id number
@@ -184,7 +145,7 @@ function M:get_inventory_contents(agent_id)
     if not agent then
         return GameStateError:new("Agent not found", { agent_id = agent_id })
     end
-    return self.game_state:inventory():get_inventory_contents(agent, agent_inventory_type)
+    return self.inventory:get_inventory_contents(agent, agent_inventory_type)
 end
 
 function M:check_item_in_inventory(agent_id, item_name)
@@ -193,18 +154,8 @@ function M:check_item_in_inventory(agent_id, item_name)
         return GameStateError:new("Agent not found", { agent_id = agent_id })
     end
 
-    return self.game_state:inventory():check_item_in_inventory(agent, item_name, agent_inventory_type)
+    return self.inventory:check_item_in_inventory(agent, item_name, agent_inventory_type)
 end
-
-function M:to_json()
-    local player = self:player()
-    return {
-        agent_id = self.agent_id,
-        player_position = player and player.position or nil,
-        player_force = player and player.force.name or nil
-    }
-end
-
 -- Internal helper to fetch the agent's LuaEntity (character)
 local function _get_control_for_agent(agent_id)
     local agents = storage.agent_characters
@@ -217,7 +168,6 @@ end
 -- Hard exclusivity policy: only one activity active at a time for stability
 -- Stop all walking-related activities (intents and immediate walking state)
 function M:stop_walking(agent_id)
-    agent_id = agent_id or self.agent_id
     -- Clear sustained intents
     if storage.walk_intents then
         storage.walk_intents[agent_id] = nil
@@ -232,7 +182,6 @@ end
 
 -- Start or stop walking for this tick. Enforces exclusivity with mining when starting.
 function M:set_walking(agent_id, direction, walking)
-    agent_id = agent_id or self.agent_id
     local control = _get_control_for_agent(agent_id)
     if not (control and control.valid) then return end
     -- If starting to walk, stop mining per exclusivity policy
@@ -248,7 +197,6 @@ end
 
 -- Sustain walking for a number of ticks; immediately applies for current tick as well
 function M:sustain_walking(agent_id, direction, ticks)
-    agent_id = agent_id or self.agent_id
     if not ticks or ticks <= 0 then return end
     storage.walk_intents = storage.walk_intents or {}
     local end_tick = (game and game.tick or 0) + ticks
@@ -263,7 +211,6 @@ end
 
 -- Clear any sustained walking intent for the agent, without changing walk_to jobs
 function M:clear_walking_intent(agent_id)
-    agent_id = agent_id or self.agent_id
     if storage.walk_intents then
         storage.walk_intents[agent_id] = nil
     end
@@ -271,7 +218,6 @@ end
 
 -- Cancel any active walk_to jobs for the agent (without touching walking intents)
 function M:cancel_walk_to(agent_id)
-    agent_id = agent_id or self.agent_id
     if not storage.walk_to_jobs then return end
     for id, job in pairs(storage.walk_to_jobs) do
         if job and job.agent_id == agent_id then
@@ -283,7 +229,6 @@ end
 -- Start/stop mining on the entity; when starting, enforce exclusivity by stopping walking
 -- target may be a position {x,y} or an entity with .position
 function M:set_mining(agent_id, mining, target)
-    agent_id = agent_id or self.agent_id
     local control = _get_control_for_agent(agent_id)
     if not (control and control.valid) then return end
     if mining then
@@ -304,18 +249,15 @@ end
 
 -- Transient selection handling ------------------------------------------------
 function M:set_selected(agent_id, selected)
-    agent_id = agent_id or self.agent_id
     storage.agent_selection = storage.agent_selection or {}
     storage.agent_selection[agent_id] = selected
 end
 
 function M:get_selected(agent_id)
-    agent_id = agent_id or self.agent_id
     return storage.agent_selection and storage.agent_selection[agent_id] or nil
 end
 
 function M:clear_selected(agent_id)
-    agent_id = agent_id or self.agent_id
     if storage.agent_selection then
         storage.agent_selection[agent_id] = nil
     end

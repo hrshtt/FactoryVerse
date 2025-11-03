@@ -1,10 +1,15 @@
 --- factorio_verse/core/game_state/InventoryGameState.lua
 --- InventoryGameState sub-module for managing inventory-related functionality.
 
+-- Module-level local references for global lookups (performance optimization)
+local pairs = pairs
+
 local GameStateError = require("core.Error")
 
 --- @class InventoryGameState
 --- @field game_state GameState
+--- @field on_demand_snapshots table
+--- @field admin_api table
 local M = {}
 M.__index = M
 
@@ -13,6 +18,8 @@ M.__index = M
 function M:new(game_state)
     local instance = {
         game_state = game_state,
+        -- Cache frequently-used sibling modules (constructor-level caching for performance)
+        entities = game_state.entities,
     }
 
     setmetatable(instance, self)
@@ -103,7 +110,7 @@ function M:serialize_entity_inventories(entity)
 end
 
 function M:clear_inventory(input)
-    local entity = self.game_state:entities():get_entity(input)
+    local entity = self.entities:get_entity(input)
     if not (entity and entity.valid) then
         return GameStateError:new("Invalid entity")
     end
@@ -120,7 +127,7 @@ function M:clear_inventory(input)
 end
 
 function M:inspect_inventory(input)
-    local entity = self.game_state:entities():get_entity(input)
+    local entity = self.entities:get_entity(input)
     if not (entity and entity.valid) then
         return GameStateError:new("Invalid entity")
     end
@@ -132,7 +139,7 @@ function M:inspect_inventory(input)
     rcon.print(json_string)
 end
 
-M.on_demand_snapshot = { inspect_inventory = M.inspect_inventory }
+M.on_demand_snapshots= { inspect_inventory = M.inspect_inventory }
 
 M.admin_api = {
     clear_inventory = M.clear_inventory,

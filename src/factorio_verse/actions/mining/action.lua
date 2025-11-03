@@ -1,5 +1,5 @@
-local Action = require("core.Action")
-local game_state = require("core.game_state.GameState")
+local Action = require("types.Action")
+local game_state = require("GameState")
 local action_registry = require("core.action.ActionRegistry")
 
 --- @class MineResourceParams : ParamSpec
@@ -213,7 +213,7 @@ local function _tick_mine_jobs(event)
 
                 -- Stop if completed
                 if (job.mined_count or 0) >= job.max_count then
-                    game_state:agent():set_mining(agent_id, false)
+                    game_state.agent:set_mining(agent_id, false)
                     job.finished = true
                     storage.mine_resource_jobs[agent_id] = nil
                 else
@@ -222,7 +222,7 @@ local function _tick_mine_jobs(event)
 
                     if not (resource and resource.valid) then
                         -- Target depleted or missing
-                        game_state:agent():set_mining(agent_id, false)
+                        game_state.agent:set_mining(agent_id, false)
                         job.finished = true
                         storage.mine_resource_jobs[agent_id] = nil
                     else
@@ -234,7 +234,7 @@ local function _tick_mine_jobs(event)
                             local names, requires_fluid = _get_resource_products(resource)
                             if requires_fluid then
                                 log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", job.resource_name, agent_id))
-                                game_state:agent():set_mining(agent_id, false)
+                                game_state.agent:set_mining(agent_id, false)
                                 job.finished = true
                                 storage.mine_resource_jobs[agent_id] = nil
                                 goto continue_agent
@@ -250,7 +250,7 @@ local function _tick_mine_jobs(event)
                         if reachable then
                             -- Ensure we are not walking and keep mining active by reasserting every tick
                             _cancel_walk_for_agent(agent_id)
-                            local agent_state = game_state:agent()
+                            local agent_state = game_state.agent
                             agent_state:set_mining(agent_id, true, resource)
                             job.mining_active = true
 
@@ -277,7 +277,7 @@ local function _tick_mine_jobs(event)
                             end
                         else
                             if job.mining_active then
-                                game_state:agent():set_mining(agent_id, false)
+                                game_state.agent:set_mining(agent_id, false)
                                 job.mining_active = false
                             end
                             if job.walk_if_unreachable then
@@ -344,7 +344,7 @@ function MineResourceAction:run(params)
             local reachable = _can_reach_entity(control, resource)
             if reachable then
                 _cancel_walk_for_agent(agent_id)
-                game_state:agent():set_mining(agent_id, true, resource)
+                game_state.agent:set_mining(agent_id, true, resource)
                 job.mining_active = true
                 local target_pos = resource.position
                 if control.update_selected_entity and target_pos then

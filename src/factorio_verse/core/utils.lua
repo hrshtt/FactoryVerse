@@ -1,5 +1,38 @@
 local M = {}
 
+
+--- @param h number
+--- @param s number
+--- @param v number
+--- @return table
+function M.hsv_to_rgb(h, s, v)
+    local r, g, b
+    local i = math.floor(h * 6)
+    local f = h * 6 - i
+    local p = v * (1 - s)
+    local q = v * (1 - f * s)
+    local t = v * (1 - (1 - f) * s)
+
+    i = i % 6
+
+    if i == 0 then
+        r, g, b = v, t, p
+    elseif i == 1 then
+        r, g, b = q, v, p
+    elseif i == 2 then
+        r, g, b = p, v, t
+    elseif i == 3 then
+        r, g, b = p, q, v
+    elseif i == 4 then
+        r, g, b = t, p, v
+    elseif i == 5 then
+        r, g, b = v, p, q
+    end
+
+    return { r = r, g = g, b = b, a = 1.0 }
+end
+
+
 function M.min_position(a, b)
     return {
         x = math.floor(math.min(a.x, b.x)),
@@ -17,7 +50,7 @@ function M.chart_native_start_area(surface, force, position, game_state)
     
     -- Register charted area for headless server fallback (if game_state provided)
     if game_state then
-        game_state:map():register_charted_area({
+        game_state.map:register_charted_area({
             left_top = { x = area[1].x, y = area[1].y },
             right_bottom = { x = area[2].x, y = area[2].y }
         })
@@ -82,45 +115,6 @@ function M.sort_coordinates_by_distance(coords, origin)
     end)
 
     return coords
-end
-
---- Disjoint Set Union (DSU) data structure for efficient connected component tracking
---- Used in connected component labeling algorithms
-M.DSU = {}
-M.DSU.__index = M.DSU
-
-function M.DSU:new()
-    return setmetatable({
-        parent = {},
-        size = {}
-    }, self)
-end
-
-function M.DSU:find(x)
-    local p = self.parent[x]
-    if not p then
-        self.parent[x] = x
-        self.size[x] = 1
-        return x
-    end
-    if p ~= x then
-        self.parent[x] = self:find(p) -- path compression
-    end
-    return self.parent[x]
-end
-
-function M.DSU:union(a, b)
-    a = self:find(a)
-    b = self:find(b)
-    if a == b then return a end
-
-    -- union by size
-    if (self.size[a] or 1) < (self.size[b] or 1) then
-        a, b = b, a
-    end
-    self.parent[b] = a
-    self.size[a] = (self.size[a] or 1) + (self.size[b] or 1)
-    return a
 end
 
 --- Utility functions for chunk coordinate operations
@@ -220,102 +214,6 @@ function M.triple_print(print_str)
 end
 
 -- SCHEMA-DRIVEN FLATTENING UTILITIES -----------------------------------------
-
---- Factorio-specific flattening patterns for common data structures
-M.FLATTEN_PATTERNS = {
-    --- Flatten position objects to x,y coordinates
-    --- @param prefix string - field name prefix
-    --- @param value table - position object with x,y fields
-    --- @return table - flattened coordinates
-    coordinates = function(prefix, value)
-        return { [prefix .. "_x"] = value.x, [prefix .. "_y"] = value.y }
-    end,
-
-    --- Flatten bounding box objects to min/max coordinates
-    --- @param prefix string - field name prefix
-    --- @param value table - bounding box with min_x, min_y, max_x, max_y fields
-    --- @return table - flattened bounds
-    bounds = function(prefix, value)
-        return {
-            [prefix .. "_min_x"] = value.min_x,
-            [prefix .. "_min_y"] = value.min_y,
-            [prefix .. "_max_x"] = value.max_x,
-            [prefix .. "_max_y"] = value.max_y
-        }
-    end,
-
-    --- Flatten object fields by prefixing each key
-    --- @param prefix string - field name prefix
-    --- @param value table - object to flatten
-    --- @return table - flattened object fields
-    object_fields = function(prefix, value)
-        local result = {}
-        for k, v in pairs(value) do
-            result[prefix .. "_" .. k] = v
-        end
-        return result
-    end,
-
-    --- Flatten inserter position objects
-    --- @param prefix string - field name prefix
-    --- @param value table - inserter object with pickup_position and drop_position
-    --- @return table - flattened inserter positions
-    inserter_positions = function(prefix, value)
-        local result = {}
-        if value.pickup_position and type(value.pickup_position) == "table" then
-            result[prefix .. "_pickup_position_x"] = value.pickup_position.x
-            result[prefix .. "_pickup_position_y"] = value.pickup_position.y
-        end
-        if value.drop_position and type(value.drop_position) == "table" then
-            result[prefix .. "_drop_position_x"] = value.drop_position.x
-            result[prefix .. "_drop_position_y"] = value.drop_position.y
-        end
-        result[prefix .. "_pickup_target_unit"] = value.pickup_target_unit
-        result[prefix .. "_drop_target_unit"] = value.drop_target_unit
-        return result
-    end,
-
-    --- Flatten train object to id and state
-    --- @param prefix string - field name prefix
-    --- @param value table - train object with id and state
-    --- @return table - flattened train fields
-    train_fields = function(prefix, value)
-        return {
-            [prefix .. "_id"] = value.id,
-            [prefix .. "_state"] = value.state
-        }
-    end,
-
-    --- Flatten burner object to fuel and burning info
-    --- @param prefix string - field name prefix
-    --- @param value table - burner object
-    --- @return table - flattened burner fields
-    burner_fields = function(prefix, value)
-        local result = {}
-        result[prefix .. "_remaining_burning_fuel"] = value.remaining_burning_fuel
-        result[prefix .. "_currently_burning"] = value.currently_burning and value.currently_burning.name
-        result[prefix .. "_inventories"] = value.inventories or nil
-        return result
-    end
-}
-
---- Validate that a flattening pattern exists
---- @param pattern_name string - name of the pattern to validate
---- @return boolean - true if pattern exists
-function M.is_valid_flatten_pattern(pattern_name)
-    return M.FLATTEN_PATTERNS[pattern_name] ~= nil
-end
-
---- Get all available flattening pattern names
---- @return table - array of pattern names
-function M.get_flatten_pattern_names()
-    local patterns = {}
-    for name, _ in pairs(M.FLATTEN_PATTERNS) do
-        table.insert(patterns, name)
-    end
-    table.sort(patterns)
-    return patterns
-end
 
 function M.blueprint_to_table(blueprint_string)
     local version=string.sub(blueprint_string,1,1)
