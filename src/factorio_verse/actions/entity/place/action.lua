@@ -1,9 +1,7 @@
 local Action = require("types.Action")
-local GameState = require("core.game_state.GameState")
+local GameStateAliases = require("game_state.GameStateAliases")
 local walk = require("actions.agent.walk.helper")
 local utils = require("core.utils")
-
-local gs = GameState:new()
 
 --- @class PlaceEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -27,10 +25,10 @@ local PlaceEntityAction = Action:new("entity.place", PlaceEntityParams)
 --- @param params PlaceEntityParams
 --- @return table result Data about the placed entity
 function PlaceEntityAction:run(params)
-    local p = self:_pre_run(gs, params)
+    local p = self:_pre_run(params)
     ---@cast p PlaceEntityParams
 
-    local agent = gs:agent():get_agent(p.agent_id)
+    local agent = self.game_state.agent:get_agent(p.agent_id)
     local surface = game.surfaces[1]
 
     local placement = {
@@ -44,9 +42,7 @@ function PlaceEntityAction:run(params)
         if type(dir) == "number" then return dir end
         if type(dir) == "string" then
             local key = string.lower(dir)
-            if GameState.aliases and GameState.aliases.direction then
-                return GameState.aliases.direction[key]
-            end
+            return GameStateAliases.direction[key]
         end
         return nil
     end

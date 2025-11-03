@@ -1,13 +1,13 @@
 --- factorio_verse/core/action/Action.lua
 --- Base class for all actions.
 
-local Snapshot = require("core.Snapshot")
 local ParamSpec = require("types.ParamSpec")
 
 --- @class Action
 --- @field name string
 --- @field params ParamSpec
 --- @field validators table
+--- @field game_state GameState|nil (set during action registration)
 --- @field validate function
 --- @field run function
 local Action = {}
@@ -46,6 +46,12 @@ function Action:attach_validators(validators)
   self.validators = validators
 end
 
+--- Set the game_state instance for this action (called during registration)
+--- @param game_state GameState
+function Action:set_game_state(game_state)
+  self.game_state = game_state
+end
+
 --- Validate parameters using external validators
 --- @param params ParamSpec|table Parameter instance or raw params (for backward compatibility)
 --- @return boolean success
@@ -76,10 +82,9 @@ end
 
 --- Prepare parameters before running an action.
 --- Accepts ParamSpec instance, raw table, or JSON string. Returns validated ParamSpec.
---- @param game_state GameState
 --- @param params ParamSpec|table|string
 --- @return ParamSpec|any
-function Action:_pre_run(game_state, params)
+function Action:_pre_run(params)
   local instance
 
   -- Decode JSON string if provided
@@ -119,35 +124,12 @@ function Action:_pre_run(game_state, params)
   return instance
 end
 
---- Post-run hook with mutation tracking
+--- Post-run hook
 --- @param result any
 --- @param params ParamSpec
 --- @return any
 function Action:_post_run(result, params)
-  -- Handle entity mutations if present in result
-  if result and type(result) == "table" then
-    local snapshot = Snapshot:get_instance()
-    
-    -- Update affected entities (now using positions instead of unit_numbers)
-    if result.affected_positions then
-      for _, position_info in ipairs(result.affected_positions) do
-        local position = position_info.position or position_info
-        local entity_name = position_info.entity_name
-        local entity_type = position_info.entity_type
-        snapshot:update_entity_from_action(position, entity_name, entity_type)
-      end
-    end
-    
-    -- Remove deleted entities (now using positions instead of unit_numbers)
-    if result.removed_positions then
-      for _, position_info in ipairs(result.removed_positions) do
-        local position = position_info.position or position_info
-        local entity_name = position_info.entity_name
-        snapshot:remove_entity_from_action(position, entity_name)
-      end
-    end
-  end
-
+  -- Mutation tracking is now handled by GameState modules directly
   return result
 end
 

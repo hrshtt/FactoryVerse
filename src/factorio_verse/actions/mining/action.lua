@@ -1,6 +1,4 @@
 local Action = require("types.Action")
-local game_state = require("GameState")
-local action_registry = require("core.action.ActionRegistry")
 
 --- @class MineResourceParams : ParamSpec
 --- @field agent_id number
@@ -186,7 +184,7 @@ local function _can_reach_entity(control, entity)
     return walk_helper:is_reachable(control, pos, nil, reach)
 end
 
-local function _tick_mine_jobs(event)
+local function _tick_mine_jobs(event, action)
     if not storage.mine_resource_jobs then return end
     for agent_id, job in pairs(storage.mine_resource_jobs) do
         if not job or job.finished then
@@ -213,7 +211,7 @@ local function _tick_mine_jobs(event)
 
                 -- Stop if completed
                 if (job.mined_count or 0) >= job.max_count then
-                    game_state.agent:set_mining(agent_id, false)
+                    action.game_state.agent:set_mining(agent_id, false)
                     job.finished = true
                     storage.mine_resource_jobs[agent_id] = nil
                 else
@@ -222,7 +220,7 @@ local function _tick_mine_jobs(event)
 
                     if not (resource and resource.valid) then
                         -- Target depleted or missing
-                        game_state.agent:set_mining(agent_id, false)
+                        action.game_state.agent:set_mining(agent_id, false)
                         job.finished = true
                         storage.mine_resource_jobs[agent_id] = nil
                     else
@@ -234,7 +232,7 @@ local function _tick_mine_jobs(event)
                             local names, requires_fluid = _get_resource_products(resource)
                             if requires_fluid then
                                 log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", job.resource_name, agent_id))
-                                game_state.agent:set_mining(agent_id, false)
+                                action.game_state.agent:set_mining(agent_id, false)
                                 job.finished = true
                                 storage.mine_resource_jobs[agent_id] = nil
                                 goto continue_agent
@@ -250,7 +248,7 @@ local function _tick_mine_jobs(event)
                         if reachable then
                             -- Ensure we are not walking and keep mining active by reasserting every tick
                             _cancel_walk_for_agent(agent_id)
-                            local agent_state = game_state.agent
+                            local agent_state = action.game_state.agent
                             agent_state:set_mining(agent_id, true, resource)
                             job.mining_active = true
 
@@ -277,7 +275,7 @@ local function _tick_mine_jobs(event)
                             end
                         else
                             if job.mining_active then
-                                game_state.agent:set_mining(agent_id, false)
+                                action.game_state.agent:set_mining(agent_id, false)
                                 job.mining_active = false
                             end
                             if job.walk_if_unreachable then
@@ -305,7 +303,7 @@ local MineResourceAction = Action:new("mine_resource", MineResourceParams)
 --- @param params MineResourceParams
 --- @return boolean
 function MineResourceAction:run(params)
-    local p = self:_pre_run(game_state, params)
+    local p = self:_pre_run(params)
     ---@cast p MineResourceParams
     local agent_id = p.agent_id
     local target = { x = p.x, y = p.y }
@@ -344,7 +342,7 @@ function MineResourceAction:run(params)
             local reachable = _can_reach_entity(control, resource)
             if reachable then
                 _cancel_walk_for_agent(agent_id)
-                game_state.agent:set_mining(agent_id, true, resource)
+                self.game_state.agent:set_mining(agent_id, true, resource)
                 job.mining_active = true
                 local target_pos = resource.position
                 if control.update_selected_entity and target_pos then
@@ -374,14 +372,21 @@ function MineResourceAction:run(params)
         end
     end
 
+    -- Delegate to AgentGameState for centralized state management
+    local agent_state = self.game_state.agent
+    local success = agent_state:start_mining_job(agent_id, target, resource_name, max_count, {
+        walk_if_unreachable = p.walk_if_unreachable,
+        debug = p.debug
+    })
+
     -- Create mutation contract result
     local result = {
-        success = true,
+        success = success,
         affected_resources = {
             {
                 name = p.resource_name,
                 position = { x = p.x, y = p.y },
-                delta = -p.max_count -- Negative because resources are being depleted
+                delta = success and -p.max_count or 0 -- Negative because resources are being depleted
             }
         },
         affected_inventories = {
@@ -389,15 +394,13 @@ function MineResourceAction:run(params)
                 owner_type = "agent",
                 owner_id = p.agent_id,
                 inventory_type = "character_main",
-                changes = { [p.resource_name] = p.max_count } -- Items gained from mining
+                changes = success and { [p.resource_name] = p.max_count } or {} -- Items gained from mining
             }
         }
     }
     return self:_post_run(result, p)
 end
 
-MineResourceAction.events = {
-    [defines.events.on_tick] = _tick_mine_jobs,
-}
+-- Event handlers removed - now handled by AgentGameState:get_activity_events()
 
 return { action = MineResourceAction, params = MineResourceParams }

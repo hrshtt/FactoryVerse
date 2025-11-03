@@ -11,6 +11,8 @@ local utils = require("utils")
 
 --- @class EntitiesGameState
 --- @field game_state GameState
+--- @field on_demand_snapshots table
+--- @field admin_api table
 local M = {}
 M.__index = M
 
@@ -21,7 +23,7 @@ function M:new(game_state)
     local instance = {
         game_state = game_state,
         -- Cache frequently-used sibling modules (constructor-level caching for performance)
-        map = game_state.map,
+        -- map = game_state.map,
     }
 
     setmetatable(instance, self)
@@ -372,7 +374,7 @@ end
 
 --- Run track_chunk_entity_status on all charted chunks
 function M:track_all_charted_chunk_entity_status()
-    local charted_chunks = self.map:get_charted_chunks()
+    local charted_chunks = self.game_state.map:get_charted_chunks()
     local all_status_records = {}
 
     for _, chunk in ipairs(charted_chunks) do

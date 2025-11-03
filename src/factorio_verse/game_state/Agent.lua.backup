@@ -1,0 +1,1312 @@
+--- factorio_verse/core/game_state/AgentGameState.lua
+--- AgentGameState sub-module for managing agent-related functionality.
+
+-- Module-level local references for global lookups (performance optimization)
+local game = game
+local pairs = pairs
+local ipairs = ipairs
+local math = math
+
+local GameStateError = require("core.Error")
+local utils = require("utils")
+local MapDiscovery = require("core.MapDiscovery")
+
+--- @param index number
+--- @param total_agents number
+--- @return table
+local function generate_agent_color(index, total_agents)
+    local hue = (index - 1) / total_agents
+    local saturation = 1.0
+    local value = 1.0
+    return utils.hsv_to_rgb(hue, saturation, value)
+end
+
+--- @class AgentGameState : GameStateModule
+--- @field entities EntitiesGameState
+--- @field inventory InventoryGameState
+local M = {}
+M.__index = M
+
+local agent_inventory_type = defines.inventory.character_main
+
+--- @param game_state GameState
+--- @return AgentGameState
+function M:new(game_state)
+    local instance = {
+        game_state = game_state,
+        -- Cache frequently-used sibling modules (constructor-level caching for performance)
+        entities = game_state.entities,
+        inventory = game_state.inventory,
+    }
+
+    setmetatable(instance, self)
+    
+    -- Initialize storage tables for activity state machines
+    storage.walk_to_jobs = storage.walk_to_jobs or {}
+    storage.mine_resource_jobs = storage.mine_resource_jobs or {}
+    storage.walk_intents = storage.walk_intents or {}
+    storage.agent_forces = storage.agent_forces or {}
+    
+    return instance
+end
+
+function M:force_destroy_agents()
+    -- Destroy all character entities on the surface, excluding those controlled by connected players
+    for _, entity in pairs(game.surfaces[1].find_entities_filtered { name = "character" }) do
+        if entity and entity.valid then
+            local associated_player = entity.associated_player
+            -- Only destroy if not controlled by a connected player
+            if not (associated_player and associated_player.connected) then
+                entity.destroy()
+            end
+        end
+    end
+    -- Clear the agent_characters table
+    storage.agent_characters = {}
+    storage.agent_forces = {}
+end
+
+--- Create or get a force by name, setting default friendly relationships
+--- @param force_name string Force name
+--- @return LuaForce
+function M:create_or_get_force(force_name)
+    if not force_name or force_name == "" then
+        error("Force name cannot be empty")
+    end
+    
+    local force = game.forces[force_name]
+    if not force then
+        force = game.create_force(force_name)
+        
+        -- Set default friendly relationships with player force and all existing agent forces
+        local player_force = game.forces.player
+        if player_force then
+            force.set_friend(player_force, true)
+            player_force.set_friend(force, true)
+        end
+        
+        -- Set friendly with all existing agent forces
+        if storage.agent_forces then
+            for _, existing_force_name in pairs(storage.agent_forces) do
+                local existing_force = game.forces[existing_force_name]
+                if existing_force and existing_force.name ~= force_name then
+                    force.set_friend(existing_force, true)
+                    existing_force.set_friend(force, true)
+                end
+            end
+        end
+    end
+    
+    return force
+end
+
+--- @param agent_id number
+--- @param position table
+--- @param color table|nil
+--- @param force_name string|nil Optional force name (if nil, uses agent-{agent_id})
+--- @return LuaEntity? character
+--- @return string force_name
+function M:create_agent(agent_id, position, color, force_name)
+    if not position then
+        position = { x = 0, y = (agent_id - 1) * 2 }
+    end
+    
+    -- Determine force name
+    local final_force_name = force_name
+    if not final_force_name then
+        final_force_name = "agent-" .. tostring(agent_id)
+    end
+    
+    -- Create or get force
+    local force = self:create_or_get_force(final_force_name)
+    
+    -- Store force mapping
+    storage.agent_forces = storage.agent_forces or {}
+    storage.agent_forces[agent_id] = final_force_name
+
+    local surface = game.surfaces[1]
+    local char = surface.create_entity {
+        name = "character",
+        position = position,
+        force = force,
+        color = color
+    }
+    -- Chart the starting area (safe now - doesn't force sync chunk generation)
+    utils.chart_native_start_area(surface, force, position, self.game_state)
+    -- Initialize map discovery for ongoing discovery
+    MapDiscovery.initialize(surface, force, position)
+    return char, final_force_name
+end
+
+--- @param agent_id number
+--- @return LuaEntity|nil
+function M:get_agent(agent_id)
+    if not storage.agent_characters then
+        storage.agent_characters = {}
+        return nil
+    end
+    local agent = storage.agent_characters[agent_id]
+    -- Clean up invalid references (can happen when loading saves)
+    if agent and not agent.valid then
+        storage.agent_characters[agent_id] = nil
+        return nil
+    end
+    return agent
+end
+
+--- @param num_agents number
+--- @param destroy_existing boolean|nil
+--- @param set_unique_forces boolean|nil Default true - each agent gets unique force
+--- @param default_common_force string|nil Force name to use if set_unique_forces=false
+--- @return table agents created (array of {character, force_name})
+function M:create_agent_characters(num_agents, destroy_existing, set_unique_forces, default_common_force)
+    if not storage.agent_characters then
+        storage.agent_characters = {}
+    end
+    if destroy_existing and storage.agent_characters then
+        for _, char in pairs(storage.agent_characters) do
+            if char and char.valid then
+                char.destroy()
+            end
+        end
+        storage.agent_characters = {}
+        storage.agent_forces = {}
+    end
+    
+    -- Determine force strategy
+    local use_unique_forces = set_unique_forces ~= false  -- Default true
+    
+    if not use_unique_forces then
+        -- Use common force
+        local common_force_name = default_common_force or "agent_force"
+        
+        -- Verify force exists if provided
+        if default_common_force then
+            if not game.forces[common_force_name] then
+                error("Force '" .. common_force_name .. "' does not exist")
+            end
+        else
+            -- Create default force if it doesn't exist
+            self:create_or_get_force(common_force_name)
+        end
+    end
+
+    local created_agents = {}
+    for i = 1, num_agents do
+        log("Creating agent character " .. i .. " of " .. num_agents)
+        position = { x = 0, y = (i - 1) * 2 }
+        
+        local force_name = nil
+        if use_unique_forces then
+            force_name = nil  -- Will auto-generate agent-{agent_id}
+        else
+            force_name = default_common_force or "agent_force"
+        end
+        
+        local char, final_force_name = self:create_agent(i, position, generate_agent_color(i, num_agents), force_name)
+        storage.agent_characters[i] = char
+        table.insert(created_agents, {character = char, force_name = final_force_name})
+    end
+    return created_agents
+end
+
+--- @param agent_id number
+--- @return table|GameStateError
+function M:get_inventory_contents(agent_id)
+    local agent = self:get_agent(agent_id)
+    if not agent then
+        return GameStateError:new("Agent not found", { agent_id = agent_id })
+    end
+    return self.inventory:get_inventory_contents(agent, agent_inventory_type)
+end
+
+function M:check_item_in_inventory(agent_id, item_name)
+    local agent = self:get_agent(agent_id)
+    if not agent then
+        return GameStateError:new("Agent not found", { agent_id = agent_id })
+    end
+
+    return self.inventory:check_item_in_inventory(agent, item_name, agent_inventory_type)
+end
+
+-- Internal helper to fetch the agent's LuaEntity (character)
+local function _get_control_for_agent(agent_id)
+    local agents = storage.agent_characters
+    if agents and agents[agent_id] and agents[agent_id].valid then
+        return agents[agent_id]
+    end
+    return nil
+end
+
+-- ============================================================================
+-- WALKING STATE MACHINE HELPERS
+-- ============================================================================
+
+-- Navigation helper functions
+local function dist_sq(a, b)
+    local dx, dy = (a.x - b.x), (a.y - b.y)
+    return dx*dx + dy*dy
+end
+
+local DIR_IDX_TO_ENUM = {
+    [0]=defines.direction.east,
+    [1]=defines.direction.southeast,
+    [2]=defines.direction.south,
+    [3]=defines.direction.southwest,
+    [4]=defines.direction.west,
+    [5]=defines.direction.northwest,
+    [6]=defines.direction.north,
+    [7]=defines.direction.northeast
+}
+
+local ENUM_TO_DIR_IDX = {
+    [defines.direction.east]=0,
+    [defines.direction.southeast]=1,
+    [defines.direction.south]=2,
+    [defines.direction.southwest]=3,
+    [defines.direction.west]=4,
+    [defines.direction.northwest]=5,
+    [defines.direction.north]=6,
+    [defines.direction.northeast]=7
+}
+
+local function desired_octant(from, to)
+    local dx, dy = to.x - from.x, to.y - from.y  -- +x east, +y south
+    if dx == 0 and dy == 0 then return nil end
+    local a = math.atan2(dy, dx)                 -- 0=east, pi/2=south
+    local oct = math.floor(((a + math.pi/8) % (2*math.pi)) / (math.pi/4))
+    return oct
+end
+
+local function hysteresis_octant(curr_enum, desired_oct)
+    if desired_oct == nil then return curr_enum end
+    if not curr_enum then return DIR_IDX_TO_ENUM[desired_oct] end
+    local curr_oct = ENUM_TO_DIR_IDX[curr_enum] or 0
+    local step = (desired_oct - curr_oct) % 8
+    -- Only switch if the desired octant differs by 2 or more "steps"
+    if step == 1 or step == 7 then
+        return curr_enum
+    else
+        return DIR_IDX_TO_ENUM[desired_oct]
+    end
+end
+
+local function sign(x) if x < 0 then return -1 elseif x > 0 then return 1 else return 0 end end
+
+-- Manhattan-biased desired octant. alpha = diag_band (0.0..1.0), snap_eps ~ 0.1..0.5 tiles
+local function desired_octant_manhattan(from, to, alpha, snap_eps, allow_diag)
+    local dx, dy = to.x - from.x, to.y - from.y
+    if dx == 0 and dy == 0 then return nil end
+    local adx, ady = math.abs(dx), math.abs(dy)
+
+    -- Axis snap near goal to prevent zig-zag landing
+    if adx <= snap_eps then
+        return (dy > 0) and 2 or 6 -- south or north
+    end
+    if ady <= snap_eps then
+        return (dx > 0) and 0 or 4 -- east or west
+    end
+
+    -- Prefer cardinal unless deltas are very similar
+    if adx > ady * (1 + alpha) then
+        return (dx > 0) and 0 or 4
+    elseif ady > adx * (1 + alpha) then
+        return (dy > 0) and 2 or 6
+    else
+        if allow_diag then
+            local sx, sy = sign(dx), sign(dy)
+            if sx > 0 and sy < 0 then return 7      -- northeast
+            elseif sx > 0 and sy > 0 then return 1  -- southeast
+            elseif sx < 0 and sy > 0 then return 3  -- southwest
+            else return 5                            -- northwest
+            end
+        else
+            -- Fall back to the larger axis; tie-break horizontal
+            if adx >= ady then
+                return (dx > 0) and 0 or 4
+            else
+                return (dy > 0) and 2 or 6
+            end
+        end
+    end
+end
+
+local function _bbox_radius_from_proto(proto)
+    if not (proto and proto.collision_box) then return 0.6 end
+    local bb = proto.collision_box
+    local w = (bb.right_bottom.x - bb.left_top.x)
+    local h = (bb.right_bottom.y - bb.left_top.y)
+    local r = math.max(w, h) * 0.5 + 0.05
+    return r
+end
+
+local DIRV = {
+    [0] = { 1, 0}, [1] = { 1, 1},
+    [2] = { 0, 1}, [3] = {-1, 1},
+    [4] = {-1, 0}, [5] = {-1,-1},
+    [6] = { 0,-1}, [7] = { 1,-1},
+}
+
+local function _scale(v, s) return { v[1]*s, v[2]*s } end
+local function _addp(p, v)  return { x = p.x + v[1], y = p.y + v[2] } end
+
+-- Forward declaration
+local _current_target, _maybe_start_micro_detour
+
+-- Start a small perpendicular sidestep around an obstacle (deterministic left/right)
+function _maybe_start_micro_detour(job, control, pos, curr_oct)
+    if not (control and control.valid) then return false end
+    -- Prefer cardinal notion of "forward"
+    local f_oct = curr_oct
+    if f_oct % 2 == 1 then
+        -- diagonal: derive dominant axis from Manhattan intent
+        -- pick nearest cardinal toward goal
+        local tgt = _current_target and _current_target(job, pos) or job.goal
+        local adx = math.abs(tgt.x - pos.x)
+        local ady = math.abs(tgt.y - pos.y)
+        if adx >= ady then f_oct = (tgt.x > pos.x) and 0 or 4 else f_oct = (tgt.y > pos.y) and 2 or 6 end
+    end
+    local left  = (f_oct + 6) % 8  -- 90° left
+    local right = (f_oct + 2) % 8  -- 90° right
+    local first, second = left, right
+    if (job.id % 2) == 1 then first, second = right, left end  -- deterministic per job
+
+    local step = 1.0
+    local proto = control.prototype
+    local name = control.name
+    local surf = control.surface
+    local radius = _bbox_radius_from_proto(proto)
+
+    local function try_dir(oct)
+        local off = _scale(DIRV[oct], step)
+        local guess = _addp(pos, off)
+        -- Nudge to a non-colliding position near the guess
+        local ok = surf.find_non_colliding_position(name, guess, radius + 0.75, 0.25, true)
+        if ok then
+            job.micro_goal = ok
+            job.micro_timeout = 120 -- 2 seconds at 60 tps
+            return true
+        end
+        return false
+    end
+
+    return try_dir(first) or try_dir(second)
+end
+
+function _current_target(job, pos)
+    if job.micro_goal then
+        if dist_sq(pos, job.micro_goal) > 0.35*0.35 then
+            return job.micro_goal
+        end
+        -- reached micro goal
+        job.micro_goal = nil
+        job.micro_timeout = 0
+    end
+    if job.waypoints and job.waypoints[job.wp_index] then
+        local wp = job.waypoints[job.wp_index].position or job.waypoints[job.wp_index]
+        return wp
+    end
+    return job.goal
+end
+
+local function _advance_waypoint(job, pos)
+    if not (job.waypoints and job.waypoints[job.wp_index]) then return end
+    local wp = job.waypoints[job.wp_index].position or job.waypoints[job.wp_index]
+    while wp and dist_sq(pos, wp) <= 0.8*0.8 do
+        job.wp_index = job.wp_index + 1
+        wp = job.waypoints[job.wp_index] and (job.waypoints[job.wp_index].position or job.waypoints[job.wp_index]) or nil
+    end
+end
+
+local function _request_path(job, control)
+    if not (control and control.valid and control.surface) then return end
+    local proto = control.prototype  -- agent is a LuaEntity (character); prototype is deterministic
+    local bbox = proto and proto.collision_box or nil
+    local mask = proto and proto.collision_mask or nil
+    local req_id = control.surface.request_path{
+        start = control.position,
+        goal = job.goal,
+        force = control.force,
+        bounding_box = bbox,
+        collision_mask = mask,
+        can_open_gates = true,
+        path_resolution_modifier = (job.replans and job.replans > 0) and -2 or 0,
+        radius = _bbox_radius_from_proto(proto),
+        entity_to_ignore = control
+    }
+    job.req_id = req_id
+    job.state = "planning"
+end
+
+local function _tick_follow(self, job, control)
+    local pos = control.position
+    local last = job.last_pos or pos
+    local dx, dy = pos.x - last.x, pos.y - last.y
+    local step_len = math.sqrt(dx*dx + dy*dy)
+    job.last_pos = { x = pos.x, y = pos.y }
+
+    -- arrival check
+    if dist_sq(pos, job.goal) <= (job.arrive_radius * job.arrive_radius) then
+        self:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
+        job.state = "arrived"
+        return
+    end
+
+    if job.waypoints then
+        _advance_waypoint(job, pos)
+    end
+
+    -- choose direction with hysteresis
+    local target = _current_target(job, pos)
+    local desired_oct
+    if job.prefer_cardinal then
+        desired_oct = desired_octant_manhattan(pos, target, job.diag_band or 0.25, job.snap_axis_eps or 0.25, true)
+    else
+        desired_oct = desired_octant(pos, target)
+    end
+    local next_dir = hysteresis_octant(job.current_dir, desired_oct)
+    job.current_dir = next_dir
+
+    self:set_walking(job.agent_id, next_dir, true)
+
+    -- motion-based stuck detection (hard collision or tight alley)
+    if step_len < 0.01 then
+        job.samepos_ticks = (job.samepos_ticks or 0) + 1
+    else
+        job.samepos_ticks = 0
+    end
+
+    if job.micro_goal then
+        job.micro_timeout = math.max(0, (job.micro_timeout or 0) - 1)
+        if job.micro_timeout == 0 then
+            job.micro_goal = nil
+        end
+    end
+
+    if (job.samepos_ticks or 0) >= 15 and (not job.micro_goal) then
+        local curr_oct = ENUM_TO_DIR_IDX[job.current_dir or next_dir] or 0
+        local started = _maybe_start_micro_detour(job, control, pos, curr_oct)
+        if not started then
+            -- couldn't find sidestep; escalate to replan immediately
+            if job.replans < job.max_replans then
+                job.replans = job.replans + 1
+                _request_path(job, control)
+                job.no_progress_ticks = 0
+                return
+            else
+                job.state = "failed"
+                self:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
+                return
+            end
+        end
+    end
+
+    local goal_dist = math.sqrt(dist_sq(pos, job.goal))
+    local improving = (goal_dist <= job.last_goal_dist - 0.02)
+    if not improving and (not job.micro_goal) then
+        job.no_progress_ticks = (job.no_progress_ticks or 0) + 1
+    else
+        job.no_progress_ticks = 0
+    end
+    job.last_goal_dist = goal_dist
+
+    if job.replan_on_stuck and (job.no_progress_ticks or 0) >= 45 then
+        if job.replans < job.max_replans then
+            job.replans = job.replans + 1
+            _request_path(job, control)
+            job.no_progress_ticks = 0
+            return
+        else
+            job.state = "failed"
+            self:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
+            return
+        end
+    end
+end
+
+-- Hard exclusivity policy: only one activity active at a time for stability
+-- Stop all walking-related activities (intents and immediate walking state)
+function M:stop_walking(agent_id)
+    -- Clear sustained intents
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+    -- Stop walking immediately on the entity
+    local control = _get_control_for_agent(agent_id)
+    if control and control.valid then
+        local current_dir = (control.walking_state and control.walking_state.direction) or defines.direction.north
+        control.walking_state = { walking = false, direction = current_dir }
+    end
+end
+
+-- Start or stop walking for this tick. Enforces exclusivity with mining when starting.
+function M:set_walking(agent_id, direction, walking)
+    local control = _get_control_for_agent(agent_id)
+    if not (control and control.valid) then return end
+    -- If starting to walk, stop mining per exclusivity policy
+    if walking then
+        if control.mining_state and control.mining_state.mining then
+            control.mining_state = { mining = false }
+        end
+    end
+    -- Apply walking state
+    local dir = direction or (control.walking_state and control.walking_state.direction) or defines.direction.north
+    control.walking_state = { walking = (walking ~= false), direction = dir }
+end
+
+-- Sustain walking for a number of ticks; immediately applies for current tick as well
+function M:sustain_walking(agent_id, direction, ticks)
+    if not ticks or ticks <= 0 then return end
+    storage.walk_intents = storage.walk_intents or {}
+    local end_tick = (game and game.tick or 0) + ticks
+    storage.walk_intents[agent_id] = {
+        direction = direction,
+        end_tick = end_tick,
+        walking = true
+    }
+    -- Immediate apply this tick
+    self:set_walking(agent_id, direction, true)
+end
+
+-- Clear any sustained walking intent for the agent, without changing walk_to jobs
+function M:clear_walking_intent(agent_id)
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+end
+
+-- Cancel any active walk_to jobs for the agent (without touching walking intents)
+function M:cancel_walk_to(agent_id)
+    if not storage.walk_to_jobs then return end
+    for id, job in pairs(storage.walk_to_jobs) do
+        if job and job.agent_id == agent_id then
+            storage.walk_to_jobs[id] = nil
+        end
+    end
+end
+
+-- ============================================================================
+-- MINING STATE MACHINE HELPERS (moved before job management API)
+-- ============================================================================
+
+local function _find_resource_entity(surface, position, resource_name)
+    if not (surface and position and resource_name) then return nil end
+    -- Try exact entity-at-position lookup first
+    local ok_ent, ent = pcall(function() return surface.find_entity(resource_name, position) end)
+    if ok_ent and ent and ent.valid and ent.type == "resource" then
+        return ent
+    end
+    -- Fallback: search in a reasonable radius and pick the nearest
+    local search_radius = 2.5
+    local entities = surface.find_entities_filtered{
+        position = position,
+        radius = search_radius,
+        type = "resource",
+        name = resource_name
+    }
+    if not entities or #entities == 0 then return nil end
+    local px, py = position.x, position.y
+    local best, best_d2 = nil, math.huge
+    for _, e in ipairs(entities) do
+        if e and e.valid then
+            local dx, dy = e.position.x - px, e.position.y - py
+            local d2 = dx*dx + dy*dy
+            if d2 < best_d2 then
+                best, best_d2 = e, d2
+            end
+        end
+    end
+    return best
+end
+
+local function _get_actor_items_total(actor, names)
+    if not names or #names == 0 then return 0 end
+    if not actor or not actor.valid then return 0 end
+    local total = 0
+    if actor.get_main_inventory then
+        local inv = actor.get_main_inventory()
+        if not inv then return 0 end
+        local contents = inv.get_contents and inv.get_contents() or {}
+        for _, n in ipairs(names) do total = total + (contents[n] or 0) end
+        return total
+    end
+    if actor.get_inventory then
+        local inv = actor.get_inventory(defines.inventory.character_main)
+        if not inv then return 0 end
+        local contents = inv.get_contents and inv.get_contents() or {}
+        for _, n in ipairs(names) do total = total + (contents[n] or 0) end
+        return total
+    end
+    return 0
+end
+
+local function _get_actor_item_count(actor, name)
+    if not (actor and actor.valid and name) then return 0 end
+    if actor.get_main_inventory then
+        local inv = actor.get_main_inventory()
+        if not inv then return 0 end
+        return (inv.get_item_count and inv.get_item_count(name)) or 0
+    end
+    if actor.get_inventory then
+        local inv = actor.get_inventory(defines.inventory.character_main)
+        if not inv then return 0 end
+        return (inv.get_item_count and inv.get_item_count(name)) or 0
+    end
+    return 0
+end
+
+local function _get_resource_products(resource)
+    if not (resource and resource.valid) then return nil, false end
+    local ok_props, props = pcall(function() return resource.prototype and resource.prototype.mineable_properties end)
+    if not ok_props or not props then return { resource.name }, false end
+    local requires_fluid = (props.required_fluid and (props.fluid_amount or 0) > 0) or false
+    local names = {}
+    if props.products and type(props.products) == "table" then
+        for _, prod in ipairs(props.products) do
+            if prod and prod.name then table.insert(names, prod.name) end
+        end
+    elseif props.product then
+        table.insert(names, props.product)
+    end
+    if #names == 0 then table.insert(names, resource.name) end
+    return names, requires_fluid
+end
+
+-- ============================================================================
+-- JOB MANAGEMENT API
+-- ============================================================================
+
+--- Start a walk-to job for an agent
+--- @param agent_id number
+--- @param goal {x:number, y:number}
+--- @param options table|nil Options: arrive_radius, lookahead, replan_on_stuck, max_replans, prefer_cardinal, diag_band, snap_axis_eps
+--- @return number|nil job_id
+function M:start_walk_to_job(agent_id, goal, options)
+    if not (goal and goal.x and goal.y) then return nil end
+    
+    storage.walk_to_jobs = storage.walk_to_jobs or {}
+    storage.walk_to_next_id = (storage.walk_to_next_id or 1)
+    
+    local opts = options or {}
+    local job = {
+        id = storage.walk_to_next_id,
+        agent_id = agent_id,
+        goal = { x = goal.x, y = goal.y },
+        arrive_radius = opts.arrive_radius or 0.7,
+        lookahead = opts.lookahead or 3.0,
+        replan_on_stuck = opts.replan_on_stuck ~= false,
+        max_replans = opts.max_replans or 3,
+        replans = 0,
+        state = "planning",
+        req_id = nil,
+        waypoints = nil,
+        wp_index = 1,
+        last_pos = { x = goal.x, y = goal.y },
+        last_goal_dist = math.huge,
+        no_progress_ticks = 0,
+        current_dir = nil,
+        prefer_cardinal = opts.prefer_cardinal ~= false,
+        diag_band = opts.diag_band or 0.25,
+        snap_axis_eps = opts.snap_axis_eps or 0.25,
+        micro_goal = nil,
+        micro_timeout = 0,
+        samepos_ticks = 0
+    }
+    
+    local job_id = storage.walk_to_next_id
+    storage.walk_to_next_id = storage.walk_to_next_id + 1
+    
+    local control = _get_control_for_agent(agent_id)
+    if not control then return nil end
+    
+    job.last_pos = { x = control.position.x, y = control.position.y }
+    job.last_goal_dist = math.sqrt(dist_sq(control.position, job.goal))
+    
+    storage.walk_to_jobs[job_id] = job
+    _request_path(job, control)
+    
+    return job_id
+end
+
+--- Start a mining job for an agent
+--- @param agent_id number
+--- @param target {x:number, y:number}
+--- @param resource_name string
+--- @param max_count number
+--- @param options table|nil Options: walk_if_unreachable, debug
+--- @return boolean success
+function M:start_mining_job(agent_id, target, resource_name, max_count, options)
+    if not (target and target.x and target.y and resource_name and max_count) then return false end
+    
+    storage.mine_resource_jobs = storage.mine_resource_jobs or {}
+    
+    local opts = options or {}
+    local job = {
+        agent_id = agent_id,
+        target = { x = target.x, y = target.y },
+        resource_name = resource_name,
+        max_count = max_count,
+        mined_count = 0,
+        walk_if_unreachable = opts.walk_if_unreachable and true or false,
+        finished = false,
+        start_total = nil,
+        start_item_count = nil,
+        debug = opts.debug or false,
+        mining_active = false
+    }
+    
+    -- Initialize baseline inventory counts
+    local control = _get_control_for_agent(agent_id)
+    if not control then return false end
+    
+    -- Get resource entity to determine products
+    local surface = control.surface
+    local resource = _find_resource_entity(surface, target, resource_name)
+    if not (resource and resource.valid) then return false end
+    
+    local products, requires_fluid = _get_resource_products(resource)
+    if requires_fluid then
+        log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", resource_name, agent_id))
+        return false
+    end
+    
+    job.products = products
+    job.start_total = _get_actor_items_total(control, products)
+    job.start_item_count = _get_actor_item_count(control, resource_name)
+    
+    storage.mine_resource_jobs[agent_id] = job
+    return true
+end
+
+-- ============================================================================
+-- MINING STATE MACHINE HELPERS
+-- ============================================================================
+
+local function _find_resource_entity(surface, position, resource_name)
+    if not (surface and position and resource_name) then return nil end
+    -- Try exact entity-at-position lookup first
+    local ok_ent, ent = pcall(function() return surface.find_entity(resource_name, position) end)
+    if ok_ent and ent and ent.valid and ent.type == "resource" then
+        return ent
+    end
+    -- Fallback: search in a reasonable radius and pick the nearest
+    local search_radius = 2.5
+    local entities = surface.find_entities_filtered{
+        position = position,
+        radius = search_radius,
+        type = "resource",
+        name = resource_name
+    }
+    if not entities or #entities == 0 then return nil end
+    local px, py = position.x, position.y
+    local best, best_d2 = nil, math.huge
+    for _, e in ipairs(entities) do
+        if e and e.valid then
+            local dx, dy = e.position.x - px, e.position.y - py
+            local d2 = dx*dx + dy*dy
+            if d2 < best_d2 then
+                best, best_d2 = e, d2
+            end
+        end
+    end
+    return best
+end
+
+local function _get_actor_items_total(actor, names)
+    if not names or #names == 0 then return 0 end
+    if not actor or not actor.valid then return 0 end
+    local total = 0
+    if actor.get_main_inventory then
+        local inv = actor.get_main_inventory()
+        if not inv then return 0 end
+        local contents = inv.get_contents and inv.get_contents() or {}
+        for _, n in ipairs(names) do total = total + (contents[n] or 0) end
+        return total
+    end
+    if actor.get_inventory then
+        local inv = actor.get_inventory(defines.inventory.character_main)
+        if not inv then return 0 end
+        local contents = inv.get_contents and inv.get_contents() or {}
+        for _, n in ipairs(names) do total = total + (contents[n] or 0) end
+        return total
+    end
+    return 0
+end
+
+local function _get_actor_item_count(actor, name)
+    if not (actor and actor.valid and name) then return 0 end
+    if actor.get_main_inventory then
+        local inv = actor.get_main_inventory()
+        if not inv then return 0 end
+        return (inv.get_item_count and inv.get_item_count(name)) or 0
+    end
+    if actor.get_inventory then
+        local inv = actor.get_inventory(defines.inventory.character_main)
+        if not inv then return 0 end
+        return (inv.get_item_count and inv.get_item_count(name)) or 0
+    end
+    return 0
+end
+
+local function _get_resource_products(resource)
+    if not (resource and resource.valid) then return nil, false end
+    local ok_props, props = pcall(function() return resource.prototype and resource.prototype.mineable_properties end)
+    if not ok_props or not props then return { resource.name }, false end
+    local requires_fluid = (props.required_fluid and (props.fluid_amount or 0) > 0) or false
+    local names = {}
+    if props.products and type(props.products) == "table" then
+        for _, prod in ipairs(props.products) do
+            if prod and prod.name then table.insert(names, prod.name) end
+        end
+    elseif props.product then
+        table.insert(names, props.product)
+    end
+    if #names == 0 then table.insert(names, resource.name) end
+    return names, requires_fluid
+end
+
+-- ============================================================================
+-- MINING STATE MACHINE HELPERS (continued)
+-- ============================================================================
+
+local function _can_reach_entity(control, entity)
+    if not (control and control.valid and entity and entity.valid) then return false end
+    local reach = control.prototype and control.prototype.character_reach_distance or 0.5
+    local dist_sq_val = dist_sq(control.position, entity.position)
+    return dist_sq_val <= (reach * reach)
+end
+
+local function _cancel_walk_for_agent(agent_id)
+    if not storage.walk_to_jobs then return end
+    for id, job in pairs(storage.walk_to_jobs) do
+        if job and job.agent_id == agent_id then
+            storage.walk_to_jobs[id] = nil
+        end
+    end
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+end
+
+-- ============================================================================
+-- EVENT HANDLERS
+-- ============================================================================
+
+function M:_tick_walk_intents(event)
+    if not storage.walk_intents then return end
+
+    local current_tick = game.tick
+    for agent_id, intent in pairs(storage.walk_intents) do
+        if intent.end_tick and current_tick >= intent.end_tick then
+            storage.walk_intents[agent_id] = nil
+        else
+            self:set_walking(agent_id, intent.direction, (intent.walking ~= false))
+        end
+    end
+end
+
+function M:_tick_walk_to_jobs(event)
+    if not storage.walk_to_jobs then return end
+    for id, job in pairs(storage.walk_to_jobs) do
+        if job.state == "arrived" or job.state == "failed" then
+            storage.walk_to_jobs[id] = nil
+        else
+            local control = _get_control_for_agent(job.agent_id)
+            if control and control.valid then
+                if job.state == "planning" then
+                    -- do nothing; wait for path callback but still nudge toward goal
+                    _tick_follow(self, job, control)
+                elseif job.state == "following" then
+                    _tick_follow(self, job, control)
+                else
+                    _tick_follow(self, job, control)
+                end
+            else
+                storage.walk_to_jobs[id] = nil
+            end
+        end
+    end
+end
+
+function M:_tick_mine_jobs(event)
+    if not storage.mine_resource_jobs then return end
+    for agent_id, job in pairs(storage.mine_resource_jobs) do
+        if not job or job.finished then
+            storage.mine_resource_jobs[agent_id] = nil
+        else
+            local control = _get_control_for_agent(agent_id)
+            if not control then
+                storage.mine_resource_jobs[agent_id] = nil
+            else
+                -- Refresh progress from inventory when possible (authoritative stop)
+                local mined_by_total = nil
+                local mined_by_item = nil
+                if job.products and (job.start_total ~= nil) then
+                    local current_total = _get_actor_items_total(control, job.products)
+                    mined_by_total = math.max(0, (current_total - (job.start_total or 0)))
+                end
+                if job.resource_name and (job.start_item_count ~= nil) then
+                    local current_item = _get_actor_item_count(control, job.resource_name)
+                    mined_by_item = math.max(0, (current_item - (job.start_item_count or 0)))
+                end
+                if mined_by_total or mined_by_item then
+                    job.mined_count = math.max(mined_by_total or 0, mined_by_item or 0)
+                end
+
+                -- Stop if completed
+                if (job.mined_count or 0) >= job.max_count then
+                    self:set_mining(agent_id, false)
+                    job.finished = true
+                    storage.mine_resource_jobs[agent_id] = nil
+                else
+                    local surface = control.surface
+                    local resource = _find_resource_entity(surface, job.target, job.resource_name)
+
+                    if not (resource and resource.valid) then
+                        -- Target depleted or missing
+                        self:set_mining(agent_id, false)
+                        job.finished = true
+                        storage.mine_resource_jobs[agent_id] = nil
+                    else
+                        if job.debug and ((game.tick % 60) == 0) then
+                            log(string.format("[mine_resource] tick=%d agent=%d mined=%d/%d (item=%d)", game.tick, agent_id, job.mined_count or 0, job.max_count, (job.resource_name and _get_actor_item_count(control, job.resource_name) - (job.start_item_count or 0)) or -1))
+                        end
+                        -- Initialize products and guard against fluid-only mining
+                        if not job.products then
+                            local names, requires_fluid = _get_resource_products(resource)
+                            if requires_fluid then
+                                log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", job.resource_name, agent_id))
+                                self:set_mining(agent_id, false)
+                                job.finished = true
+                                storage.mine_resource_jobs[agent_id] = nil
+                                goto continue_agent
+                            end
+                            job.products = names
+                            job.start_total = _get_actor_items_total(control, job.products)
+                            job.start_item_count = _get_actor_item_count(control, job.resource_name)
+                        end
+
+                        local target_pos = resource.position or job.target
+                        local reachable = _can_reach_entity(control, resource)
+
+                        if reachable then
+                            -- Ensure we are not walking and keep mining active by reasserting every tick
+                            _cancel_walk_for_agent(agent_id)
+                            self:set_mining(agent_id, true, resource)
+                            job.mining_active = true
+
+                            -- Emulation: reassert mining_state via control, track via inventory
+                            if control.update_selected_entity and target_pos then
+                                pcall(function() control.update_selected_entity(target_pos) end)
+                            end
+                            if control.mining_state ~= nil then
+                                control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
+                            end
+                            local current_total = _get_actor_items_total(control, job.products)
+                            local current_item = _get_actor_item_count(control, job.resource_name)
+                            job.mined_count = math.max(
+                                math.max(0, (current_total - (job.start_total or 0))),
+                                math.max(0, (current_item - (job.start_item_count or 0)))
+                            )
+                            if (job.mined_count or 0) >= job.max_count then
+                                if control.mining_state ~= nil then
+                                    control.mining_state = { mining = false }
+                                end
+                                job.finished = true
+                                storage.mine_resource_jobs[agent_id] = nil
+                                log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.max_count))
+                            end
+                        else
+                            if job.mining_active then
+                                self:set_mining(agent_id, false)
+                                job.mining_active = false
+                            end
+                            if job.walk_if_unreachable then
+                                -- Use walk_to_job API
+                                self:start_walk_to_job(agent_id, job.target, {
+                                    arrive_radius = 1.2,
+                                    prefer_cardinal = true
+                                })
+                            end
+                        end
+                    end
+                end
+                ::continue_agent::
+            end
+        end
+    end
+end
+
+function M:_on_path_finished(event)
+    if not (storage.walk_to_jobs and event and event.id) then return end
+    for _, job in pairs(storage.walk_to_jobs) do
+        if job.req_id == event.id then
+            if event.path and #event.path > 0 then
+                job.waypoints = event.path
+                job.wp_index = 1
+                job.micro_goal = nil
+                job.micro_timeout = 0
+                job.state = "following"
+            else
+                -- Path failed; keep local steering, optionally mark failed if we insist
+                if job.replan_on_stuck == false then
+                    job.state = "failed"
+                else
+                    -- Keep trying with local steering
+                    job.state = "following"
+                end
+            end
+            break
+        end
+    end
+end
+
+--- Get activity event handlers
+--- @return table Event handlers keyed by event ID
+function M:get_activity_events()
+    return {
+        [defines.events.on_tick] = function(event)
+            self:_tick_walk_intents(event)
+            self:_tick_walk_to_jobs(event)
+            self:_tick_mine_jobs(event)
+        end,
+        [defines.events.on_script_path_request_finished] = function(event)
+            self:_on_path_finished(event)
+        end
+    }
+end
+
+-- Start/stop mining on the entity; when starting, enforce exclusivity by stopping walking
+-- target may be a position {x,y} or an entity with .position
+function M:set_mining(agent_id, mining, target)
+    local control = _get_control_for_agent(agent_id)
+    if not (control and control.valid) then return end
+    if mining then
+        -- Exclusivity: stop any walking and walk_to jobs
+        self:stop_walking(agent_id)
+        local pos = target and (target.position or target) or nil
+        -- When a specific entity is provided, prefer explicit target entity
+        local ent = (target and target.valid == true and target) or nil
+        if pos then
+            control.mining_state = { mining = true, position = { x = pos.x, y = pos.y }, entity = ent }
+        else
+            control.mining_state = { mining = true, entity = ent }
+        end
+    else
+        control.mining_state = { mining = false }
+    end
+end
+
+--- Update friendly relationships for an agent's force
+--- @param agent_id number
+--- @param force_names table<string> Array of force names to set as friendly
+function M:update_agent_friends(agent_id, force_names)
+    if not storage.agent_forces then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    local agent_force_name = storage.agent_forces[agent_id]
+    if not agent_force_name then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    
+    local agent_force = game.forces[agent_force_name]
+    if not agent_force then
+        error("Agent force '" .. agent_force_name .. "' does not exist")
+    end
+    
+    for _, force_name in ipairs(force_names or {}) do
+        local other_force = game.forces[force_name]
+        if other_force then
+            agent_force.set_friend(other_force, true)
+            other_force.set_friend(agent_force, true)
+        end
+    end
+end
+
+--- Update enemy relationships for an agent's force
+--- @param agent_id number
+--- @param force_names table<string> Array of force names to set as enemy
+function M:update_agent_enemies(agent_id, force_names)
+    if not storage.agent_forces then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    local agent_force_name = storage.agent_forces[agent_id]
+    if not agent_force_name then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    
+    local agent_force = game.forces[agent_force_name]
+    if not agent_force then
+        error("Agent force '" .. agent_force_name .. "' does not exist")
+    end
+    
+    for _, force_name in ipairs(force_names or {}) do
+        local other_force = game.forces[force_name]
+        if other_force then
+            agent_force.set_cease_fire(other_force, false)
+            agent_force.set_friend(other_force, false)
+            other_force.set_cease_fire(agent_force, false)
+            other_force.set_friend(agent_force, false)
+        end
+    end
+end
+
+--- Destroy an agent with optional force cleanup
+--- @param agent_id number
+--- @param destroy_force boolean|nil If true, destroy force (errors if other agents use it)
+function M:destroy_agent(agent_id, destroy_force)
+    local agent = self:get_agent(agent_id)
+    if not agent then
+        error("Agent " .. tostring(agent_id) .. " not found")
+    end
+    
+    -- Destroy character
+    if agent.valid then
+        agent.destroy()
+    end
+    
+    -- Cleanup storage
+    if storage.agent_characters then
+        storage.agent_characters[agent_id] = nil
+    end
+    
+    -- Handle force cleanup
+    if destroy_force then
+        local agent_force_name = storage.agent_forces and storage.agent_forces[agent_id]
+        if agent_force_name then
+            -- Check if other agents use this force
+            local other_agents_using_force = false
+            for other_id, force_name in pairs(storage.agent_forces) do
+                if other_id ~= agent_id and force_name == agent_force_name then
+                    other_agents_using_force = true
+                    break
+                end
+            end
+            
+            if other_agents_using_force then
+                error("Cannot destroy force '" .. agent_force_name .. "': other agents still use it")
+            end
+            
+            -- Destroy force (Note: Forces cannot be deleted in Factorio API, so we just remove from tracking)
+            -- The force will remain in game but won't be tracked by our system
+            if game.forces[agent_force_name] then
+                -- Forces are permanent in Factorio - cannot be deleted
+                -- We just remove from our tracking
+            end
+            
+            -- Cleanup force mapping
+            storage.agent_forces[agent_id] = nil
+        end
+    else
+        -- Just remove from mapping, keep force alive
+        if storage.agent_forces then
+            storage.agent_forces[agent_id] = nil
+        end
+    end
+end
+
+--- List all agent-to-force mappings
+--- @return table<number, string> Mapping of agent_id -> force_name
+function M:list_agent_forces()
+    return storage.agent_forces or {}
+end
+
+-- Transient selection handling ------------------------------------------------
+function M:set_selected(agent_id, selected)
+    storage.agent_selection = storage.agent_selection or {}
+    storage.agent_selection[agent_id] = selected
+end
+
+function M:get_selected(agent_id)
+    return storage.agent_selection and storage.agent_selection[agent_id] or nil
+end
+
+function M:clear_selected(agent_id)
+    if storage.agent_selection then
+        storage.agent_selection[agent_id] = nil
+    end
+end
+
+--- Inspect agent details
+--- @param agent_id number - agent ID (required)
+--- @param attach_inventory boolean - whether to include inventory (default false)
+--- @return table - {agent_id, tick, position {x, y}, inventory?} or {error, agent_id, tick}
+local function inspect_agent(agent_id, attach_inventory)
+    attach_inventory = attach_inventory or false
+    
+    local agent = M:get_agent(agent_id)
+    if not agent or not agent.valid then
+        return {
+            error = "Agent not found or invalid",
+            agent_id = agent_id,
+            tick = game.tick or 0
+        }
+    end
+
+    local position = agent.position
+    if not position then
+        return {
+            error = "Agent has no position",
+            agent_id = agent_id,
+            tick = game.tick or 0
+        }
+    end
+
+    local result = {
+        agent_id = agent_id,
+        tick = game.tick or 0,
+        position = { x = position.x, y = position.y }
+    }
+
+    -- Get agent inventory only if requested
+    if attach_inventory then
+        local inventory = {}
+        local main_inventory = agent.get_main_inventory and agent:get_main_inventory()
+        if main_inventory then
+            local contents = main_inventory.get_contents()
+            if contents and next(contents) ~= nil then
+                inventory = contents
+            end
+        end
+        result.inventory = inventory
+    end
+
+    return result
+end
+
+--- Destroy multiple agents with optional force cleanup
+--- @param agent_ids table<number> Array of agent IDs to destroy
+--- @param destroy_forces boolean|nil If true, destroy forces (errors if other agents use them)
+function M:destroy_agents(agent_ids, destroy_forces)
+    local destroyed = {}
+    local errors = {}
+    
+    for _, agent_id in ipairs(agent_ids or {}) do
+        local ok, err = pcall(function()
+            self:destroy_agent(agent_id, destroy_forces)
+        end)
+        if ok then
+            table.insert(destroyed, agent_id)
+        else
+            table.insert(errors, {agent_id = agent_id, error = tostring(err)})
+        end
+    end
+    
+    return {
+        destroyed = destroyed,
+        errors = errors
+    }
+end
+
+M.admin_api = {
+    inspect_agent = inspect_agent,
+    create_agents = M.create_agent_characters,
+    destroy_agents = M.destroy_agents,
+    update_agent_friends = M.update_agent_friends,
+    update_agent_enemies = M.update_agent_enemies,
+    list_agent_forces = M.list_agent_forces,
+}
+
+M.on_demand_snapshots = { inspect_agent = inspect_agent }
+
+return M

@@ -1,13 +1,16 @@
 -- control.lua: Central event dispatcher using aggregation pattern
--- All modules export get_events() which returns {event_id -> handler}
--- This file aggregates them and registers each event once with script.on_event
+-- Coordinates ActionRegistry and GameState to aggregate events and register remote interfaces
+-- Events can only be registered once, so we aggregate all handlers and register via chains
 
-local remote_registry = require("RemoteRegistry")
--- local action_queue = require("core.ActionQueue")
+local ActionRegistry = require("core.ActionRegistry")
+local ActionQueue = require("core.ActionQueue")
 local GameState = require("GameState")
 local utils = require("utils")
 
+-- Initialize core instances
 local game_state = GameState:new()
+local action_registry = ActionRegistry
+local action_queue = ActionQueue
 
 -- ============================================================================
 -- EVENT DISPATCHER PATTERN
@@ -21,14 +24,17 @@ local function count_keys(tbl)
     return count
 end
 
+--- Aggregate all events from all sources
+--- Events can only be registered once, so we aggregate all handlers into chains
+--- @return table - {defined_events = {event_id -> [handler, ...]}, nth_tick = {tick_interval -> [handler, ...]}}
 local function aggregate_all_events()
-    local all_handlers = {} -- {event_id -> [handler1, handler2, ...], ...}
-    local nth_tick_handlers = {} -- {tick_interval -> [handler1, handler2, ...], ...}
+    local defined_events = {} -- {event_id -> [handler1, handler2, ...]}
+    local nth_tick_handlers = {} -- {tick_interval -> [handler1, handler2, ...]}
     
-    local function add_event_handler(event_id, handler)
+    local function add_defined_event(event_id, handler)
         if event_id and handler then
-            all_handlers[event_id] = all_handlers[event_id] or {}
-            table.insert(all_handlers[event_id], handler)
+            defined_events[event_id] = defined_events[event_id] or {}
+            table.insert(defined_events[event_id], handler)
         end
     end
     
@@ -39,33 +45,72 @@ local function aggregate_all_events()
         end
     end
     
+    -- Initialize actions with game_state before getting events/interface
+    action_registry:init_actions(game_state)
+    
     -- 1. Action Registry Events
-    local action_events = remote_registry:get_events()
-    for event_id, handler in pairs(action_events or {}) do
-        add_event_handler(event_id, handler)
+    -- Actions export events as {event_id -> handler} or {event_id -> factory(game_state)}
+    local action_events = action_registry:get_events()
+    for event_id, handlers in pairs(action_events or {}) do
+        for _, handler in ipairs(handlers) do
+            add_defined_event(event_id, handler)
+        end
     end
     
-    -- 2. Snapshot Events (resource depletion, chunk charted)
-    local snapshot = Snapshot:get_instance()
-    local snapshot_events = snapshot:get_events()
-    for event_id, handler in pairs(snapshot_events or {}) do
-        add_event_handler(event_id, handler)
+    -- 2. GameState Event-Based Snapshot Events
+    local event_based_snapshot = game_state:get_event_based_snapshot_events()
+    for event_id, handlers in pairs(event_based_snapshot.defined_events or {}) do
+        for _, handler in ipairs(handlers) do
+            add_defined_event(event_id, handler)
+        end
+    end
+    for tick_interval, handlers in pairs(event_based_snapshot.nth_tick or {}) do
+        for _, handler in ipairs(handlers) do
+            add_nth_tick_handler(tick_interval, handler)
+        end
     end
     
-    -- 2b. Snapshot nth_tick Events (recurring snapshots)
-    local snapshot_nth_tick_events = snapshot:get_nth_tick_handlers()
-    for tick_interval, handler in pairs(snapshot_nth_tick_events or {}) do
-        add_nth_tick_handler(tick_interval, handler)
+    -- 3. GameState Disk Write Snapshot Events
+    local disk_write_snapshot = game_state:get_disk_write_snapshot_events()
+    for event_id, handlers in pairs(disk_write_snapshot.defined_events or {}) do
+        for _, handler in ipairs(handlers) do
+            add_defined_event(event_id, handler)
+        end
+    end
+    for tick_interval, handlers in pairs(disk_write_snapshot.nth_tick or {}) do
+        for _, handler in ipairs(handlers) do
+            add_nth_tick_handler(tick_interval, handler)
+        end
     end
     
-    -- 3. Map Discovery nth_tick Events
-    local map_nth_tick_handlers = game_state:get_nth_tick_handlers()
-    for tick_interval, handler in pairs(map_nth_tick_handlers or {}) do
-        add_nth_tick_handler(tick_interval, handler)
+    -- 4. GameState Regular Events (internal game state events)
+    local game_state_events = game_state:get_game_state_events()
+    for event_id, handlers in pairs(game_state_events.defined_events or {}) do
+        for _, handler in ipairs(handlers) do
+            add_defined_event(event_id, handler)
+        end
+    end
+    for tick_interval, handlers in pairs(game_state_events.nth_tick or {}) do
+        for _, handler in ipairs(handlers) do
+            add_nth_tick_handler(tick_interval, handler)
+        end
     end
     
-    -- 4. Player Events (custom handlers)
-    -- add_event_handler(defines.events.on_player_created, function(e)
+    -- 5. GameState nth_tick Handlers (legacy map discovery, etc.)
+    local gs_nth_tick = game_state:get_nth_tick_handlers()
+    for tick_interval, handlers in pairs(gs_nth_tick or {}) do
+        if type(handlers) == "table" then
+            for _, handler in ipairs(handlers) do
+                add_nth_tick_handler(tick_interval, handler)
+            end
+        else
+            -- Support legacy single handler format
+            add_nth_tick_handler(tick_interval, handlers)
+        end
+    end
+    
+    -- 6. Player Events (custom handlers)
+    -- add_defined_event(defines.events.on_player_created, function(e)
     --     local player = game.get_player(e.player_index)
     --     if player then
     --         local character = player.character
@@ -76,31 +121,28 @@ local function aggregate_all_events()
     --     end
     -- end)
     
-    -- add_event_handler(defines.events.on_player_joined_game, function(event)
-    --     log("hello from on_player_joined_game")
-    --     utils.players_to_spectators()
-    -- end)
-    
-    return all_handlers, nth_tick_handlers
+    return {
+        defined_events = defined_events,
+        nth_tick = nth_tick_handlers
+    }
 end
 
+--- Register all aggregated events
+--- Events are registered once per event_id/tick_interval with aggregated handler chains
 local function register_all_events()
-    local all_handlers, nth_tick_handlers = aggregate_all_events()
+    local aggregated = aggregate_all_events()
     
-    -- Register standard events (event_id -> aggregated handler)
-    for event_id, handlers_list in pairs(all_handlers) do
+    -- Register defined events (defines.events.*) - each event_id registered once with aggregated handlers
+    for event_id, handlers_list in pairs(aggregated.defined_events) do
         script.on_event(event_id, function(event)
             for _, handler in ipairs(handlers_list) do
-                local ok, err = pcall(handler, event)
-                if not ok then
-                    log("Error in event handler for " .. tostring(event_id) .. ": " .. tostring(err))
-                end
+                handler(event)
             end
         end)
     end
     
-    -- Register on_nth_tick events
-    for tick_interval, handlers_list in pairs(nth_tick_handlers) do
+    -- Register nth_tick events - each tick_interval registered once with aggregated handlers
+    for tick_interval, handlers_list in pairs(aggregated.nth_tick) do
         script.on_nth_tick(tick_interval, function(event)
             for _, handler in ipairs(handlers_list) do
                 local ok, err = pcall(handler, event)
@@ -112,22 +154,63 @@ local function register_all_events()
     end
     
     log("Event dispatcher initialized: registered " .. 
-        count_keys(all_handlers) .. " standard events and " .. 
-        count_keys(nth_tick_handlers) .. " nth_tick event groups")
+        count_keys(aggregated.defined_events) .. " defined events and " .. 
+        count_keys(aggregated.nth_tick) .. " nth_tick event groups")
 end
 
 -- ============================================================================
 -- REGISTER REMOTE INTERFACES
 -- ============================================================================
 
-remote_registry:register_all_interfaces(game_state)
-action_queue:register_queue_remote_interface()
+local function register_all_remote_interfaces()
+    if not remote or not remote.add_interface then
+        return
+    end
+    
+    -- Register action interface (sync actions)
+    -- Actions already initialized with game_state above
+    local action_iface = action_registry:get_action_interface()
+    if remote.interfaces["action"] then
+        log("Removing existing 'action' interface")
+        remote.remove_interface("action")
+    end
+    local action_count = 0
+    for _ in pairs(action_iface) do action_count = action_count + 1 end
+    log("Registering 'action' interface with " .. action_count .. " actions")
+    remote.add_interface("action", action_iface)
+    
+    -- Register admin interface (from GameState)
+    local admin_iface = game_state:get_admin_api()
+    if remote.interfaces["admin"] then
+        log("Removing existing 'admin' interface")
+        remote.remove_interface("admin")
+    end
+    local admin_count = 0
+    for _ in pairs(admin_iface) do admin_count = admin_count + 1 end
+    log("Registering 'admin' interface with " .. admin_count .. " methods")
+    remote.add_interface("admin", admin_iface)
+    
+    -- Register on-demand snapshot interface (from GameState)
+    local snapshot_iface = game_state:get_on_demand_snapshot_api()
+    if remote.interfaces["snapshot"] then
+        log("Removing existing 'snapshot' interface")
+        remote.remove_interface("snapshot")
+    end
+    local snapshot_count = 0
+    for _ in pairs(snapshot_iface) do snapshot_count = snapshot_count + 1 end
+    log("Registering 'snapshot' interface with " .. snapshot_count .. " methods")
+    remote.add_interface("snapshot", snapshot_iface)
+    
+    -- Register action queue interface (async actions)
+    action_queue:register_queue_remote_interface()
+end
+
+register_all_remote_interfaces()
 
 -- ============================================================================
 -- REGISTER ALL EVENTS USING DISPATCHER
+-- Events must be registered in on_init/on_load, not at module load time
 -- ============================================================================
-
-register_all_events()
 
 -- ============================================================================
 -- ACTION QUEUE HANDLER
@@ -161,52 +244,19 @@ script.on_init(function()
         log("Initialized empty agent_characters storage for new game")
     end
     
-    -- Take initial snapshot asynchronously
-    local snapshot = Snapshot:get_instance()
-    snapshot:take_map_snapshot({
-        async = true,
-        chunks_per_tick = 2,
-        components = {"entities", "resources"}
-    })
+    -- Register events (game is available during on_init)
+    register_all_events()
 end)
 
 script.on_load(function()
     log("hello from on_load")
     
-    -- Register a one-time tick handler for initial snapshot
-    local handler_registered = false
-    local function check_and_snapshot(event)
-        if handler_registered then return end
-        handler_registered = true
-        
-        -- Take snapshot ONLY on server startup with no clients
-        if game.is_multiplayer() and #game.connected_players == 0 then
-            log("Server startup detected - taking initial map snapshot")
-            local surface = game.surfaces[1]
-            if surface and #surface.find_entities() > 0 then
-                log("Existing entities found - taking snapshot")
-                local snapshot = Snapshot:get_instance()
-                snapshot:take_map_snapshot({
-                    async = true,
-                    chunks_per_tick = 2,
-                    components = {"entities", "resources"}
-                })
-            else
-                log("No entities found - skipping snapshot")
-            end
-        else
-            log("Client load or players present - skipping snapshot")
-        end
-        
-        -- Unregister this handler - it will never fire again
-        script.on_nth_tick(1, nil)
-        
-        -- Re-register the action queue processing handler for tick 1
-        register_action_queue_handler()
-    end
+    -- Register action queue processing handler
+    register_action_queue_handler()
     
-    -- Register handler to fire on next tick
-    script.on_nth_tick(1, check_and_snapshot)
+    -- Re-register events (game is available during on_load)
+    -- This is needed because event handlers may be lost after mod reload
+    register_all_events()
 end)
 
 script.on_configuration_changed(function()

@@ -1,5 +1,5 @@
 local Action = require("types.Action")
-local game_state = require("GameState")
+local GameStateAliases = require("game_state.GameStateAliases")
 
 --- @class WalkParams : ParamSpec
 --- @field agent_id number
@@ -38,14 +38,13 @@ local WalkToParams = Action.ParamSpec:new({
 })
 
 --- Map common direction strings to defines.direction
-
 local function normalize_direction(dir)
     if type(dir) == "number" then
         return dir
     end
     if type(dir) == "string" then
         local key = string.lower(dir)
-        return game_state.aliases.direction[key]
+        return GameStateAliases.direction[key]
     end
     return nil
 end
@@ -300,7 +299,9 @@ local function _current_target(job, pos)
     return job.goal
 end
 
-local function _tick_follow(job, control)
+-- Helper functions that need game_state will receive it as parameter
+-- (used in event handlers via closures)
+local function _tick_follow(job, control, game_state)
     local pos = control.position
     local last = job.last_pos or pos
     local dx, dy = pos.x - last.x, pos.y - last.y
@@ -395,16 +396,15 @@ local WalkToAction = Action:new("agent.walk_to", WalkToParams)
 --- @param params WalkToParams
 --- @return boolean
 function WalkToAction:run(params)
-    local p = self:_pre_run(game_state, params)
+    local p = self:_pre_run(params)
     ---@cast p WalkToParams
     local agent_id = p.agent_id
     local goal = p.goal
     if not (goal and goal.x and goal.y) then return false end
 
-    storage.walk_to_jobs = storage.walk_to_jobs or {}
-    storage.walk_to_next_id = (storage.walk_to_next_id or 1)
-
-    local job = _new_walkto_job(agent_id, goal, {
+    -- Delegate to AgentGameState for centralized state management
+    local agent_state = self.game_state.agent
+    local job_id = agent_state:start_walk_to_job(agent_id, goal, {
         arrive_radius = p.arrive_radius,
         lookahead = p.lookahead,
         replan_on_stuck = p.replan_on_stuck,
@@ -413,18 +413,8 @@ function WalkToAction:run(params)
         diag_band = p.diag_band,
         snap_axis_eps = p.snap_axis_eps
     })
-    job.id = storage.walk_to_next_id
-    storage.walk_to_next_id = storage.walk_to_next_id + 1
 
-    local control = _get_control_for_agent(agent_id)
-    if not control then return false end
-    job.last_pos = { x = control.position.x, y = control.position.y }
-    job.last_goal_dist = math.sqrt(dist_sq(control.position, job.goal))
-
-    storage.walk_to_jobs[job.id] = job
-    _request_path(job, control) -- async; meanwhile we'll start walking directly
-
-    return self:_post_run(true, p)
+    return self:_post_run(job_id ~= nil, p)
 end
 
 --- @class WalkAction : Action
@@ -434,7 +424,7 @@ local WalkAction = Action:new("agent.walk", WalkParams)
 --- @param params WalkParams
 --- @return boolean
 function WalkAction:run(params)
-    local p = self:_pre_run(game_state, params)
+    local p = self:_pre_run(params)
     ---@cast p WalkParams
     local agent_id = p.agent_id
     local direction = normalize_direction(p.direction)
@@ -444,7 +434,7 @@ function WalkAction:run(params)
         return false
     end
 
-    local agent_state = game_state.agent
+    local agent_state = self.game_state.agent
     local agent = agent_state:get_agent(agent_id)
 
     -- If ticks specified, register an intent to sustain walking each tick
@@ -465,51 +455,11 @@ function WalkAction:run(params)
     return self:_post_run(true, p)
 end
 
-local function on_tick_walk_intents(event)
-    if not storage.walk_intents then return end
-
-    local current_tick = game.tick
-    for agent_id, intent in pairs(storage.walk_intents) do
-        if intent.end_tick and current_tick >= intent.end_tick then
-            storage.walk_intents[agent_id] = nil
-        else
-            local agent_state = game_state.agent
-            agent_state:set_walking(agent_id, intent.direction, (intent.walking ~= false))
-        end
-    end
-end
-
-local function on_tick_walk_to(event)
-    if not storage.walk_to_jobs then return end
-    for id, job in pairs(storage.walk_to_jobs) do
-        if job.state == "arrived" or job.state == "failed" then
-            storage.walk_to_jobs[id] = nil
-        else
-            local control = _get_control_for_agent(job.agent_id)
-            if control and control.valid then
-                if job.state == "planning" then
-                    -- do nothing; wait for path callback but still nudge toward goal
-                    _tick_follow(job, control)
-                elseif job.state == "following" then
-                    _tick_follow(job, control)
-                else
-                    _tick_follow(job, control)
-                end
-            else
-                storage.walk_to_jobs[id] = nil
-            end
-        end
-    end
-end
-
-local function on_tick(event)
-    on_tick_walk_intents(event)
-    on_tick_walk_to(event)
-end
+-- Event handlers removed - now handled by AgentGameState:get_activity_events()
 
 --- @class WalkCancelParams : ParamSpec
 --- @field agent_id number
-local WalkCancelParams = ParamSpec:new({
+local WalkCancelParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
 })
 
@@ -519,43 +469,17 @@ local WalkCancelAction = Action:new("agent.walk_cancel", WalkCancelParams)
 --- @param params WalkCancelParams
 --- @return boolean
 function WalkCancelAction:run(params)
-    local p = self:_pre_run(game_state, params)
+    local p = self:_pre_run(params)
     local agent_id = p.agent_id
 
     -- Delegate to AgentGameState for centralized state management
-    local agent_state = game_state.agent
+    local agent_state = self.game_state.agent
     agent_state:stop_walking(agent_id)
 
     return self:_post_run(true, p)
 end
 
-local function on_script_path_request_finished(e)
-    if not (storage.walk_to_jobs and e and e.id) then return end
-    for _, job in pairs(storage.walk_to_jobs) do
-        if job.req_id == e.id then
-            if e.path and #e.path > 0 then
-                job.waypoints = e.path
-                job.wp_index = 1
-                job.micro_goal = nil
-                job.micro_timeout = 0
-                job.state = "following"
-            else
-                -- Path failed; keep local steering, optionally mark failed if we insist
-                if job.replan_on_stuck == false then
-                    job.state = "failed"
-                else
-                    job.state = "following" -- continue greedy steering
-                end
-            end
-            job.req_id = nil
-            break
-        end
-    end
-end
-
-WalkAction.events = {
-    [defines.events.on_tick] = on_tick,
-    [defines.events.on_script_path_request_finished] = on_script_path_request_finished
-}
+-- Event handlers removed - now handled by AgentGameState:get_activity_events()
+-- WalkAction is kept internal-only (not exposed via remote interface)
 
 return { WalkAction, WalkToAction, WalkCancelAction }
