@@ -173,7 +173,7 @@ local function register_all_remote_interfaces()
     for _ in pairs(action_iface) do action_count = action_count + 1 end
     log("Registering 'action' interface with " .. action_count .. " actions")
     remote.add_interface("action", action_iface)
-    
+
     -- Register admin interface (from GameState)
     local admin_iface = game_state:get_admin_api()
     if remote.interfaces["admin"] then
@@ -239,3 +239,4 @@ end)
 script.on_configuration_changed(function()
     log("hello from on_configuration_changed")
 end)
+-- test comment
