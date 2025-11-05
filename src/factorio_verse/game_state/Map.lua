@@ -3,7 +3,7 @@ local pairs = pairs
 local ipairs = ipairs
 
 local Config = require("core.Config")
-local utils = require("utils")
+local utils = require("core.utils")
 
 local M = {}
 M.__index = M
@@ -253,6 +253,45 @@ end
 
 function M:get_player_force()
     return game.forces["player"]
+end
+
+--- Register a charted area by converting it to chunk coordinates
+--- Called after force.chart() to ensure snapshot works on headless servers
+--- @param area table - {left_top = {x, y}, right_bottom = {x, y}}
+function M:register_charted_area(area)
+    if not area or not area.left_top or not area.right_bottom then
+        return
+    end
+    
+    if not storage.registered_charted_areas then
+        storage.registered_charted_areas = {}
+    end
+    
+    -- Convert world coordinates to chunk coordinates
+    local min_chunk_x = math.floor(area.left_top.x / 32)
+    local min_chunk_y = math.floor(area.left_top.y / 32)
+    local max_chunk_x = math.floor(area.right_bottom.x / 32)
+    local max_chunk_y = math.floor(area.right_bottom.y / 32)
+    
+    -- Register each chunk in the area
+    for cx = min_chunk_x, max_chunk_x do
+        for cy = min_chunk_y, max_chunk_y do
+            local chunk_key = utils.chunk_key(cx, cy)
+            storage.registered_charted_areas[chunk_key] = { x = cx, y = cy }
+        end
+    end
+end
+
+--- Check if a chunk was registered as charted (fallback for headless servers)
+--- @param chunk_x number
+--- @param chunk_y number
+--- @return boolean
+function M:is_registered_charted(chunk_x, chunk_y)
+    if not storage.registered_charted_areas then
+        return false
+    end
+    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
+    return storage.registered_charted_areas[chunk_key] ~= nil
 end
 
 M.admin_api = {

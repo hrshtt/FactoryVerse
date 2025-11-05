@@ -25,7 +25,7 @@ function ActionQueue:new(action_registry)
     immediate_mode = true,        -- whether to execute actions immediately
     max_queue_size = 10000,       -- maximum queue size
     processing = false,           -- whether currently processing queue
-    action_registry = action_registry or require("core.action.ActionRegistry"),
+    action_registry = action_registry or require("core.ActionRegistry"),
     -- Deterministic sequencing and fairness state
     seq_counter = 0,              -- monotonic sequence for tie-breaking
     key_order = {},               -- array of keys for round-robin fairness
@@ -121,7 +121,7 @@ end
 function ActionQueue:process_immediate(queued_action)
   -- Ensure action registry is loaded
   if not self.action_registry then
-    self.action_registry = require("core.action.ActionRegistry")
+    self.action_registry = require("core.ActionRegistry")
   end
   
   local action = self.action_registry:get(queued_action.action_name)
@@ -459,7 +459,7 @@ function ActionQueue:get_queue_remote_interface()
   
   -- Add convenience methods for each action type
   if not self.action_registry then
-    self.action_registry = require("core.action.ActionRegistry")
+    self.action_registry = require("core.ActionRegistry")
   end
   
   local action_registry = self.action_registry

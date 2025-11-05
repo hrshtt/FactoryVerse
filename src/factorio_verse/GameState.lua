@@ -50,6 +50,7 @@ GameState.aliases = game_state_aliases
 --- @return table<string, function> Admin API interface
 function GameState:get_admin_api()
     local admin_interface = {}
+    local ParamSpec = require("types.ParamSpec")
     
     -- All sub-modules (already initialized)
     local submodules = {
@@ -63,8 +64,11 @@ function GameState:get_admin_api()
     for _, submod in ipairs(submodules) do
         if submod.instance and submod.instance.admin_api then
             for api_name, api_func in pairs(submod.instance.admin_api) do
+                local spec = submod.instance.AdminApiSpecs and submod.instance.AdminApiSpecs[api_name]
+                
                 admin_interface[submod.name .. "." .. api_name] = function(...)
-                    return api_func(submod.instance, ...)
+                    local normalized_args = ParamSpec:normalize_varargs(spec, ...)
+                    return api_func(submod.instance, table.unpack(normalized_args))
                 end
             end
         end

@@ -1,7 +1,7 @@
 --- factorio_verse/core/WalkHelper.lua
 --- Utility for handling walk_if_unreachable logic across actions
 
-local action_registry = require("core.action.ActionRegistry")
+local action_registry = require("core.ActionRegistry")
 
 --- @class WalkHelper
 local WalkHelper = {}

@@ -8,7 +8,7 @@ local ipairs = ipairs
 local math = math
 
 local GameStateError = require("core.Error")
-local utils = require("utils")
+local utils = require("core.utils")
 local MapDiscovery = require("core.MapDiscovery")
 
 --- @param index number

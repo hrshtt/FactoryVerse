@@ -1,6 +1,6 @@
 --- Map discovery system with proper event pattern
 local Config = require("core.Config")
-local utils = require("utils")
+local utils = require("core.utils")
 
 local MapDiscovery = {}
 

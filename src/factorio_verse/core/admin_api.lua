@@ -1,6 +1,6 @@
 local GameState = require("core.game_state.GameState")
 local Snapshot = require("core.snapshot.Snapshot")
-local utils = require("utils")
+local utils = require("core.utils")
 
 
 local M = {}

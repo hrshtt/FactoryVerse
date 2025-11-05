@@ -144,4 +144,64 @@ function ParamSpec:from_json(spec, json_params)
     return ParamSpec:new(spec, json_params)
 end
 
+--- Normalize varargs from remote calls - supports multiple calling conventions:
+--- 1. JSON string: '{"num_agents": 2, "destroy_existing": true}'
+--- 2. Object table: {num_agents = 2, destroy_existing = true}
+--- 3. Positional args: 2, true, ...
+--- Converts to normalized positional arguments based on spec._param_order
+--- Validates parameters against spec rules (type, required)
+--- @param spec table Specification with _param_order field listing parameter names
+--- @param ... any Variable arguments from remote call
+--- @return table Positional arguments ready to pass to function
+function ParamSpec:normalize_varargs(spec, ...)
+    local args = {...}
+    
+    -- Handle JSON string decoding
+    if #args == 1 and type(args[1]) == "string" then
+        if helpers and helpers.json_to_table then
+            local ok, decoded = pcall(helpers.json_to_table, args[1])
+            if ok and type(decoded) == "table" then
+                args[1] = decoded
+            end
+        end
+    end
+    
+    -- Convert object table to positional args using spec
+    if spec and spec._param_order and #args == 1 and type(args[1]) == "table" and not args[1][1] then
+        local opts = args[1]
+        local positional = {}
+        
+        -- Validate and convert each parameter
+        for i, param_name in ipairs(spec._param_order) do
+            local value = opts[param_name]
+            local rule = spec[param_name]
+            
+            -- Validate required parameters
+            if rule and rule.required and value == nil then
+                error(string.format("Missing required parameter: %s", param_name))
+            end
+            
+            -- Type checking (if value is not nil)
+            if value ~= nil and rule and rule.type and rule.type ~= "any" then
+                local t = type(value)
+                if rule.type == "number" and t ~= "number" then
+                    error(string.format("Parameter '%s' must be a number, got %s", param_name, t))
+                elseif rule.type == "string" and t ~= "string" then
+                    error(string.format("Parameter '%s' must be a string, got %s", param_name, t))
+                elseif rule.type == "boolean" and t ~= "boolean" then
+                    error(string.format("Parameter '%s' must be a boolean, got %s", param_name, t))
+                elseif rule.type == "table" and t ~= "table" then
+                    error(string.format("Parameter '%s' must be a table, got %s", param_name, t))
+                end
+            end
+            
+            table.insert(positional, value)
+        end
+        return positional
+    end
+    
+    -- Already positional or no conversion needed
+    return args
+end
+
 return ParamSpec

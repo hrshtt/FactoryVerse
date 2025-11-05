@@ -10,8 +10,8 @@ local pairs = pairs
 local ipairs = ipairs
 
 local GameStateError = require("core.Error")
-local utils = require("utils")
-local MapDiscovery = require("core.MapDiscovery")
+local utils = require("core.utils")
+-- local MapDiscovery = require("core.MapDiscovery")
 
 -- Agent activity modules
 local Walking = require("game_state.agent.walking")
@@ -144,16 +144,20 @@ function M:create_agent(agent_id, position, color, force_name)
     storage.agent_forces[agent_id] = final_force_name
 
     local surface = game.surfaces[1]
+    -- Find non-colliding position for character placement
+    local spawn_position = force.get_spawn_position(surface)
+    local safe_position = surface.find_non_colliding_position("character", spawn_position, 10, 2)
+    
     local char = surface.create_entity {
         name = "character",
-        position = position,
+        position = safe_position or spawn_position,
         force = force,
         color = color
     }
     -- Chart the starting area (safe now - doesn't force sync chunk generation)
-    utils.chart_native_start_area(surface, force, position, self.game_state)
+    utils.chart_native_start_area(surface, force, safe_position or spawn_position, self.game_state)
     -- Initialize map discovery for ongoing discovery
-    MapDiscovery.initialize(surface, force, position)
+    -- MapDiscovery.initialize(surface, force, position)
     return char, final_force_name
 end
 
@@ -164,13 +168,44 @@ function M:get_agent(agent_id)
         storage.agent_characters = {}
         return nil
     end
-    local agent = storage.agent_characters[agent_id]
-    -- Clean up invalid references (can happen when loading saves)
-    if agent and not agent.valid then
+    
+    local data = storage.agent_characters[agent_id]
+    if not data then
+        return nil
+    end
+    
+    -- Reconstruct LuaEntity from force (only one surface in this mod)
+    local force = game.forces[data.force_name]
+    if not force then
         storage.agent_characters[agent_id] = nil
         return nil
     end
-    return agent
+    
+    local surface = game.surfaces[1]
+    if not surface then
+        return nil
+    end
+    
+    -- Find character of this force on surface
+    -- Since each agent has unique force, there's exactly one character
+    local chars = surface.find_entities_filtered{
+        type = "character",
+        force = force
+    }
+    
+    if chars and #chars > 0 then
+        local char = chars[1]
+        if char.valid then
+            return char
+        else
+            storage.agent_characters[agent_id] = nil
+            return nil
+        end
+    end
+    
+    -- Character not found, clean up stale entry
+    storage.agent_characters[agent_id] = nil
+    return nil
 end
 
 --- @param num_agents number
@@ -182,10 +217,26 @@ function M:create_agent_characters(num_agents, destroy_existing, set_unique_forc
     if not storage.agent_characters then
         storage.agent_characters = {}
     end
+    
     if destroy_existing and storage.agent_characters then
-        for _, char in pairs(storage.agent_characters) do
-            if char and char.valid then
-                char.destroy()
+        -- Destroy existing agents by force
+        for agent_id, data in pairs(storage.agent_characters) do
+            if data and data.force_name then
+                local force = game.forces[data.force_name]
+                if force then
+                    local surface = game.surfaces[1]
+                    if surface then
+                        local chars = surface.find_entities_filtered{
+                            type = "character",
+                            force = force
+                        }
+                        for _, char in ipairs(chars) do
+                            if char and char.valid then
+                                char.destroy()
+                            end
+                        end
+                    end
+                end
             end
         end
         storage.agent_characters = {}
@@ -223,7 +274,12 @@ function M:create_agent_characters(num_agents, destroy_existing, set_unique_forc
         end
         
         local char, final_force_name = self:create_agent(i, position, generate_agent_color(i, num_agents), force_name)
-        storage.agent_characters[i] = char
+        
+        -- Store only serializable metadata, not the LuaEntity reference
+        storage.agent_characters[i] = {
+            force_name = final_force_name,
+            surface_index = 1
+        }
         table.insert(created_agents, {character = char, force_name = final_force_name})
     end
     return created_agents
@@ -622,6 +678,42 @@ function M:destroy_agents(agent_ids, destroy_forces)
         errors = errors
     }
 end
+
+--- Specifications for admin API methods - enables multiple calling conventions
+--- Each spec has _param_order to map positional args to named parameters
+--- Includes type and required metadata for validation
+M.AdminApiSpecs = {
+    inspect_agent = {
+        _param_order = {"agent_id", "attach_inventory"},
+        agent_id = {type = "number", required = true},
+        attach_inventory = {type = "boolean", required = false},
+    },
+    create_agents = {
+        _param_order = {"num_agents", "destroy_existing", "set_unique_forces", "default_common_force"},
+        num_agents = {type = "number", required = true},
+        destroy_existing = {type = "boolean", required = false},
+        set_unique_forces = {type = "boolean", required = false},
+        default_common_force = {type = "string", required = false},
+    },
+    destroy_agents = {
+        _param_order = {"agent_ids", "destroy_forces"},
+        agent_ids = {type = "table", required = true},
+        destroy_forces = {type = "boolean", required = false},
+    },
+    update_agent_friends = {
+        _param_order = {"agent_id", "force_names"},
+        agent_id = {type = "number", required = true},
+        force_names = {type = "table", required = true},
+    },
+    update_agent_enemies = {
+        _param_order = {"agent_id", "force_names"},
+        agent_id = {type = "number", required = true},
+        force_names = {type = "table", required = true},
+    },
+    list_agent_forces = {
+        _param_order = {},
+    },
+}
 
 M.admin_api = {
     inspect_agent = inspect_agent,

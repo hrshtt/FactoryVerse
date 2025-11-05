@@ -3,14 +3,12 @@
 -- Events can only be registered once, so we aggregate all handlers and register via chains
 
 local ActionRegistry = require("core.ActionRegistry")
-local ActionQueue = require("core.ActionQueue")
 local GameState = require("GameState")
-local utils = require("utils")
+local utils = require("core.utils")
 
 -- Initialize core instances
 local game_state = GameState:new()
 local action_registry = ActionRegistry
-local action_queue = ActionQueue
 
 -- ============================================================================
 -- EVENT DISPATCHER PATTERN
@@ -198,8 +196,6 @@ local function register_all_remote_interfaces()
     log("Registering 'snapshot' interface with " .. snapshot_count .. " methods")
     remote.add_interface("snapshot", snapshot_iface)
     
-    -- Register action queue interface (async actions)
-    action_queue:register_queue_remote_interface()
 end
 
 register_all_remote_interfaces()
@@ -213,15 +209,6 @@ register_all_remote_interfaces()
 -- ACTION QUEUE HANDLER
 -- ============================================================================
 
-local MAX_ACTIONS_PER_TICK = 10
-
-local function register_action_queue_handler()
-    script.on_nth_tick(1, function(event)
-        if action_queue and action_queue.process_some then
-            action_queue:process_some(MAX_ACTIONS_PER_TICK)
-        end
-    end)
-end
 
 -- ============================================================================
 -- LIFECYCLE CALLBACKS
@@ -230,10 +217,6 @@ end
 script.on_init(function()
     log("hello from on_init")
     
-    -- Configure action queue for non-blocking intent ingestion
-    action_queue:set_immediate_mode(false)
-    action_queue:set_max_queue_size(10000)
-    action_queue:load_from_global()
     
     -- Initialize agent_characters storage
     if not storage.agent_characters then
@@ -248,9 +231,6 @@ end)
 script.on_load(function()
     log("hello from on_load")
     
-    -- Register action queue processing handler
-    register_action_queue_handler()
-    
     -- Re-register events (game is available during on_load)
     -- This is needed because event handlers may be lost after mod reload
     register_all_events()
@@ -259,6 +239,3 @@ end)
 script.on_configuration_changed(function()
     log("hello from on_configuration_changed")
 end)
-
--- Register action queue handler for tick 1 processing
-register_action_queue_handler()

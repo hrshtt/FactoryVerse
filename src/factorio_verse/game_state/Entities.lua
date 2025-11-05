@@ -6,7 +6,7 @@ local pairs = pairs
 local ipairs = ipairs
 
 local GameStateError = require("core.Error")
-local utils = require("utils")
+local utils = require("core.utils")
 
 --- @class EntitiesGameState
 --- @field game_state GameState
