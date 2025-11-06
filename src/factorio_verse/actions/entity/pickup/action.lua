@@ -2,13 +2,11 @@ local Action = require("types.Action")
 
 --- @class PickupEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field position_x number X coordinate of the target entity
---- @field position_y number Y coordinate of the target entity
+--- @field position table Position of the target entity: { x = number, y = number }
 --- @field entity_name string Entity prototype name
 local PickupEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position_x = { type = "number", required = true },
-    position_y = { type = "number", required = true },
+    position = { type = "table", required = true },
     entity_name = { type = "string", required = true }
 })
 
@@ -63,7 +61,7 @@ function PickupEntityAction:run(params)
     local p = self:_pre_run(params)
     ---@cast p PickupEntityParams
 
-    local position = { x = p.position_x, y = p.position_y }
+    local position = p.position
     local entity = game.surfaces[1].find_entity(p.entity_name, position)
     if not entity or not entity.valid then
         error("Entity not found or invalid")

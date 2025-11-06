@@ -14,12 +14,12 @@ local Action = require("types.Action")
 local ACTION_MODULES = {
   -- agent
   "actions.agent.walk.action",
+  "actions.agent.place_entity.action",
 
   -- crafting
   "actions.crafting.craft_sync.action",
 
   -- entity
-  "actions.entity.place.action",
   "actions.entity.place_line.action",
   "actions.entity.rotate.action",
   "actions.entity.pickup.action",

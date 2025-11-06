@@ -20,7 +20,7 @@ local PlaceEntityParams = Action.ParamSpec:new({
 })
 
 --- @class PlaceEntityAction : Action
-local PlaceEntityAction = Action:new("entity.place", PlaceEntityParams)
+local PlaceEntityAction = Action:new("agent.place_entity", PlaceEntityParams)
 
 --- @param params PlaceEntityParams
 --- @return table result Data about the placed entity

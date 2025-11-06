@@ -47,7 +47,7 @@ local function can_place_at_location(params)
         direction = GameState.aliases.direction[direction]
     end
 
-    local agent = gs:agent():get_agent(params.agent_id)
+    local agent = gs.agent:get_agent(params.agent_id)
     local force = params.force or (agent and agent.force) or nil
 
     local can_place = surface.can_place_entity{
@@ -65,7 +65,7 @@ end
 
 local function validate_item_in_inventory(params)
     local gs = GameState:new()
-    local ok = gs:agent():check_item_in_inventory(params.agent_id, params.entity_name)
+    local ok = gs.agent:check_item_in_inventory(params.agent_id, params.entity_name)
     if ok ~= true then
         -- If ok is a GameStateError, extract its message
         local error_msg = "agent does not have required item in inventory"

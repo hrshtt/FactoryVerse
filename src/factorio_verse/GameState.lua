@@ -37,6 +37,12 @@ function GameState:new()
     instance.resource_state = ResourceGameState:new(instance)
     instance.research = ResearchGameState:new(instance)
     
+    -- Update cached references in modules that depend on other modules
+    -- (e.g., agent caches inventory, but inventory is created after agent)
+    if instance.agent and instance.agent.inventory == nil then
+        instance.agent.inventory = instance.inventory
+    end
+    
     setmetatable(instance, self)
     return instance
 end

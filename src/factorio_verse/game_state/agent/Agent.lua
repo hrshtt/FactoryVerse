@@ -281,7 +281,8 @@ function M:get_inventory_contents(agent_id)
     if not agent then
         return GameStateError:new("Agent not found", { agent_id = agent_id })
     end
-    return self.inventory:get_inventory_contents(agent, agent_inventory_type)
+    local inventory_module = self.inventory or self.game_state.inventory
+    return inventory_module:get_inventory_contents(agent, agent_inventory_type)
 end
 
 function M:check_item_in_inventory(agent_id, item_name)
@@ -290,7 +291,8 @@ function M:check_item_in_inventory(agent_id, item_name)
         return GameStateError:new("Agent not found", { agent_id = agent_id })
     end
 
-    return self.inventory:check_item_in_inventory(agent, item_name, agent_inventory_type)
+    local inventory_module = self.inventory or self.game_state.inventory
+    return inventory_module:check_item_in_inventory(agent, item_name, agent_inventory_type)
 end
 
 -- ============================================================================

@@ -9,7 +9,7 @@ local function validate_entity_exists(params)
     local pos_y = params.position_y or (params.position and params.position.y)
     
     if type(pos_x) ~= "number" or type(pos_y) ~= "number" then
-        return false, "position_x and position_y must be numbers"
+        return true -- Skip if position not provided (let other validators handle it)
     end
     
     -- Support optional entity_name parameter for more precise lookup
