@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 local Snapshot = require("core.snapshot.Snapshot")
 local utils = require("core.utils")
 

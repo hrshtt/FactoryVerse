@@ -82,6 +82,7 @@ end
 --- @return table<string, function> On-demand snapshot interface
 function GameState:get_on_demand_snapshot_api()
     local snapshot_interface = {}
+    local ParamSpec = require("types.ParamSpec")
     
     -- All sub-modules (already initialized)
     local submodules = {
@@ -97,8 +98,18 @@ function GameState:get_on_demand_snapshot_api()
             local snapshots = submod.instance.on_demand_snapshots
             if snapshots then
                 for snapshot_name, snapshot_func in pairs(snapshots) do
+                    -- Check if there's a spec for this snapshot method (reuse AdminApiSpecs if available)
+                    local spec = submod.instance.AdminApiSpecs and submod.instance.AdminApiSpecs[snapshot_name]
+                    
                     snapshot_interface[submod.name .. "." .. snapshot_name] = function(...)
-                        return snapshot_func(submod.instance, ...)
+                        if spec then
+                            -- Normalize arguments like admin API does
+                            local normalized_args = ParamSpec:normalize_varargs(spec, ...)
+                            return snapshot_func(submod.instance, table.unpack(normalized_args))
+                        else
+                            -- No spec available, pass through as-is
+                            return snapshot_func(submod.instance, ...)
+                        end
                     end
                 end
             end

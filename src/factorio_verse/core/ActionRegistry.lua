@@ -159,17 +159,20 @@ function ActionRegistry:load()
   if self.loaded then return end
 
   -- Helper to register a single action instance
-  local function register_action(action)
+  local function register_action(action, module_path)
     if not (type(action) == "table" and type(action.name) == "string" and type(action.run) == "function") then
       return
     end
     
     -- Load validators hierarchically
+    -- Use module_path to determine validator location (e.g., "actions.mining.action" -> "mining")
+    -- Fallback to action.name if module_path not provided
     local ok, err = pcall(function()
-      local validators = load_validators(action.name)
+      local validator_base_name = module_path and extract_action_name(module_path) or action.name
+      local validators = load_validators(validator_base_name)
       action:attach_validators(validators)
       if #validators > 0 then
-        log("Attached " .. #validators .. " validator(s) to action: " .. tostring(action.name))
+        log("Attached " .. #validators .. " validator(s) to action: " .. tostring(action.name) .. " (from " .. validator_base_name .. ")")
       end
     end)
     if not ok then
@@ -206,13 +209,13 @@ function ActionRegistry:load()
       -- 2) Array of actions {action1, action2, ...}
       -- 3) Table with field `action`
       if type(action_or_err.name) == "string" and type(action_or_err.run) == "function" then
-        register_action(action_or_err)
+        register_action(action_or_err, module_name)
       elseif type(action_or_err[1]) == "table" then
         for _, a in ipairs(action_or_err) do
-          register_action(a)
+          register_action(a, module_name)
         end
       elseif type(action_or_err.action) == "table" then
-        register_action(action_or_err.action)
+        register_action(action_or_err.action, module_name)
       else
         log("Module did not return an action: " .. module_name)
       end

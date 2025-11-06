@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 
 --- Validate that entity exists and is valid
 --- @param params table - must include position_x, position_y or position table

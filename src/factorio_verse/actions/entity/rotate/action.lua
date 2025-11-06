@@ -1,7 +1,5 @@
 local Action = require("types.Action")
-local GameState = require("core.game_state.GameState")
-
-local gs = GameState:new()
+local GameStateAliases = require("game_state.GameStateAliases")
 
 --- @class RotateEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -24,7 +22,7 @@ local RotateEntityAction = Action:new("entity.rotate", RotateEntityParams)
 --- @return table result Data about the rotated entity
 function RotateEntityAction:run(params)
     log("DEBUG ROTATE: run() called with params")
-    local p = self:_pre_run(gs, params)
+    local p = self:_pre_run(params)
     ---@cast p RotateEntityParams
     
     log("DEBUG ROTATE: After _pre_run")
@@ -53,9 +51,7 @@ function RotateEntityAction:run(params)
         if type(dir) == "number" then return dir end
         if type(dir) == "string" then
             local key = string.lower(dir)
-            if GameState.aliases and GameState.aliases.direction then
-                return GameState.aliases.direction[key]
-            end
+            return GameStateAliases.direction[key]
         end
         return nil
     end

@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 
 local function is_hand_craftable(recipe_proto)
     if not recipe_proto then return false end

@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 
 local function validate_params(params)
     if type(params) ~= "table" then

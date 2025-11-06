@@ -1,7 +1,4 @@
 local Action = require("types.Action")
-local GameState = require("core.game_state.GameState")
-
-local gs = GameState:new()
 
 --- @class SetRecipeParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -25,7 +22,7 @@ local SetRecipeAction = Action:new("entity.set_recipe", SetRecipeParams)
 --- @param params SetRecipeParams
 --- @return table result Data about the recipe change
 function SetRecipeAction:run(params)
-    local p = self:_pre_run(gs, params)
+    local p = self:_pre_run(params)
     ---@cast p SetRecipeParams
 
     local position = { x = p.position_x, y = p.position_y }

@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 
 --- Inventory type mapping from string names to defines.inventory constants
 local INVENTORY_TYPE_MAP = {

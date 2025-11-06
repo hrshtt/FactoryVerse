@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 local walk_helper = require("actions.agent.walk.helper")
 
 --- Validate that entity is minable
@@ -46,7 +46,7 @@ local function validate_agent_reachable(params)
     end
     
     local gs = GameState:new()
-    local agent = gs:agent():get_agent(params.agent_id)
+    local agent = gs.agent:get_agent(params.agent_id)
     if not agent then
         return true -- Let other validators handle agent validation
     end
@@ -79,7 +79,7 @@ local function validate_agent_inventory_space(params)
     end
     
     local gs = GameState:new()
-    local agent = gs:agent():get_agent(params.agent_id)
+    local agent = gs.agent:get_agent(params.agent_id)
     if not agent then
         return true -- Let other validators handle agent validation
     end

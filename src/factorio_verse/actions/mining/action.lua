@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local helpers = require("game_state.agent.helpers")
 
 --- @class MineResourceParams : ParamSpec
 --- @field agent_id number
@@ -154,33 +155,22 @@ local function _cancel_walk_for_agent(agent_id)
     walk_helper:cancel_walk(agent_id)
 end
 
--- Compute a conservative resource reach distance for the character
-local function _resource_reach_distance(control)
-    if not (control and control.valid) then return 2.5 end
-    local proto = control.prototype
-    local by_proto = proto and (proto.reach_resource_distance or proto.reach_distance) or nil
-    local by_control = control.reach_distance or nil
-    local reach = by_proto or by_control or 2.5
-    -- generous small buffer
-    return reach + 0.1
-end
-
+-- Check if control can reach entity (uses shared helper with resource-specific reach)
 local function _can_reach_entity(control, entity)
     if not (control and control.valid and entity and entity.valid) then return false end
     
-    -- First try Factorio's built-in can_reach_entity if available
+    -- Try Factorio's built-in can_reach_entity first
     if control.can_reach_entity then
-        -- Try both call styles defensively
-        local ok, res = pcall(function() return control.can_reach_entity(control, entity) end)
+        local ok, res = pcall(function() return control.can_reach_entity(entity) end)
         if not ok then
-            ok, res = pcall(function() return control.can_reach_entity(entity) end)
+            ok, res = pcall(function() return control.can_reach_entity(control, entity) end)
         end
         if ok and type(res) == "boolean" then return res end
     end
     
-    -- Fallback to WalkHelper's reach checking with resource-specific reach distance
+    -- Fallback to distance-based check with resource-specific reach distance
     local pos = entity.position or entity
-    local reach = _resource_reach_distance(control)
+    local reach = helpers.resource_reach_distance(control)
     return walk_helper:is_reachable(control, pos, nil, reach)
 end
 
@@ -323,52 +313,59 @@ function MineResourceAction:run(params)
     log(string.format("[mine_resource] start agent=%d target=(%.2f,%.2f) res=%s max=%d walk=%s", agent_id, target.x, target.y, resource_name, max_count, tostring(p.walk_if_unreachable)))
 
     local control = _get_control_for_agent(agent_id)
-    if control then
-        local surface = control.surface
-        local resource = _find_resource_entity(surface, target, resource_name)
-        if resource and resource.valid then
-            -- Precompute products and guard fluid requirement
-            local names, requires_fluid = _get_resource_products(resource)
-            if requires_fluid then
-                log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", resource_name, agent_id))
-                storage.mine_resource_jobs[agent_id] = nil
-                return self:_post_run(false, p)
-            end
-            job.products = names
-            job.start_total = _get_actor_items_total(control, job.products)
-            job.start_item_count = _get_actor_item_count(control, job.resource_name)
+    if not control then
+        storage.mine_resource_jobs[agent_id] = nil
+        return self:_post_run(false, p)
+    end
+    
+    local surface = control.surface
+    local resource = _find_resource_entity(surface, target, resource_name)
+    if not (resource and resource.valid) then
+        -- Resource not found at target location
+        storage.mine_resource_jobs[agent_id] = nil
+        return self:_post_run(false, p)
+    end
+    
+    -- Precompute products and guard fluid requirement
+    local names, requires_fluid = _get_resource_products(resource)
+    if requires_fluid then
+        log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", resource_name, agent_id))
+        storage.mine_resource_jobs[agent_id] = nil
+        return self:_post_run(false, p)
+    end
+    
+    job.products = names
+    job.start_total = _get_actor_items_total(control, job.products)
+    job.start_item_count = _get_actor_item_count(control, job.resource_name)
 
-            -- Try to begin mining immediately if in reach; tick will maintain it
-            local reachable = _can_reach_entity(control, resource)
-            if reachable then
-                _cancel_walk_for_agent(agent_id)
-                self.game_state.agent:set_mining(agent_id, true, resource)
-                job.mining_active = true
-                local target_pos = resource.position
-                if control.update_selected_entity and target_pos then
-                    pcall(function() control.update_selected_entity(target_pos) end)
-                end
-                if control.mining_state ~= nil then
-                    control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
-                end
-            elseif job.walk_if_unreachable then
-                walk_helper:start_walk_to({
-                    agent_id = job.agent_id,
-                    target_position = job.target,
-                    arrive_radius = 1.2,
-                    prefer_cardinal = true
-                })
-            end
+    -- Check if resource is reachable
+    local reachable = _can_reach_entity(control, resource)
+    if not reachable then
+        -- Resource is not reachable
+        if not job.walk_if_unreachable then
+            -- Cannot reach and walk_if_unreachable is false - fail immediately
+            storage.mine_resource_jobs[agent_id] = nil
+            return self:_post_run(false, p)
         else
-            -- No entity found yet; optionally start walking toward the tile
-            if job.walk_if_unreachable then 
-                walk_helper:start_walk_to({
-                    agent_id = job.agent_id,
-                    target_position = job.target,
-                    arrive_radius = 1.2,
-                    prefer_cardinal = true
-                })
-            end
+            -- Start walking toward the resource
+            walk_helper:start_walk_to({
+                agent_id = job.agent_id,
+                target_position = job.target,
+                arrive_radius = 1.2,
+                prefer_cardinal = true
+            })
+        end
+    else
+        -- Resource is reachable - start mining immediately
+        _cancel_walk_for_agent(agent_id)
+        self.game_state.agent:set_mining(agent_id, true, resource)
+        job.mining_active = true
+        local target_pos = resource.position
+        if control.update_selected_entity and target_pos then
+            pcall(function() control.update_selected_entity(target_pos) end)
+        end
+        if control.mining_state ~= nil then
+            control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
         end
     end
 
@@ -378,25 +375,18 @@ function MineResourceAction:run(params)
         walk_if_unreachable = p.walk_if_unreachable,
         debug = p.debug
     })
+    
+    if not success then
+        storage.mine_resource_jobs[agent_id] = nil
+        return self:_post_run(false, p)
+    end
 
     -- Create mutation contract result
+    -- Note: Mining is async and happens over multiple ticks
+    -- TODO: Actual affects (resource deltas, inventory changes) will be sent via UDP when mining completes
+    -- Return success=true only if job was started (reachable or walk_if_unreachable=true)
     local result = {
-        success = success,
-        affected_resources = {
-            {
-                name = p.resource_name,
-                position = { x = p.x, y = p.y },
-                delta = success and -p.max_count or 0 -- Negative because resources are being depleted
-            }
-        },
-        affected_inventories = {
-            {
-                owner_type = "agent",
-                owner_id = p.agent_id,
-                inventory_type = "character_main",
-                changes = success and { [p.resource_name] = p.max_count } or {} -- Items gained from mining
-            }
-        }
+        success = success
     }
     return self:_post_run(result, p)
 end

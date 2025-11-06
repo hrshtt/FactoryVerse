@@ -1,7 +1,4 @@
 local Action = require("types.Action")
-local GameState = require("core.game_state.GameState")
-
-local gs = GameState:new()
 
 --- @class SetLimitParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -25,7 +22,7 @@ local SetLimitAction = Action:new("entity.inventory.set_limit", SetLimitParams)
 --- @param params SetLimitParams
 --- @return table result Data about the limit change
 function SetLimitAction:run(params)
-    local p = self:_pre_run(gs, params)
+    local p = self:_pre_run(params)
     ---@cast p SetLimitParams
 
     local position = { x = p.position_x, y = p.position_y }

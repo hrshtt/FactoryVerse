@@ -1,7 +1,4 @@
 local Action = require("types.Action")
-local GameState = require("core.game_state.GameState")
-
-local gs = GameState:new()
 
 --- @class CraftParams : ParamSpec
 --- @field agent_id number
@@ -56,11 +53,11 @@ end
 --- @param params CraftParams
 --- @return table
 function CraftAction:run(params)
-    params = self:_pre_run(gs, params)
+    params = self:_pre_run(params)
     ---@cast params CraftParams
 
     ---@type LuaEntity
-    local agent = gs:agent():get_agent(params.agent_id)
+    local agent = self.game_state:agent():get_agent(params.agent_id)
     local inv = agent.get_inventory(defines.inventory.character_main)
     local recipe_proto = (prototypes and prototypes.recipe and prototypes.recipe[params.recipe])
 

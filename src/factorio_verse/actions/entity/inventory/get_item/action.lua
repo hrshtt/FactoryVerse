@@ -1,7 +1,4 @@
 local Action = require("types.Action")
-local GameState = require("core.game_state.GameState")
-
-local gs = GameState:new()
 
 --- @class GetItemParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -94,7 +91,7 @@ end
 --- @param params GetItemParams
 --- @return table result Data about the item transfer
 function GetItemAction:run(params)
-    local p = self:_pre_run(gs, params)
+    local p = self:_pre_run(params)
     ---@cast p GetItemParams
 
     local position = { x = p.position_x, y = p.position_y }
@@ -103,7 +100,7 @@ function GetItemAction:run(params)
         error("Entity not found or invalid")
     end
 
-    local agent = gs:agent():get_agent(p.agent_id)
+    local agent = self.game_state:agent():get_agent(p.agent_id)
     if not agent then
         error("Agent not found")
     end

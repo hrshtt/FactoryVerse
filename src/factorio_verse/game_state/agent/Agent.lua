@@ -83,6 +83,16 @@ function M:force_destroy_agents()
     -- Clear the agent_characters table
     storage.agent_characters = {}
     storage.agent_forces = {}
+    
+    -- Cleanup all rendered name tags
+    if storage.agent_name_tags then
+        for agent_id, render_id in pairs(storage.agent_name_tags) do
+            pcall(function()
+                rendering.destroy(render_id)
+            end)
+        end
+        storage.agent_name_tags = {}
+    end
 end
 
 --- Create or get a force by name, setting default friendly relationships
@@ -151,9 +161,30 @@ function M:create_agent(agent_id, position, color, force_name)
     local char = surface.create_entity {
         name = "character",
         position = safe_position or spawn_position,
-        force = force,
-        color = color
+        force = force
     }
+    -- Set color after creation (characters don't accept color in create_entity)
+    if color then
+        char.color = color
+    end
+    -- Set name tag for identification (visible in editor mode)
+    local name_tag = "Agent-" .. tostring(agent_id)
+    if char and char.valid then
+        char.name_tag = name_tag
+        -- Render name tag for regular gameplay visibility (name_tag only works in editor mode)
+        storage.agent_name_tags = storage.agent_name_tags or {}
+        local render_id = rendering.draw_text{
+            text = name_tag,
+            target = char,
+            surface = char.surface,
+            color = {r = 1, g = 1, b = 1, a = 1},
+            scale = 1.2,
+            font = "default-game",
+            alignment = "center",
+            vertical_alignment = "middle"
+        }
+        storage.agent_name_tags[agent_id] = render_id
+    end
     -- Chart the starting area (safe now - doesn't force sync chunk generation)
     utils.chart_native_start_area(surface, force, safe_position or spawn_position, self.game_state)
     -- Initialize map discovery for ongoing discovery
@@ -169,43 +200,13 @@ function M:get_agent(agent_id)
         return nil
     end
     
-    local data = storage.agent_characters[agent_id]
-    if not data then
-        return nil
-    end
-    
-    -- Reconstruct LuaEntity from force (only one surface in this mod)
-    local force = game.forces[data.force_name]
-    if not force then
+    local agent = storage.agent_characters[agent_id]
+    -- Clean up invalid references (can happen when loading saves)
+    if agent and not agent.valid then
         storage.agent_characters[agent_id] = nil
         return nil
     end
-    
-    local surface = game.surfaces[1]
-    if not surface then
-        return nil
-    end
-    
-    -- Find character of this force on surface
-    -- Since each agent has unique force, there's exactly one character
-    local chars = surface.find_entities_filtered{
-        type = "character",
-        force = force
-    }
-    
-    if chars and #chars > 0 then
-        local char = chars[1]
-        if char.valid then
-            return char
-        else
-            storage.agent_characters[agent_id] = nil
-            return nil
-        end
-    end
-    
-    -- Character not found, clean up stale entry
-    storage.agent_characters[agent_id] = nil
-    return nil
+    return agent
 end
 
 --- @param num_agents number
@@ -219,24 +220,10 @@ function M:create_agent_characters(num_agents, destroy_existing, set_unique_forc
     end
     
     if destroy_existing and storage.agent_characters then
-        -- Destroy existing agents by force
-        for agent_id, data in pairs(storage.agent_characters) do
-            if data and data.force_name then
-                local force = game.forces[data.force_name]
-                if force then
-                    local surface = game.surfaces[1]
-                    if surface then
-                        local chars = surface.find_entities_filtered{
-                            type = "character",
-                            force = force
-                        }
-                        for _, char in ipairs(chars) do
-                            if char and char.valid then
-                                char.destroy()
-                            end
-                        end
-                    end
-                end
+        -- Destroy existing agents directly
+        for _, char in pairs(storage.agent_characters) do
+            if char and char.valid then
+                char.destroy()
             end
         end
         storage.agent_characters = {}
@@ -275,12 +262,10 @@ function M:create_agent_characters(num_agents, destroy_existing, set_unique_forc
         
         local char, final_force_name = self:create_agent(i, position, generate_agent_color(i, num_agents), force_name)
         
-        -- Store only serializable metadata, not the LuaEntity reference
-        storage.agent_characters[i] = {
-            force_name = final_force_name,
-            surface_index = 1
-        }
-        table.insert(created_agents, {character = char, force_name = final_force_name})
+        -- Store direct LuaEntity reference
+        storage.agent_characters[i] = char
+        -- Return only serializable data (LuaEntity cannot be JSON serialized)
+        table.insert(created_agents, {agent_id = i, force_name = final_force_name})
     end
     return created_agents
 end
@@ -544,6 +529,14 @@ function M:destroy_agent(agent_id, destroy_force)
         storage.agent_characters[agent_id] = nil
     end
     
+    -- Cleanup rendered name tag
+    if storage.agent_name_tags and storage.agent_name_tags[agent_id] then
+        pcall(function()
+            rendering.destroy(storage.agent_name_tags[agent_id])
+        end)
+        storage.agent_name_tags[agent_id] = nil
+    end
+    
     -- Handle force cleanup
     if destroy_force then
         local agent_force_name = storage.agent_forces and storage.agent_forces[agent_id]
@@ -612,10 +605,10 @@ end
 --- @param agent_id number - agent ID (required)
 --- @param attach_inventory boolean - whether to include inventory (default false)
 --- @return table - {agent_id, tick, position {x, y}, inventory?} or {error, agent_id, tick}
-local function inspect_agent(agent_id, attach_inventory)
+function M:inspect_agent(agent_id, attach_inventory)
     attach_inventory = attach_inventory or false
     
-    local agent = M:get_agent(agent_id)
+    local agent = self:get_agent(agent_id)
     if not agent or not agent.valid then
         return {
             error = "Agent not found or invalid",
@@ -716,7 +709,7 @@ M.AdminApiSpecs = {
 }
 
 M.admin_api = {
-    inspect_agent = inspect_agent,
+    inspect_agent = M.inspect_agent,
     create_agents = M.create_agent_characters,
     destroy_agents = M.destroy_agents,
     update_agent_friends = M.update_agent_friends,
@@ -724,7 +717,7 @@ M.admin_api = {
     list_agent_forces = M.list_agent_forces,
 }
 
-M.on_demand_snapshots = { inspect_agent = inspect_agent }
+M.on_demand_snapshots = { inspect_agent = M.inspect_agent }
 
 return M
 

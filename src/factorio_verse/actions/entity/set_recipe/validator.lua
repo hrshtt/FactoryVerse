@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 
 --- Validate that entity type supports recipes
 --- @param params table

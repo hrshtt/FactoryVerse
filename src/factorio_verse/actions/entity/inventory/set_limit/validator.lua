@@ -1,4 +1,4 @@
-local GameState = require("core.game_state.GameState")
+local GameState = require("GameState")
 
 --- Validate that inventory supports bar/limit
 --- @param params table

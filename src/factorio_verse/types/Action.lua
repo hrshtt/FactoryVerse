@@ -67,7 +67,12 @@ function Action:validate(params)
   end
   
   for i, validator in ipairs(self.validators) do
-    local ok, result, error_msg = pcall(validator, params_table)
+    -- Use pcall to safely call validator, preserving multiple return values
+    local call_results = {pcall(validator, params_table)}
+    local ok = call_results[1]
+    local result = call_results[2]
+    local error_msg = call_results[3]
+    
     if not ok then
       return false, "Validator " .. i .. " threw error: " .. tostring(result)
     elseif result == false then

@@ -1,7 +1,4 @@
 local Action = require("types.Action")
-local GameState = require("core.game_state.GameState")
-
-local gs = GameState:new()
 
 --- @class PickupEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -63,7 +60,7 @@ end
 --- @param params PickupEntityParams
 --- @return table result Data about the picked up entity and items
 function PickupEntityAction:run(params)
-    local p = self:_pre_run(gs, params)
+    local p = self:_pre_run(params)
     ---@cast p PickupEntityParams
 
     local position = { x = p.position_x, y = p.position_y }
@@ -77,7 +74,7 @@ function PickupEntityAction:run(params)
         error("Entity is not minable")
     end
 
-    local agent = gs:agent():get_agent(p.agent_id)
+    local agent = self.game_state.agent:get_agent(p.agent_id)
     if not agent then
         error("Agent not found")
     end
@@ -131,18 +128,14 @@ function PickupEntityAction:run(params)
     local entity_type = entity.type
 
     -- Mine the entity (this destroys it and returns items)
+    -- entity.mine() with inventory parameter automatically inserts all mined items
+    -- (including the entity itself and all inventory contents) into the specified inventory
     local mine_success = entity.mine({inventory = agent_inventory, force = true})
     if not mine_success then
         error("Failed to mine entity")
     end
 
     -- entity is now invalid after mining, don't access it
-    
-    -- The entity itself may not be automatically inserted, so insert it manually
-    local entity_inserted = agent_inventory.insert({name = entity_name, count = 1})
-    if entity_inserted < 1 then
-        error("Failed to insert entity into agent inventory")
-    end
 
     -- Calculate actual items obtained
     -- entity.mine() with inventory parameter auto-inserts all mined items into the inventory

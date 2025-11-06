@@ -34,26 +34,48 @@ function M.dist_sq(a, b)
     return dx*dx + dy*dy
 end
 
---- Check if control can reach entity
+--- Compute resource-specific reach distance for a character
+--- @param control LuaEntity
+--- @return number
+function M.resource_reach_distance(control)
+    if not (control and control.valid) then return 2.5 end
+    local proto = control.prototype
+    local by_proto = proto and (proto.reach_resource_distance or proto.reach_distance) or nil
+    local by_control = control.reach_distance or nil
+    local reach = by_proto or by_control or 2.5
+    return reach + 0.1  -- small buffer
+end
+
+--- Check if control can reach entity (for resources, uses resource-specific reach distance)
 --- @param control LuaEntity
 --- @param entity LuaEntity
+--- @param use_resource_reach boolean|nil If true, use resource-specific reach distance
 --- @return boolean
 --- @diagnostic disable: undefined-field
-function M.can_reach_entity(control, entity)
+function M.can_reach_entity(control, entity, use_resource_reach)
     if not (control and control.valid and entity and entity.valid) then return false end
-    local proto = control.prototype
-    -- character_reach_distance may not exist on all prototypes, use safe access with fallback
-    local reach = 0.5  -- default reach distance
-    if proto then
-        -- Use pcall to safely access prototype field (may not exist on all entity types)
-        local ok, reach_value = pcall(function() 
-            return proto.character_reach_distance 
-        end)
-        if ok and reach_value then
-            reach = reach_value
+    
+    -- First try Factorio's built-in can_reach_entity if available
+    if control.can_reach_entity then
+        local ok, res = pcall(function() return control.can_reach_entity(entity) end)
+        if ok and type(res) == "boolean" then return res end
+    end
+    
+    -- Fallback to distance-based check
+    local reach
+    if use_resource_reach then
+        reach = M.resource_reach_distance(control)
+    else
+        local proto = control.prototype
+        reach = 0.5  -- default reach distance
+        if proto then
+            local ok, reach_value = pcall(function() return proto.character_reach_distance end)
+            if ok and reach_value then
+                reach = reach_value
+            end
         end
     end
-    -- Convert positions to {x, y} format if needed (handle MapPosition array format)
+    
     local control_pos = control.position
     local entity_pos = entity.position
     local cp = { x = control_pos.x or control_pos[1] or 0, y = control_pos.y or control_pos[2] or 0 }
