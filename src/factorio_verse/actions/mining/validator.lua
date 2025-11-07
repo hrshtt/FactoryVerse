@@ -12,13 +12,13 @@ local function validate_resource_tile(params)
     -- Special handling for trees (non-snapped positions, search by radius)
     if resource_name == "tree" then
         local entities = surface.find_entities_filtered{
-            position = {x = params.x, y = params.y},
+            position = {x = params.position.x, y = params.position.y},
             radius = 2.5,
             type = "tree"
         }
         
         if not entities or #entities == 0 then
-            error(string.format("No tree near (%.1f, %.1f)", params.x, params.y))
+            error(string.format("No tree near (%.1f, %.1f)", params.position.x, params.position.y))
         end
         
         return true
@@ -26,7 +26,7 @@ local function validate_resource_tile(params)
 
     -- Original logic for resource (ore) tiles (snapped to tile grid)
     local tile_entities = surface.find_entities_filtered{
-        area = {{params.x, params.y}, {params.x + 1, params.y + 1}},
+        area = {{params.position.x, params.position.y}, {params.position.x + 1, params.position.y + 1}},
         type = "resource"
     }
 
@@ -39,7 +39,7 @@ local function validate_resource_tile(params)
     end
 
     if not found_resource then
-        error(string.format("No resource tile of type '%s' at (%d, %d)", resource_name, params.x, params.y))
+        error(string.format("No resource tile of type '%s' at (%d, %d)", resource_name, params.position.x, params.position.y))
     end
 
     return true
@@ -61,7 +61,7 @@ local function validate_resource_reachable(params)
     end
 
     -- Skip if position not provided
-    if not params.x or not params.y or not params.resource_name then
+    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" or not params.resource_name then
         return true -- Let other validators handle this
     end
 
@@ -72,7 +72,7 @@ local function validate_resource_reachable(params)
     end
 
     local surface = game.surfaces[1]
-    local resource = helpers.find_resource_entity(surface, {x = params.x, y = params.y}, params.resource_name)
+    local resource = helpers.find_resource_entity(surface, {x = params.position.x, y = params.position.y}, params.resource_name)
     if not resource or not resource.valid then
         return true -- Let validate_resource_tile handle this
     end
@@ -81,7 +81,7 @@ local function validate_resource_reachable(params)
     local reachable = helpers.can_reach_entity(agent, resource, true)  -- true = use resource-specific reach
     
     if not reachable then
-        return false, string.format("Agent %d cannot reach resource '%s' at (%d, %d). Set walk_if_unreachable=true to allow walking to resource.", params.agent_id, params.resource_name, params.x, params.y)
+        return false, string.format("Agent %d cannot reach resource '%s' at (%d, %d). Set walk_if_unreachable=true to allow walking to resource.", params.agent_id, params.resource_name, params.position.x, params.position.y)
     end
 
     return true
@@ -93,12 +93,12 @@ end
 --- @return boolean, string|nil
 local function validate_no_concurrent_mining(params)
     -- Skip if position or resource name not provided
-    if not params.x or not params.y or not params.resource_name then
+    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" or not params.resource_name then
         return true -- Let other validators handle this
     end
     
     local surface = game.surfaces[1]
-    local resource = helpers.find_resource_entity(surface, {x = params.x, y = params.y}, params.resource_name)
+    local resource = helpers.find_resource_entity(surface, {x = params.position.x, y = params.position.y}, params.resource_name)
     if not resource or not resource.valid then
         return true -- Let validate_resource_tile handle this
     end
@@ -119,7 +119,7 @@ local function validate_no_concurrent_mining(params)
     
     if action_id then
         return false, string.format("Resource '%s' at (%.1f, %.1f) is already being mined (action_id: %s)", 
-                                   params.resource_name, params.x, params.y, action_id)
+                                   params.resource_name, params.position.x, params.position.y, action_id)
     end
     
     return true

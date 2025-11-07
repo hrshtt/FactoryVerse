@@ -19,8 +19,8 @@ end
 --- @param params WalkToParams
 --- @return boolean, string|nil
 local function validate_no_concurrent_walking(params)
-    -- Only applies to walk_to action (has goal parameter)
-    if params.goal == nil then
+    -- Only applies to walk_to action (has position parameter)
+    if params.position == nil then
         return true -- skip for walk action (which has direction instead)
     end
     

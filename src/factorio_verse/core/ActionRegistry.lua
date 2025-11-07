@@ -20,6 +20,7 @@ local ACTION_MODULES = {
   -- agent crafting
   "actions.agent.crafting.craft_sync.action",
   "actions.agent.crafting.craft_enqueue.action",
+  "actions.agent.crafting.craft_cancel.action",
 
   -- entity
   "actions.entity.place_line.action",

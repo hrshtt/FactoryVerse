@@ -2,16 +2,14 @@ local Action = require("types.Action")
 
 --- @class SetItemParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field position_x number X coordinate of the target entity
---- @field position_y number Y coordinate of the target entity
+--- @field position table Position of the target entity: { x = number, y = number }
 --- @field entity_name string Entity prototype name
 --- @field item string Name of the item to insert
 --- @field count number|nil Number of items to insert (defaults to 1)
 --- @field inventory_type string|nil Inventory type string (e.g., "chest", "modules", "fuel")
 local SetItemParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position_x = { type = "number", required = true },
-    position_y = { type = "number", required = true },
+    position = { type = "table", required = true },
     entity_name = { type = "string", required = true },
     item = { type = "string", required = true },
     count = { type = "number", required = false, default = 1 },
@@ -99,7 +97,7 @@ function SetItemAction:run(params)
     local p = self:_pre_run(params)
     ---@cast p SetItemParams
 
-    local position = { x = p.position_x, y = p.position_y }
+    local position = { x = p.position.x, y = p.position.y }
     local entity = game.surfaces[1].find_entity(p.entity_name, position)
     if not entity or not entity.valid then
         error("Entity not found or invalid")

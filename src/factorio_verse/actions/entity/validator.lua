@@ -1,21 +1,17 @@
 local GameState = require("GameState")
 
 --- Validate that entity exists and is valid
---- @param params table - must include position_x, position_y or position table
+--- @param params table - must include position table
 --- @return boolean, string|nil
 local function validate_entity_exists(params)
-    -- Support both position_x/position_y and position table
-    local pos_x = params.position_x or (params.position and params.position.x)
-    local pos_y = params.position_y or (params.position and params.position.y)
-    
-    if type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
         return true -- Skip if position not provided (let other validators handle it)
     end
     
     -- Support optional entity_name parameter for more precise lookup
     local entity_name = params.entity_name
     
-    local position = { x = pos_x, y = pos_y }
+    local position = { x = params.position.x, y = params.position.y }
     local entity
     
     if entity_name then
@@ -27,7 +23,7 @@ local function validate_entity_exists(params)
     end
     
     if not entity or not entity.valid then
-        log("DEBUG: Entity at position {" .. pos_x .. "," .. pos_y .. "} not found or invalid")
+        log("DEBUG: Entity at position {" .. position.x .. "," .. position.y .. "} not found or invalid")
         return false, "Entity not found or invalid"
     end
     
@@ -35,18 +31,14 @@ local function validate_entity_exists(params)
 end
 
 --- Validate that agent can reach the entity (optional check)
---- @param params table - must include position_x, position_y and agent_id
+--- @param params table - must include position and agent_id
 --- @return boolean, string|nil
 local function validate_entity_reachable(params)
-    -- Support both position_x/position_y and position table
-    local pos_x = params.position_x or (params.position and params.position.x)
-    local pos_y = params.position_y or (params.position and params.position.y)
-    
-    if not params.agent_id or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+    if not params.agent_id or not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
         return true -- Skip if parameters not provided
     end
     
-    local position = { x = pos_x, y = pos_y }
+    local position = { x = params.position.x, y = params.position.y }
     local entity_name = params.entity_name
     local entity
     

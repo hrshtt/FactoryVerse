@@ -3,16 +3,14 @@ local helpers = require("game_state.agent.helpers")
 
 --- @class MineResourceParams : ParamSpec
 --- @field agent_id number
---- @field x number
---- @field y number
+--- @field position table Position of the resource: { x = number, y = number }
 --- @field resource_name string
 --- @field max_count number
 --- @field walk_if_unreachable boolean|nil
 --- @field debug boolean|nil
 local MineResourceParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    x = { type = "number", required = true },
-    y = { type = "number", required = true },
+    position = { type = "table", required = true },
     resource_name = { type = "string", required = true },
     max_count = { type = "number", required = true },
     walk_if_unreachable = { type = "boolean", required = false, default = false },
@@ -155,7 +153,7 @@ function MineResourceAction:run(params)
     local p = self:_pre_run(params)
     ---@cast p MineResourceParams
     local agent_id = p.agent_id
-    local target = { x = p.x, y = p.y }
+    local target = { x = p.position.x, y = p.position.y }
     local resource_name = p.resource_name
     local max_count = p.max_count
     local emulate = true

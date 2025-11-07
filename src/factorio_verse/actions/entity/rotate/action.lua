@@ -3,14 +3,12 @@ local GameStateAliases = require("game_state.GameStateAliases")
 
 --- @class RotateEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
---- @field position_x number X coordinate of the target entity
---- @field position_y number Y coordinate of the target entity
+--- @field position table Position of the target entity: { x = number, y = number }
 --- @field entity_name string Entity prototype name
 --- @field direction string|number Direction to rotate to (required) - accepts alias from GameState.aliases.direction or defines.direction value (0-7)
 local RotateEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position_x = { type = "number", required = true },
-    position_y = { type = "number", required = true },
+    position = { type = "table", required = true },
     entity_name = { type = "string", required = true },
     direction = { type = "any", required = true }  -- Changed: now required
 })
@@ -27,7 +25,7 @@ function RotateEntityAction:run(params)
     
     log("DEBUG ROTATE: After _pre_run")
 
-    local position = { x = p.position_x, y = p.position_y }
+    local position = { x = p.position.x, y = p.position.y }
     local entity = game.surfaces[1].find_entity(p.entity_name, position)
     if not entity or not entity.valid then
         error("Entity not found or invalid")

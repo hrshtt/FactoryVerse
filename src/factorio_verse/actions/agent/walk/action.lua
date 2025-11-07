@@ -15,7 +15,7 @@ local WalkParams = Action.ParamSpec:new({
 
 --- @class WalkToParams : ParamSpec
 --- @field agent_id number
---- @field goal {x:number,y:number}
+--- @field position table Position to walk to: { x = number, y = number }
 --- @field arrive_radius number|nil
 --- @field lookahead number|nil
 --- @field replan_on_stuck boolean|nil
@@ -26,7 +26,7 @@ local WalkParams = Action.ParamSpec:new({
 --- @field snap_axis_eps number|nil
 local WalkToParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    goal = { type = "table", required = true },
+    position = { type = "table", required = true },
     arrive_radius = { type = "number", required = false },
     lookahead = { type = "number", required = false },
     replan_on_stuck = { type = "boolean", required = false },
@@ -87,7 +87,7 @@ function WalkToAction:run(params)
     local p = self:_pre_run(params)
     ---@cast p WalkToParams
     local agent_id = p.agent_id
-    local goal = p.goal
+    local goal = p.position
     if not (goal and goal.x and goal.y) then return self:_post_run({ success = false }, p) end
 
     -- Delegate to AgentGameState for centralized state management

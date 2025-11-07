@@ -8,15 +8,11 @@ local function validate_entity_has_items(params)
         return true -- Let other validators handle missing parameters
     end
     
-    -- Support both position_x/position_y and position table
-    local pos_x = params.position_x or (params.position and params.position.x)
-    local pos_y = params.position_y or (params.position and params.position.y)
-    
-    if not params.entity_name or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
         return true -- Let other validators handle missing parameters
     end
     
-    local position = { x = pos_x, y = pos_y }
+    local position = { x = params.position.x, y = params.position.y }
     local entity = game.surfaces[1].find_entity(params.entity_name, position)
     if not entity or not entity.valid then
         return true -- Let validate_entity_exists handle this

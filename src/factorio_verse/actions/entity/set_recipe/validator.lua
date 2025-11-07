@@ -4,16 +4,16 @@ local GameState = require("GameState")
 --- @param params table
 --- @return boolean, string|nil
 local function validate_entity_supports_recipes(params)
-    -- Support both position_x/position_y and position table
-    local pos_x = params.position_x or (params.position and params.position.x)
-    local pos_y = params.position_y or (params.position and params.position.y)
-    local entity_name = params.entity_name
-    
-    if not entity_name or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
         return true -- Let other validators handle missing parameters
     end
     
-    local position = { x = pos_x, y = pos_y }
+    local entity_name = params.entity_name
+    if not entity_name then
+        return true -- Let other validators handle missing parameters
+    end
+    
+    local position = { x = params.position.x, y = params.position.y }
     local entity = game.surfaces[1].find_entity(entity_name, position)
     if not entity or not entity.valid then
         return true -- Let validate_entity_exists handle this
@@ -49,16 +49,16 @@ local function validate_recipe_compatibility(params)
         return true -- Skip if recipe not provided
     end
     
-    -- Support both position_x/position_y and position table
-    local pos_x = params.position_x or (params.position and params.position.x)
-    local pos_y = params.position_y or (params.position and params.position.y)
-    local entity_name = params.entity_name
-    
-    if not entity_name or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
         return true -- Let other validators handle missing parameters
     end
     
-    local position = { x = pos_x, y = pos_y }
+    local entity_name = params.entity_name
+    if not entity_name then
+        return true -- Let other validators handle missing parameters
+    end
+    
+    local position = { x = params.position.x, y = params.position.y }
     local entity = game.surfaces[1].find_entity(entity_name, position)
     if not entity or not entity.valid then
         return true -- Let validate_entity_exists handle this
@@ -94,16 +94,16 @@ end
 --- @param params table
 --- @return boolean, string|nil
 local function validate_overwrite_permission(params)
-    -- Support both position_x/position_y and position table
-    local pos_x = params.position_x or (params.position and params.position.x)
-    local pos_y = params.position_y or (params.position and params.position.y)
-    local entity_name = params.entity_name
-    
-    if not entity_name or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
         return true -- Let other validators handle missing parameters
     end
     
-    local position = { x = pos_x, y = pos_y }
+    local entity_name = params.entity_name
+    if not entity_name then
+        return true -- Let other validators handle missing parameters
+    end
+    
+    local position = { x = params.position.x, y = params.position.y }
     local entity = game.surfaces[1].find_entity(entity_name, position)
     if not entity or not entity.valid then
         return true -- Let validate_entity_exists handle this
