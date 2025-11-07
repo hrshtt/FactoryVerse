@@ -1,5 +1,5 @@
 --[[
-    actions.crafting.craft_enqueue.action
+    actions.agent.crafting.craft_enqueue.action
 
     This file defines the enqueue version of the item crafting action, as an alternative entry point to `craft_sync`.
     The primary functionality of this action is to enqueue a crafting job for the agent, which is then processed asynchronously by the Factorio game engine:

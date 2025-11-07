@@ -11,7 +11,7 @@ local CraftParams = Action.ParamSpec:new({
 })
 
 --- @class CraftAction : Action
-local CraftAction = Action:new("crafting.craft_sync", CraftParams)
+local CraftAction = Action:new("agent.crafting.craft_sync", CraftParams)
 
 local function is_hand_craftable(recipe_proto)
     if not recipe_proto then return false end

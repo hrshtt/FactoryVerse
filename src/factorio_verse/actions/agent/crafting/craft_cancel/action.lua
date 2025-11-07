@@ -1,5 +1,5 @@
 --[[
-    actions.crafting.craft_cancel.action
+    actions.agent.crafting.craft_cancel.action
 
     -- This action enables an agent to cancel a previously queued crafting job submitted via `craft_enqueue`.
     -- 1. Validator is checked on invocation; it will raise an error if this action cannot be called for the given params.

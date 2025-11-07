@@ -1,20 +1,30 @@
 local GameState = require("GameState")
 local helpers = require("game_state.agent.helpers")
 
---- Validate that the given (x, y) is a resource tile of the correct type
+--- Validate that the given (x, y) has a mineable entity of the correct type
+--- Supports both resource tiles (ores, tile-snapped) and trees (non-snapped, radius-based).
 --- @param params table
 --- @return boolean
 local function validate_resource_tile(params)
     local resource_name = params.resource_name
-    -- if not resource_name then
-    --     error("Missing required param: resource_name")
-    -- end
-    -- if not params.x or not params.y then
-    --     error("Missing required params: x and y")
-    -- end
-
     local surface = game.surfaces[1]
 
+    -- Special handling for trees (non-snapped positions, search by radius)
+    if resource_name == "tree" then
+        local entities = surface.find_entities_filtered{
+            position = {x = params.x, y = params.y},
+            radius = 2.5,
+            type = "tree"
+        }
+        
+        if not entities or #entities == 0 then
+            error(string.format("No tree near (%.1f, %.1f)", params.x, params.y))
+        end
+        
+        return true
+    end
+
+    -- Original logic for resource (ore) tiles (snapped to tile grid)
     local tile_entities = surface.find_entities_filtered{
         area = {{params.x, params.y}, {params.x + 1, params.y + 1}},
         type = "resource"

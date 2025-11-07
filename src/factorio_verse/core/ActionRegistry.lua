@@ -15,9 +15,10 @@ local ACTION_MODULES = {
   -- agent
   "actions.agent.walk.action",
   "actions.agent.place_entity.action",
+  "actions.agent.teleport.action",
 
-  -- crafting
-  "actions.crafting.craft_sync.action",
+  -- agent crafting
+  "actions.agent.crafting.craft_sync.action",
 
   -- entity
   "actions.entity.place_line.action",

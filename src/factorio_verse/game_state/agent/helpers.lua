@@ -90,12 +90,41 @@ end
 -- ============================================================================
 
 --- Find resource entity at position
+--- Supports both resource entities (ores) and trees.
+--- If resource_name == "tree", searches for any tree entity near position.
+--- Otherwise searches for a resource entity with that name.
 --- @param surface LuaSurface
 --- @param position {x:number, y:number}
---- @param resource_name string
+--- @param resource_name string - "tree" for trees, or resource/ore name for ores
 --- @return LuaEntity|nil
 function M.find_resource_entity(surface, position, resource_name)
     if not (surface and position and resource_name) then return nil end
+    
+    -- Special handling for trees
+    if resource_name == "tree" then
+        -- Try exact entity-at-position lookup for trees first
+        local search_radius = 2.5
+        local entities = surface.find_entities_filtered{
+            position = position,
+            radius = search_radius,
+            type = "tree"
+        }
+        if not entities or #entities == 0 then return nil end
+        local px, py = position.x, position.y
+        local best, best_d2 = nil, math.huge
+        for _, e in ipairs(entities) do
+            if e and e.valid then
+                local dx, dy = e.position.x - px, e.position.y - py
+                local d2 = dx*dx + dy*dy
+                if d2 < best_d2 then
+                    best, best_d2 = e, d2
+                end
+            end
+        end
+        return best
+    end
+    
+    -- Original logic for resource (ore) entities
     -- Try exact entity-at-position lookup first
     local ok_ent, ent = pcall(function() return surface.find_entity(resource_name, position) end)
     if ok_ent and ent and ent.valid and ent.type == "resource" then

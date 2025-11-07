@@ -56,6 +56,13 @@ function M:start_mining_job(agent_id, target, resource_name, max_count, options)
         return false
     end
     
+    local start_item_count
+    if resource.type == "tree" then
+        start_item_count = nil
+    else
+        start_item_count = helpers.get_actor_item_count(control, resource_name)
+    end
+    
     local job = {
         agent_id = agent_id,
         target = { x = target.x, y = target.y },
@@ -66,7 +73,7 @@ function M:start_mining_job(agent_id, target, resource_name, max_count, options)
         finished = false,
         products = products,
         start_total = products and helpers.get_actor_items_total(control, products) or 0,
-        start_item_count = helpers.get_actor_item_count(control, resource_name),
+        start_item_count = start_item_count,
         debug = opts.debug or false,
         mining_active = false
     }
@@ -84,6 +91,31 @@ local function _cancel_walk_for_agent(walking_module, agent_id)
     if storage.walk_intents then
         storage.walk_intents[agent_id] = nil
     end
+end
+
+--- Send UDP notification for mining completion
+--- @param job table Mining job
+--- @param resource LuaEntity|nil Resource entity (may be nil if depleted)
+local function _send_mining_completion_udp(job, resource)
+    local payload = {
+        action = "mine_resource_complete",
+        agent_id = job.agent_id,
+        resource_name = job.resource_name,
+        target = { x = job.target.x, y = job.target.y },
+        items_received = job.mined_count or 0,
+        products = job.products
+    }
+    if resource and resource.valid and resource.type == "resource" then
+        payload.resource_type = "tile"
+        payload.resource_remaining = resource.amount or 0
+    elseif resource and resource.valid and resource.type == "tree" then
+        payload.resource_type = "tree"
+        payload.resource_remaining = 0
+    else
+        payload.resource_type = job.resource_name == "tree" and "tree" or "tile"
+        payload.resource_remaining = 0
+    end
+    pcall(function() _G.helpers.send_udp(30123, payload, 0) end)
 end
 
 --- Tick handler for mining jobs
@@ -115,17 +147,20 @@ function M:tick_mine_jobs(event)
                 end
 
                 -- Stop if completed
+                local surface = control.surface
                 if (job.mined_count or 0) >= job.max_count then
                     self.agent_control:set_mining(agent_id, false)
+                    local resource = helpers.find_resource_entity(surface, job.target, job.resource_name)
+                    _send_mining_completion_udp(job, resource)
                     job.finished = true
                     storage.mine_resource_jobs[agent_id] = nil
                 else
-                    local surface = control.surface
                     local resource = helpers.find_resource_entity(surface, job.target, job.resource_name)
 
                     if not (resource and resource.valid) then
                         -- Target depleted or missing
                         self.agent_control:set_mining(agent_id, false)
+                        _send_mining_completion_udp(job, nil)
                         job.finished = true
                         storage.mine_resource_jobs[agent_id] = nil
                     else
@@ -146,7 +181,12 @@ function M:tick_mine_jobs(event)
                             end
                             job.products = names
                             job.start_total = helpers.get_actor_items_total(control, job.products)
-                            job.start_item_count = helpers.get_actor_item_count(control, job.resource_name)
+                            -- For trees: do NOT track resource_name as an item
+                            if resource.type == "tree" then
+                                job.start_item_count = nil
+                            else
+                                job.start_item_count = helpers.get_actor_item_count(control, job.resource_name)
+                            end
                         end
 
                         local target_pos = resource.position or job.target
@@ -168,16 +208,20 @@ function M:tick_mine_jobs(event)
                             
                             -- Track progress
                             local current_total = helpers.get_actor_items_total(control, job.products)
-                            local current_item = helpers.get_actor_item_count(control, job.resource_name)
-                            job.mined_count = math.max(
-                                math.max(0, (current_total - (job.start_total or 0))),
-                                math.max(0, (current_item - (job.start_item_count or 0)))
-                            )
+                            local mined_by_total = math.max(0, (current_total - (job.start_total or 0)))
+                            -- Only track item count if start_item_count was set (skipped for trees)
+                            local mined_by_item = 0
+                            if job.start_item_count ~= nil then
+                                local current_item = helpers.get_actor_item_count(control, job.resource_name)
+                                mined_by_item = math.max(0, (current_item - (job.start_item_count or 0)))
+                            end
+                            job.mined_count = math.max(mined_by_total, mined_by_item)
                             
                             if (job.mined_count or 0) >= job.max_count then
                                 if control.mining_state ~= nil then
                                     control.mining_state = { mining = false }
                                 end
+                                _send_mining_completion_udp(job, resource)
                                 job.finished = true
                                 storage.mine_resource_jobs[agent_id] = nil
                                 log(string.format("[mine_resource] agent=%d completed target: %d/%d", agent_id, job.mined_count, job.max_count))
