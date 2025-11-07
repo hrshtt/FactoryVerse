@@ -105,7 +105,7 @@ function SetItemAction:run(params)
         error("Entity not found or invalid")
     end
 
-    local agent = self.game_state:agent():get_agent(p.agent_id)
+    local agent = self.game_state.agent:get_agent(p.agent_id)
     if not agent then
         error("Agent not found")
     end

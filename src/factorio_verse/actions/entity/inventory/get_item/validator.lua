@@ -1,14 +1,18 @@
 local GameState = require("GameState")
 
---- Validate that items exist in entity inventory
+--- Validate that entity inventory has sufficient items
 --- @param params table
 --- @return boolean, string|nil
-local function validate_items_exist_in_entity(params)
+local function validate_entity_has_items(params)
+    if not params.item or not params.count then
+        return true -- Let other validators handle missing parameters
+    end
+    
     -- Support both position_x/position_y and position table
     local pos_x = params.position_x or (params.position and params.position.x)
     local pos_y = params.position_y or (params.position and params.position.y)
     
-    if not params.item or not params.inventory_type or not params.entity_name or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
+    if not params.entity_name or type(pos_x) ~= "number" or type(pos_y) ~= "number" then
         return true -- Let other validators handle missing parameters
     end
     
@@ -18,6 +22,9 @@ local function validate_items_exist_in_entity(params)
         return true -- Let validate_entity_exists handle this
     end
     
+    -- Default to "output" inventory if not specified
+    local inventory_type_name = params.inventory_type or "output"
+    
     -- Map inventory type name to defines constant
     local inventory_type_map = {
         chest = defines.inventory.chest,
@@ -26,54 +33,39 @@ local function validate_items_exist_in_entity(params)
         input = defines.inventory.assembling_machine_input,
         output = defines.inventory.assembling_machine_output,
         ammo = defines.inventory.turret_ammo,
+        trunk = defines.inventory.car_trunk,
+        cargo = defines.inventory.cargo_wagon,
     }
     
-    local inventory_type = inventory_type_map[params.inventory_type]
+    local inventory_type = inventory_type_map[inventory_type_name]
     if not inventory_type then
         return true -- Let validate_inventory_type handle this
     end
     
-    local target_inventory = entity.get_inventory(inventory_type)
-    if not target_inventory or not target_inventory.valid then
+    local source_inventory = entity.get_inventory(inventory_type)
+    if not source_inventory or not source_inventory.valid then
         return true -- Let validate_entity_has_inventory handle this
     end
     
-    -- Handle different item parameter types
-    if params.item == "ALL_ITEMS" then
-        -- For ALL_ITEMS, just check that inventory has any items
-        local contents = target_inventory.get_contents()
-        if not contents or next(contents) == nil then
-            return false, "Entity inventory is empty"
-        end
-    elseif type(params.item) == "table" then
-        -- Batch operation: check each item
-        for item_name, count in pairs(params.item) do
-            local available_count = target_inventory.get_item_count(item_name)
-            if available_count == 0 then
-                return false, "Item '" .. item_name .. "' not found in entity inventory"
-            end
-        end
-    else
-        -- Single item operation
-        local available_count = target_inventory.get_item_count(params.item)
-        if available_count == 0 then
-            return false, "Item '" .. params.item .. "' not found in entity inventory"
-        end
+    local available_count = source_inventory.get_item_count(params.item)
+    if available_count < params.count then
+        return false, "Entity inventory does not have enough items. Has: " .. 
+                      available_count .. ", needs: " .. params.count
     end
     
     return true
 end
 
---- Validate that agent inventory has space
+--- Validate that agent inventory has space for the items
 --- @param params table
 --- @return boolean, string|nil
 local function validate_agent_inventory_space(params)
-    if not params.agent_id or not params.item then
+    if not params.agent_id or not params.item or not params.count then
         return true -- Let other validators handle missing parameters
     end
     
     local gs = GameState:new()
-    local agent = gs:agent():get_agent(params.agent_id)
+    local agent = gs.agent:get_agent(params.agent_id)
     if not agent then
         return true -- Let other validators handle agent validation
     end
@@ -83,31 +75,13 @@ local function validate_agent_inventory_space(params)
         return false, "Agent inventory not found"
     end
     
-    -- For ALL_ITEMS, we can't easily validate space without knowing what items exist
-    -- So we'll let the action handle this gracefully
-    if params.item == "ALL_ITEMS" then
-        return true
-    end
-    
-    -- For specific items, check if agent can accept at least some
-    if type(params.item) == "table" then
-        -- Batch operation: check each item
-        for item_name, count in pairs(params.item) do
-            local can_accept = agent_inventory.can_insert({name = item_name, count = 1})
-            if can_accept == 0 then
-                return false, "Agent inventory cannot accept item: " .. item_name
-            end
-        end
-    else
-        -- Single item operation
-        local count = params.count or 1
-        local can_accept = agent_inventory.can_insert({name = params.item, count = count})
-        if can_accept == 0 then
-            return false, "Agent inventory cannot accept item: " .. params.item
-        end
+    local can_insert = agent_inventory.can_insert({name = params.item, count = params.count})
+    if not can_insert then
+        return false, "Agent inventory cannot accept " .. params.count .. " of item: " .. params.item
     end
     
     return true
 end
 
-return { validate_items_exist_in_entity, validate_agent_inventory_space }
+return { validate_entity_has_items, validate_agent_inventory_space }
+
