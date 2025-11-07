@@ -262,7 +262,8 @@ function MineResourceAction:run(params)
         storage.mine_resource_in_progress = storage.mine_resource_in_progress or {}
         local resource = helpers.find_resource_entity(surface, target, resource_name)
         if resource and resource.valid then
-            storage.mine_resource_in_progress[resource.unit_number] = { 
+            local resource_key = resource.position.x .. "," .. resource.position.y
+            storage.mine_resource_in_progress[resource_key] = { 
                 action_id = action_id, 
                 rcon_tick = rcon_tick 
             }

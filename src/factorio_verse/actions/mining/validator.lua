@@ -104,8 +104,18 @@ local function validate_no_concurrent_mining(params)
     end
     
     -- Check if this resource is already being mined by another agent
+    -- Use position string key (matches action.lua storage format)
     storage.mine_resource_in_progress = storage.mine_resource_in_progress or {}
-    local action_id = storage.mine_resource_in_progress[resource.unit_number]
+    local resource_key = resource.position.x .. "," .. resource.position.y
+    local tracking = storage.mine_resource_in_progress[resource_key]
+    
+    -- Handle both table format (new) and string format (old)
+    local action_id = nil
+    if tracking and type(tracking) == "table" then
+        action_id = tracking.action_id
+    elseif tracking and type(tracking) == "string" then
+        action_id = tracking
+    end
     
     if action_id then
         return false, string.format("Resource '%s' at (%.1f, %.1f) is already being mined (action_id: %s)", 
