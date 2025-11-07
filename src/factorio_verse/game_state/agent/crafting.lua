@@ -75,7 +75,7 @@ local function _send_craft_completion_udp(tracking, agent_id, actual_products, c
     local payload = {
         action_id = action_id or string.format("craft_enqueue_unknown_%d_%d", rcon_tick or completion_tick, agent_id),
         agent_id = agent_id,
-        action_type = "agent_crafting_craft_enqueue",
+        action_type = "agent_crafting_enqueue",
         rcon_tick = rcon_tick or completion_tick,  -- when action was triggered
         completion_tick = completion_tick,          -- when action completed
         success = true,

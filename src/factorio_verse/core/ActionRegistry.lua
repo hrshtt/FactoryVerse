@@ -18,9 +18,8 @@ local ACTION_MODULES = {
   "actions.agent.place_entity.action",
 
   -- agent crafting
-  "actions.agent.crafting.craft_sync.action",
-  "actions.agent.crafting.craft_enqueue.action",
-  "actions.agent.crafting.craft_cancel.action",
+  "actions.agent.crafting.enqueue.action",
+  "actions.agent.crafting.cancel.action",
 
   -- entity
   "actions.entity.place_line.action",
@@ -318,7 +317,8 @@ function ActionRegistry:get_action_metadata()
     mine_resource = { is_async = true },
     agent_walk = { is_async = true },
     agent_walk_to = { is_async = true },
-    agent_crafting_craft_enqueue = { is_async = true },
+    agent_crafting_enqueue = { is_async = true },
+    agent_crafting_cancel = { is_async = false },
     
     -- SYNC ACTIONS (complete in same RCON call)
     agent_teleport = { is_async = false },
@@ -331,7 +331,6 @@ function ActionRegistry:get_action_metadata()
     entity_inventory_get_item = { is_async = false },
     entity_inventory_set_limit = { is_async = false },
     enqueue_research = { is_async = false },
-    agent_crafting_craft_sync = { is_async = false },
   }
 end
 

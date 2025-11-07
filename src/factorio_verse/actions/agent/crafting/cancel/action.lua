@@ -12,7 +12,7 @@ local CraftCancelParams = Action.ParamSpec:new({
 })
 
 --- @class CraftCancelAction : Action
-local CraftCancelAction = Action:new("agent.crafting.craft_cancel", CraftCancelParams)
+local CraftCancelAction = Action:new("agent.crafting.cancel", CraftCancelParams)
 
 --- Calculate actual items crafted by comparing inventory before/after
 --- @param agent LuaEntity
@@ -67,7 +67,7 @@ local function _send_cancel_completion_udp(tracking, agent_id, count_cancelled, 
     local payload = {
         action_id = action_id or string.format("craft_enqueue_unknown_%d_%d", rcon_tick or completion_tick, agent_id),
         agent_id = agent_id,
-        action_type = "agent_crafting_craft_enqueue",
+        action_type = "agent_crafting_enqueue",
         rcon_tick = rcon_tick or completion_tick,  -- when action was triggered
         completion_tick = completion_tick,          -- when action completed
         success = true,

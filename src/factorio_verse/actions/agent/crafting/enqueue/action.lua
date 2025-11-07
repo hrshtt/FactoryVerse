@@ -12,7 +12,7 @@ local CraftEnqueueParams = Action.ParamSpec:new({
 })
 
 --- @class CraftEnqueueAction : Action
-local CraftEnqueueAction = Action:new("agent.crafting.craft_enqueue", CraftEnqueueParams)
+local CraftEnqueueAction = Action:new("agent.crafting.enqueue", CraftEnqueueParams)
 
 --- Get item products from recipe prototype
 --- @param recipe_proto table
