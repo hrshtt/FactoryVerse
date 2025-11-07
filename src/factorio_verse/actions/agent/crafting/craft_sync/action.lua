@@ -57,7 +57,7 @@ function CraftAction:run(params)
     ---@cast params CraftParams
 
     ---@type LuaEntity
-    local agent = self.game_state:agent():get_agent(params.agent_id)
+    local agent = self.game_state.agent:get_agent(params.agent_id)
     local inv = agent.get_inventory(defines.inventory.character_main)
     local recipe_proto = (prototypes and prototypes.recipe and prototypes.recipe[params.recipe])
 
