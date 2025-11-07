@@ -138,7 +138,7 @@ end
 -- Forcefully stop all agent activities and flush pending intents/jobs
 M.helpers.reset_agents_state = function()
     local gs = GameState:new()
-    local agent_state = gs:agent()
+    local agent_state = gs.agent
 
     -- Stop walking/mining on all agent characters
     if storage.agent_characters then

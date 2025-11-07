@@ -16,6 +16,7 @@ local utils = require("core.utils")
 -- Agent activity modules
 local Walking = require("game_state.agent.walking")
 local Mining = require("game_state.agent.mining")
+local Crafting = require("game_state.agent.crafting")
 
 --- @param index number
 --- @param total_agents number
@@ -32,6 +33,7 @@ end
 --- @field inventory InventoryGameState
 --- @field walking WalkingModule
 --- @field mining MiningModule
+--- @field crafting CraftingModule
 local M = {}
 M.__index = M
 
@@ -61,6 +63,9 @@ function M:new(game_state)
     
     instance.mining = Mining
     instance.mining:init(instance, instance.walking)  -- Pass self and walking module
+    
+    instance.crafting = Crafting
+    instance.crafting:init(instance)  -- Pass self as agent_control interface (for consistency)
     
     return instance
 end
@@ -418,34 +423,49 @@ end
 -- EVENT HANDLERS
 -- ============================================================================
 
---- Get activity event handlers (aggregates from walking and mining modules)
+--- Get activity event handlers (aggregates from walking, mining, and crafting modules)
 --- @return table Event handlers keyed by event ID
 function M:get_activity_events()
     local walking_events = self.walking:get_event_handlers(self)
     local mining_events = self.mining:get_event_handlers()
+    local crafting_events = self.crafting:get_event_handlers()
     
-    -- Merge event handlers (both walking and mining use on_tick)
+    -- Merge event handlers (walking, mining, and crafting all use on_tick)
     local merged = {}
     
-    -- Merge on_tick handlers
-    if walking_events[defines.events.on_tick] and mining_events[defines.events.on_tick] then
-        merged[defines.events.on_tick] = function(event)
-            walking_events[defines.events.on_tick](event)
-            mining_events[defines.events.on_tick](event)
-        end
-    elseif walking_events[defines.events.on_tick] then
-        merged[defines.events.on_tick] = walking_events[defines.events.on_tick]
-    elseif mining_events[defines.events.on_tick] then
-        merged[defines.events.on_tick] = mining_events[defines.events.on_tick]
+    -- Collect all on_tick handlers
+    local on_tick_handlers = {}
+    if walking_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, walking_events[defines.events.on_tick])
+    end
+    if mining_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, mining_events[defines.events.on_tick])
+    end
+    if crafting_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, crafting_events[defines.events.on_tick])
     end
     
-    -- Copy other events
+    -- Merge on_tick handlers into single function
+    if #on_tick_handlers > 0 then
+        merged[defines.events.on_tick] = function(event)
+            for _, handler in ipairs(on_tick_handlers) do
+                handler(event)
+            end
+        end
+    end
+    
+    -- Copy other events (non-on_tick)
     for event_id, handler in pairs(walking_events) do
         if event_id ~= defines.events.on_tick then
             merged[event_id] = handler
         end
     end
     for event_id, handler in pairs(mining_events) do
+        if event_id ~= defines.events.on_tick then
+            merged[event_id] = handler
+        end
+    end
+    for event_id, handler in pairs(crafting_events) do
         if event_id ~= defines.events.on_tick then
             merged[event_id] = handler
         end

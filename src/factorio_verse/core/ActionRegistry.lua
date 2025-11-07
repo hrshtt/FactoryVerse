@@ -19,6 +19,7 @@ local ACTION_MODULES = {
 
   -- agent crafting
   "actions.agent.crafting.craft_sync.action",
+  "actions.agent.crafting.craft_enqueue.action",
 
   -- entity
   "actions.entity.place_line.action",
@@ -316,7 +317,7 @@ function ActionRegistry:get_action_metadata()
     mine_resource = { is_async = true },
     agent_walk = { is_async = true },
     agent_walk_to = { is_async = true },
-    -- agent_crafting_craft_enqueue = { is_async = true },  -- TBD
+    agent_crafting_craft_enqueue = { is_async = true },
     
     -- SYNC ACTIONS (complete in same RCON call)
     agent_teleport = { is_async = false },
