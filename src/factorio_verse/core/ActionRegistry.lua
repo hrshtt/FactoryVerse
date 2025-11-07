@@ -14,8 +14,8 @@ local Action = require("types.Action")
 local ACTION_MODULES = {
   -- agent
   "actions.agent.walk.action",
-  "actions.agent.place_entity.action",
   "actions.agent.teleport.action",
+  "actions.agent.place_entity.action",
 
   -- agent crafting
   "actions.agent.crafting.craft_sync.action",
@@ -305,6 +305,32 @@ function ActionRegistry:get_events()
   end
   
   return aggregated
+end
+
+--- Return action metadata (sync vs async classification)
+--- Source of truth for Python-side action contracts
+--- @return table<string, table> metadata with is_async flags
+function ActionRegistry:get_action_metadata()
+  return {
+    -- ASYNC ACTIONS (complete across multiple ticks, send UDP completion)
+    mine_resource = { is_async = true },
+    agent_walk = { is_async = true },
+    agent_walk_to = { is_async = true },
+    -- agent_crafting_craft_enqueue = { is_async = true },  -- TBD
+    
+    -- SYNC ACTIONS (complete in same RCON call)
+    agent_teleport = { is_async = false },
+    agent_place_entity = { is_async = false },
+    agent_walk_cancel = { is_async = false },
+    entity_rotate = { is_async = false },
+    entity_pickup = { is_async = false },
+    entity_set_recipe = { is_async = false },
+    entity_inventory_set_item = { is_async = false },
+    entity_inventory_get_item = { is_async = false },
+    entity_inventory_set_limit = { is_async = false },
+    enqueue_research = { is_async = false },
+    agent_crafting_craft_sync = { is_async = false },
+  }
 end
 
 return ActionRegistry:new()

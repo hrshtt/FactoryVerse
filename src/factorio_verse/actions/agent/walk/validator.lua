@@ -15,4 +15,30 @@ local function validate_direction(params)
     return true
 end
 
-return { validate_direction }
+--- Validate that the agent is not already walking (for walk_to action only)
+--- @param params WalkToParams
+--- @return boolean, string|nil
+local function validate_no_concurrent_walking(params)
+    -- Only applies to walk_to action (has goal parameter)
+    if params.goal == nil then
+        return true -- skip for walk action (which has direction instead)
+    end
+    
+    -- Skip if agent_id not provided
+    if not params.agent_id then
+        return true
+    end
+    
+    -- Check if this agent is already walking
+    storage.walk_in_progress = storage.walk_in_progress or {}
+    local action_id = storage.walk_in_progress[params.agent_id]
+    
+    if action_id then
+        return false, string.format("Agent %d is already walking (action_id: %s). Wait for current walk to complete.", 
+                                   params.agent_id, action_id)
+    end
+    
+    return true
+end
+
+return { validate_direction, validate_no_concurrent_walking }

@@ -82,13 +82,13 @@ local ENUM_TO_DIR_IDX = {
 local WalkToAction = Action:new("agent.walk_to", WalkToParams)
 
 --- @param params WalkToParams
---- @return boolean
+--- @return table|boolean Result with async contract or boolean for backwards compatibility
 function WalkToAction:run(params)
     local p = self:_pre_run(params)
     ---@cast p WalkToParams
     local agent_id = p.agent_id
     local goal = p.goal
-    if not (goal and goal.x and goal.y) then return false end
+    if not (goal and goal.x and goal.y) then return self:_post_run({ success = false }, p) end
 
     -- Delegate to AgentGameState for centralized state management
     local agent_state = self.game_state.agent
@@ -102,7 +102,30 @@ function WalkToAction:run(params)
         snap_axis_eps = p.snap_axis_eps
     })
 
-    return self:_post_run(job_id ~= nil, p)
+    if job_id then
+        -- Generate unique action_id from tick + agent_id
+        -- Tick is captured at RCON invocation time, ensuring consistency
+        -- between the queued response and eventual UDP completion
+        local rcon_tick = game.tick
+        local action_id = string.format("agent_walk_to_%d_%d", rcon_tick, agent_id)
+        
+        -- Store in progress tracking with both action_id and rcon_tick
+        storage.walk_in_progress = storage.walk_in_progress or {}
+        storage.walk_in_progress[agent_id] = { action_id = action_id, rcon_tick = rcon_tick }
+        game.print(string.format("[walk_to_action] Queued walk for agent %d at tick %d: %s", agent_id, rcon_tick, action_id))
+        
+        -- Return async contract: queued + action_id for UDP tracking
+        local result = {
+            success = true,
+            queued = true,
+            action_id = action_id,
+            tick = rcon_tick
+        }
+        return self:_post_run(result, p)
+    else
+        game.print(string.format("[walk_to_action] Failed to start job for agent %d", agent_id))
+        return self:_post_run({ success = false }, p)
+    end
 end
 
 --- @class WalkAction : Action

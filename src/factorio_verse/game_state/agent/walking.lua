@@ -6,7 +6,7 @@
 local pairs = pairs
 local math = math
 
-local helpers = require("game_state.agent.helpers")
+local agent_helpers = require("game_state.agent.helpers")
 
 local M = {}
 
@@ -121,7 +121,7 @@ local _current_target, _maybe_start_micro_detour
 
 function _current_target(job, pos)
     if job.micro_goal then
-        if helpers.dist_sq(pos, job.micro_goal) > 0.35*0.35 then
+        if agent_helpers.dist_sq(pos, job.micro_goal) > 0.35*0.35 then
             return job.micro_goal
         end
         -- reached micro goal
@@ -178,7 +178,7 @@ end
 local function _advance_waypoint(job, pos)
     if not (job.waypoints and job.waypoints[job.wp_index]) then return end
     local wp = job.waypoints[job.wp_index].position or job.waypoints[job.wp_index]
-    while wp and helpers.dist_sq(pos, wp) <= 0.8*0.8 do
+    while wp and agent_helpers.dist_sq(pos, wp) <= 0.8*0.8 do
         job.wp_index = job.wp_index + 1
         wp = job.waypoints[job.wp_index] and (job.waypoints[job.wp_index].position or job.waypoints[job.wp_index]) or nil
     end
@@ -202,6 +202,68 @@ local function _request_path(job, control)
     }
     job.req_id = req_id
     job.state = "planning"
+end
+
+-- ============================================================================
+-- UDP COMPLETION NOTIFICATIONS
+-- ============================================================================
+
+--- Send UDP notification for walk completion
+--- @param job table Walk job
+--- @param success boolean Whether walk succeeded (true) or failed (false)
+local function _send_walk_completion_udp(job, success)
+    -- Get action tracking info (action_id + rcon_tick that queued this action)
+    local tracking = nil
+    local action_id = nil
+    local rcon_tick = nil
+    
+    if storage.walk_in_progress then
+        tracking = storage.walk_in_progress[job.agent_id]
+        if tracking and type(tracking) == "table" then
+            action_id = tracking.action_id
+            rcon_tick = tracking.rcon_tick
+        elseif tracking and type(tracking) == "string" then
+            -- backwards compat: old format was just action_id string
+            action_id = tracking
+        end
+        game.print(string.format("[UDP] Found tracking for agent %d: action_id=%s, rcon_tick=%s", 
+                                 job.agent_id, action_id or "nil", rcon_tick or "nil"))
+        storage.walk_in_progress[job.agent_id] = nil
+    else
+        game.print("[UDP] walk_in_progress storage is nil!")
+    end
+    
+    -- Use rcon_tick from when action was queued, coupled with current completion tick
+    local completion_tick = game.tick
+    
+    -- New async action completion payload contract
+    local payload = {
+        action_id = action_id or string.format("walk_unknown_%d_%d", rcon_tick or completion_tick, job.agent_id),
+        agent_id = job.agent_id,
+        action_type = "agent_walk_to",
+        rcon_tick = rcon_tick or completion_tick,  -- when action was triggered
+        completion_tick = completion_tick,          -- when action completed
+        success = success,
+        result = {
+            agent_id = job.agent_id,
+            goal = job.goal,
+            reached = success,
+            current_position = job.last_pos or job.goal
+        }
+    }
+    
+    game.print(string.format("[UDP] Sending completion for agent %d: action_id=%s (success=%s)", 
+                             job.agent_id, payload.action_id, success))
+    
+    local json_payload = helpers.table_to_json(payload)
+    game.print(string.format("[UDP] Payload: %s", json_payload))
+    
+    local ok, err = pcall(function() helpers.send_udp(34202, json_payload) end)
+    if not ok then
+        game.print(string.format("[UDP] ERROR: %s", err or "unknown"))
+    else
+        game.print(string.format("[UDP] ✅ Sent"))
+    end
 end
 
 -- ============================================================================
@@ -235,7 +297,7 @@ function M:start_walk_to_job(agent_id, goal, options)
     storage.walk_to_next_id = (storage.walk_to_next_id or 1)
     
     local opts = options or {}
-    local control = helpers.get_control_for_agent(agent_id)
+    local control = agent_helpers.get_control_for_agent(agent_id)
     if not control then return nil end
     
     -- Convert position to {x, y} format if needed (handle MapPosition array format)
@@ -256,7 +318,7 @@ function M:start_walk_to_job(agent_id, goal, options)
         waypoints = nil,
         wp_index = 1,
         last_pos = { x = cp.x, y = cp.y },
-        last_goal_dist = math.sqrt(helpers.dist_sq(cp, {x = goal.x, y = goal.y})),
+        last_goal_dist = math.sqrt(agent_helpers.dist_sq(cp, {x = goal.x, y = goal.y})),
         no_progress_ticks = 0,
         current_dir = nil,
         prefer_cardinal = opts.prefer_cardinal ~= false,
@@ -296,7 +358,7 @@ local function _tick_follow(agent_control, job, control)
     job.last_pos = { x = pos.x, y = pos.y }
 
     -- arrival check
-    if helpers.dist_sq(pos, job.goal) <= (job.arrive_radius * job.arrive_radius) then
+    if agent_helpers.dist_sq(pos, job.goal) <= (job.arrive_radius * job.arrive_radius) then
         agent_control:set_walking(job.agent_id, job.current_dir or defines.direction.north, false)
         job.state = "arrived"
         return
@@ -351,7 +413,7 @@ local function _tick_follow(agent_control, job, control)
         end
     end
 
-    local goal_dist = math.sqrt(helpers.dist_sq(pos, job.goal))
+    local goal_dist = math.sqrt(agent_helpers.dist_sq(pos, job.goal))
     local improving = (goal_dist <= job.last_goal_dist - 0.02)
     if not improving and (not job.micro_goal) then
         job.no_progress_ticks = (job.no_progress_ticks or 0) + 1
@@ -402,12 +464,18 @@ function M:tick_walk_to_jobs(event, agent_control)
     if not storage.walk_to_jobs then return end
     for id, job in pairs(storage.walk_to_jobs) do
         if job.state == "arrived" or job.state == "failed" then
+            -- Send UDP completion notification
+            local success = (job.state == "arrived")
+            game.print(string.format("[walk_to_job] Job %d completed: state=%s, sending UDP...", id, job.state))
+            _send_walk_completion_udp(job, success)
+            game.print(string.format("[walk_to_job] UDP sent for job %d", id))
             storage.walk_to_jobs[id] = nil
         else
-            local control = helpers.get_control_for_agent(job.agent_id)
+            local control = agent_helpers.get_control_for_agent(job.agent_id)
             if control and control.valid then
                 _tick_follow(agent_control, job, control)
             else
+                game.print(string.format("[walk_to_job] Agent %d control invalid, cleaning up job %d", job.agent_id, id))
                 storage.walk_to_jobs[id] = nil
             end
         end

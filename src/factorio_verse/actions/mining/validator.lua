@@ -87,4 +87,32 @@ local function validate_resource_reachable(params)
     return true
 end
 
-return { validate_resource_tile, validate_resource_reachable }
+
+--- Validate that no other agent is concurrently mining the same resource
+--- @param params table
+--- @return boolean, string|nil
+local function validate_no_concurrent_mining(params)
+    -- Skip if position or resource name not provided
+    if not params.x or not params.y or not params.resource_name then
+        return true -- Let other validators handle this
+    end
+    
+    local surface = game.surfaces[1]
+    local resource = helpers.find_resource_entity(surface, {x = params.x, y = params.y}, params.resource_name)
+    if not resource or not resource.valid then
+        return true -- Let validate_resource_tile handle this
+    end
+    
+    -- Check if this resource is already being mined by another agent
+    storage.mine_resource_in_progress = storage.mine_resource_in_progress or {}
+    local action_id = storage.mine_resource_in_progress[resource.unit_number]
+    
+    if action_id then
+        return false, string.format("Resource '%s' at (%.1f, %.1f) is already being mined (action_id: %s)", 
+                                   params.resource_name, params.x, params.y, action_id)
+    end
+    
+    return true
+end
+
+return { validate_resource_tile, validate_resource_reachable, validate_no_concurrent_mining }

@@ -20,7 +20,7 @@ CLIENT_RCON_PORT = 27100
 CLIENT_RCON_PASSWORD = "factorio"
 
 # Enable Lua UDP for client connections
-ENABLE_FACTORIO_UDP = False
+ENABLE_FACTORIO_UDP = True
 
 
 def _detect_factorio_dir() -> Path:
@@ -43,6 +43,66 @@ def _get_mod_path() -> Path:
 def _get_scenario_path() -> Path:
     """Get local Factorio scenario directory."""
     return _detect_factorio_dir() / "scenarios"
+
+
+def get_factorio_log_path() -> Path:
+    """
+    Get the path to factorio-current.log file.
+    
+    Based on Factorio wiki: https://wiki.factorio.com/Application_directory
+    - Windows: %appdata%\\Factorio\\factorio-current.log
+    - macOS: ~/Library/Application Support/factorio/factorio-current.log
+    - Linux: ~/.factorio/factorio-current.log
+    
+    Returns:
+        Path to factorio-current.log file
+    """
+    factorio_dir = _detect_factorio_dir()
+    return factorio_dir / "factorio-current.log"
+
+
+def read_factorio_log(follow: bool = False) -> None:
+    """
+    Read and display factorio-current.log file.
+    
+    Args:
+        follow: If True, follow the log file (like tail -f)
+    """
+    log_path = get_factorio_log_path()
+    
+    if not log_path.exists():
+        print(f"❌ Log file not found at: {log_path}", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        if follow:
+            # Follow mode - stream the log file
+            import time
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                # Seek to end of file
+                f.seek(0, 2)
+                print(f"📋 Following log file: {log_path}")
+                print("Press Ctrl+C to stop...")
+                print("-" * 80)
+                try:
+                    while True:
+                        line = f.readline()
+                        if line:
+                            print(line, end='')
+                        else:
+                            time.sleep(0.1)
+                except KeyboardInterrupt:
+                    print("\n✅ Stopped following log")
+        else:
+            # Read and print entire file
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                print(f.read(), end='')
+    except PermissionError:
+        print(f"❌ Permission denied: {log_path}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error reading log file: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _ensure_mod_list_exists(mod_path: Path) -> None:
@@ -202,7 +262,7 @@ def launch_factorio_client() -> None:
         command = [str(factorio_exe)]
         if ENABLE_FACTORIO_UDP:
             print("⚠️  WARNING: Launching Factorio client with UDP enabled (--enable-lua-udp)")
-            command.append("--enable-lua-udp")
+            command.append("--enable-lua-udp 34200")
         
         subprocess.Popen(command)
         print("✅ Factorio client launched!")

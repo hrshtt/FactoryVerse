@@ -248,14 +248,40 @@ function MineResourceAction:run(params)
         return self:_post_run(false, p)
     end
 
-    -- Create mutation contract result
-    -- Note: Mining is async and happens over multiple ticks
-    -- TODO: Actual affects (resource deltas, inventory changes) will be sent via UDP when mining completes
-    -- Return success=true only if job was started (reachable or walk_if_unreachable=true)
-    local result = {
-        success = success
-    }
-    return self:_post_run(result, p)
+    -- Create async action contract result
+    -- Mining is async and happens over multiple ticks
+    -- Returns queued response immediately, completion sent via UDP
+    if success then
+        -- Generate unique action_id from tick + agent_id
+        -- Tick is captured at RCON invocation time, ensuring consistency
+        -- between the queued response and eventual UDP completion
+        local rcon_tick = game.tick
+        local action_id = string.format("mine_resource_%d_%d", rcon_tick, agent_id)
+        
+        -- Store in progress tracking to prevent concurrent mining of same resource
+        storage.mine_resource_in_progress = storage.mine_resource_in_progress or {}
+        local resource = helpers.find_resource_entity(surface, target, resource_name)
+        if resource and resource.valid then
+            storage.mine_resource_in_progress[resource.unit_number] = { 
+                action_id = action_id, 
+                rcon_tick = rcon_tick 
+            }
+        end
+        
+        log(string.format("[mine_resource] Queued mining for agent %d at tick %d: %s", agent_id, rcon_tick, action_id))
+        
+        -- Return async contract: queued + action_id for UDP tracking
+        local result = {
+            success = true,
+            queued = true,
+            action_id = action_id,
+            tick = rcon_tick
+        }
+        return self:_post_run(result, p)
+    else
+        -- Action failed to start
+        return self:_post_run({ success = false }, p)
+    end
 end
 
 -- Event handlers removed - now handled by AgentGameState:get_activity_events()

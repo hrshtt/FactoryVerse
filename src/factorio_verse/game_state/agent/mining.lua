@@ -97,25 +97,47 @@ end
 --- @param job table Mining job
 --- @param resource LuaEntity|nil Resource entity (may be nil if depleted)
 local function _send_mining_completion_udp(job, resource)
-    local payload = {
-        action = "mine_resource_complete",
-        agent_id = job.agent_id,
-        resource_name = job.resource_name,
-        target = { x = job.target.x, y = job.target.y },
-        items_received = job.mined_count or 0,
-        products = job.products
-    }
-    if resource and resource.valid and resource.type == "resource" then
-        payload.resource_type = "tile"
-        payload.resource_remaining = resource.amount or 0
-    elseif resource and resource.valid and resource.type == "tree" then
-        payload.resource_type = "tree"
-        payload.resource_remaining = 0
-    else
-        payload.resource_type = job.resource_name == "tree" and "tree" or "tile"
-        payload.resource_remaining = 0
+    -- Get action tracking info (action_id + rcon_tick that queued this action)
+    local tracking = nil
+    local action_id = nil
+    local rcon_tick = nil
+    
+    if resource and resource.valid then
+        storage.mine_resource_in_progress = storage.mine_resource_in_progress or {}
+        tracking = storage.mine_resource_in_progress[resource.unit_number]
+        if tracking and type(tracking) == "table" then
+            action_id = tracking.action_id
+            rcon_tick = tracking.rcon_tick
+        elseif tracking and type(tracking) == "string" then
+            -- backwards compat: old format was just action_id string
+            action_id = tracking
+        end
+        storage.mine_resource_in_progress[resource.unit_number] = nil
     end
-    pcall(function() _G.helpers.send_udp(30123, payload, 0) end)
+    
+    -- Use rcon_tick from when action was queued, coupled with current completion tick
+    local completion_tick = game.tick
+    
+    -- New async action completion payload contract
+    local payload = {
+        action_id = action_id or string.format("mine_resource_unknown_%d_%d", rcon_tick or completion_tick, job.agent_id),
+        agent_id = job.agent_id,
+        action_type = "mine_resource",
+        rcon_tick = rcon_tick or completion_tick,  -- when action was triggered
+        completion_tick = completion_tick,          -- when action completed
+        success = true,
+        result = {
+            agent_id = job.agent_id,
+            resource_name = job.resource_name,
+            target = { x = job.target.x, y = job.target.y },
+            mined_count = job.mined_count or 0,
+            products = job.products,
+            resource_type = (resource and resource.valid and resource.type == "tree") and "tree" or "tile",
+            resource_remaining = (resource and resource.valid and resource.type == "resource") and (resource.amount or 0) or 0
+        }
+    }
+    
+    pcall(function() _G.helpers.send_udp(34202, payload) end)
 end
 
 --- Tick handler for mining jobs

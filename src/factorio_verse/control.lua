@@ -173,6 +173,15 @@ local function register_all_remote_interfaces()
     for _ in pairs(action_iface) do action_count = action_count + 1 end
     log("Registering 'action' interface with " .. action_count .. " actions")
     remote.add_interface("action", action_iface)
+    
+    -- Register metadata interface (action sync/async classification)
+    local metadata_iface = { get_action_metadata = function() return action_registry:get_action_metadata() end }
+    if remote.interfaces["metadata"] then
+        log("Removing existing 'metadata' interface")
+        remote.remove_interface("metadata")
+    end
+    log("Registering 'metadata' interface")
+    remote.add_interface("metadata", metadata_iface)
 
     -- Register admin interface (from GameState)
     local admin_iface = game_state:get_admin_api()
