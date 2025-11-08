@@ -184,6 +184,8 @@ local function _advance_waypoint(job, pos)
     end
 end
 
+--- @param job table
+--- @param control LuaEntity
 local function _request_path(job, control)
     if not (control and control.valid and control.surface) then return end
     local proto = control.prototype  -- agent is a LuaEntity (character); prototype is deterministic

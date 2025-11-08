@@ -28,7 +28,7 @@ end
 --- @param tracking table Tracking entry with start_products and products
 --- @return table<string, number> Actual products added to inventory
 --- @return number Estimated count crafted
-local function calculate_crafted_items(agent, tracking)
+function M:calculate_crafted_items(agent, tracking)
     local products = tracking.products or {}
     local start_products = tracking.start_products or {}
     local actual_products = {}
@@ -145,7 +145,7 @@ function M:tick_craft_jobs(event)
             
             if completed then
                 -- Calculate actual items crafted from inventory delta
-                local actual_products, count_crafted = calculate_crafted_items(agent, tracking)
+                local actual_products, count_crafted = self:calculate_crafted_items(agent, tracking)
                 
                 -- Send UDP completion notification
                 _send_craft_completion_udp(tracking, agent_id, actual_products, count_crafted)

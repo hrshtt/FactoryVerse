@@ -18,8 +18,7 @@ local ACTION_MODULES = {
   "actions.agent.place_entity.action",
 
   -- agent crafting
-  "actions.agent.crafting.enqueue.action",
-  "actions.agent.crafting.cancel.action",
+  "actions.agent.crafting.action",
 
   -- entity
   "actions.entity.place_line.action",
@@ -111,19 +110,27 @@ do
 end
 
 --- Load validators for an action from pre-loaded validator modules
---- Validator modules always return an array of functions
+--- Validator modules return either an array of functions or {enqueue = [...], cancel = [...]}
 --- @param action_name string Action name like "entity.place"
+--- @param validator_type string|nil "enqueue" or "cancel" for structured validators
 --- @return table<function> Array of validator functions
-local function load_validators(action_name)
+local function load_validators(action_name, validator_type)
   local validators = {}
   local validator_paths = get_validator_paths(action_name)
   
   for _, validator_path in ipairs(validator_paths) do
     local validator_module = VALIDATORS_BY_PATH[validator_path]
     if validator_module then
-      -- Validator modules always return an array of functions
-      for _, validator_func in ipairs(validator_module) do
-        table.insert(validators, validator_func)
+      -- Handle structured validators (e.g., {enqueue = [...], cancel = [...]})
+      if validator_type and type(validator_module) == "table" and validator_module[validator_type] then
+        for _, validator_func in ipairs(validator_module[validator_type]) do
+          table.insert(validators, validator_func)
+        end
+      -- Handle array validators (legacy format)
+      elseif type(validator_module) == "table" and #validator_module > 0 and type(validator_module[1]) == "function" then
+        for _, validator_func in ipairs(validator_module) do
+          table.insert(validators, validator_func)
+        end
       end
     end
   end
@@ -171,7 +178,9 @@ function ActionRegistry:load()
     -- Fallback to action.name if module_path not provided
     local ok, err = pcall(function()
       local validator_base_name = module_path and extract_action_name(module_path) or action.name
-      local validators = load_validators(validator_base_name)
+      -- For crafting, use "enqueue" validators for the main action
+      local validator_type = (validator_base_name == "agent.crafting") and "enqueue" or nil
+      local validators = load_validators(validator_base_name, validator_type)
       action:attach_validators(validators)
       if #validators > 0 then
         log("Attached " .. #validators .. " validator(s) to action: " .. tostring(action.name) .. " (from " .. validator_base_name .. ")")
@@ -184,6 +193,35 @@ function ActionRegistry:load()
 
     table.insert(self.actions, action)
     self.actions_by_name[action.name] = action
+
+    -- Auto-register cancel action for AsyncActions
+    if action.is_async and type(action.cancel) == "function" and action.cancel_params then
+      -- For crafting, use "dequeue" instead of "cancel" in the name
+      local cancel_name = (action.name == "agent.crafting.enqueue") and "agent.crafting.dequeue" or (action.name .. ".cancel")
+      
+      -- Load cancel validators
+      local cancel_validators = {}
+      local validator_base_name = module_path and extract_action_name(module_path) or action.name
+      -- For crafting, use "cancel" validators from the same validator module
+      local validator_type = (validator_base_name == "agent.crafting") and "cancel" or nil
+      local ok, validators = pcall(function() return load_validators(validator_base_name, validator_type) end)
+      if ok and validators then
+        cancel_validators = validators
+      end
+      
+      local cancel_action = {
+        name = cancel_name,
+        run = function(params) return action:cancel(params) end,
+        is_sync = true,   -- Cancel is always sync
+        is_async = false, -- Cancel is always sync
+        cancel_params = action.cancel_params,
+        cancel_validators = cancel_validators,
+        set_game_state = function(self, game_state) action:set_game_state(game_state) end,
+      }
+      table.insert(self.actions, cancel_action)
+      self.actions_by_name[cancel_name] = cancel_action
+      log("Auto-registered cancel action: " .. cancel_name)
+    end
 
     -- Collect event handlers (static handlers that don't need game_state)
     if type(action.events) == "table" then
@@ -308,30 +346,40 @@ function ActionRegistry:get_events()
   return aggregated
 end
 
+--- Convert action name to metadata key format
+--- "agent.crafting.enqueue" -> "agent_crafting_enqueue"
+--- @param action_name string
+--- @return string
+local function action_name_to_metadata_key(action_name)
+  local result = string.gsub(action_name, "%.", "_")
+  return result
+end
+
 --- Return action metadata (sync vs async classification)
+--- Dynamically generated from registered actions
 --- Source of truth for Python-side action contracts
 --- @return table<string, table> metadata with is_async flags
 function ActionRegistry:get_action_metadata()
-  return {
-    -- ASYNC ACTIONS (complete across multiple ticks, send UDP completion)
-    mine_resource = { is_async = true },
-    agent_walk = { is_async = true },
-    agent_walk_to = { is_async = true },
-    agent_crafting_enqueue = { is_async = true },
-    agent_crafting_cancel = { is_async = false },
-    
-    -- SYNC ACTIONS (complete in same RCON call)
-    agent_teleport = { is_async = false },
-    agent_place_entity = { is_async = false },
-    agent_walk_cancel = { is_async = false },
-    entity_rotate = { is_async = false },
-    entity_pickup = { is_async = false },
-    entity_set_recipe = { is_async = false },
-    entity_inventory_set_item = { is_async = false },
-    entity_inventory_get_item = { is_async = false },
-    entity_inventory_set_limit = { is_async = false },
-    enqueue_research = { is_async = false },
-  }
+  self:load()  -- Ensure actions are loaded
+  
+  local metadata = {}
+  
+  for _, action in ipairs(self.actions) do
+    if action.name then
+      local metadata_key = action_name_to_metadata_key(action.name)
+      -- Use is_async if explicitly set, otherwise derive from is_sync
+      local is_async = action.is_async
+      if is_async == nil then
+        is_async = not (action.is_sync == true)
+      end
+      
+      metadata[metadata_key] = {
+        is_async = is_async
+      }
+    end
+  end
+  
+  return metadata
 end
 
 return ActionRegistry:new()

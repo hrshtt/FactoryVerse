@@ -8,6 +8,8 @@ local ParamSpec = require("types.ParamSpec")
 --- @field params ParamSpec
 --- @field validators table
 --- @field game_state GameState|nil (set during action registration)
+--- @field is_sync boolean Whether action completes synchronously (default: true)
+--- @field is_async boolean|nil Whether action completes asynchronously (default: nil, derived from is_sync)
 --- @field validate function
 --- @field run function
 local Action = {}
@@ -37,6 +39,8 @@ function Action:new(name, params, validators)
     name = name,
     params = params,
     validators = validators or {},
+    is_sync = true,  -- Default: all actions are sync unless explicitly marked async
+    is_async = nil,  -- Derived from is_sync
   }, Action)
 end
 

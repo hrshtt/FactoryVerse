@@ -128,46 +128,6 @@ function WalkToAction:run(params)
     end
 end
 
---- @class WalkAction : Action
---- @field validators table<function>
-local WalkAction = Action:new("agent.walk", WalkParams)
-
---- @param params WalkParams
---- @return boolean
-function WalkAction:run(params)
-    local p = self:_pre_run(params)
-    ---@cast p WalkParams
-    local agent_id = p.agent_id
-    local direction = normalize_direction(p.direction)
-    local should_walk = p.walking
-
-    if direction == nil then
-        return false
-    end
-
-    local agent_state = self.game_state.agent
-    local agent = agent_state:get_agent(agent_id)
-
-    -- If ticks specified, register an intent to sustain walking each tick
-    if p.ticks and p.ticks > 0 then
-        agent_state:sustain_walking(agent_id, direction, p.ticks)
-        return true
-    end
-
-    -- One-shot set for this tick
-    if should_walk == false then
-        -- Stop walking and clear any intent
-        agent_state:clear_walking_intent(agent_id)
-        agent_state:set_walking(agent_id, direction, false)
-    else
-        agent_state:set_walking(agent_id, direction, true)
-    end
-
-    return self:_post_run(true, p)
-end
-
--- Event handlers removed - now handled by AgentGameState:get_activity_events()
-
 --- @class WalkCancelParams : ParamSpec
 --- @field agent_id number
 local WalkCancelParams = Action.ParamSpec:new({
