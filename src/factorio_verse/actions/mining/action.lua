@@ -1,288 +1,186 @@
-local Action = require("types.Action")
-local helpers = require("game_state.agent.helpers")
+local AsyncAction = require("types.AsyncAction")
 
 --- @class MineResourceParams : ParamSpec
 --- @field agent_id number
 --- @field position table Position of the resource: { x = number, y = number }
 --- @field resource_name string
 --- @field max_count number
---- @field walk_if_unreachable boolean|nil
 --- @field debug boolean|nil
-local MineResourceParams = Action.ParamSpec:new({
+local MineResourceParams = AsyncAction.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position = { type = "table", required = true },
     resource_name = { type = "string", required = true },
-    max_count = { type = "number", required = true },
-    walk_if_unreachable = { type = "boolean", required = false, default = false },
-    debug = { type = "boolean", required = false, default = false },
+    position = { type = "table", required = false, default = nil },
+    max_count = { type = "number", required = false, default = 10 },
 })
 
---- Internal per-agent job state
---- @class MineJob
+--- @class MineCancelParams : ParamSpec
 --- @field agent_id number
---- @field target {x:number,y:number}
---- @field resource_name string
---- @field max_count number
---- @field mined_count number
---- @field products string[]|nil
---- @field start_total number|nil
---- @field start_item_count number|nil
---- @field finished boolean
-local function _new_job(agent_id, pos, resource_name, max_count, walk_if_unreachable)
-    return {
-        agent_id = agent_id,
-        target = { x = pos.x, y = pos.y },
-        resource_name = resource_name,
-        max_count = max_count,
-        mined_count = 0,
-        walk_if_unreachable = walk_if_unreachable and true or false,
-        finished = false,
-        -- no swing timer state required
-        start_total = nil,
-        start_item_count = nil,
-        debug = false,
-    }
-end
+local MineCancelParams = AsyncAction.ParamSpec:new({
+    agent_id = { type = "number", required = true },
+})
 
-local function _get_control_for_agent(agent_id)
-    local agent = storage.agent_characters and storage.agent_characters[agent_id] or nil
-    if agent and agent.valid then return agent end
-    return nil
-end
+--- @class MineResourceAction : AsyncAction
+local MineResourceAction = AsyncAction:new("mine_resource", MineResourceParams, nil, {
+    cancel_params = MineCancelParams,
+    cancel_storage_key = "mine_resource_in_progress",
+    cancel_tracking_key_fn = function(cancel_params)
+        return cancel_params.agent_id
+    end,
+})
 
-local function _distance(a, b)
-    local dx, dy = (a.x - b.x), (a.y - b.y)
-    return math.sqrt(dx*dx + dy*dy)
-end
+local resource_type_mapping = {
+    ["tree"] = "tree",
+    ["rock"] = "simple-entity",
+}
 
-
--- removed older single-item helpers; we now use _get_actor_items_total/_get_actor_item_count
-
--- Generic item count over list of product names for either LuaEntity character or LuaPlayer
-local function _get_actor_items_total(actor, names)
-    if not names or #names == 0 then return 0 end
-    if not actor or not actor.valid then return 0 end
-    local total = 0
-    if actor.get_main_inventory then
-        local inv = actor.get_main_inventory()
-        if not inv then return 0 end
-        local contents = inv.get_contents and inv.get_contents() or {}
-        for _, n in ipairs(names) do total = total + (contents[n] or 0) end
-        return total
-    end
-    if actor.get_inventory then
-        local inv = actor.get_inventory(defines.inventory.character_main)
-        if not inv then return 0 end
-        local contents = inv.get_contents and inv.get_contents() or {}
-        for _, n in ipairs(names) do total = total + (contents[n] or 0) end
-        return total
-    end
-    return 0
-end
-
-local function _get_actor_item_count(actor, name)
-    if not (actor and actor.valid and name) then return 0 end
-    if actor.get_main_inventory then
-        local inv = actor.get_main_inventory()
-        if not inv then return 0 end
-        return (inv.get_item_count and inv.get_item_count(name)) or 0
-    end
-    if actor.get_inventory then
-        local inv = actor.get_inventory(defines.inventory.character_main)
-        if not inv then return 0 end
-        return (inv.get_item_count and inv.get_item_count(name)) or 0
-    end
-    return 0
-end
-
-local function _get_resource_products(resource)
-    if not (resource and resource.valid) then return nil, false end
-    local ok_props, props = pcall(function() return resource.prototype and resource.prototype.mineable_properties end)
-    if not ok_props or not props then return { resource.name }, false end
-    local requires_fluid = (props.required_fluid and (props.fluid_amount or 0) > 0) or false
-    local names = {}
-    if props.products and type(props.products) == "table" then
-        for _, prod in ipairs(props.products) do
-            if prod and prod.name then table.insert(names, prod.name) end
-        end
-    elseif props.product then
-        table.insert(names, props.product)
-    end
-    if #names == 0 then table.insert(names, resource.name) end
-    return names, requires_fluid
-end
-
--- Compute number of ticks required to mine the entity, approximating player mining (60 tps)
--- Removed: fake swing timer path and player bind/unbind; we only emulate via mining_state and inventory deltas
-
--- Create a shared WalkHelper instance for mine_resource actions
-local walk_helper = require("actions.agent.walk.helper"):new()
-
-
-local function _cancel_walk_for_agent(agent_id)
-    walk_helper:cancel_walk(agent_id)
-end
-
--- Check if control can reach entity (uses shared helper with resource-specific reach)
-local function _can_reach_entity(control, entity)
-    if not (control and control.valid and entity and entity.valid) then return false end
-    
-    -- Try Factorio's built-in can_reach_entity first
-    if control.can_reach_entity then
-        local ok, res = pcall(function() return control.can_reach_entity(entity) end)
-        if not ok then
-            ok, res = pcall(function() return control.can_reach_entity(control, entity) end)
-        end
-        if ok and type(res) == "boolean" then return res end
-    end
-    
-    -- Fallback to distance-based check with resource-specific reach distance
-    local pos = entity.position or entity
-    local reach = helpers.resource_reach_distance(control)
-    return walk_helper:is_reachable(control, pos, nil, reach)
-end
-
--- Removed player-mined event usage; character agents aren't players. Use inventory delta instead.
-
---- @class MineResourceAction : Action
-local MineResourceAction = Action:new("mine_resource", MineResourceParams)
+local resource_item_mapping = {
+    ["tree"] = "wood",
+    ["rock"] = "stone",
+}
 
 --- @param params MineResourceParams
---- @return boolean
+--- @return table
 function MineResourceAction:run(params)
+    -- local p = self:_pre_run(params).get_values()
     local p = self:_pre_run(params)
     ---@cast p MineResourceParams
-    local agent_id = p.agent_id
-    local target = { x = p.position.x, y = p.position.y }
-    local resource_name = p.resource_name
-    local max_count = p.max_count
-    local emulate = true
-    local debug = (p.debug == true)
-    
+    -- p = p._spec:to_table()
+    local agent = storage.agent_characters[p.agent_id]
 
-    storage.mine_resource_jobs = storage.mine_resource_jobs or {}
-
-    -- Initialize or replace existing job for this agent
-    local job = _new_job(agent_id, target, resource_name, max_count, p.walk_if_unreachable)
-    job.emulate = emulate
-    job.debug = debug
-    storage.mine_resource_jobs[agent_id] = job
-    log(string.format("[mine_resource] start agent=%d target=(%.2f,%.2f) res=%s max=%d walk=%s", agent_id, target.x, target.y, resource_name, max_count, tostring(p.walk_if_unreachable)))
-
-    local control = _get_control_for_agent(agent_id)
-    if not control then
-        storage.mine_resource_jobs[agent_id] = nil
-        return self:_post_run(false, p)
-    end
-    
-    local surface = control.surface
-    local resource = helpers.find_resource_entity(surface, target, resource_name)
-    if not (resource and resource.valid) then
-        -- Resource not found at target location
-        storage.mine_resource_jobs[agent_id] = nil
-        return self:_post_run(false, p)
-    end
-    
-    -- Precompute products and guard fluid requirement
-    local names, requires_fluid = _get_resource_products(resource)
-    if requires_fluid then
-        log(string.format("[mine_resource] resource %s requires fluid; cannot hand-mine. Aborting job for agent=%d", resource_name, agent_id))
-        storage.mine_resource_jobs[agent_id] = nil
-        return self:_post_run(false, p)
-    end
-    
-    job.products = names
-    job.start_total = _get_actor_items_total(control, job.products)
-    
-    -- For trees: do NOT track resource_name as an item (trees are not items).
-    -- Only track products (wood) and rely on entity disappearance for completion.
-    -- For ores: track the resource item itself as a backup completion signal.
-    if resource.type == "tree" then
-        job.start_item_count = nil  -- Trees are not items; rely on entity depletion
-    else
-        job.start_item_count = _get_actor_item_count(control, job.resource_name)
+    if not agent or not agent.valid then
+        return self:_post_run({ success = false, error = "Agent not found" }, p)
     end
 
-    -- Check if resource is reachable
-    local reachable = _can_reach_entity(control, resource)
-    if not reachable then
-        -- Resource is not reachable
-        if not job.walk_if_unreachable then
-            -- Cannot reach and walk_if_unreachable is false - fail immediately
-            storage.mine_resource_jobs[agent_id] = nil
-            return self:_post_run(false, p)
+    -- Validate: cannot mine oil
+    if string.find(p.resource_name:lower(), "oil") then
+        return self:_post_run({ success = false, error = "Cannot mine oil resources" }, p)
+    end
+
+    local max_count_valid = true
+    local search_args = {}
+    local is_point_entity = (p.resource_name == "tree" or p.resource_name == "rock")
+    local radius = agent.resource_reach_distance
+    
+    local job = {
+        agent_id = p.agent_id,
+        action_id = nil,  -- Will be set from generate_action_id
+        start_tick = game.tick,
+        initial_item_count = 0,
+        item_name = nil,
+        mine_till_count = nil,
+        mine_till_depleted = false,
+        cancelled = false,
+        cancelled_tick = nil,
+    }
+
+    -- Build search arguments based on resource type and position
+    if is_point_entity then
+        -- Trees and rocks need position + radius (point entities)
+        search_args.type = resource_type_mapping[p.resource_name]
+        if p.position then
+            search_args.position = p.position
+            search_args.radius = radius
         else
-            -- Start walking toward the resource
-            walk_helper:start_walk_to({
-                agent_id = job.agent_id,
-                target_position = job.target,
-                arrive_radius = 1.2,
-                prefer_cardinal = true
-            })
+            search_args.position = agent.position
+            search_args.radius = radius
         end
+        job.initial_item_count = agent.get_item_count(resource_item_mapping[p.resource_name])
+        job.item_name = resource_item_mapping[p.resource_name]
     else
-        -- Resource is reachable - start mining immediately
-        _cancel_walk_for_agent(agent_id)
-        self.game_state.agent:set_mining(agent_id, true, resource)
-        job.mining_active = true
-        local target_pos = resource.position
-        if control.update_selected_entity and target_pos then
-            pcall(function() control.update_selected_entity(target_pos) end)
+        -- Ores can use position or area (tile-based entities)
+        search_args.name = p.resource_name
+        if p.position then
+            search_args.position = p.position
+        else
+            local x = agent.position.x
+            local y = agent.position.y
+            search_args.area = { { x = x - radius, y = y - radius }, { x = x + radius, y = y + radius } }
         end
-        if control.mining_state ~= nil then
-            control.mining_state = { mining = true, position = { x = target_pos.x, y = target_pos.y } }
-        end
+        job.initial_item_count = agent.get_item_count(p.resource_name)
+        job.item_name = p.resource_name
     end
 
-    -- Delegate to AgentGameState for centralized state management
-    local agent_state = self.game_state.agent
-    local success = agent_state:start_mining_job(agent_id, target, resource_name, max_count, {
-        walk_if_unreachable = p.walk_if_unreachable,
-        debug = p.debug
+    local resource_entity = game.surfaces[1].find_entities_filtered(search_args)[1]
+    if not resource_entity or not resource_entity.valid then
+        return self:_post_run({ success = false, error = "Resource not found" }, p)
+    end
+
+    -- Validate reachability using agent.resource_reach_distance
+    local agent_pos = agent.position
+    local resource_pos = resource_entity.position
+    local dx = resource_pos.x - agent_pos.x
+    local dy = resource_pos.y - agent_pos.y
+    local dist_sq = dx * dx + dy * dy
+    local reach = agent.resource_reach_distance
+    if dist_sq > (reach * reach) then
+        return self:_post_run({ success = false, error = "Resource out of reach" }, p)
+    end
+
+    if resource_entity.type == "tree" or resource_entity.type == "simple-entity" then
+        max_count_valid = false
+    end
+
+    -- Generate action_id and store tracking using AsyncAction helpers
+    local action_id, rcon_tick = self:generate_action_id(p.agent_id)
+    job.action_id = action_id
+
+    -- Store tracking with agent_id as key (1:1 per agent)
+    self:store_tracking("mine_resource_in_progress", p.agent_id, action_id, rcon_tick, {
+        agent_id = p.agent_id
     })
-    
-    if not success then
-        storage.mine_resource_jobs[agent_id] = nil
-        return self:_post_run(false, p)
+
+    -- Initialize job tracking
+    if max_count_valid then
+        job.mine_till_count = p.max_count + job.initial_item_count
+    else
+        job.mine_till_depleted = true
     end
 
-    -- Create async action contract result
-    -- Mining is async and happens over multiple ticks
-    -- Returns queued response immediately, completion sent via UDP
-    if success then
-        -- Generate unique action_id from tick + agent_id
-        -- Tick is captured at RCON invocation time, ensuring consistency
-        -- between the queued response and eventual UDP completion
-        local rcon_tick = game.tick
-        local action_id = string.format("mine_resource_%d_%d", rcon_tick, agent_id)
-        
-        -- Store in progress tracking to prevent concurrent mining of same resource
-        storage.mine_resource_in_progress = storage.mine_resource_in_progress or {}
-        local resource = helpers.find_resource_entity(surface, target, resource_name)
-        if resource and resource.valid then
-            local resource_key = resource.position.x .. "," .. resource.position.y
-            storage.mine_resource_in_progress[resource_key] = { 
-                action_id = action_id, 
-                rcon_tick = rcon_tick 
-            }
-        end
-        
-        log(string.format("[mine_resource] Queued mining for agent %d at tick %d: %s", agent_id, rcon_tick, action_id))
-        
-        -- Return async contract: queued + action_id for UDP tracking
-        local result = {
-            success = true,
-            queued = true,
-            action_id = action_id,
-            tick = rcon_tick
-        }
-        return self:_post_run(result, p)
-    else
-        -- Action failed to start
-        return self:_post_run({ success = false }, p)
-    end
+    -- Start mining
+    agent.update_selected_entity(resource_entity.position)
+    agent.mining_state = { mining = true, position = agent.position }
+
+    storage.mining_results = storage.mining_results or {}
+    storage.mining_results[p.agent_id] = job
+
+    -- Return async result using AsyncAction helper
+    return self:_post_run(
+        self:create_async_result(action_id, rcon_tick, {
+            agent_id = p.agent_id,
+            resource_name = p.resource_name,
+            position = { x = resource_entity.position.x, y = resource_entity.position.y }
+        }),
+        p
+    )
 end
 
--- Event handlers removed - now handled by AgentGameState:get_activity_events()
+--- Cancel mining action
+--- @param cancel_params MineCancelParams
+--- @param tracking table|nil
+--- @return table
+function MineResourceAction:_do_cancel(cancel_params, tracking)
+    local agent_id = cancel_params.agent_id
+    local agent = storage.agent_characters[agent_id]
+    
+    if not agent or not agent.valid then
+        return self:create_cancel_result(false, false, tracking and tracking.action_id, { error = "Agent not found or invalid" })
+    end
+
+    local job = storage.mining_results[agent_id]
+    if not job then
+        return self:create_cancel_result(false, false, tracking and tracking.action_id, { error = "No mining in progress for agent" })
+    end
+
+    agent.mining_state = { mining = false }
+    agent.clear_selected_entity()
+    job.cancelled = true
+    job.cancelled_tick = game.tick
+    storage.mining_results[agent_id] = job
+
+    return self:create_cancel_result(true, true, tracking and tracking.action_id, {
+        agent_id = agent_id,
+        item_name = job.item_name
+    })
+end
 
 return { action = MineResourceAction, params = MineResourceParams }

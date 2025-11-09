@@ -11,7 +11,6 @@ local ipairs = ipairs
 
 local GameStateError = require("core.Error")
 local utils = require("core.utils")
--- local MapDiscovery = require("core.MapDiscovery")
 
 -- Agent activity modules
 local Walking = require("game_state.agent.walking")
@@ -32,7 +31,6 @@ end
 --- @field entities EntitiesGameState
 --- @field inventory InventoryGameState
 --- @field walking WalkingModule
---- @field mining MiningModule
 --- @field crafting CraftingModule
 local M = {}
 M.__index = M
@@ -53,19 +51,13 @@ function M:new(game_state)
     
     -- Initialize storage tables for activity state machines
     storage.walk_to_jobs = storage.walk_to_jobs or {}
-    storage.mine_resource_jobs = storage.mine_resource_jobs or {}
+    storage.mining_results = storage.mining_results or {}
     storage.walk_intents = storage.walk_intents or {}
     storage.agent_forces = storage.agent_forces or {}
     
     -- Initialize activity modules with control interface
     instance.walking = Walking
     instance.walking:init(instance)  -- Pass self as agent_control interface
-    
-    instance.mining = Mining
-    instance.mining:init(instance, instance.walking)  -- Pass self and walking module
-    
-    instance.crafting = Crafting
-    instance.crafting:init(instance)  -- Pass self as agent_control interface (for consistency)
     
     return instance
 end
@@ -86,6 +78,7 @@ function M:force_destroy_agents()
         end
     end
     -- Clear the agent_characters table
+    --- @type table<number, LuaEntity>
     storage.agent_characters = {}
     storage.agent_forces = {}
     
@@ -408,16 +401,6 @@ function M:start_walk_to_job(agent_id, goal, options)
     return self.walking:start_walk_to_job(agent_id, goal, options)
 end
 
---- Start a mining job for an agent
---- @param agent_id number
---- @param target {x:number, y:number}
---- @param resource_name string
---- @param max_count number
---- @param options table|nil Options: walk_if_unreachable, debug
---- @return boolean success
-function M:start_mining_job(agent_id, target, resource_name, max_count, options)
-    return self.mining:start_mining_job(agent_id, target, resource_name, max_count, options)
-end
 
 -- ============================================================================
 -- EVENT HANDLERS
@@ -427,8 +410,8 @@ end
 --- @return table Event handlers keyed by event ID
 function M:get_activity_events()
     local walking_events = self.walking:get_event_handlers(self)
-    local mining_events = self.mining:get_event_handlers()
-    local crafting_events = self.crafting:get_event_handlers()
+    local mining_events = Mining.get_event_handlers()
+    local crafting_events = Crafting.get_event_handlers()
     
     -- Merge event handlers (walking, mining, and crafting all use on_tick)
     local merged = {}
