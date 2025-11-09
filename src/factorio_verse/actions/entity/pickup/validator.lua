@@ -1,5 +1,4 @@
 local GameState = require("GameState")
-local walk_helper = require("actions.agent.walk.helper")
 
 --- Validate that entity is minable
 --- @param params table
@@ -22,35 +21,6 @@ local function validate_entity_minable(params)
     
     if not entity.minable then
         return false, "Entity is not minable"
-    end
-    
-    return true
-end
-
---- Validate that agent can reach the entity
---- @param params table
---- @return boolean, string|nil
-local function validate_agent_reachable(params)
-    if not params.agent_id or not params.entity_name or not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
-        return true -- Skip if parameters not provided
-    end
-    
-    local position = { x = params.position.x, y = params.position.y }
-    local entity = game.surfaces[1].find_entity(params.entity_name, position)
-    if not entity or not entity.valid then
-        return true -- Let validate_entity_exists handle this
-    end
-    
-    local gs = GameState:new()
-    local agent = gs.agent:get_agent(params.agent_id)
-    if not agent then
-        return true -- Let other validators handle agent validation
-    end
-    
-    -- Use WalkHelper for reachability check
-    local reachable = walk_helper:is_reachable(agent, position)
-    if not reachable then
-        return false, "Agent cannot reach entity"
     end
     
     return true
@@ -92,5 +62,3 @@ end
 
 -- Return validators for entity.pickup
 return { validate_entity_minable, validate_agent_inventory_space }
--- TODO: Re-enable reachability check once entity placement in tests is optimized
--- return { validate_entity_minable, validate_agent_reachable, validate_agent_inventory_space }

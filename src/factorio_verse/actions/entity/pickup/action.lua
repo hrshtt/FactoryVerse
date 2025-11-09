@@ -81,95 +81,22 @@ function PickupEntityAction:run(params)
         error("Agent inventory not found")
     end
 
-    -- Extract all items from entity inventories before mining
-    local entity_items = extract_entity_inventories(entity)
-    
-    -- Calculate total items that will be obtained (entity + contents)
-    local total_items = {}
-    -- Add the entity itself
-    total_items[entity.name] = 1
-    -- Add all inventory contents
-    for item_name, count in pairs(entity_items) do
-        total_items[item_name] = (total_items[item_name] or 0) + count
-    end
+    agent.update_selected_entity(entity.position)
 
-    -- Check if agent has enough space for all items
-    local can_fit_all = true
-    local space_check = {}
-    for item_name, count in pairs(total_items) do
-        local can_insert = agent_inventory.can_insert({name = item_name, count = count})
-        space_check[item_name] = can_insert
-        if not can_insert then
-            can_fit_all = false
-        end
-    end
+    local e_inventory = extract_entity_inventories(entity)
 
-    if not can_fit_all then
-        local missing_items = {}
-        for item_name, count in pairs(total_items) do
-            local can_insert = space_check[item_name]
-            if not can_insert then
-                missing_items[item_name] = count - (agent_inventory.get_item_count(item_name) or 0) -- Calculate missing count
-            end
-        end
-        local missing_str = ""
-        for item_name, count in pairs(missing_items) do
-            if missing_str ~= "" then missing_str = missing_str .. ", " end
-            missing_str = missing_str .. item_name .. ":" .. count
-        end
-        error("Agent inventory insufficient space for entity pickup. Missing space for: " .. missing_str)
-    end
-
-    -- Store entity position for removal tracking
-    local entity_position = entity.position
-    local entity_name = entity.name
-    local entity_type = entity.type
-
-    -- Mine the entity (this destroys it and returns items)
-    -- entity.mine() with inventory parameter automatically inserts all mined items
-    -- (including the entity itself and all inventory contents) into the specified inventory
-    local mine_success = entity.mine({inventory = agent_inventory, force = true})
-    if not mine_success then
+    local result = agent.mine_entity(agent.selected)
+    if not result then
         error("Failed to mine entity")
     end
 
-    -- entity is now invalid after mining, don't access it
-
-    -- Calculate actual items obtained
-    -- entity.mine() with inventory parameter auto-inserts all mined items into the inventory
-    -- So we use our pre-extracted entity_items as the record
-    local actual_items = {}
-    -- Add the entity itself
-    actual_items[entity_name] = 1
-    -- Add all inventory contents that were extracted before mining
-    for item_name, count in pairs(entity_items) do
-        actual_items[item_name] = count
-    end
-
-    -- Calculate inventory changes for mutation contract
-    local inventory_changes = {}
-    for item_name, count in pairs(actual_items) do
-        inventory_changes[item_name] = count -- Positive: items gained
-    end
-
-    local result = {
-        position = entity_position,
-        entity_name = entity_name,
-        entity_type = entity_type,
-        items_obtained = actual_items,
-        removed_positions = { { position = entity_position, entity_name = entity_name } },
-        removed_entity = { position = entity_position, name = entity_name },
-        affected_inventories = {
-            {
-                owner_type = "agent",
-                owner_id = p.agent_id,
-                inventory_type = "character_main",
-                changes = inventory_changes
-            }
-        }
+    local response = {
+        success = true,
+        items_obtained = e_inventory,
+        picked_up_entity = { position = entity.position, name = entity.name, type = entity.type },
     }
     
-    return self:_post_run(result, p)
+    return self:_post_run(response, p)
 end
 
 return { action = PickupEntityAction, params = PickupEntityParams }
