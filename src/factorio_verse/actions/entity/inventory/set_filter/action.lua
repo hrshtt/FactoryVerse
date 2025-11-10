@@ -1,27 +1,27 @@
 local Action = require("types.Action")
 
---- @class SetLimitParams : ParamSpec
+--- @class SetFilterParams : ParamSpec
 --- @field agent_id number Agent id executing the action
 --- @field entity_name string Entity prototype name
 --- @field position table|nil Optional position: { x = number, y = number }
 --- @field inventory_type string Inventory type string (e.g., "chest", "input", "output")
---- @field limit number Maximum number of slots to allow (0 = unlimited)
-local SetLimitParams = Action.ParamSpec:new({
+--- @field filters table[] Array of filter specs: [{index: number, filter: string|nil}, ...]
+local SetFilterParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     entity_name = { type = "string", required = true },
     position = { type = "table", required = false },
     inventory_type = { type = "string", required = true },
-    limit = { type = "number", required = true }
+    filters = { type = "table", required = true }
 })
 
---- @class SetLimitAction : Action
-local SetLimitAction = Action:new("entity.inventory.set_limit", SetLimitParams)
+--- @class SetFilterAction : Action
+local SetFilterAction = Action:new("entity.inventory.set_filter", SetFilterParams)
 
---- @param params SetLimitParams
---- @return table result Data about the limit change
-function SetLimitAction:run(params)
+--- @param params SetFilterParams
+--- @return table result Data about the filter changes
+function SetFilterAction:run(params)
     local p = self:_pre_run(params)
-    ---@cast p SetLimitParams
+    ---@cast p SetFilterParams
 
     -- Get agent (LuaEntity)
     local agent = self.game_state.agent:get_agent(p.agent_id)
@@ -95,53 +95,68 @@ function SetLimitAction:run(params)
         error("Entity does not have inventory type: " .. p.inventory_type)
     end
 
-    -- Check if inventory supports bar/limit
-    if not target_inventory.supports_bar() then
-        error("Inventory does not support setting limits")
+    -- Check if inventory supports filters
+    if not target_inventory.supports_filters() then
+        error("Inventory does not support filters")
     end
 
-    -- Validate limit value
+    -- Validate filters array
+    if type(p.filters) ~= "table" or not p.filters[1] then
+        error("filters must be a non-empty array")
+    end
+
     local inventory_size = #target_inventory
-    if math.floor(p.limit) ~= p.limit then
-        error("Limit must be an integer, got: " .. p.limit)
-    end
-    if p.limit < 0 or p.limit > inventory_size then
-        error("Limit must be between 0 and " .. inventory_size .. " (inventory size). Got: " .. p.limit)
-    end
+    local processed_filters = {}
 
-    -- Get current limit for comparison
-    local current_limit = target_inventory.get_bar()
-    if current_limit == p.limit then
-        return self:_post_run({
-            position = { x = entity.position.x, y = entity.position.y },
-            entity_name = entity.name,
-            entity_type = entity.type,
-            inventory_type = p.inventory_type,
-            previous_limit = current_limit,
-            new_limit = p.limit,
-            action = "no_op",
-            message = "Inventory already has this limit",
-            affected_positions = { 
-                { 
-                    position = { x = entity.position.x, y = entity.position.y },
-                    entity_name = p.entity_name,
-                    entity_type = entity.type
-                } 
-            }
-        }, p)
-    end
+    -- Process each filter
+    for i, filter_spec in ipairs(p.filters) do
+        if type(filter_spec) ~= "table" then
+            error("filters[" .. i .. "] must be a table with 'index' and 'filter' fields")
+        end
 
-    -- Set the limit
-    target_inventory.set_bar(p.limit)
+        local index = filter_spec.index
+        local filter = filter_spec.filter  -- string or nil
+
+        -- Validate index
+        if type(index) ~= "number" or math.floor(index) ~= index then
+            error("filters[" .. i .. "].index must be an integer")
+        end
+        if index < 1 or index > inventory_size then
+            error("filters[" .. i .. "].index must be between 1 and " .. inventory_size .. ", got: " .. index)
+        end
+
+        -- Validate filter (if provided, must be string)
+        if filter ~= nil and type(filter) ~= "string" then
+            error("filters[" .. i .. "].filter must be a string or nil, got: " .. type(filter))
+        end
+
+        -- Check if filter can be set
+        if not target_inventory.can_set_filter(index, filter) then
+            error("Cannot set filter for slot " .. index .. " to '" .. tostring(filter) .. "'")
+        end
+
+        -- Get current filter for result
+        local previous_filter = target_inventory.get_filter(index)
+
+        -- Set the filter
+        local success = target_inventory.set_filter(index, filter)
+        if not success then
+            error("Failed to set filter for slot " .. index)
+        end
+
+        table.insert(processed_filters, {
+            index = index,
+            previous_filter = previous_filter,
+            new_filter = filter
+        })
+    end
 
     local result = {
         position = { x = entity.position.x, y = entity.position.y },
         entity_name = entity.name,
         entity_type = entity.type,
         inventory_type = p.inventory_type,
-        previous_limit = current_limit,
-        new_limit = p.limit,
-        action = "set",
+        filters = processed_filters,
         affected_positions = { 
             { 
                 position = { x = entity.position.x, y = entity.position.y },
@@ -154,4 +169,5 @@ function SetLimitAction:run(params)
     return self:_post_run(result, p)
 end
 
-return { action = SetLimitAction, params = SetLimitParams }
+return { action = SetFilterAction, params = SetFilterParams }
+
