@@ -15,23 +15,41 @@ local M = {}
 --- Send UDP notification for mining completion
 --- @param job table Mining job
 local function _send_mining_completion_udp(job)
+    -- Get action tracking info (action_id + rcon_tick that queued this action)
+    storage.mine_resource_in_progress = storage.mine_resource_in_progress or {}
+    local tracking = storage.mine_resource_in_progress[job.agent_id]
+    
+    local action_id = job.action_id
+    local rcon_tick = job.start_tick
+    
+    if tracking and type(tracking) == "table" then
+        action_id = tracking.action_id or action_id
+        rcon_tick = tracking.rcon_tick or rcon_tick
+    end
+    
+    -- Clean up tracking entry
+    storage.mine_resource_in_progress[job.agent_id] = nil
+    
+    local completion_tick = game.tick
+    
     -- New async action completion payload contract
     local payload = {
+        action_id = action_id,
         agent_id = job.agent_id,
-        action_id = job.action_id,
         action_type = "mine_resource",
-        start_tick = job.start_tick, -- when action was triggered
+        rcon_tick = rcon_tick,
+        completion_tick = completion_tick,
         success = true,
+        cancelled = job.cancelled or false,
         result = {
             [job.item_name] = storage.agent_characters[job.agent_id].get_item_count(job.item_name) - job.initial_item_count,
         }
     }
+    
     if job.cancelled then
-        payload.cancelled = true
         payload.cancelled_tick = job.cancelled_tick
-    else
-        payload.completion_tick = game.tick
     end
+    
     local json_payload = helpers.table_to_json(payload)
     local ok, err = pcall(function() helpers.send_udp(34202, json_payload) end)
     if not ok then

@@ -54,6 +54,9 @@ function M:new(game_state)
     storage.mining_results = storage.mining_results or {}
     storage.walk_intents = storage.walk_intents or {}
     storage.agent_forces = storage.agent_forces or {}
+
+    --- @type table<number, table<string, LuaRenderObject>>
+    storage.agent_name_tags = storage.agent_name_tags or {}
     
     -- Initialize activity modules with control interface
     instance.walking = Walking
@@ -84,9 +87,23 @@ function M:force_destroy_agents()
     
     -- Cleanup all rendered name tags
     if storage.agent_name_tags then
-        for agent_id, render_id in pairs(storage.agent_name_tags) do
+        for agent_id, render_objects in pairs(storage.agent_name_tags) do
             pcall(function()
-                rendering.destroy(render_id)
+                if type(render_objects) == "table" then
+                    -- New format: table with main_tag, map_marker, map_tag
+                    if render_objects.main_tag then
+                        rendering.destroy(render_objects.main_tag)
+                    end
+                    if render_objects.map_marker then
+                        rendering.destroy(render_objects.map_marker)
+                    end
+                    if render_objects.map_tag then
+                        rendering.destroy(render_objects.map_tag)
+                    end
+                else
+                    -- Old format: single render_id (for backwards compatibility)
+                    rendering.destroy(render_objects)
+                end
             end)
         end
         storage.agent_name_tags = {}
@@ -170,8 +187,7 @@ function M:create_agent(agent_id, position, color, force_name)
     if char and char.valid then
         char.name_tag = name_tag
         -- Render name tag for regular gameplay visibility (name_tag only works in editor mode)
-        storage.agent_name_tags = storage.agent_name_tags or {}
-        local render_id = rendering.draw_text{
+        local main_tag = rendering.draw_text{
             text = name_tag,
             target = char,
             surface = char.surface,
@@ -181,7 +197,33 @@ function M:create_agent(agent_id, position, color, force_name)
             alignment = "center",
             vertical_alignment = "middle"
         }
-        storage.agent_name_tags[agent_id] = render_id
+        -- Create circle marker on map
+        local map_marker = rendering.draw_circle{
+            color = char.color,
+            radius = 2.5,
+            filled = true,
+            target = char,
+            surface = char.surface,
+            render_mode = "chart",
+            scale_with_zoom = true
+        }
+        -- Create text label on map
+        local map_tag = rendering.draw_text{
+            text = name_tag,
+            surface = char.surface,
+            target = char,
+            color = {r = 1, g = 1, b = 1},
+            scale = 1,
+            alignment = "left",
+            vertical_alignment = "middle",
+            render_mode = "chart",
+            scale_with_zoom = true
+        }
+        storage.agent_name_tags[agent_id] = {
+            main_tag = main_tag,
+            map_marker = map_marker,
+            map_tag = map_tag
+        }
     end
     -- Chart the starting area (safe now - doesn't force sync chunk generation)
     utils.chart_native_start_area(surface, force, safe_position or spawn_position, self.game_state)
@@ -537,7 +579,22 @@ function M:destroy_agent(agent_id, destroy_force)
     -- Cleanup rendered name tag
     if storage.agent_name_tags and storage.agent_name_tags[agent_id] then
         pcall(function()
-            rendering.destroy(storage.agent_name_tags[agent_id])
+            local render_objects = storage.agent_name_tags[agent_id]
+            if type(render_objects) == "table" then
+                -- New format: table with main_tag, map_marker, map_tag
+                if render_objects.main_tag then
+                    render_objects.main_tag.destroy()
+                end
+                if render_objects.map_marker then
+                    render_objects.map_marker.destroy()
+                end
+                if render_objects.map_tag then
+                    render_objects.map_tag.destroy()
+                end
+            else
+                -- Old format: single render_id (for backwards compatibility)
+                render_objects.destroy()
+            end
         end)
         storage.agent_name_tags[agent_id] = nil
     end
