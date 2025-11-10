@@ -1,156 +1,69 @@
 local GameState = require("GameState")
 
---- Inventory type mapping from string names to defines.inventory constants
-local INVENTORY_TYPE_MAP = {
-    chest = defines.inventory.chest,
-    fuel = defines.inventory.fuel,
-    burnt_result = defines.inventory.burnt_result,
-    input = defines.inventory.assembling_machine_input,
-    output = defines.inventory.assembling_machine_output,
-    modules = defines.inventory.assembling_machine_modules,
-    ammo = defines.inventory.turret_ammo,
-    trunk = defines.inventory.car_trunk,
-    cargo = defines.inventory.cargo_wagon,
-    main = defines.inventory.character_main,
-}
-
---- Resolve inventory type string to defines.inventory constant
---- @param inventory_type string|nil
---- @return defines.inventory|nil, string|nil
-local function resolve_inventory_type(inventory_type)
-    if not inventory_type then
-        return nil, "inventory_type not specified"
-    end
-    
-    local resolved = INVENTORY_TYPE_MAP[inventory_type]
-    if not resolved then
-        local available_types = {}
-        for name, _ in pairs(INVENTORY_TYPE_MAP) do
-            table.insert(available_types, name)
-        end
-        return nil, "Invalid inventory_type '" .. inventory_type .. "'. Available: " .. 
-                    table.concat(available_types, ", ")
-    end
-    
-    return resolved, nil
-end
-
---- Validate that entity has the specified inventory type
---- @param params table
+--- Find entity by name within agent's build_distance radius
+--- @param params table - must include agent_id, entity_name, optional position
 --- @return boolean, string|nil
-local function validate_entity_has_inventory(params)
-    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
+local function validate_entity_in_range(params)
+    if not params.agent_id or not params.entity_name then
         return true -- Let other validators handle missing parameters
     end
     
-    if not params.inventory_type or not params.entity_name then
-        return true -- Let other validators handle missing parameters
+    local gs = GameState:new()
+    local agent = gs.agent:get_agent(params.agent_id)
+    if not agent or not agent.valid then
+        return true -- Let other validators handle agent validation
     end
     
-    local position = { x = params.position.x, y = params.position.y }
-    local entity = game.surfaces[1].find_entity(params.entity_name, position)
-    if not entity or not entity.valid then
-        return true -- Let validate_entity_exists handle this
+    local agent_pos = agent.position
+    local build_distance = agent.build_distance or 10
+    local entity_name = params.entity_name
+    local surface = game.surfaces[1]
+    
+    -- Search for entities within build_distance radius
+    local search_filter = {
+        position = agent_pos,
+        radius = build_distance,
+        name = entity_name
+    }
+    
+    local entities = surface.find_entities_filtered(search_filter)
+    
+    -- Filter to only valid entities
+    local valid_entities = {}
+    for _, entity in ipairs(entities) do
+        if entity and entity.valid then
+            table.insert(valid_entities, entity)
+        end
     end
     
-    local inventory_type, error_msg = resolve_inventory_type(params.inventory_type)
-    if not inventory_type then
-        return false, error_msg
+    -- If position provided, try to find exact match first
+    if params.position and type(params.position.x) == "number" and type(params.position.y) == "number" then
+        local target_pos = { x = params.position.x, y = params.position.y }
+        local exact_entity = surface.find_entity(entity_name, target_pos)
+        if exact_entity and exact_entity.valid then
+            -- Verify it's within build_distance
+            local dx = exact_entity.position.x - agent_pos.x
+            local dy = exact_entity.position.y - agent_pos.y
+            local dist_sq = dx * dx + dy * dy
+            if dist_sq <= build_distance * build_distance then
+                return true -- Found exact match within range
+            end
+        end
     end
     
-    -- Check if entity has this inventory type
-    local success, inventory = pcall(function()
-        return entity.get_inventory(inventory_type)
-    end)
+    -- No entities found
+    if #valid_entities == 0 then
+        return false, "Entity '" .. entity_name .. "' not found within build_distance (" .. 
+                      build_distance .. ") of agent. Provide position to search at specific location."
+    end
     
-    if not success or not inventory or not inventory.valid then
-        return false, "Entity does not have inventory type: " .. params.inventory_type
+    -- Multiple entities found without position
+    if #valid_entities > 1 and not params.position then
+        return false, "Multiple entities '" .. entity_name .. "' found within build_distance. " ..
+                      "Provide position parameter to specify which entity to use."
     end
     
     return true
 end
 
---- Validate inventory type parameter
---- @param params table
---- @return boolean, string|nil
-local function validate_inventory_type(params)
-    if not params.inventory_type then
-        return true -- inventory_type is optional for some actions
-    end
-    
-    local inventory_type, error_msg = resolve_inventory_type(params.inventory_type)
-    if not inventory_type then
-        return false, error_msg
-    end
-    
-    return true
-end
-
---- Check if item is appropriate for inventory type
---- @param item_name string
---- @param inventory_type string
---- @param entity LuaEntity
---- @return boolean, string|nil
-local function is_item_appropriate_for_inventory(item_name, inventory_type, entity)
-    -- Get item prototype
-    local item_proto = prototypes and prototypes.item and prototypes.item[item_name]
-    if not item_proto then
-        return true -- Let other validators handle unknown items
-    end
-    
-    -- Check module inventories
-    if inventory_type == "modules" then
-        if not item_proto.module_effects then
-            return false, "Item '" .. item_name .. "' is not a module"
-        end
-    end
-    
-    -- Check fuel inventories
-    if inventory_type == "fuel" then
-        if not item_proto.fuel_value or item_proto.fuel_value == 0 then
-            return false, "Item '" .. item_name .. "' is not a fuel"
-        end
-    end
-    
-    -- Check ammo inventories
-    if inventory_type == "ammo" then
-        if not item_proto.type or item_proto.type ~= "ammo" then
-            return false, "Item '" .. item_name .. "' is not ammunition"
-        end
-    end
-    
-    return true
-end
-
---- Validate item appropriateness for inventory type
---- @param params table
---- @return boolean, string|nil
-local function validate_item_inventory_compatibility(params)
-    if not params.item or not params.inventory_type then
-        return true -- Skip if parameters not provided
-    end
-    
-    if not params.position or type(params.position.x) ~= "number" or type(params.position.y) ~= "number" then
-        return true -- Let other validators handle missing parameters
-    end
-    
-    if not params.entity_name then
-        return true -- Let other validators handle missing parameters
-    end
-    
-    local position = { x = params.position.x, y = params.position.y }
-    local entity = game.surfaces[1].find_entity(params.entity_name, position)
-    if not entity or not entity.valid then
-        return true -- Let validate_entity_exists handle this
-    end
-    
-    local is_appropriate, error_msg = is_item_appropriate_for_inventory(params.item, params.inventory_type, entity)
-    if not is_appropriate then
-        return false, error_msg
-    end
-    
-    return true
-end
-
--- Validators for all inventory actions (loaded automatically for entity.inventory.* actions)
-return { validate_inventory_type, validate_entity_has_inventory, validate_item_inventory_compatibility }
+return { validate_entity_in_range }
