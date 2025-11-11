@@ -1,4 +1,5 @@
 local GameState = require("GameState")
+local gs = GameState:new()
 
 local function validate_params(params)
     if type(params) ~= "table" then
@@ -36,7 +37,7 @@ local function validate_params(params)
 end
 
 local function can_place_at_location(params)
-    local gs = GameState:new()
+    
     local surface = game.surfaces[1]
     if not surface then
         return false, "no surface available"
@@ -54,7 +55,8 @@ local function can_place_at_location(params)
         name = params.entity_name,
         position = params.position,
         direction = direction,
-        force = force
+        force = force,
+        build_check_type = defines.build_check_type.manual
     }
 
     if not can_place then
@@ -64,7 +66,6 @@ local function can_place_at_location(params)
 end
 
 local function validate_item_in_inventory(params)
-    local gs = GameState:new()
     local ok = gs.agent:check_item_in_inventory(params.agent_id, params.entity_name)
     if ok ~= true then
         -- If ok is a GameStateError, extract its message

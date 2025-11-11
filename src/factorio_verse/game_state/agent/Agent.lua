@@ -80,9 +80,9 @@ function M:force_destroy_agents()
             end
         end
     end
-    -- Clear the agent_characters table
+    -- Clear the agents table
     --- @type table<number, LuaEntity>
-    storage.agent_characters = {}
+    storage.agents = {}
     storage.agent_forces = {}
     
     -- Cleanup all rendered name tags
@@ -235,15 +235,15 @@ end
 --- @param agent_id number
 --- @return LuaEntity|nil
 function M:get_agent(agent_id)
-    if not storage.agent_characters then
-        storage.agent_characters = {}
+    if not storage.agents then
+        storage.agents = {}
         return nil
     end
     
-    local agent = storage.agent_characters[agent_id]
+    local agent = storage.agents[agent_id]
     -- Clean up invalid references (can happen when loading saves)
     if agent and not agent.valid then
-        storage.agent_characters[agent_id] = nil
+        storage.agents[agent_id] = nil
         return nil
     end
     return agent
@@ -254,19 +254,19 @@ end
 --- @param set_unique_forces boolean|nil Default true - each agent gets unique force
 --- @param default_common_force string|nil Force name to use if set_unique_forces=false
 --- @return table agents created (array of {character, force_name})
-function M:create_agent_characters(num_agents, destroy_existing, set_unique_forces, default_common_force)
-    if not storage.agent_characters then
-        storage.agent_characters = {}
+function M:create_agents(num_agents, destroy_existing, set_unique_forces, default_common_force)
+    if not storage.agents then
+        storage.agents = {}
     end
     
-    if destroy_existing and storage.agent_characters then
+    if destroy_existing and storage.agents then
         -- Destroy existing agents directly
-        for _, char in pairs(storage.agent_characters) do
+        for _, char in pairs(storage.agents) do
             if char and char.valid then
                 char.destroy()
             end
         end
-        storage.agent_characters = {}
+        storage.agents = {}
         storage.agent_forces = {}
     end
     
@@ -303,7 +303,7 @@ function M:create_agent_characters(num_agents, destroy_existing, set_unique_forc
         local char, final_force_name = self:create_agent(i, position, generate_agent_color(i, num_agents), force_name)
         
         -- Store direct LuaEntity reference
-        storage.agent_characters[i] = char
+        storage.agents[i] = char
         -- Return only serializable data (LuaEntity cannot be JSON serialized)
         table.insert(created_agents, {agent_id = i, force_name = final_force_name})
     end
@@ -341,7 +341,7 @@ end
 
 -- Internal helper to fetch the agent's LuaEntity (character)
 local function _get_control_for_agent(agent_id)
-    local agents = storage.agent_characters
+    local agents = storage.agents
     if agents and agents[agent_id] and agents[agent_id].valid then
         return agents[agent_id]
     end
@@ -572,8 +572,8 @@ function M:destroy_agent(agent_id, destroy_force)
     end
     
     -- Cleanup storage
-    if storage.agent_characters then
-        storage.agent_characters[agent_id] = nil
+    if storage.agents then
+        storage.agents[agent_id] = nil
     end
     
     -- Cleanup rendered name tag
@@ -772,7 +772,7 @@ M.AdminApiSpecs = {
 
 M.admin_api = {
     inspect_agent = M.inspect_agent,
-    create_agents = M.create_agent_characters,
+    create_agents = M.create_agents,
     destroy_agents = M.destroy_agents,
     update_agent_friends = M.update_agent_friends,
     update_agent_enemies = M.update_agent_enemies,

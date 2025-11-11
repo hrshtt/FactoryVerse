@@ -227,10 +227,10 @@ script.on_init(function()
     log("hello from on_init")
     
     
-    -- Initialize agent_characters storage
-    if not storage.agent_characters then
-        storage.agent_characters = {}
-        log("Initialized empty agent_characters storage for new game")
+    -- Initialize agents storage
+    if not storage.agents then
+        storage.agents = {}
+        log("Initialized empty agents storage for new game")
     end
     
     -- Register events (game is available during on_init)

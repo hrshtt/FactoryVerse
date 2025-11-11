@@ -6,7 +6,7 @@ local Action = require("types.Action")
 --- @field fallback_to_safe_position boolean|nil If true, try to find safe position nearby if target is blocked (default false)
 local TeleportParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position = { type = "table", required = true },
+    position = { type = "position", required = true },
     fallback_to_safe_position = { type = "boolean", required = false, default = false }
 })
 

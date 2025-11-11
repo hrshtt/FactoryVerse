@@ -2,7 +2,7 @@ local Action = require("types.Action")
 
 --- @class EnqueueResearchParams : ParamSpec
 --- @field agent_id number
---- @field technology_name string
+--- @field technology_name string Technology name (validated against agent's force)
 --- @field cancel_current_research boolean
 local EnqueueResearchParams = Action.ParamSpec:new({
     agent_id = {
@@ -10,7 +10,7 @@ local EnqueueResearchParams = Action.ParamSpec:new({
         required = true
     },
     technology_name = {
-        type = "string",
+        type = "technology_name",
         required = true
     },
     cancel_current_research = {
@@ -30,6 +30,9 @@ function EnqueueResearchAction:run(params)
     local p = self:_pre_run(params)
     local technology_name = p.technology_name
     local agent = self.game_state.agent:get_agent(p.agent_id)
+    if not agent or not agent.valid then
+        error("Agent not found or invalid")
+    end
     local force = agent.force
 
     if force.current_research then

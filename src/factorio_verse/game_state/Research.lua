@@ -22,7 +22,7 @@ function M:new(game_state)
 end
 
 function M:save_research(agent_id, research_id)
-    local player = storage.agent_characters[agent_id]
+    local player = storage.agents[agent_id]
     local force = player.force
 
     local research_state = {
@@ -57,7 +57,7 @@ end
 
 function M:reset_research(input)
     local agent_id = input.agent_id
-    local player = storage.agent_characters[agent_id]
+    local player = storage.agents[agent_id]
     local force = player.force
     force.cancel_current_research()
     force.research_queue = {}

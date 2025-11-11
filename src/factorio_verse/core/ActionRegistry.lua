@@ -30,6 +30,7 @@ local ACTION_MODULES = {
   "actions.entity.inventory.set_item.action",
   "actions.entity.inventory.get_item.action",
   "actions.entity.inventory.set_limit.action",
+  "actions.entity.inventory.set_filter.action",
 
   -- resources
   "actions.mining.action",
@@ -178,8 +179,8 @@ function ActionRegistry:load()
     -- Fallback to action.name if module_path not provided
     local ok, err = pcall(function()
       local validator_base_name = module_path and extract_action_name(module_path) or action.name
-      -- For crafting, use "enqueue" validators for the main action
-      local validator_type = (validator_base_name == "agent.crafting") and "enqueue" or nil
+      -- For crafting and mining, use "enqueue" validators for the main action
+      local validator_type = ((validator_base_name == "agent.crafting") or (validator_base_name == "mining")) and "enqueue" or nil
       local validators = load_validators(validator_base_name, validator_type)
       action:attach_validators(validators)
       if #validators > 0 then
@@ -202,8 +203,8 @@ function ActionRegistry:load()
       -- Load cancel validators
       local cancel_validators = {}
       local validator_base_name = module_path and extract_action_name(module_path) or action.name
-      -- For crafting, use "cancel" validators from the same validator module
-      local validator_type = (validator_base_name == "agent.crafting") and "cancel" or nil
+      -- For crafting and mining, use "cancel" validators from the same validator module
+      local validator_type = ((validator_base_name == "agent.crafting") or (validator_base_name == "mining")) and "cancel" or nil
       local ok, validators = pcall(function() return load_validators(validator_base_name, validator_type) end)
       if ok and validators then
         cancel_validators = validators
@@ -211,7 +212,7 @@ function ActionRegistry:load()
       
       local cancel_action = {
         name = cancel_name,
-        run = function(params) return action:cancel(params) end,
+        run = function(self, params) return action:cancel(params) end,
         is_sync = true,   -- Cancel is always sync
         is_async = false, -- Cancel is always sync
         cancel_params = action.cancel_params,

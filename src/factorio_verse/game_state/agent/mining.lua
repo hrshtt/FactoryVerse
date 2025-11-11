@@ -42,7 +42,7 @@ local function _send_mining_completion_udp(job)
         success = true,
         cancelled = job.cancelled or false,
         result = {
-            [job.item_name] = storage.agent_characters[job.agent_id].get_item_count(job.item_name) - job.initial_item_count,
+            [job.item_name] = storage.agents[job.agent_id].get_item_count(job.item_name) - job.initial_item_count,
         }
     }
     
@@ -60,7 +60,7 @@ end
 
 -- In M.tick_mine_jobs()
 function M.tick_mine_jobs(event)
-    for agent_id, agent in pairs(storage.agent_characters) do
+    for agent_id, agent in pairs(storage.agents) do
         local job = storage.mining_results[agent_id]
         
         if job then

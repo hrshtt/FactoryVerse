@@ -8,7 +8,7 @@ local GameStateAliases = require("game_state.GameStateAliases")
 --- @field ticks number|nil
 local WalkParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    direction = { type = "string", required = true },
+    direction = { type = "direction", required = true },
     walking = { type = "boolean", required = false },
     ticks = { type = "number", required = false },
 })
@@ -26,7 +26,7 @@ local WalkParams = Action.ParamSpec:new({
 --- @field snap_axis_eps number|nil
 local WalkToParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position = { type = "table", required = true },
+    position = { type = "position", required = true },
     arrive_radius = { type = "number", required = false },
     lookahead = { type = "number", required = false },
     replan_on_stuck = { type = "boolean", required = false },
@@ -36,46 +36,6 @@ local WalkToParams = Action.ParamSpec:new({
     diag_band = { type = "number", required = false },
     snap_axis_eps = { type = "number", required = false },
 })
-
---- Map common direction strings to defines.direction
-local function normalize_direction(dir)
-    if type(dir) == "number" then
-        return dir
-    end
-    if type(dir) == "string" then
-        local key = string.lower(dir)
-        return GameStateAliases.direction[key]
-    end
-    return nil
-end
-
--- ===== Helpers for walk_to =====
-local function dist_sq(a, b)
-    local dx, dy = (a.x - b.x), (a.y - b.y)
-    return dx*dx + dy*dy
-end
-
-local DIR_IDX_TO_ENUM = {
-    [0]=defines.direction.east,
-    [1]=defines.direction.southeast,
-    [2]=defines.direction.south,
-    [3]=defines.direction.southwest,
-    [4]=defines.direction.west,
-    [5]=defines.direction.northwest,
-    [6]=defines.direction.north,
-    [7]=defines.direction.northeast
-}
-
-local ENUM_TO_DIR_IDX = {
-    [defines.direction.east]=0,
-    [defines.direction.southeast]=1,
-    [defines.direction.south]=2,
-    [defines.direction.southwest]=3,
-    [defines.direction.west]=4,
-    [defines.direction.northwest]=5,
-    [defines.direction.north]=6,
-    [defines.direction.northeast]=7
-}
 
 --- @class WalkToAction : Action
 --- @field validators table<function>

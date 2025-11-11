@@ -8,8 +8,8 @@ local Action = require("types.Action")
 --- @field limit number Maximum number of slots to allow (0 = unlimited)
 local SetLimitParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    entity_name = { type = "string", required = true },
-    position = { type = "table", required = false },
+    entity_name = { type = "entity_name", required = true },
+    position = { type = "position", required = false },
     inventory_type = { type = "string", required = true },
     limit = { type = "number", required = true }
 })

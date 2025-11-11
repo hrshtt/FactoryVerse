@@ -1,6 +1,5 @@
 local Action = require("types.Action")
 local GameStateAliases = require("game_state.GameStateAliases")
-local walk = require("actions.agent.walk.helper")
 local utils = require("core.utils")
 
 --- @class PlaceEntityParams : ParamSpec
@@ -9,14 +8,12 @@ local utils = require("core.utils")
 --- @field position table Position to place at: { x = number, y = number }
 --- @field direction string|number|nil Optional direction; accepts alias from GameState.aliases.direction or defines.direction value
 --- @field orient_towards table|nil Optional orientation hint: { entity_name = string|nil, position = {x:number,y:number}|nil }
---- @field walk_if_unreachable boolean|nil Optional walk_if_unreachable hint
 local PlaceEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    entity_name = { type = "string", required = true },
-    position = { type = "table", required = true },
-    direction = { type = "any", required = false },
+    entity_name = { type = "entity_name", required = true },
+    position = { type = "position", required = true },
+    direction = { type = "direction", required = false },
     orient_towards = { type = "table", required = false },
-    walk_if_unreachable = { type = "boolean", required = false, default = false }
 })
 
 --- @class PlaceEntityAction : Action
@@ -29,6 +26,9 @@ function PlaceEntityAction:run(params)
     ---@cast p PlaceEntityParams
 
     local agent = self.game_state.agent:get_agent(p.agent_id)
+    if not agent or not agent.valid then
+        error("Agent not found or invalid")
+    end
     local surface = game.surfaces[1]
 
     local placement = {
@@ -37,19 +37,9 @@ function PlaceEntityAction:run(params)
         force = agent.force,
     }
 
-    local function normalize_direction(dir)
-        if dir == nil then return nil end
-        if type(dir) == "number" then return dir end
-        if type(dir) == "string" then
-            local key = string.lower(dir)
-            return GameStateAliases.direction[key]
-        end
-        return nil
-    end
-
-    local dir = normalize_direction(p.direction)
-    if type(dir) == "number" then
-        placement.direction = dir
+    -- Direction is already normalized by ParamSpec (string aliases converted to enum numbers)
+    if p.direction ~= nil then
+        placement.direction = p.direction
     end
 
     -- If direction not provided, but orient_towards is provided, derive direction
@@ -98,31 +88,13 @@ function PlaceEntityAction:run(params)
         end
     end
 
-    -- Handle walk_if_unreachable logic
-    if p.walk_if_unreachable then
-        local placement_reachable = walk:is_reachable(agent, p.position)
-        if not placement_reachable then
-            local walk_success = walk:start_walk_to({
-                agent_id = p.agent_id,
-                target_position = p.position,
-                walk_if_unreachable = true,
-                arrive_radius = 1.0, -- Close enough to place
-                prefer_cardinal = true
-            })
-            if walk_success then
-                error("Agent is walking to position. Try placing again when closer.")
-            else
-                error("Cannot reach position and failed to start walking")
-            end
-        end
-    end
-
     -- Validate placement
-    local can_place = surface.can_place_entity{
+    local can_place = game.surfaces[1].can_place_entity{
         name = placement.name,
         position = placement.position,
         direction = placement.direction,
-        force = placement.force
+        force = placement.force,
+        build_check_type = defines.build_check_type.manual
     }
     if not can_place then
         error("Cannot place entity at the specified position")

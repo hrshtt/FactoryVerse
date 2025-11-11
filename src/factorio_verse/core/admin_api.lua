@@ -7,8 +7,8 @@ local M = {}
 M.helpers = {}
 M.commands = {}
 
-M.helpers.create_agent_characters = function(num_agents, destroy_existing)
-    return GameState:new():agent():create_agent_characters(num_agents, destroy_existing)
+M.helpers.create_agents = function(num_agents, destroy_existing)
+    return GameState:new():agent():create_agents(num_agents, destroy_existing)
 end
 
 M.helpers.force_clear_agents = function()
@@ -141,8 +141,8 @@ M.helpers.reset_agents_state = function()
     local agent_state = gs.agent
 
     -- Stop walking/mining on all agent characters
-    if storage.agent_characters then
-        for id, agent in pairs(storage.agent_characters) do
+    if storage.agents then
+        for id, agent in pairs(storage.agents) do
             if agent and agent.valid then
                 local current_dir = (agent.walking_state and agent.walking_state.direction) or defines.direction.north
                 agent.walking_state = { walking = false, direction = current_dir }

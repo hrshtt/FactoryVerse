@@ -9,7 +9,7 @@ local AsyncAction = require("types.AsyncAction")
 local MineResourceParams = AsyncAction.ParamSpec:new({
     agent_id = { type = "number", required = true },
     resource_name = { type = "string", required = true },
-    position = { type = "table", required = false, default = nil },
+    position = { type = "position", required = false, default = nil },
     max_count = { type = "number", required = false, default = 10 },
 })
 
@@ -45,7 +45,7 @@ function MineResourceAction:run(params)
     local p = self:_pre_run(params)
     ---@cast p MineResourceParams
     -- p = p._spec:to_table()
-    local agent = storage.agent_characters[p.agent_id]
+    local agent = storage.agents[p.agent_id]
 
     if not agent or not agent.valid then
         return self:_post_run({ success = false, error = "Agent not found" }, p)
@@ -159,8 +159,9 @@ end
 --- @param tracking table|nil
 --- @return table
 function MineResourceAction:_do_cancel(cancel_params, tracking)
+    game.print("Cancelling mining action")
     local agent_id = cancel_params.agent_id
-    local agent = storage.agent_characters[agent_id]
+    local agent = storage.agents[agent_id]
     
     if not agent or not agent.valid then
         return self:create_cancel_result(false, false, tracking and tracking.action_id, { error = "Agent not found or invalid" })

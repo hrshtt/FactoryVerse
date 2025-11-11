@@ -5,6 +5,8 @@
 --- @field _validated boolean Whether validation has been performed
 local ParamSpec = {}
 
+local utils = require("core.utils")
+
 --- Create a new ParamInstance with direct property access via metatables
 --- @param spec table Parameter specification with validation rules
 --- @param values table|nil Initial parameter values (optional)
@@ -97,16 +99,158 @@ function ParamSpec:validate()
         end
 
         -- Type checking (if value is not nil)
+        -- Skip basic type checking for custom types - they handle their own validation
         if value ~= nil and rule.type and rule.type ~= "any" then
-            local t = type(value)
-            if rule.type == "number" and t ~= "number" then
-                error(string.format("Parameter '%s' must be a number, got %s", key, t))
-            elseif rule.type == "string" and t ~= "string" then
-                error(string.format("Parameter '%s' must be a string, got %s", key, t))
-            elseif rule.type == "boolean" and t ~= "boolean" then
-                error(string.format("Parameter '%s' must be a boolean, got %s", key, t))
-            elseif rule.type == "table" and t ~= "table" then
-                error(string.format("Parameter '%s' must be a table, got %s", key, t))
+            -- Check if it's a custom type (these handle their own validation)
+            local custom_types = {
+                position = true,
+                direction = true,
+                orientation = true,
+                entity_name = true,
+                recipe = true,
+                technology_name = true,
+                item_stack = true
+            }
+            
+            -- Only do basic type checking for primitive types
+            if not custom_types[rule.type] then
+                local t = type(value)
+                if rule.type == "number" and t ~= "number" then
+                    error(string.format("Parameter '%s' must be a number, got %s", key, t))
+                elseif rule.type == "string" and t ~= "string" then
+                    error(string.format("Parameter '%s' must be a string, got %s", key, t))
+                elseif rule.type == "boolean" and t ~= "boolean" then
+                    error(string.format("Parameter '%s' must be a boolean, got %s", key, t))
+                elseif rule.type == "table" and t ~= "table" then
+                    error(string.format("Parameter '%s' must be a table, got %s", key, t))
+                end
+            end
+        end
+
+
+        -- Custom validation for filters array (array of {index: number, filter: string|nil})
+        if key == "filters" and value ~= nil then
+            if type(value) ~= "table" then
+                error(string.format("Parameter 'filters' must be an array, got %s", type(value)))
+            end
+            -- Check if it's an array (has numeric indices)
+            if not value[1] and next(value) then
+                error("Parameter 'filters' must be an array, not a map")
+            end
+            -- Validate each filter in the array
+            for i, filter_spec in ipairs(value) do
+                if type(filter_spec) ~= "table" then
+                    error(string.format("Parameter 'filters[%d]' must be a table with 'index' and 'filter', got %s", i, type(filter_spec)))
+                end
+                if not filter_spec.index or type(filter_spec.index) ~= "number" then
+                    error(string.format("Parameter 'filters[%d].index' must be a number", i))
+                end
+                if filter_spec.filter ~= nil and type(filter_spec.filter) ~= "string" then
+                    error(string.format("Parameter 'filters[%d].filter' must be a string or nil, got %s", i, type(filter_spec.filter)))
+                end
+            end
+        end
+
+        -- Custom type validation (type-based, not key-based)
+        if value ~= nil and rule.type then
+            -- Custom validation for position type ({x: number, y: number})
+            if rule.type == "position" then
+                local normalized = utils.validate_position(value)
+                if normalized == nil then
+                    error(string.format("Parameter '%s' must be a position (table with numeric x and y fields), got %s", key, type(value)))
+                end
+                -- Normalize in-place (ensures x and y are numbers)
+                self[key] = normalized
+            end
+
+            -- Custom validation for direction type (string alias or number enum 0-7)
+            if rule.type == "direction" then
+                local normalized = utils.validate_direction(value)
+                if normalized == nil then
+                    error(string.format("Parameter '%s' must be a valid direction (string alias like 'north', 'east', etc. or number 0-7), got %s", key, tostring(value)))
+                end
+                -- Normalize in-place (convert string aliases to enum numbers)
+                self[key] = normalized
+            end
+
+            -- Custom validation for orientation type ([0, 1) range)
+            if rule.type == "orientation" then
+                local normalized = utils.validate_orientation(value)
+                if normalized == nil then
+                    error(string.format("Parameter '%s' must be an orientation (number in range [0, 1)), got %s", key, tostring(value)))
+                end
+                -- Normalize in-place (wraps 1.0 to 0.0 if needed)
+                self[key] = normalized
+            end
+
+            -- Custom validation for entity_name type (must be a valid entity prototype)
+            if rule.type == "entity_name" then
+                if type(value) ~= "string" or value == "" then
+                    error(string.format("Parameter '%s' must be a non-empty string, got %s", key, type(value)))
+                end
+                if not utils.validate_entity_name(value) then
+                    error(string.format("Parameter '%s' must be a valid entity prototype name, got '%s'", key, value))
+                end
+            end
+
+            -- Custom validation for recipe type (must be a valid recipe name in agent's force)
+            if rule.type == "recipe" then
+                if type(value) ~= "string" or value == "" then
+                    error(string.format("Parameter '%s' must be a non-empty string, got %s", key, type(value)))
+                end
+                -- Try to get agent_id from params to validate against agent's force
+                local agent_id = rawget(self, "agent_id")
+                if not utils.validate_recipe(value, agent_id) then
+                    local error_msg = string.format("Parameter '%s' must be a valid recipe name for agent's force, got '%s'", key, value)
+                    if agent_id then
+                        error_msg = error_msg .. string.format(" (agent_id: %d)", agent_id)
+                    end
+                    error(error_msg)
+                end
+            end
+
+            -- Custom validation for technology_name type (must be a valid technology name in agent's force)
+            if rule.type == "technology_name" then
+                if type(value) ~= "string" or value == "" then
+                    error(string.format("Parameter '%s' must be a non-empty string, got %s", key, type(value)))
+                end
+                -- Try to get agent_id from params to validate against agent's force
+                local agent_id = rawget(self, "agent_id")
+                if not utils.validate_technology(value, agent_id) then
+                    local error_msg = string.format("Parameter '%s' must be a valid technology name for agent's force, got '%s'", key, value)
+                    if agent_id then
+                        error_msg = error_msg .. string.format(" (agent_id: %d)", agent_id)
+                    end
+                    error(error_msg)
+                end
+            end
+
+            -- Custom validation for item_stack type (array of {name: string, count: number|string})
+            if rule.type == "item_stack" then
+                if type(value) ~= "table" then
+                    error(string.format("Parameter '%s' must be an array of item stacks, got %s", key, type(value)))
+                end
+                -- Check if it's an array (has numeric indices)
+                if not value[1] and next(value) then
+                    error(string.format("Parameter '%s' must be an array, not a map", key))
+                end
+                -- Validate each item in the array
+                for i, item in ipairs(value) do
+                    if type(item) ~= "table" then
+                        error(string.format("Parameter '%s[%d]' must be a table with 'name' and 'count', got %s", key, i, type(item)))
+                    end
+                    if not item.name or type(item.name) ~= "string" then
+                        error(string.format("Parameter '%s[%d].name' must be a string", key, i))
+                    end
+                    if item.count ~= nil and type(item.count) ~= "number" and 
+                       item.count ~= "MAX" and item.count ~= "FULL-STACK" and item.count ~= "HALF-STACK" then
+                        error(string.format("Parameter '%s[%d].count' must be a number, 'MAX', 'FULL-STACK', or 'HALF-STACK', got %s", key, i, type(item.count)))
+                    end
+                    if item.count == nil then
+                        -- Default count to 1 if not provided
+                        item.count = 1
+                    end
+                end
             end
         end
     end

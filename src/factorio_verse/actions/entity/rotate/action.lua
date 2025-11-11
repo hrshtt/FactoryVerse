@@ -8,9 +8,9 @@ local GameStateAliases = require("game_state.GameStateAliases")
 --- @field direction string|number Direction to rotate to (required) - accepts alias from GameState.aliases.direction or defines.direction value (0-7)
 local RotateEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position = { type = "table", required = true },
-    entity_name = { type = "string", required = true },
-    direction = { type = "any", required = true }  -- Changed: now required
+    position = { type = "position", required = true },
+    entity_name = { type = "entity_name", required = true },
+    direction = { type = "direction", required = true }
 })
 
 --- @class RotateEntityAction : Action
@@ -39,25 +39,9 @@ function RotateEntityAction:run(params)
     local original_direction = entity.direction
     local new_direction = original_direction
 
-    -- Direction is now required
-    if not p.direction then
-        error("Direction parameter is required")
-    end
-    
-    -- Normalize direction parameter
-    local function normalize_direction(dir)
-        if type(dir) == "number" then return dir end
-        if type(dir) == "string" then
-            local key = string.lower(dir)
-            return GameStateAliases.direction[key]
-        end
-        return nil
-    end
-
-    local target_direction = normalize_direction(p.direction)
-    if target_direction == nil then
-        error("Invalid direction value: " .. tostring(p.direction))
-    end
+    -- Direction is already normalized by ParamSpec (string aliases converted to enum numbers)
+    -- Cast to number since ParamSpec normalizes string aliases to enum numbers (0-7)
+    local target_direction = tonumber(p.direction) or p.direction
 
     -- Check if already in target direction (no-op)
     if original_direction == target_direction then

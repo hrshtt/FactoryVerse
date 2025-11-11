@@ -4,6 +4,20 @@
 
 local Action = require("types.Action")
 
+-- Helper function to check if string looks like JSON (same as Action.lua)
+local function _trim(s)
+  return (s and s:gsub("^%s+", ""):gsub("%s+$", "")) or s
+end
+
+local function _looks_like_json(s)
+  if type(s) ~= "string" then return false end
+  local t = _trim(s)
+  if not t or #t == 0 then return false end
+  local first = t:sub(1, 1)
+  local last = t:sub(-1)
+  return (first == "{" and last == "}") or (first == "[" and last == "]")
+end
+
 --- @class AsyncAction : Action
 --- @field name string
 --- @field params ParamSpec
@@ -151,14 +165,13 @@ function AsyncAction:clear_tracking(storage_key, tracking_key)
   end
 end
 
---- Prepare cancel parameters before running cancel action
---- Similar to Action:_pre_run but for cancel params
+--- Prepare cancel parameters - just validates and returns ParamSpec instance
 --- @param params ParamSpec|table|string Cancel parameter instance, raw params, or JSON string
 --- @return ParamSpec Validated cancel ParamSpec instance
 function AsyncAction:_pre_cancel(params)
   local instance
-  
-  -- Handle JSON string (same as Action:_pre_run)
+
+  -- Decode JSON string if provided
   if type(params) == "string" then
     if helpers and helpers.json_to_table then
       local ok, decoded = pcall(helpers.json_to_table, params)
@@ -170,36 +183,19 @@ function AsyncAction:_pre_cancel(params)
       error("JSON decode unavailable in this context")
     end
   end
-  
-  -- Normalize to ParamSpec instance
+
+  -- Normalize to ParamSpec instance (exactly like Action:_pre_run)
   if type(params) == "table" and params.get_values then
     instance = params
   else
     instance = self.cancel_params:from_table(params or {})
   end
-  
+
   -- Ensure validated
   if not instance:is_validated() then
     instance:validate()
   end
-  
-  -- Run cancel validators
-  for i, validator in ipairs(self.cancel_validators) do
-    local params_table = instance:get_values()
-    local call_results = {pcall(validator, params_table)}
-    local ok = call_results[1]
-    local result = call_results[2]
-    local error_msg = call_results[3]
-    
-    if not ok then
-      error("Cancel validator " .. i .. " threw error: " .. tostring(result))
-    elseif result == false then
-      error("Cancel validation failed: " .. (error_msg or ("Validator " .. i .. " failed")))
-    elseif result ~= true then
-      error("Cancel validator " .. i .. " failed")
-    end
-  end
-  
+
   return instance
 end
 

@@ -2,21 +2,21 @@ local AsyncAction = require("types.AsyncAction")
 
 --- @class CraftEnqueueParams : ParamSpec
 --- @field agent_id number
---- @field recipe string Recipe prototype name
+--- @field recipe string Recipe prototype name (validated against agent's force)
 --- @field count number|nil Desired crafts; defaults to 1
 local CraftEnqueueParams = AsyncAction.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    recipe = { type = "string", required = true },
+    recipe = { type = "recipe", required = true },
     count = { type = "number", required = false },
 })
 
 --- @class CraftCancelParams : ParamSpec
 --- @field agent_id number
---- @field recipe string Recipe prototype name to cancel
+--- @field recipe string Recipe prototype name to cancel (validated against agent's force)
 --- @field count number|nil Count to cancel, or all if not specified
 local CraftCancelParams = AsyncAction.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    recipe = { type = "string", required = true },
+    recipe = { type = "recipe", required = true },
     count = { type = "number", required = false },
 })
 
@@ -37,15 +37,17 @@ function CraftEnqueueAction:run(params)
     local count_requested = math.max(1, math.floor(p.count or 1))
     
     -- Get agent
-    local agent = storage.agent_characters[agent_id]
+    local agent = storage.agents[agent_id]
     if not agent or not agent.valid then
         return self:_post_run({ success = false, error = "Agent not found or invalid" }, p)
     end
     
-    -- Validate recipe exists
+    -- Recipe is already validated by ParamSpec against agent's force
+    -- Get recipe prototype for craftable_count check
     local recipe_proto = (prototypes and prototypes.recipe and prototypes.recipe[recipe_name])
     if not recipe_proto then
-        return self:_post_run({ success = false, error = "Unknown recipe: " .. recipe_name }, p)
+        -- This should not happen if ParamSpec validation worked, but keep as safety check
+        return self:_post_run({ success = false, error = "Recipe prototype not found: " .. recipe_name }, p)
     end
 
     -- Validate recipe is unlocked for agent's force
@@ -139,7 +141,7 @@ function CraftEnqueueAction:_do_cancel(cancel_params, tracking)
     local count_to_cancel = cancel_params.count
     
     -- Get agent
-    local agent = storage.agent_characters[agent_id]
+    local agent = storage.agents[agent_id]
     if not agent or not agent.valid then
         return self:create_cancel_result(false, false, nil, {error = "Agent not found or invalid"})
     end

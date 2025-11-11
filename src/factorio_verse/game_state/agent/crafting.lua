@@ -1,7 +1,9 @@
 --- Agent crafting completion monitoring
 --- Handles crafting job completion detection, inventory tracking, and UDP notifications
 
+--- @class CraftingModule
 local M = {}
+M.__index = M
 
 -- ============================================================================
 -- CRAFTING COMPLETION MONITORING
@@ -82,7 +84,7 @@ function M.on_tick(event)
     if not storage.craft_in_progress then return end
     
     for agent_id, tracking in pairs(storage.craft_in_progress) do
-        local agent = storage.agent_characters[agent_id]
+        local agent = storage.agents[agent_id]
         
         -- Clean up if agent invalid
         if not agent or not agent.valid then

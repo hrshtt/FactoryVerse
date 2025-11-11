@@ -6,8 +6,8 @@ local Action = require("types.Action")
 --- @field entity_name string Entity prototype name
 local PickupEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position = { type = "table", required = true },
-    entity_name = { type = "string", required = true }
+    position = { type = "position", required = true },
+    entity_name = { type = "entity_name", required = true }
 })
 
 --- @class PickupEntityAction : Action

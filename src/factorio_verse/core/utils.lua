@@ -207,6 +207,166 @@ function M.orientation_to_name(orientation)
     return names[idx + 1]
 end
 
+-- PARAMETER VALIDATION UTILITIES ------------------------------------------------
+
+--- Validate and normalize position structure {x: number, y: number}
+--- @param pos table|nil Position to validate
+--- @return table|nil Normalized position {x: number, y: number} or nil if invalid
+function M.validate_position(pos)
+    if pos == nil then return nil end
+    if type(pos) ~= "table" then return nil end
+    local x = pos.x
+    local y = pos.y
+    if type(x) ~= "number" or type(y) ~= "number" then
+        return nil
+    end
+    -- Return normalized position (ensure numbers, optionally floor)
+    return { x = x, y = y }
+end
+
+--- Validate and normalize direction (string alias or number enum)
+--- @param dir string|number|nil Direction to validate
+--- @return number|nil Normalized defines.direction enum (0-7) or nil if invalid
+function M.validate_direction(dir)
+    if dir == nil then return nil end
+    
+    -- If it's already a number, check if it's a valid direction enum (0-7)
+    if type(dir) == "number" then
+        if dir >= 0 and dir <= 7 then
+            return dir
+        end
+        return nil
+    end
+    
+    -- If it's a string, try to look it up in GameStateAliases
+    if type(dir) == "string" then
+        local GameStateAliases = require("game_state.GameStateAliases")
+        local key = string.lower(dir)
+        local normalized = GameStateAliases.direction[key]
+        if normalized ~= nil then
+            -- defines.direction enum values are numbers 0-7, but type system sees them as specific types
+            -- Return as-is since they are actually numbers
+            return normalized
+        end
+        return nil
+    end
+    
+    return nil
+end
+
+--- Validate orientation value [0, 1)
+--- @param orientation number|nil Orientation to validate
+--- @return number|nil Normalized orientation [0, 1) or nil if invalid
+function M.validate_orientation(orientation)
+    if orientation == nil then return nil end
+    if type(orientation) ~= "number" then return nil end
+    
+    -- Orientation is in range [0, 1) - wrap if needed
+    if orientation < 0 or orientation >= 1 then
+        -- Allow slight overflow (1.0) and wrap it
+        if orientation >= 1.0 and orientation < 1.0001 then
+            return 0.0
+        end
+        return nil
+    end
+    
+    return orientation
+end
+
+--- Validate entity prototype name exists
+--- @param entity_name string|nil Entity prototype name to validate
+--- @return boolean True if entity prototype exists, false otherwise
+function M.validate_entity_name(entity_name)
+    if entity_name == nil then return false end
+    if type(entity_name) ~= "string" or entity_name == "" then return false end
+    
+    -- Check if entity prototype exists in prototypes.entity
+    if prototypes and prototypes.entity then
+        local proto = prototypes.entity[entity_name]
+        return proto ~= nil
+    end
+    
+    -- Fallback: if prototypes is not available, just check it's a non-empty string
+    -- (This allows validation to work in contexts where prototypes isn't loaded)
+    return true
+end
+
+--- Validate recipe name exists for agent's force
+--- Note: Recipes are per-force (LuaForce.recipes), so we validate against the agent's force
+--- @param recipe_name string|nil Recipe name to validate
+--- @param agent_id number|nil Optional agent_id to get the agent's force
+--- @return boolean True if recipe exists in agent's force, false otherwise
+function M.validate_recipe(recipe_name, agent_id)
+    if recipe_name == nil then return false end
+    if type(recipe_name) ~= "string" or recipe_name == "" then return false end
+    
+    -- If agent_id is provided, validate against the agent's force
+    if agent_id ~= nil and type(agent_id) == "number" then
+        -- Get agent's force from storage
+        if storage and storage.agent_forces then
+            local force_name = storage.agent_forces[agent_id]
+            if force_name and game and game.forces then
+                local force = game.forces[force_name]
+                if force and force.recipes then
+                    local recipe = force.recipes[recipe_name]
+                    return recipe ~= nil
+                end
+            end
+        end
+        
+        -- Fallback: try to get agent entity and use its force
+        if storage and storage.agents then
+            local agent = storage.agents[agent_id]
+            if agent and agent.valid and agent.force then
+                local recipe = agent.force.recipes[recipe_name]
+                return recipe ~= nil
+            end
+        end
+    end
+    
+    -- Fallback: if agent_id not available or validation failed, just check it's a non-empty string
+    -- (This allows validation to work in contexts where game/agent isn't available)
+    return true
+end
+
+--- Validate technology name exists for agent's force
+--- Note: Technologies are per-force (LuaForce.technologies), so we validate against the agent's force
+--- @param technology_name string|nil Technology name to validate
+--- @param agent_id number|nil Optional agent_id to get the agent's force
+--- @return boolean True if technology exists in agent's force, false otherwise
+function M.validate_technology(technology_name, agent_id)
+    if technology_name == nil then return false end
+    if type(technology_name) ~= "string" or technology_name == "" then return false end
+    
+    -- If agent_id is provided, validate against the agent's force
+    if agent_id ~= nil and type(agent_id) == "number" then
+        -- Get agent's force from storage
+        if storage and storage.agent_forces then
+            local force_name = storage.agent_forces[agent_id]
+            if force_name and game and game.forces then
+                local force = game.forces[force_name]
+                if force and force.technologies then
+                    local technology = force.technologies[technology_name]
+                    return technology ~= nil
+                end
+            end
+        end
+        
+        -- Fallback: try to get agent entity and use its force
+        if storage and storage.agents then
+            local agent = storage.agents[agent_id]
+            if agent and agent.valid and agent.force then
+                local technology = agent.force.technologies[technology_name]
+                return technology ~= nil
+            end
+        end
+    end
+    
+    -- Fallback: if agent_id not available or validation failed, just check it's a non-empty string
+    -- (This allows validation to work in contexts where game/agent isn't available)
+    return true
+end
+
 function M.triple_print(print_str)
     game.print(print_str)
     log(print_str)

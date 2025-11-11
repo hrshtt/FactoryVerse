@@ -152,7 +152,7 @@ function M:start_walk_to_job(agent_id, goal, options)
     storage.walk_to_next_id = (storage.walk_to_next_id or 1)
     
     local opts = options or {}
-    local agent = storage.agent_characters[agent_id]
+    local agent = storage.agents[agent_id]
     if not agent then return nil end
     
     -- Convert position to {x, y} format if needed
@@ -306,7 +306,7 @@ function M:tick_walk_to_jobs(event, agent_control)
             _send_walk_completion_udp(job, success)
             storage.walk_to_jobs[id] = nil
         elseif job.state == "following" then
-            local agent = storage.agent_characters[job.agent_id]
+            local agent = storage.agents[job.agent_id]
             if not agent then return end
             if agent and agent.valid then
                 _tick_follow(agent_control, job, agent)
@@ -336,7 +336,7 @@ function M:on_path_finished(event)
                     job.state = "failed"
                 else
                     -- Try replanning with current position
-                    local agent = storage.agent_characters[job.agent_id]
+                    local agent = storage.agents[job.agent_id]
                     if agent and agent.valid then
                         job.replans = job.replans + 1
                         _request_path(job, agent)

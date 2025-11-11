@@ -3,14 +3,14 @@ local Action = require("types.Action")
 --- @class SetRecipeParams : ParamSpec
 --- @field agent_id number Agent id executing the action
 --- @field position table Position of the target entity: { x = number, y = number }
---- @field entity_name string Entity prototype name
---- @field recipe string|nil Recipe name to set (nil to clear recipe)
+--- @field entity_name string Entity prototype name (validated against prototypes.entity)
+--- @field recipe string|nil Recipe name to set (nil to clear recipe, validated against agent's force if provided)
 --- @field overwrite boolean|nil Whether to allow overwriting existing recipe
 local SetRecipeParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    position = { type = "table", required = true },
-    entity_name = { type = "string", required = true },
-    recipe = { type = "string", required = false },
+    position = { type = "position", required = true },
+    entity_name = { type = "entity_name", required = true },
+    recipe = { type = "recipe", required = false },
     overwrite = { type = "boolean", required = false, default = false }
 })
 
@@ -79,10 +79,12 @@ function SetRecipeAction:run(params)
         end
     end
 
-    -- Validate recipe exists
+    -- Recipe is already validated by ParamSpec against agent's force
+    -- Get recipe prototype for compatibility check
     local recipe_proto = prototypes and prototypes.recipe and prototypes.recipe[p.recipe]
     if not recipe_proto then
-        error("Recipe not found: " .. p.recipe)
+        -- This should not happen if ParamSpec validation worked, but keep as safety check
+        error("Recipe prototype not found: " .. p.recipe)
     end
 
     -- Check if recipe is compatible with entity

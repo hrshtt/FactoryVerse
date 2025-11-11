@@ -7,9 +7,9 @@ local Action = require("types.Action")
 --- @field items table[] Array of items to transfer: [{name: string, count: number}, ...]
 local SetItemParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
-    entity_name = { type = "string", required = true },
-    position = { type = "table", required = false },
-    items = { type = "table", required = true }
+    entity_name = { type = "entity_name", required = true },
+    position = { type = "position", required = false },
+    items = { type = "item_stack", required = true }
 })
 
 --- @class SetItemAction : Action
