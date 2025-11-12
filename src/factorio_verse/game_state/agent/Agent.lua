@@ -9,8 +9,8 @@
 local pairs = pairs
 local ipairs = ipairs
 
-local GameStateError = require("core.Error")
-local utils = require("core.utils")
+local GameStateError = require("types.Error")
+local utils = require("utils")
 
 -- Agent activity modules
 local Walking = require("game_state.agent.walking")

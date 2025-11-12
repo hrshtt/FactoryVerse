@@ -5,7 +5,7 @@
 --- @field _validated boolean Whether validation has been performed
 local ParamSpec = {}
 
-local utils = require("core.utils")
+local utils = require("utils")
 
 --- Create a new ParamInstance with direct property access via metatables
 --- @param spec table Parameter specification with validation rules

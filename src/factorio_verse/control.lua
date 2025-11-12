@@ -2,9 +2,9 @@
 -- Coordinates ActionRegistry and GameState to aggregate events and register remote interfaces
 -- Events can only be registered once, so we aggregate all handlers and register via chains
 
-local ActionRegistry = require("core.ActionRegistry")
+local ActionRegistry = require("ActionRegistry")
 local GameState = require("GameState")
-local utils = require("core.utils")
+local utils = require("utils")
 
 -- Initialize core instances
 local game_state = GameState:new()

@@ -1,7 +1,7 @@
 local Action = require("types.Action")
 local GameContext = require("game_state.GameContext")
 local GameStateAliases = require("game_state.GameStateAliases")
-local utils = require("core.utils")
+local utils = require("utils")
 
 --- @class PlaceEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action

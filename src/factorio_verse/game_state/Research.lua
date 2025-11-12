@@ -1,7 +1,7 @@
 --- factorio_verse/core/game_state/ResearchGameState.lua
 --- ResearchGameState sub-module for managing research-related functionality.
 
-local GameStateError = require("core.Error")
+local GameStateError = require("types.Error")
 
 --- @class ResearchGameState
 --- @field game_state GameState

@@ -4,8 +4,8 @@
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
 
-local GameStateError = require("core.Error")
-local utils = require("core.utils")
+local GameStateError = require("types.Error")
+local utils = require("utils")
 
 --- @class ResourceGameState
 --- @field game_state GameState

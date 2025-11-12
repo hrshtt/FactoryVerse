@@ -2,8 +2,8 @@
 local pairs = pairs
 local ipairs = ipairs
 
-local Config = require("core.Config")
-local utils = require("core.utils")
+local Config = require("Config")
+local utils = require("utils")
 
 local M = {}
 M.__index = M

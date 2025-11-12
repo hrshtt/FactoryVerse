@@ -4,7 +4,7 @@
 -- Module-level local references for global lookups (performance optimization)
 -- (This module currently doesn't use many globals, but kept for consistency)
 
-local GameStateError = require("core.Error")
+local GameStateError = require("types.Error")
 
 --- @class PowerGameState
 --- @field parent GameState
