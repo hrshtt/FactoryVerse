@@ -89,9 +89,6 @@ local function _send_walk_completion_udp(job, success)
         if tracking and type(tracking) == "table" then
             action_id = tracking.action_id
             rcon_tick = tracking.rcon_tick
-        elseif tracking and type(tracking) == "string" then
-            -- backwards compat: old format was just action_id string
-            action_id = tracking
         end
         storage.walk_in_progress[job.agent_id] = nil
     end

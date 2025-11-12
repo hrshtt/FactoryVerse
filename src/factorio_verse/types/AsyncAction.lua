@@ -4,20 +4,6 @@
 
 local Action = require("types.Action")
 
--- Helper function to check if string looks like JSON (same as Action.lua)
-local function _trim(s)
-  return (s and s:gsub("^%s+", ""):gsub("%s+$", "")) or s
-end
-
-local function _looks_like_json(s)
-  if type(s) ~= "string" then return false end
-  local t = _trim(s)
-  if not t or #t == 0 then return false end
-  local first = t:sub(1, 1)
-  local last = t:sub(-1)
-  return (first == "{" and last == "}") or (first == "[" and last == "]")
-end
-
 --- @class AsyncAction : Action
 --- @field name string
 --- @field params ParamSpec
@@ -58,20 +44,20 @@ function AsyncAction:new(name, params, options)
   -- Create base Action instance first
   local instance = Action:new(name, params)
   ---@cast instance AsyncAction
-  
+
   -- Mark as async (used for metadata generation)
   instance.is_async = true
   instance.is_sync = false
-  
+
   -- Set up cancel functionality
   local opts = options or {}
   instance.cancel_params = opts.cancel_params or DefaultCancelParams
-  instance.cancel_storage_key = opts.cancel_storage_key  -- Must be set by action
+  instance.cancel_storage_key = opts.cancel_storage_key -- Must be set by action
   instance.cancel_tracking_key_fn = opts.cancel_tracking_key_fn or default_tracking_key_fn
-  
+
   -- Set metatable to AsyncAction (which inherits from Action via metatable chain)
   setmetatable(instance, AsyncAction)
-  
+
   return instance
 end
 
@@ -102,14 +88,14 @@ function AsyncAction:create_async_result(action_id, rcon_tick, extra_data)
     action_id = action_id,
     tick = rcon_tick
   }
-  
+
   -- Merge in any extra data (action-specific fields)
   if extra_data and type(extra_data) == "table" then
     for k, v in pairs(extra_data) do
       result[k] = v
     end
   end
-  
+
   return result
 end
 
@@ -124,19 +110,19 @@ function AsyncAction:store_tracking(storage_key, tracking_key, action_id, rcon_t
   if not storage[storage_key] then
     storage[storage_key] = {}
   end
-  
+
   local tracking_data = {
     action_id = action_id,
     rcon_tick = rcon_tick
   }
-  
+
   -- Merge in any extra tracking data
   if extra_data and type(extra_data) == "table" then
     for k, v in pairs(extra_data) do
       tracking_data[k] = v
     end
   end
-  
+
   storage[storage_key][tracking_key] = tracking_data
 end
 
@@ -201,7 +187,7 @@ function AsyncAction:find_active_tracking(cancel_params)
   if not self.cancel_storage_key then
     error("cancel_storage_key not set for action: " .. tostring(self.name))
   end
-  
+
   local tracking_key = self.cancel_tracking_key_fn(cancel_params)
   return self:get_tracking(self.cancel_storage_key, tracking_key)
 end
@@ -220,7 +206,7 @@ function AsyncAction:_do_cancel(cancel_params, tracking)
       error = "No active action found to cancel"
     }
   end
-  
+
   -- Subclasses should override this to implement actual cancel logic
   error("_do_cancel must be overridden by AsyncAction subclass: " .. tostring(self.name))
 end
@@ -230,19 +216,19 @@ end
 --- @return table Cancel result with {success, cancelled, action_id, result={...}}
 function AsyncAction:cancel(params)
   local cancel_params = self:_pre_cancel(params)
-  
+
   -- Find active tracking
   local tracking = self:find_active_tracking(cancel_params)
-  
+
   -- Call action-specific cancel logic
   local cancel_result = self:_do_cancel(cancel_params, tracking)
-  
+
   -- If cancellation was successful, clean up tracking
   if cancel_result.success and cancel_result.cancelled and tracking then
     local tracking_key = self.cancel_tracking_key_fn(cancel_params)
     self:clear_tracking(self.cancel_storage_key, tracking_key)
   end
-  
+
   -- Standardize cancel result format
   local result = {
     success = cancel_result.success or false,
@@ -250,14 +236,14 @@ function AsyncAction:cancel(params)
     action_id = (tracking and tracking.action_id) or cancel_result.action_id,
     result = cancel_result.result or {}
   }
-  
+
   -- Merge in any additional fields from cancel_result
   for k, v in pairs(cancel_result) do
     if k ~= "success" and k ~= "cancelled" and k ~= "action_id" and k ~= "result" then
       result[k] = v
     end
   end
-  
+
   return self:_post_run(result, cancel_params)
 end
 
@@ -273,15 +259,14 @@ function AsyncAction:create_cancel_result(success, cancelled, action_id, extra_d
     cancelled = cancelled,
     action_id = action_id
   }
-  
+
   if extra_data and type(extra_data) == "table" then
     for k, v in pairs(extra_data) do
       result[k] = v
     end
   end
-  
+
   return result
 end
 
 return AsyncAction
-

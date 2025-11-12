@@ -1,38 +1,21 @@
 --- factorio_verse/core/game_state/EntitiesGameState.lua
 --- EntitiesGameState sub-module for managing entity-related functionality.
+--- Static module - no instantiation required.
 
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
 local ipairs = ipairs
 
 local GameStateError = require("types.Error")
-local utils = require("utils")
+local utils = require("utils.utils")
+local Map = require("game_state.Map")
 
---- @class EntitiesGameState
---- @field game_state GameState
---- @field on_demand_snapshots table
---- @field admin_api table
 local M = {}
-M.__index = M
-
-
---- @param game_state GameState
---- @return EntitiesGameState
-function M:new(game_state)
-    local instance = {
-        game_state = game_state,
-        -- Cache frequently-used sibling modules (constructor-level caching for performance)
-        -- map = game_state.map,
-    }
-
-    setmetatable(instance, self)
-    return instance
-end
 
 --- @param area table
 --- @param filter string
 --- @return table
-function M:get_entities_in_area(area, filter)
+function M.get_entities_in_area(area, filter)
     local surface = game.surfaces[1]  -- Uses module-level local 'game'
     if not surface then
         return {}
@@ -45,7 +28,7 @@ function M:get_entities_in_area(area, filter)
     return entities
 end
 
-function M:find_entity(entity_name, position)
+function M.find_entity(entity_name, position)
     local surface = game.surfaces[1]
     local entity = surface.find_entity(entity_name, position)
     if not entity or not entity.valid then
@@ -57,7 +40,7 @@ end
 --- Get a single entity, input can be a JSON string or a table.
 --- @param input string|table - JSON string or argument table ({name=..., position={x=..., y=...}})
 --- @return LuaEntity|GameStateError
-function M:get_entity(input)
+function M.get_entity(input)
     local params = input
 
     -- If input is a string, try to parse as JSON
@@ -85,10 +68,10 @@ function M:get_entity(input)
         return GameStateError:new("Position must be a table containing numeric 'x' and 'y'")
     end
 
-    return self:find_entity(params.name, { x = pos.x, y = pos.y })
+    return M.find_entity(params.name, { x = pos.x, y = pos.y })
 end
 
-function M:can_place_entity(entity_name, position)
+function M.can_place_entity(entity_name, position)
     local surface = game.surfaces[1]
     if not surface then
         return GameStateError:new("No surface available")
@@ -104,7 +87,7 @@ end
 --- @param entity_type string - entity type from Factorio API
 --- @param entity_name string - entity prototype name
 --- @return string - component type ("belts", "pipes", "poles", "entities")
-function M:_determine_component_type(entity_type, entity_name)
+function M._determine_component_type(entity_type, entity_name)
     -- Belt types
     if entity_type == "transport-belt" or entity_type == "underground-belt" or
         entity_type == "splitter" or entity_type == "loader" or
@@ -131,7 +114,7 @@ end
 --- @param entity LuaEntity
 --- @param out table - output table to populate
 --- @return table
-function M:_serialize_base_properties(entity, out)
+function M._serialize_base_properties(entity, out)
     local proto = entity.prototype
 
     -- Base identity and spatial properties
@@ -184,7 +167,7 @@ end
 --- @param entity LuaEntity
 --- @param out table - output table to populate
 --- @return table
-function M:_serialize_belt_data(entity, out)
+function M._serialize_belt_data(entity, out)
     -- Belt item lines
     local item_lines = {}
     local max_index = 0
@@ -239,7 +222,7 @@ end
 --- @param entity LuaEntity
 --- @param out table - output table to populate
 --- @return table
-function M:_serialize_pipe_data(entity, out)
+function M._serialize_pipe_data(entity, out)
     local inputs_ids, outputs_ids = {}, {}
     local fb = entity.fluidbox
     if fb then
@@ -281,7 +264,7 @@ end
 --- @param entity LuaEntity
 --- @param out table - output table to populate
 --- @return table
-function M:_serialize_inserter_data(entity, out)
+function M._serialize_inserter_data(entity, out)
     local ins = {
         pickup_position = entity.pickup_position,
         drop_position = entity.drop_position,
@@ -296,32 +279,32 @@ end
 --- Serialize entity data for JSON storage
 --- @param entity LuaEntity
 --- @return table|nil - serialized entity data or nil if invalid
-function M:serialize_entity(entity)
+function M.serialize_entity(entity)
     if not (entity and entity.valid) then return nil end
 
     local out = {}
 
     -- Serialize base properties
-    self:_serialize_base_properties(entity, out)
+    M._serialize_base_properties(entity, out)
 
     -- Determine component type and serialize component-specific data
-    local component_type = self:_determine_component_type(entity.type, entity.name)
+    local component_type = M._determine_component_type(entity.type, entity.name)
 
     if component_type == "belts" then
-        self:_serialize_belt_data(entity, out)
+        M._serialize_belt_data(entity, out)
     elseif component_type == "pipes" then
-        self:_serialize_pipe_data(entity, out)
+        M._serialize_pipe_data(entity, out)
     end
 
     -- Inserter IO (pickup/drop positions and resolved targets)
     if entity.type == "inserter" then
-        self:_serialize_inserter_data(entity, out)
+        M._serialize_inserter_data(entity, out)
     end
 
     return out
 end
 
-function M:track_entity_status(entity)
+function M.track_entity_status(entity)
     local last_record = storage.entity_status[entity.unit_number] or nil
     local is_new_record = false
     if last_record and (last_record.status == entity.status) then
@@ -337,7 +320,7 @@ function M:track_entity_status(entity)
     return { is_new_record = is_new_record, status = last_record.status }
 end
 
-function M:track_chunk_entity_status(chunk_position)
+function M.track_chunk_entity_status(chunk_position)
     local surface = game.surfaces[1]
     if not surface then
         return {}
@@ -358,7 +341,7 @@ function M:track_chunk_entity_status(chunk_position)
     local status_records = {}
     for _, entity in ipairs(entities) do
         if entity and entity.valid then
-            local result = self:track_entity_status(entity)
+            local result = M.track_entity_status(entity)
             if result.is_new_record then
                 status_records[entity.unit_number] = {
                     position = { entity.position.x, entity.position.y },
@@ -372,13 +355,13 @@ function M:track_chunk_entity_status(chunk_position)
 end
 
 --- Run track_chunk_entity_status on all charted chunks
-function M:track_all_charted_chunk_entity_status()
-    local charted_chunks = self.game_state.map:get_charted_chunks()
+function M.track_all_charted_chunk_entity_status()
+    local charted_chunks = Map.get_charted_chunks()
     local all_status_records = {}
 
     for _, chunk in ipairs(charted_chunks) do
         local chunk_pos = { x = chunk.x, y = chunk.y }
-        local records = self:track_chunk_entity_status(chunk_pos)
+        local records = M.track_chunk_entity_status(chunk_pos)
         for unit_number, status in pairs(records) do
             all_status_records[unit_number] = status
         end
@@ -389,11 +372,11 @@ function M:track_all_charted_chunk_entity_status()
     end
 end
 
-function M:get_event_based_snapshot_events()
+function M.get_event_based_snapshot_events()
     return {
         nth_tick = {
             [10] = function()
-                self:track_all_charted_chunk_entity_status()
+                M.track_all_charted_chunk_entity_status()
             end
         }
     }

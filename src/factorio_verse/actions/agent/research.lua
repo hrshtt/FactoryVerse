@@ -2,7 +2,7 @@
 -- Research is a long-running operation that should be cancellable
 -- When migrated, this will support async tracking and cancellation via dequeue_research
 local Action = require("types.Action")
-local GameContext = require("game_state.GameContext")
+local GameContext = require("types.GameContext")
 
 --- @class EnqueueResearchParams : ParamSpec
 --- @field agent_id number

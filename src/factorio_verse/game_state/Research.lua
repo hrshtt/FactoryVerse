@@ -1,27 +1,12 @@
 --- factorio_verse/core/game_state/ResearchGameState.lua
 --- ResearchGameState sub-module for managing research-related functionality.
+--- Static module - no instantiation required.
 
 local GameStateError = require("types.Error")
 
---- @class ResearchGameState
---- @field game_state GameState
---- @field on_demand_snapshots table
---- @field admin_api table
 local M = {}
-M.__index = M
 
---- @param game_state GameState
---- @return ResearchGameState
-function M:new(game_state)
-    local instance = {
-        game_state = game_state
-    }
-
-    setmetatable(instance, self)
-    return instance
-end
-
-function M:save_research(agent_id, research_id)
+function M.save_research(agent_id, research_id)
     local player = storage.agents[agent_id]
     local force = player.force
 
@@ -55,7 +40,7 @@ function M:save_research(agent_id, research_id)
     return research_state
 end
 
-function M:reset_research(input)
+function M.reset_research(input)
     local agent_id = input.agent_id
     local player = storage.agents[agent_id]
     local force = player.force
@@ -64,7 +49,7 @@ function M:reset_research(input)
     force.research_progress = 0
 end
 
-function M:inspect_research(agent_id)
+function M.inspect_research(agent_id)
 end
 
 M.admin_api = {

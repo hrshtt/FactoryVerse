@@ -1,6 +1,5 @@
 local Action = require("types.Action")
-local GameContext = require("game_state.GameContext")
-local GameStateAliases = require("game_state.GameStateAliases")
+local GameContext = require("types.GameContext")
 
 --- @class WalkParams : ParamSpec
 --- @field agent_id number

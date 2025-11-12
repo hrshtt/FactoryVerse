@@ -1,35 +1,20 @@
 --- factorio_verse/core/game_state/ResourceGameState.lua
 --- ResourceGameState sub-module for managing resource-related functionality.
+--- Static module - no instantiation required.
 
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
 
 local GameStateError = require("types.Error")
-local utils = require("utils")
+local utils = require("utils.utils")
 
---- @class ResourceGameState
---- @field game_state GameState
---- @field on_demand_snapshots table
---- @field admin_api table
 local M = {}
-M.__index = M
-
---- @param game_state GameState
---- @return ResourceGameState
-function M:new(game_state)
-    local instance = {
-        game_state = game_state
-    }
-
-    setmetatable(instance, self)
-    return instance
-end
 
 --- Serialize a single resource tile
 --- @param entity LuaEntity - the resource entity
 --- @param resource_name string - the resource name
 --- @return table - serialized resource data
-function M:serialize_resource_tile(entity, resource_name)
+function M.serialize_resource_tile(entity, resource_name)
     return {
         kind = resource_name,
         x = utils.floor(entity.position.x),
@@ -42,7 +27,7 @@ end
 --- @param entity LuaEntity - the rock entity
 --- @param chunk table - {x, y, area}
 --- @return table - serialized rock data
-function M:serialize_rock(entity, chunk)
+function M.serialize_rock(entity, chunk)
     local size = 1
     if entity.name:match("huge") then
         size = 3
@@ -75,7 +60,7 @@ end
 --- @param entity LuaEntity - the tree entity
 --- @param chunk table - {x, y, area}
 --- @return table - serialized tree data
-function M:serialize_tree(entity, chunk)
+function M.serialize_tree(entity, chunk)
     return {
         name = entity.name,
         position = entity.position,

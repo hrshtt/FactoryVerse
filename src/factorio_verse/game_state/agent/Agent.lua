@@ -9,8 +9,7 @@
 local pairs = pairs
 local ipairs = ipairs
 
-local GameStateError = require("types.Error")
-local utils = require("utils")
+local utils = require("utils.utils")
 
 -- Agent activity modules
 local Walking = require("game_state.agent.walking")
@@ -28,23 +27,15 @@ local function generate_agent_color(index, total_agents)
 end
 
 --- @class AgentGameState : GameStateModule
---- @field entities EntitiesGameState
---- @field inventory InventoryGameState
 --- @field walking WalkingModule
---- @field crafting CraftingModule
 local M = {}
 M.__index = M
-
-local agent_inventory_type = defines.inventory.character_main
 
 --- @param game_state GameState
 --- @return AgentGameState
 function M:new(game_state)
     local instance = {
         game_state = game_state,
-        -- Cache frequently-used sibling modules (constructor-level caching for performance)
-        entities = game_state.entities,
-        inventory = game_state.inventory,
     }
 
     setmetatable(instance, self)
@@ -68,47 +59,6 @@ end
 -- ============================================================================
 -- AGENT LIFECYCLE MANAGEMENT
 -- ============================================================================
-
-function M:force_destroy_agents()
-    -- Destroy all character entities on the surface, excluding those controlled by connected players
-    for _, entity in pairs(game.surfaces[1].find_entities_filtered { name = "character" }) do
-        if entity and entity.valid then
-            local associated_player = entity.associated_player
-            -- Only destroy if not controlled by a connected player
-            if not (associated_player and associated_player.connected) then
-                entity.destroy()
-            end
-        end
-    end
-    -- Clear the agents table
-    --- @type table<number, LuaEntity>
-    storage.agents = {}
-    storage.agent_forces = {}
-    
-    -- Cleanup all rendered name tags
-    if storage.agent_name_tags then
-        for agent_id, render_objects in pairs(storage.agent_name_tags) do
-            pcall(function()
-                if type(render_objects) == "table" then
-                    -- New format: table with main_tag, map_marker, map_tag
-                    if render_objects.main_tag then
-                        rendering.destroy(render_objects.main_tag)
-                    end
-                    if render_objects.map_marker then
-                        rendering.destroy(render_objects.map_marker)
-                    end
-                    if render_objects.map_tag then
-                        rendering.destroy(render_objects.map_tag)
-                    end
-                else
-                    -- Old format: single render_id (for backwards compatibility)
-                    rendering.destroy(render_objects)
-                end
-            end)
-        end
-        storage.agent_name_tags = {}
-    end
-end
 
 --- Create or get a force by name, setting default friendly relationships
 --- @param force_name string Force name
@@ -227,8 +177,6 @@ function M:create_agent(agent_id, position, color, force_name)
     end
     -- Chart the starting area (safe now - doesn't force sync chunk generation)
     utils.chart_native_start_area(surface, force, safe_position or spawn_position, self.game_state)
-    -- Initialize map discovery for ongoing discovery
-    -- MapDiscovery.initialize(surface, force, position)
     return char, final_force_name
 end
 
@@ -308,31 +256,6 @@ function M:create_agents(num_agents, destroy_existing, set_unique_forces, defaul
         table.insert(created_agents, {agent_id = i, force_name = final_force_name})
     end
     return created_agents
-end
-
--- ============================================================================
--- AGENT QUERIES
--- ============================================================================
-
---- @param agent_id number
---- @return table|GameStateError
-function M:get_inventory_contents(agent_id)
-    local agent = self:get_agent(agent_id)
-    if not agent then
-        return GameStateError:new("Agent not found", { agent_id = agent_id })
-    end
-    local inventory_module = self.inventory or self.game_state.inventory
-    return inventory_module:get_inventory_contents(agent, agent_inventory_type)
-end
-
-function M:check_item_in_inventory(agent_id, item_name)
-    local agent = self:get_agent(agent_id)
-    if not agent then
-        return GameStateError:new("Agent not found", { agent_id = agent_id })
-    end
-
-    local inventory_module = self.inventory or self.game_state.inventory
-    return inventory_module:check_item_in_inventory(agent, item_name, agent_inventory_type)
 end
 
 -- ============================================================================
@@ -581,7 +504,6 @@ function M:destroy_agent(agent_id, destroy_force)
         pcall(function()
             local render_objects = storage.agent_name_tags[agent_id]
             if type(render_objects) == "table" then
-                -- New format: table with main_tag, map_marker, map_tag
                 if render_objects.main_tag then
                     render_objects.main_tag.destroy()
                 end
@@ -591,9 +513,6 @@ function M:destroy_agent(agent_id, destroy_force)
                 if render_objects.map_tag then
                     render_objects.map_tag.destroy()
                 end
-            else
-                -- Old format: single render_id (for backwards compatibility)
-                render_objects.destroy()
             end
         end)
         storage.agent_name_tags[agent_id] = nil
@@ -641,25 +560,6 @@ function M:list_agent_forces()
 end
 
 -- ============================================================================
--- SELECTION MANAGEMENT
--- ============================================================================
-
-function M:set_selected(agent_id, selected)
-    storage.agent_selection = storage.agent_selection or {}
-    storage.agent_selection[agent_id] = selected
-end
-
-function M:get_selected(agent_id)
-    return storage.agent_selection and storage.agent_selection[agent_id] or nil
-end
-
-function M:clear_selected(agent_id)
-    if storage.agent_selection then
-        storage.agent_selection[agent_id] = nil
-    end
-end
-
--- ============================================================================
 -- ADMIN API AND SNAPSHOTS
 -- ============================================================================
 
@@ -697,7 +597,7 @@ function M:inspect_agent(agent_id, attach_inventory)
     -- Get agent inventory only if requested
     if attach_inventory then
         local inventory = {}
-        local main_inventory = agent.get_main_inventory and agent:get_main_inventory()
+        local main_inventory = agent.get_inventory(defines.inventory.character_main)
         if main_inventory then
             local contents = main_inventory.get_contents()
             if contents and next(contents) ~= nil then

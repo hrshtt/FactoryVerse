@@ -1,5 +1,5 @@
 local Action = require("types.Action")
-local GameContext = require("game_state.GameContext")
+local GameContext = require("types.GameContext")
 
 --- @class PickupEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action

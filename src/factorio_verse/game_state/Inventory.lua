@@ -1,36 +1,20 @@
 --- factorio_verse/core/game_state/InventoryGameState.lua
 --- InventoryGameState sub-module for managing inventory-related functionality.
+--- Static module - no instantiation required.
 
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
 
 local GameStateError = require("types.Error")
+local Entities = require("game_state.Entities")
 
---- @class InventoryGameState
---- @field game_state GameState
---- @field on_demand_snapshots table
---- @field admin_api table
 local M = {}
-M.__index = M
-
---- @param game_state GameState
---- @return InventoryGameState
-function M:new(game_state)
-    local instance = {
-        game_state = game_state,
-        -- Cache frequently-used sibling modules (constructor-level caching for performance)
-        entities = game_state.entities,
-    }
-
-    setmetatable(instance, self)
-    return instance
-end
 
 --- Get the contents of an inventory for any entity supporting inventories.
 --- @param entity LuaEntity|LuaPlayer|LuaControl The entity or player to get inventory from
 --- @param inventory_type defines.inventory (optional) The inventory type (default: character_main)
 --- @return table|GameStateError
-function M:get_inventory_contents(entity, inventory_type)
+function M.get_inventory_contents(entity, inventory_type)
     if not (entity and entity.valid) then
         return GameStateError:new("Invalid entity")
     end
@@ -49,11 +33,11 @@ end
 --- @param item_name string The item name to check for
 --- @param inventory_type defines.inventory (optional) The inventory type (default: character_main)
 --- @return boolean, GameStateError|nil
-function M:check_item_in_inventory(entity, item_name, inventory_type)
+function M.check_item_in_inventory(entity, item_name, inventory_type)
     if not (entity and entity.valid) then
         return false, GameStateError:new("Invalid entity")
     end
-    local contents, err = self:get_inventory_contents(entity, inventory_type)
+    local contents, err = M.get_inventory_contents(entity, inventory_type)
     if not contents or type(contents) ~= "table" or contents.message then
         -- contents might be a GameStateError object
         local error_msg = (contents and contents.message) or (err and err.message) or "unknown error"
@@ -73,9 +57,9 @@ end
 
 --- Serialize all inventories for an entity (snapshot helper).
 --- Collects contents from all inventory types the entity supports.
---- @param entity LuaEntity|LuaPlayer|LuaControl The entity to serialize inventories for
+--- @param entity LuaEntity|GameStateError The entity to serialize inventories for
 --- @return table|GameStateError - inventory contents by type name (e.g., {chest = {...}, input = {...}}) or error
-function M:serialize_entity_inventories(entity)
+function M.serialize_entity_inventories(entity)
     if not (entity and entity.valid) then
         return GameStateError:new("Invalid entity")
     end
@@ -109,12 +93,13 @@ function M:serialize_entity_inventories(entity)
     return inventories
 end
 
-function M:clear_inventory(input)
-    local entity = self.entities:get_entity(input)
-    if not (entity and entity.valid) then
+function M.clear_inventory(input)
+    local entity = Entities.get_entity(input)
+    -- Check if entity is valid (GameStateError won't have .valid property)
+    if not entity or type(entity) ~= "table" or not entity.valid then
         return GameStateError:new("Invalid entity")
     end
-    local inventories = self:serialize_entity_inventories(entity)
+    local inventories = M.serialize_entity_inventories(entity)
     if not inventories or type(inventories) ~= "table" or inventories.message then
         return GameStateError:new("Failed to serialize inventories")
     end
@@ -126,12 +111,13 @@ function M:clear_inventory(input)
     return true
 end
 
-function M:inspect_inventory(input)
-    local entity = self.entities:get_entity(input)
-    if not (entity and entity.valid) then
+function M.inspect_inventory(input)
+    local entity = Entities.get_entity(input)
+    -- Check if entity is valid (GameStateError won't have .valid property)
+    if not entity or type(entity) ~= "table" or not entity.valid then
         return GameStateError:new("Invalid entity")
     end
-    local inventories = self:serialize_entity_inventories(entity)
+    local inventories = M.serialize_entity_inventories(entity)
     if not inventories or type(inventories) ~= "table" or inventories.message then
         return GameStateError:new("Failed to serialize inventories")
     end
@@ -139,7 +125,7 @@ function M:inspect_inventory(input)
     rcon.print(json_string)
 end
 
-M.on_demand_snapshots= { inspect_inventory = M.inspect_inventory }
+M.on_demand_snapshots = { inspect_inventory = M.inspect_inventory }
 
 M.admin_api = {
     clear_inventory = M.clear_inventory,

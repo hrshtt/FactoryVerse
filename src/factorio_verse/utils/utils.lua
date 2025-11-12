@@ -1,5 +1,42 @@
 local M = {}
 
+M.direction = {
+    [defines.direction.north] = defines.direction.north,
+    n = defines.direction.north,
+    north = defines.direction.north,
+    up = defines.direction.north,
+
+    [defines.direction.south] = defines.direction.south,
+    s = defines.direction.south,
+    south = defines.direction.south,
+    down = defines.direction.south,
+
+    [defines.direction.east] = defines.direction.east,
+    e = defines.direction.east,
+    east = defines.direction.east,
+    right = defines.direction.east,
+
+    [defines.direction.west] = defines.direction.west,
+    w = defines.direction.west,
+    west = defines.direction.west,
+    left = defines.direction.west,
+
+    [defines.direction.northeast] = defines.direction.northeast,
+    ne = defines.direction.northeast,
+    northeast = defines.direction.northeast,
+
+    [defines.direction.northwest] = defines.direction.northwest,
+    nw = defines.direction.northwest,
+    northwest = defines.direction.northwest,
+
+    [defines.direction.southeast] = defines.direction.southeast,
+    se = defines.direction.southeast,
+    southeast = defines.direction.southeast,
+
+    [defines.direction.southwest] = defines.direction.southwest,
+    sw = defines.direction.southwest,
+    southwest = defines.direction.southwest,
+}
 
 --- @param h number
 --- @param s number
@@ -32,7 +69,6 @@ function M.hsv_to_rgb(h, s, v)
     return { r = r, g = g, b = b, a = 1.0 }
 end
 
-
 function M.min_position(a, b)
     return {
         x = math.floor(math.min(a.x, b.x)),
@@ -47,15 +83,15 @@ function M.chart_native_start_area(surface, force, position, game_state)
         { x = position.x + radius_tiles, y = position.y + radius_tiles }
     }
     force.chart(surface, area)
-    
+
     -- Register charted area for headless server fallback (if game_state provided)
-    if game_state then
-        game_state.map:register_charted_area({
+    if game_state and game_state.map then
+        game_state.map.register_charted_area({
             left_top = { x = area[1].x, y = area[1].y },
             right_bottom = { x = area[2].x, y = area[2].y }
         })
     end
-    
+
     -- Don't force generate chunks synchronously - this causes crashes when called from RCON
     -- Chunks will be generated naturally by the engine over time
     -- surface.request_to_generate_chunks(position, math.ceil(radius_tiles / 32))
@@ -178,20 +214,12 @@ function M.direction_to_name(dir)
     return string.lower(string.gsub(name, "_", "-"))
 end
 
---- Convert LuaEntity.status (defines.entity_status) to name
---- @param status any
---- @return string|nil
-function M.entity_status_to_name(status)
-    local name = M.enum_value_to_name(defines.entity_status or {}, status)
-    if not name then return nil end
-    return string.lower(string.gsub(name, "_", "-"))
-end
-
---- Alias for entity_status_to_name (for backward compatibility)
 --- @param status any
 --- @return string|nil
 function M.status_to_name(status)
-    return M.entity_status_to_name(status)
+    local name = M.enum_value_to_name(defines.entity_status or {}, status)
+    if not name then return nil end
+    return string.lower(string.gsub(name, "_", "-"))
 end
 
 --- Map orientation [0,1) to 8-way compass name
@@ -229,7 +257,7 @@ end
 --- @return number|nil Normalized defines.direction enum (0-7) or nil if invalid
 function M.validate_direction(dir)
     if dir == nil then return nil end
-    
+
     -- If it's already a number, check if it's a valid direction enum (0-7)
     if type(dir) == "number" then
         if dir >= 0 and dir <= 7 then
@@ -237,12 +265,11 @@ function M.validate_direction(dir)
         end
         return nil
     end
-    
-    -- If it's a string, try to look it up in GameStateAliases
+
+    -- If it's a string, try to look it up in Direction
     if type(dir) == "string" then
-        local GameStateAliases = require("game_state.GameStateAliases")
         local key = string.lower(dir)
-        local normalized = GameStateAliases.direction[key]
+        local normalized = M.direction[key]
         if normalized ~= nil then
             -- defines.direction enum values are numbers 0-7, but type system sees them as specific types
             -- Return as-is since they are actually numbers
@@ -250,7 +277,7 @@ function M.validate_direction(dir)
         end
         return nil
     end
-    
+
     return nil
 end
 
@@ -260,7 +287,7 @@ end
 function M.validate_orientation(orientation)
     if orientation == nil then return nil end
     if type(orientation) ~= "number" then return nil end
-    
+
     -- Orientation is in range [0, 1) - wrap if needed
     if orientation < 0 or orientation >= 1 then
         -- Allow slight overflow (1.0) and wrap it
@@ -269,7 +296,7 @@ function M.validate_orientation(orientation)
         end
         return nil
     end
-    
+
     return orientation
 end
 
@@ -279,13 +306,13 @@ end
 function M.validate_entity_name(entity_name)
     if entity_name == nil then return false end
     if type(entity_name) ~= "string" or entity_name == "" then return false end
-    
+
     -- Check if entity prototype exists in prototypes.entity
     if prototypes and prototypes.entity then
         local proto = prototypes.entity[entity_name]
         return proto ~= nil
     end
-    
+
     -- Fallback: if prototypes is not available, just check it's a non-empty string
     -- (This allows validation to work in contexts where prototypes isn't loaded)
     return true
@@ -299,7 +326,7 @@ end
 function M.validate_recipe(recipe_name, agent_id)
     if recipe_name == nil then return false end
     if type(recipe_name) ~= "string" or recipe_name == "" then return false end
-    
+
     -- If agent_id is provided, validate against the agent's force
     if agent_id ~= nil and type(agent_id) == "number" then
         -- Get agent's force from storage
@@ -313,7 +340,7 @@ function M.validate_recipe(recipe_name, agent_id)
                 end
             end
         end
-        
+
         -- Fallback: try to get agent entity and use its force
         if storage and storage.agents then
             local agent = storage.agents[agent_id]
@@ -323,7 +350,7 @@ function M.validate_recipe(recipe_name, agent_id)
             end
         end
     end
-    
+
     -- Fallback: if agent_id not available or validation failed, just check it's a non-empty string
     -- (This allows validation to work in contexts where game/agent isn't available)
     return true
@@ -337,7 +364,7 @@ end
 function M.validate_technology(technology_name, agent_id)
     if technology_name == nil then return false end
     if type(technology_name) ~= "string" or technology_name == "" then return false end
-    
+
     -- If agent_id is provided, validate against the agent's force
     if agent_id ~= nil and type(agent_id) == "number" then
         -- Get agent's force from storage
@@ -351,7 +378,7 @@ function M.validate_technology(technology_name, agent_id)
                 end
             end
         end
-        
+
         -- Fallback: try to get agent entity and use its force
         if storage and storage.agents then
             local agent = storage.agents[agent_id]
@@ -361,7 +388,7 @@ function M.validate_technology(technology_name, agent_id)
             end
         end
     end
-    
+
     -- Fallback: if agent_id not available or validation failed, just check it's a non-empty string
     -- (This allows validation to work in contexts where game/agent isn't available)
     return true
@@ -376,11 +403,11 @@ end
 -- SCHEMA-DRIVEN FLATTENING UTILITIES -----------------------------------------
 
 function M.blueprint_to_table(blueprint_string)
-    local version=string.sub(blueprint_string,1,1)
-    local body=string.sub(blueprint_string,2)
-    local json_str=helpers.decode_string(body)
+    local version = string.sub(blueprint_string, 1, 1)
+    local body = string.sub(blueprint_string, 2)
+    local json_str = helpers.decode_string(body)
     if not json_str then return nil end
-    local output=helpers.json_to_table(json_str)
+    local output = helpers.json_to_table(json_str)
     if not output then return nil end
     return output
 end

@@ -1,11 +1,11 @@
 local Action = require("types.Action")
-local GameStateAliases = require("game_state.GameStateAliases")
+
 
 --- @class RotateEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
 --- @field position table Position of the target entity: { x = number, y = number }
 --- @field entity_name string Entity prototype name
---- @field direction string|number Direction to rotate to (required) - accepts alias from GameState.aliases.direction or defines.direction value (0-7)
+--- @field direction string|number Direction to rotate to (required) - accepts alias from defines.direction value (0-7)
 local RotateEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
     position = { type = "position", required = true },

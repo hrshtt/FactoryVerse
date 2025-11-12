@@ -1,31 +1,20 @@
+--- factorio_verse/core/game_state/MapGameState.lua
+--- MapGameState sub-module for managing map-related functionality.
+--- Static module - no instantiation required.
+
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
 local ipairs = ipairs
 
 local Config = require("Config")
-local utils = require("utils")
+local utils = require("utils.utils")
+local Resource = require("game_state.Resource")
 
 local M = {}
-M.__index = M
 
---- @class MapGameState
---- @field game_state GameState
---- @field resource_state ResourceGameState
---- @field on_demand_snapshots table
---- @field admin_api table
-function M:new(game_state)
-    local instance = {
-        game_state = game_state,
-        -- Cache frequently-used sibling modules (constructor-level caching for performance)
-        resource_state = game_state.resource_state,
-    }
-    setmetatable(instance, self)
-    return instance
-end
-
-function M:get_charted_chunks(sort_by_distance)
+function M.get_charted_chunks(sort_by_distance)
     local surface = game.surfaces[1]  -- Uses module-level local 'game'
-    local force = self:get_player_force()
+    local force = M.get_player_force()
     local charted_chunks = {}
     local generated_count = 0
 
@@ -81,7 +70,7 @@ end
 
 -- Returns chunk coordinates from a position object using Factorio's logic (same as LuaSurface::get_chunk_position)
 -- See: https://lua-api.factorio.com/latest/LuaSurface.html#LuaSurface.get_chunk_position
-function M:to_chunk_coordinates(position)
+function M.to_chunk_coordinates(position)
     -- position may be {x=..., y=...} or {1=..., 2=...}, prefer .x/.y
     local x = position.x or position[1]
     local y = position.y or position[2]
@@ -93,7 +82,7 @@ end
 --- Get all resource entities in specified chunks
 --- @param chunks table - list of chunk areas
 --- @return table - entities grouped by resource name
-function M:get_resources_in_chunks(chunks)
+function M.get_resources_in_chunks(chunks)
     local surface = game.surfaces[1]
     if not surface then return {} end
 
@@ -120,7 +109,7 @@ end
 --- Get water tiles using prototype detection for mod compatibility
 --- @param chunks table - list of chunk areas
 --- @return table - water tiles and tile names
-function M:get_water_tiles_in_chunks(chunks)
+function M.get_water_tiles_in_chunks(chunks)
     local surface = game.surfaces[1]
     if not surface then return { tiles = {}, tile_names = {} } end
 
@@ -160,7 +149,7 @@ end
 --- @param position table - starting position {x, y}
 --- @param water_tile_names table - list of water tile names
 --- @return table - connected tiles or empty table if error
-function M:get_connected_water_tiles(position, water_tile_names)
+function M.get_connected_water_tiles(position, water_tile_names)
     local surface = game.surfaces[1]
     if not surface then return {} end
 
@@ -181,7 +170,7 @@ end
 --- Gather all resources for a specific chunk
 --- @param chunk table - {x, y, area}
 --- @return table - {resources = {...}, rocks = {...}, trees = {...}, water = {...}}
-function M:gather_resources_for_chunk(chunk)
+function M.gather_resources_for_chunk(chunk)
     local surface = game.surfaces[1]
 
     local gathered = {
@@ -192,11 +181,11 @@ function M:gather_resources_for_chunk(chunk)
     }
 
     -- Resources (including crude oil)
-    local resources_in_chunk = self:get_resources_in_chunks({ chunk })
+    local resources_in_chunk = M.get_resources_in_chunks({ chunk })
     if resources_in_chunk then
         for resource_name, entities in pairs(resources_in_chunk) do
             for _, entity in ipairs(entities) do
-                table.insert(gathered.resources, self.resource_state:serialize_resource_tile(entity, resource_name))
+                table.insert(gathered.resources, Resource.serialize_resource_tile(entity, resource_name))
             end
         end
     end
@@ -205,18 +194,18 @@ function M:gather_resources_for_chunk(chunk)
     local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
     for _, entity in ipairs(rock_entities) do
         if entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
-            table.insert(gathered.rocks, self.resource_state:serialize_rock(entity, chunk))
+            table.insert(gathered.rocks, Resource.serialize_rock(entity, chunk))
         end
     end
 
     -- Trees
     local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
     for _, entity in ipairs(tree_entities) do
-        table.insert(gathered.trees, self.resource_state:serialize_tree(entity, chunk))
+        table.insert(gathered.trees, Resource.serialize_tree(entity, chunk))
     end
 
     -- Water
-    local water_data = self:get_water_tiles_in_chunks({ chunk })
+    local water_data = M.get_water_tiles_in_chunks({ chunk })
     if water_data and water_data.tiles then
         for _, tile in ipairs(water_data.tiles) do
             local x, y = utils.extract_position(tile)
@@ -238,27 +227,27 @@ end
 ---   - A blueprint can have no more than 10,000 entities and 10,000 tiles (hard limit; see LuaBlueprintEntity and LuaTile).
 ---   - Attempting to create blueprints larger than this will fail or be capped; for reference see https://lua-api.factorio.com/latest/LuaBlueprintEntity.html and relevant forum discussions.
 --- For comprehensive map state exceeding blueprint limits, chunked or streamed approaches are required; avoid trying to handle large areas as a single blueprint.
-function M:get_map_area_state(bounding_box)
+function M.get_map_area_state(bounding_box)
 end
 
 --- set the state of the map area, state is a JSON string
-function M:set_map_area_state(bounding_box, state)
+function M.set_map_area_state(bounding_box, state)
 end
 
-function M:clear_map_area(bounding_box)
+function M.clear_map_area(bounding_box)
 end
 
-function M:track_chunk_charting()
+function M.track_chunk_charting()
 end
 
-function M:get_player_force()
+function M.get_player_force()
     return game.forces["player"]
 end
 
 --- Register a charted area by converting it to chunk coordinates
 --- Called after force.chart() to ensure snapshot works on headless servers
 --- @param area table - {left_top = {x, y}, right_bottom = {x, y}}
-function M:register_charted_area(area)
+function M.register_charted_area(area)
     if not area or not area.left_top or not area.right_bottom then
         return
     end
@@ -286,7 +275,7 @@ end
 --- @param chunk_x number
 --- @param chunk_y number
 --- @return boolean
-function M:is_registered_charted(chunk_x, chunk_y)
+function M.is_registered_charted(chunk_x, chunk_y)
     if not storage.registered_charted_areas then
         return false
     end
@@ -304,7 +293,7 @@ M.admin_api = {
 M.event_based_snapshot = {
     nth_tick = {
         [60] = function(event)
-            M:track_chunk_charting()
+            M.track_chunk_charting()
         end,
     }
 }

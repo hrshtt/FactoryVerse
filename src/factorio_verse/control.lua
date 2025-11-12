@@ -4,7 +4,7 @@
 
 local ActionRegistry = require("ActionRegistry")
 local GameState = require("GameState")
-local utils = require("utils")
+local utils = require("utils.utils")
 
 -- Initialize core instances
 local game_state = GameState:new()

@@ -1,13 +1,23 @@
 local Action = require("types.Action")
-local GameContext = require("game_state.GameContext")
-local GameStateAliases = require("game_state.GameStateAliases")
-local utils = require("utils")
+local GameContext = require("types.GameContext")
+local utils = require("utils.utils")
+
+local DIR_IDX_TO_ENUM = {
+    [0] = defines.direction.east,
+    [1] = defines.direction.southeast,
+    [2] = defines.direction.south,
+    [3] = defines.direction.southwest,
+    [4] = defines.direction.west,
+    [5] = defines.direction.northwest,
+    [6] = defines.direction.north,
+    [7] = defines.direction.northeast
+}
 
 --- @class PlaceEntityParams : ParamSpec
 --- @field agent_id number Agent id executing the action
 --- @field entity_name string Prototype name of the entity to place (e.g., "assembling-machine-1")
 --- @field position table Position to place at: { x = number, y = number }
---- @field direction string|number|nil Optional direction; accepts alias from GameState.aliases.direction or defines.direction value
+--- @field direction string|number|nil Optional direction; accepts alias from defines.direction value (0-7)
 --- @field orient_towards table|nil Optional orientation hint: { entity_name = string|nil, position = {x:number,y:number}|nil }
 local PlaceEntityParams = Action.ParamSpec:new({
     agent_id = { type = "number", required = true },
@@ -35,10 +45,10 @@ function PlaceEntityAction:_pre_run(params)
     -- Call parent to get validated ParamSpec
     local p = Action._pre_run(self, params)
     local params_table = p:get_values()
-    
+
     -- Build context using GameContext
     local agent = GameContext.resolve_agent(params_table, self.game_state)
-    
+
     -- Return context for run()
     return {
         agent = agent,
@@ -100,28 +110,22 @@ function PlaceEntityAction:run(params)
                         if dx < 0 then
                             if dy >= 0 then a = a + math.pi else a = a - math.pi end
                         end
-                        if a < 0 then a = a + 2*math.pi end
+                        if a < 0 then a = a + 2 * math.pi end
                     end
                 end
-                local oct = math.floor(((a + math.pi/8) % (2*math.pi)) / (math.pi/4))
-                local DIR_IDX_TO_ENUM = {
-                    [0]=defines.direction.east, [1]=defines.direction.southeast,
-                    [2]=defines.direction.south,[3]=defines.direction.southwest,
-                    [4]=defines.direction.west, [5]=defines.direction.northwest,
-                    [6]=defines.direction.north,[7]=defines.direction.northeast
-                }
+                local oct = math.floor(((a + math.pi / 8) % (2 * math.pi)) / (math.pi / 4))
                 placement.direction = DIR_IDX_TO_ENUM[oct]
             end
         end
     end
 
     -- Logical validation: Check if placement is valid
-    local can_place = surface.can_place_entity{
+    local can_place = surface.can_place_entity {
         name = placement.name,
         position = placement.position,
         direction = placement.direction,
         force = placement.force,
-        build_check_type = defines.build_check_type.manual
+        build_check_type = defines.build_check_type.manual -- exteremely important to use manual here
     }
     if not can_place then
         error("Cannot place entity at the specified position")
@@ -171,5 +175,3 @@ function PlaceEntityAction:run(params)
 end
 
 return { action = PlaceEntityAction, params = PlaceEntityParams }
-
-

@@ -1,5 +1,5 @@
 local AsyncAction = require("types.AsyncAction")
-local GameContext = require("game_state.GameContext")
+local GameContext = require("types.GameContext")
 
 --- @class MineResourceParams : ParamSpec
 --- @field agent_id number
