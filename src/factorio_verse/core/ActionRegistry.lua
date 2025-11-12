@@ -13,131 +13,22 @@ local Action = require("types.Action")
 
 local ACTION_MODULES = {
   -- agent
-  "actions.agent.walk.action",
-  "actions.agent.teleport.action",
-  "actions.agent.place_entity.action",
-
-  -- agent crafting
-  "actions.agent.crafting.action",
+  "actions.agent.walk",
+  "actions.agent.teleport",
+  "actions.agent.place_entity",
+  "actions.agent.crafting",
+  "actions.agent.mining",
+  "actions.agent.research",
 
   -- entity
-  "actions.entity.place_line.action",
-  "actions.entity.rotate.action",
-  "actions.entity.pickup.action",
-  "actions.entity.set_recipe.action",
-
-  -- entity inventory
-  "actions.entity.inventory.set_item.action",
-  "actions.entity.inventory.get_item.action",
-  "actions.entity.inventory.set_limit.action",
-  "actions.entity.inventory.set_filter.action",
-
-  -- resources
-  "actions.mining.action",
-
-  -- research
-  "actions.research.enqueue_research.action",
-  "actions.research.dequeue_research.action",
+  "actions.entity.rotate",
+  "actions.entity.pickup",
+  "actions.entity.set_recipe",
+  "actions.entity.inventory_get_item",
+  "actions.entity.inventory_set_item",
+  "actions.entity.inventory_set_limit",
+  "actions.entity.inventory_set_filter",
 }
-
--- ============================================================================
--- VALIDATOR PRE-LOADING (hierarchical loading based on action name nesting)
--- ============================================================================
-
---- Extract action name from action module path
---- "actions.entity.inventory.set_item.action" -> "entity.inventory.set_item"
---- @param module_path string Action module path
---- @return string Action name
-local function extract_action_name(module_path)
-  -- Remove "actions." prefix and ".action" suffix
-  local name = string.gsub(module_path, "^actions%.", "")
-  name = string.gsub(name, "%.action$", "")
-  return name
-end
-
---- Generate hierarchical validator paths for an action name
---- For "entity.inventory.set_item", returns:
----   {"actions.validator", "actions.entity.validator", 
----    "actions.entity.inventory.validator", "actions.entity.inventory.set_item.validator"}
---- @param action_name string Action name like "entity.place"
---- @return table<string> Array of validator module paths
-local function get_validator_paths(action_name)
-  local paths = {}
-  table.insert(paths, "actions.validator") -- Root validator always included
-  
-  -- Split action name by dots and build progressively longer paths
-  local parts = {}
-  for part in string.gmatch(action_name, "[^.]+") do
-    table.insert(parts, part)
-  end
-  
-  local current_path = "actions"
-  for i = 1, #parts do
-    current_path = current_path .. "." .. parts[i]
-    table.insert(paths, current_path .. ".validator")
-  end
-  
-  return paths
-end
-
---- Pre-load all validator modules at top level
---- Maps validator_path -> validator_module (table of functions)
-local VALIDATORS_BY_PATH = {}
-
-do
-  -- Collect all unique validator paths from all actions
-  local validator_paths_set = {}
-  
-  -- Always include root validator
-  validator_paths_set["actions.validator"] = true
-  
-  -- Generate paths for each action module
-  for _, module_path in ipairs(ACTION_MODULES) do
-    local action_name = extract_action_name(module_path)
-    local paths = get_validator_paths(action_name)
-    for _, path in ipairs(paths) do
-      validator_paths_set[path] = true
-    end
-  end
-  
-  -- Require all validator modules at top level
-  for validator_path, _ in pairs(validator_paths_set) do
-    local ok, validator_module = pcall(require, validator_path)
-    if ok and type(validator_module) == "table" then
-      log("Loaded validator module: " .. validator_path)
-      VALIDATORS_BY_PATH[validator_path] = validator_module
-    end
-  end
-end
-
---- Load validators for an action from pre-loaded validator modules
---- Validator modules return either an array of functions or {enqueue = [...], cancel = [...]}
---- @param action_name string Action name like "entity.place"
---- @param validator_type string|nil "enqueue" or "cancel" for structured validators
---- @return table<function> Array of validator functions
-local function load_validators(action_name, validator_type)
-  local validators = {}
-  local validator_paths = get_validator_paths(action_name)
-  
-  for _, validator_path in ipairs(validator_paths) do
-    local validator_module = VALIDATORS_BY_PATH[validator_path]
-    if validator_module then
-      -- Handle structured validators (e.g., {enqueue = [...], cancel = [...]})
-      if validator_type and type(validator_module) == "table" and validator_module[validator_type] then
-        for _, validator_func in ipairs(validator_module[validator_type]) do
-          table.insert(validators, validator_func)
-        end
-      -- Handle array validators (legacy format)
-      elseif type(validator_module) == "table" and #validator_module > 0 and type(validator_module[1]) == "function" then
-        for _, validator_func in ipairs(validator_module) do
-          table.insert(validators, validator_func)
-        end
-      end
-    end
-  end
-  
-  return validators
-end
 
 -- ============================================================================
 -- ACTION REGISTRY CLASS
@@ -174,23 +65,10 @@ function ActionRegistry:load()
       return
     end
     
-    -- Load validators hierarchically
-    -- Use module_path to determine validator location (e.g., "actions.mining.action" -> "mining")
-    -- Fallback to action.name if module_path not provided
-    local ok, err = pcall(function()
-      local validator_base_name = module_path and extract_action_name(module_path) or action.name
-      -- For crafting and mining, use "enqueue" validators for the main action
-      local validator_type = ((validator_base_name == "agent.crafting") or (validator_base_name == "mining")) and "enqueue" or nil
-      local validators = load_validators(validator_base_name, validator_type)
-      action:attach_validators(validators)
-      if #validators > 0 then
-        log("Attached " .. #validators .. " validator(s) to action: " .. tostring(action.name) .. " (from " .. validator_base_name .. ")")
-      end
-    end)
-    if not ok then
-      log("Error attaching validator to action: " .. tostring(action.name))
-      log(err)
-    end
+    -- Validators removed - validation now handled by:
+    -- 1. ParamSpec format validation (in Action._pre_run)
+    -- 2. GameContext resolution (in action _pre_run overrides)
+    -- 3. Logical validation (in action run() methods)
 
     table.insert(self.actions, action)
     self.actions_by_name[action.name] = action
@@ -200,23 +78,12 @@ function ActionRegistry:load()
       -- For crafting, use "dequeue" instead of "cancel" in the name
       local cancel_name = (action.name == "agent.crafting.enqueue") and "agent.crafting.dequeue" or (action.name .. ".cancel")
       
-      -- Load cancel validators
-      local cancel_validators = {}
-      local validator_base_name = module_path and extract_action_name(module_path) or action.name
-      -- For crafting and mining, use "cancel" validators from the same validator module
-      local validator_type = ((validator_base_name == "agent.crafting") or (validator_base_name == "mining")) and "cancel" or nil
-      local ok, validators = pcall(function() return load_validators(validator_base_name, validator_type) end)
-      if ok and validators then
-        cancel_validators = validators
-      end
-      
       local cancel_action = {
         name = cancel_name,
         run = function(self, params) return action:cancel(params) end,
         is_sync = true,   -- Cancel is always sync
         is_async = false, -- Cancel is always sync
         cancel_params = action.cancel_params,
-        cancel_validators = cancel_validators,
         set_game_state = function(self, game_state) action:set_game_state(game_state) end,
       }
       table.insert(self.actions, cancel_action)
@@ -245,17 +112,16 @@ function ActionRegistry:load()
   for _, module_name in ipairs(ACTION_MODULES) do
     local ok, action_or_err = pcall(require, module_name)
     if ok and type(action_or_err) == "table" then
-      -- Handle different return formats:
-      -- 1) Single action table with name/run
-      -- 2) Array of actions {action1, action2, ...}
-      -- 3) Table with field `action`
-      if type(action_or_err.name) == "string" and type(action_or_err.run) == "function" then
-        register_action(action_or_err, module_name)
-      elseif type(action_or_err[1]) == "table" then
+      -- Handle return formats:
+      -- 1) Array of actions {action1, action2, ...} (e.g., walk.lua returns {WalkToAction, WalkCancelAction})
+      -- 2) Table with field `action` (standard format: {action = Action, params = Params})
+      if type(action_or_err[1]) == "table" then
+        -- Array format: multiple actions in one file
         for _, a in ipairs(action_or_err) do
           register_action(a, module_name)
         end
       elseif type(action_or_err.action) == "table" then
+        -- Standard format: {action = Action, params = Params}
         register_action(action_or_err.action, module_name)
       else
         log("Module did not return an action: " .. module_name)

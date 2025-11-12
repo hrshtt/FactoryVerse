@@ -6,11 +6,9 @@ local ParamSpec = require("types.ParamSpec")
 --- @class Action
 --- @field name string
 --- @field params ParamSpec
---- @field validators table
 --- @field game_state GameState|nil (set during action registration)
 --- @field is_sync boolean Whether action completes synchronously (default: true)
 --- @field is_async boolean|nil Whether action completes asynchronously (default: nil, derived from is_sync)
---- @field validate function
 --- @field run function
 local Action = {}
 Action.__index = Action
@@ -34,20 +32,13 @@ end
 --- @param name string
 --- @param params ParamSpec
 --- @return Action
-function Action:new(name, params, validators)
+function Action:new(name, params)
   return setmetatable({
     name = name,
     params = params,
-    validators = validators or {},
     is_sync = true,  -- Default: all actions are sync unless explicitly marked async
     is_async = nil,  -- Derived from is_sync
   }, Action)
-end
-
---- Attach validators to the action
---- @param validators table<function>
-function Action:attach_validators(validators)
-  self.validators = validators
 end
 
 --- Set the game_state instance for this action (called during registration)
@@ -56,43 +47,11 @@ function Action:set_game_state(game_state)
   self.game_state = game_state
 end
 
---- Validate parameters using external validators
---- @param params ParamSpec|table Parameter instance or raw params (for backward compatibility)
---- @return boolean success
---- @return string|nil error_message
-function Action:validate(params)
-  local params_table
-  if type(params) == "table" and params.get_values then
-    -- It's a ParamInstance
-    params_table = params:get_values()
-  else
-    -- It's raw params table (backward compatibility)
-    params_table = params
-  end
-  
-  for i, validator in ipairs(self.validators) do
-    -- Use pcall to safely call validator, preserving multiple return values
-    local call_results = {pcall(validator, params_table)}
-    local ok = call_results[1]
-    local result = call_results[2]
-    local error_msg = call_results[3]
-    
-    if not ok then
-      return false, "Validator " .. i .. " threw error: " .. tostring(result)
-    elseif result == false then
-      return false, error_msg or ("Validator " .. i .. " failed")
-    elseif result ~= true then
-      -- Handle case where validator returns just false without error message
-      return false, "Validator " .. i .. " failed"
-    end
-  end
-  return true
-end
-
 --- Prepare parameters before running an action.
---- Accepts ParamSpec instance, raw table, or JSON string. Returns validated ParamSpec.
+--- Subclasses can override to return custom context table instead of ParamSpec.
+--- Accepts ParamSpec instance, table, or JSON string. Returns validated ParamSpec by default.
 --- @param params ParamSpec|table|string
---- @return ParamSpec|any
+--- @return ParamSpec|any validated params or context table
 function Action:_pre_run(params)
   local instance
 
@@ -120,16 +79,15 @@ function Action:_pre_run(params)
     instance = self.params:from_table(params or {})
   end
 
-  -- Ensure validated and run external validators
+  -- Ensure validated (ParamSpec format validation only)
   if not instance:is_validated() then
     instance:validate()
   end
-  local ok, error_msg = self:validate(instance)
-  if ok == false then
-    error("Validation failed for action '" .. tostring(self.name) .. "': " .. (error_msg or "unknown error"))
-  end
  
   self.params = instance
+  
+  -- Default: return validated ParamSpec
+  -- Subclasses can override to return context table
   return instance
 end
 

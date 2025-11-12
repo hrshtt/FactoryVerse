@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local GameContext = require("game_state.GameContext")
 
 --- @class SetFilterParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -15,64 +16,44 @@ local SetFilterParams = Action.ParamSpec:new({
 })
 
 --- @class SetFilterAction : Action
-local SetFilterAction = Action:new("entity.inventory.set_filter", SetFilterParams)
+local SetFilterAction = Action:new("entity.inventory_set_filter", SetFilterParams)
 
---- @param params SetFilterParams
+--- @class SetFilterContext
+--- @field agent LuaEntity Agent character entity
+--- @field entity LuaEntity Target entity
+--- @field entity_proto table Entity prototype
+--- @field inventory_type string Inventory type string
+--- @field filters table[] Array of filter specs
+--- @field params SetFilterParams ParamSpec instance for _post_run
+
+--- Override _pre_run to build context using GameContext
+--- @param params SetFilterParams|table|string
+--- @return SetFilterContext
+function SetFilterAction:_pre_run(params)
+    -- Call parent to get validated ParamSpec
+    local p = Action._pre_run(self, params)
+    local params_table = p:get_values()
+    
+    -- Build context using GameContext
+    local agent = GameContext.resolve_agent(params_table, self.game_state)
+    local entity, entity_proto = GameContext.resolve_entity(params_table, agent)
+    
+    -- Return context for run()
+    return {
+        agent = agent,
+        entity = entity,
+        entity_proto = entity_proto,
+        inventory_type = params_table.inventory_type,
+        filters = params_table.filters,
+        params = p
+    }
+end
+
+--- @param params SetFilterParams|table|string
 --- @return table result Data about the filter changes
 function SetFilterAction:run(params)
-    local p = self:_pre_run(params)
-    ---@cast p SetFilterParams
-
-    -- Get agent (LuaEntity)
-    local agent = self.game_state.agent:get_agent(p.agent_id)
-    if not agent or not agent.valid then
-        error("Agent not found or invalid")
-    end
-
-    -- Find entity within agent's build_distance
-    local agent_pos = agent.position
-    local build_distance = agent.build_distance or 10
-    local surface = game.surfaces[1]
-    local entity = nil
-    
-    if p.position and type(p.position.x) == "number" and type(p.position.y) == "number" then
-        -- Try exact position first
-        entity = surface.find_entity(p.entity_name, { x = p.position.x, y = p.position.y })
-        if entity and entity.valid then
-            -- Verify within build_distance
-            local dx = entity.position.x - agent_pos.x
-            local dy = entity.position.y - agent_pos.y
-            local dist_sq = dx * dx + dy * dy
-            if dist_sq > build_distance * build_distance then
-                entity = nil
-            end
-        end
-    end
-    
-    -- If not found at exact position, search within radius
-    if not entity or not entity.valid then
-        local entities = surface.find_entities_filtered({
-            position = agent_pos,
-            radius = build_distance,
-            name = p.entity_name
-        })
-        
-        -- Filter to valid entities
-        local valid_entities = {}
-        for _, e in ipairs(entities) do
-            if e and e.valid then
-                table.insert(valid_entities, e)
-            end
-        end
-        
-        if #valid_entities == 0 then
-            error("Entity '" .. p.entity_name .. "' not found within build_distance of agent")
-        elseif #valid_entities > 1 then
-            error("Multiple entities '" .. p.entity_name .. "' found. Provide position parameter to specify which entity.")
-        else
-            entity = valid_entities[1]
-        end
-    end
+    --- @type SetFilterContext
+    local context = self:_pre_run(params)
 
     -- Map inventory type name to defines constant
     local inventory_type_map = {
@@ -84,24 +65,24 @@ function SetFilterAction:run(params)
         ammo = defines.inventory.turret_ammo,
     }
     
-    local inventory_type = inventory_type_map[p.inventory_type]
+    local inventory_type = inventory_type_map[context.inventory_type]
     if not inventory_type then
-        error("Invalid inventory_type: " .. p.inventory_type)
+        error("Invalid inventory_type: " .. context.inventory_type)
     end
 
     -- Get target inventory
-    local target_inventory = entity.get_inventory(inventory_type)
+    local target_inventory = context.entity.get_inventory(inventory_type)
     if not target_inventory or not target_inventory.valid then
-        error("Entity does not have inventory type: " .. p.inventory_type)
+        error("Entity does not have inventory type: " .. context.inventory_type)
     end
 
-    -- Check if inventory supports filters
+    -- Logical validation: Check if inventory supports filters
     if not target_inventory.supports_filters() then
         error("Inventory does not support filters")
     end
 
-    -- Validate filters array
-    if type(p.filters) ~= "table" or not p.filters[1] then
+    -- Logical validation: Validate filters array
+    if type(context.filters) ~= "table" or not context.filters[1] then
         error("filters must be a non-empty array")
     end
 
@@ -109,7 +90,7 @@ function SetFilterAction:run(params)
     local processed_filters = {}
 
     -- Process each filter
-    for i, filter_spec in ipairs(p.filters) do
+    for i, filter_spec in ipairs(context.filters) do
         if type(filter_spec) ~= "table" then
             error("filters[" .. i .. "] must be a table with 'index' and 'filter' fields")
         end
@@ -151,22 +132,23 @@ function SetFilterAction:run(params)
         })
     end
 
+    local params_table = context.params:get_values()
     local result = {
-        position = { x = entity.position.x, y = entity.position.y },
-        entity_name = entity.name,
-        entity_type = entity.type,
-        inventory_type = p.inventory_type,
+        position = { x = context.entity.position.x, y = context.entity.position.y },
+        entity_name = context.entity.name,
+        entity_type = context.entity.type,
+        inventory_type = context.inventory_type,
         filters = processed_filters,
         affected_positions = { 
             { 
-                position = { x = entity.position.x, y = entity.position.y },
-                entity_name = p.entity_name,
-                entity_type = entity.type
+                position = { x = context.entity.position.x, y = context.entity.position.y },
+                entity_name = params_table.entity_name,
+                entity_type = context.entity.type
             } 
         }
     }
     
-    return self:_post_run(result, p)
+    return self:_post_run(result, context.params)
 end
 
 return { action = SetFilterAction, params = SetFilterParams }

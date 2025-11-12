@@ -21,14 +21,11 @@ end
 --- @class AsyncAction : Action
 --- @field name string
 --- @field params ParamSpec
---- @field validators table
 --- @field game_state GameState|nil (set during action registration)
 --- @field is_async boolean Always true for async actions
 --- @field cancel_params ParamSpec|nil Parameter specification for cancel action
---- @field cancel_validators table|nil Validators for cancel action
 --- @field cancel_storage_key string|nil Storage key for tracking (e.g., "walk_in_progress")
 --- @field cancel_tracking_key_fn function|nil Function to extract tracking key from cancel params
---- @field validate function
 --- @field run function
 --- @field cancel function
 local AsyncAction = {}
@@ -55,12 +52,11 @@ end
 --- Create a new async action
 --- @param name string Action name (e.g., "agent.walk_to")
 --- @param params ParamSpec Parameter specification
---- @param validators table|nil Optional array of validator functions
---- @param options table|nil Options: cancel_params, cancel_validators, cancel_storage_key, cancel_tracking_key_fn
+--- @param options table|nil Options: cancel_params, cancel_storage_key, cancel_tracking_key_fn
 --- @return AsyncAction
-function AsyncAction:new(name, params, validators, options)
+function AsyncAction:new(name, params, options)
   -- Create base Action instance first
-  local instance = Action:new(name, params, validators)
+  local instance = Action:new(name, params)
   ---@cast instance AsyncAction
   
   -- Mark as async (used for metadata generation)
@@ -70,7 +66,6 @@ function AsyncAction:new(name, params, validators, options)
   -- Set up cancel functionality
   local opts = options or {}
   instance.cancel_params = opts.cancel_params or DefaultCancelParams
-  instance.cancel_validators = opts.cancel_validators or {}
   instance.cancel_storage_key = opts.cancel_storage_key  -- Must be set by action
   instance.cancel_tracking_key_fn = opts.cancel_tracking_key_fn or default_tracking_key_fn
   
@@ -166,7 +161,7 @@ function AsyncAction:clear_tracking(storage_key, tracking_key)
 end
 
 --- Prepare cancel parameters - just validates and returns ParamSpec instance
---- @param params ParamSpec|table|string Cancel parameter instance, raw params, or JSON string
+--- @param params ParamSpec|table|string Cancel parameter instance, table, or JSON string
 --- @return ParamSpec Validated cancel ParamSpec instance
 function AsyncAction:_pre_cancel(params)
   local instance

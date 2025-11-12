@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local GameContext = require("game_state.GameContext")
 
 --- @class TeleportParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -13,32 +14,53 @@ local TeleportParams = Action.ParamSpec:new({
 --- @class TeleportAction : Action
 local TeleportAction = Action:new("agent.teleport", TeleportParams)
 
---- @param params TeleportParams
+--- @class TeleportContext
+--- @field agent LuaEntity Agent character entity
+--- @field position table Position to teleport to: {x: number, y: number}
+--- @field fallback_to_safe_position boolean If true, try to find safe position nearby if target is blocked
+--- @field params TeleportParams ParamSpec instance for _post_run
+
+--- Override _pre_run to build context using GameContext
+--- @param params TeleportParams|table|string
+--- @return TeleportContext
+function TeleportAction:_pre_run(params)
+    -- Call parent to get validated ParamSpec
+    local p = Action._pre_run(self, params)
+    local params_table = p:get_values()
+    
+    -- Build context using GameContext
+    local agent = GameContext.resolve_agent(params_table, self.game_state)
+    
+    -- Return context for run()
+    return {
+        agent = agent,
+        position = params_table.position,
+        fallback_to_safe_position = params_table.fallback_to_safe_position or false,
+        params = p
+    }
+end
+
+--- @param params TeleportParams|table|string
 --- @return table result Data about the teleportation
 function TeleportAction:run(params)
-    local p = self:_pre_run(params)
-    ---@cast p TeleportParams
+    --- @type TeleportContext
+    local context = self:_pre_run(params)
 
-    local agent = self.game_state.agent:get_agent(p.agent_id)
-    if not agent or not agent.valid then
-        error("Agent not found or invalid")
-    end
-
-    local surface = agent.surface or game.surfaces[1]
+    local surface = context.agent.surface or game.surfaces[1]
     if not surface then
         error("No surface available")
     end
 
     -- Validate position format (should be handled by ParamSpec, but double-check)
-    if not p.position or type(p.position.x) ~= "number" or type(p.position.y) ~= "number" then
+    if not context.position or type(context.position.x) ~= "number" or type(context.position.y) ~= "number" then
         error("Position must be a table with numeric x and y")
     end
 
-    local target_position = { x = p.position.x, y = p.position.y }
+    local target_position = { x = context.position.x, y = context.position.y }
     local teleport_position = target_position
 
     -- Handle position safety check
-    if p.fallback_to_safe_position then
+    if context.fallback_to_safe_position then
         -- Fallback mode: try to find safe position nearby, but fallback to target if needed
         local safe_position = surface.find_non_colliding_position("character", target_position, 10, 2)
         if safe_position then
@@ -53,7 +75,7 @@ function TeleportAction:run(params)
         local can_place = surface.can_place_entity{
             name = "character",
             position = target_position,
-            force = agent.force
+            force = context.agent.force
         }
         if not can_place then
             error("Target position is not safe for teleportation (blocked or invalid)")
@@ -64,31 +86,32 @@ function TeleportAction:run(params)
 
     -- Stop any active activities before teleporting
     local agent_state = self.game_state.agent
-    agent_state:stop_walking(p.agent_id)
-    agent_state:set_mining(p.agent_id, false)
+    local params_table = context.params:get_values()
+    agent_state:stop_walking(params_table.agent_id)
+    agent_state:set_mining(params_table.agent_id, false)
 
     -- Store old position for result
-    local old_position = { x = agent.position.x, y = agent.position.y }
+    local old_position = { x = context.agent.position.x, y = context.agent.position.y }
 
     -- Perform teleportation
-    local success = agent.teleport(teleport_position)
+    local success = context.agent.teleport(teleport_position)
     if not success then
         error("Failed to teleport agent")
     end
 
     -- Read actual position from character entity after teleport
-    local actual_position = { x = agent.position.x, y = agent.position.y }
+    local actual_position = { x = context.agent.position.x, y = context.agent.position.y }
 
     -- Note: Rendered name tags automatically follow the entity when it moves
 
     local result = {
-        agent_id = p.agent_id,
+        agent_id = params_table.agent_id,
         old_position = old_position,
         target_position = target_position,
         actual_position = actual_position,
         success = true
     }
-    return self:_post_run(result, p)
+    return self:_post_run(result, context.params)
 end
 
 return { action = TeleportAction, params = TeleportParams }

@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local GameContext = require("game_state.GameContext")
 local GameStateAliases = require("game_state.GameStateAliases")
 local utils = require("core.utils")
 
@@ -19,44 +20,70 @@ local PlaceEntityParams = Action.ParamSpec:new({
 --- @class PlaceEntityAction : Action
 local PlaceEntityAction = Action:new("agent.place_entity", PlaceEntityParams)
 
---- @param params PlaceEntityParams
+--- @class PlaceEntityContext
+--- @field agent LuaEntity Agent character entity
+--- @field entity_name string Entity prototype name
+--- @field position table Position to place at: {x: number, y: number}
+--- @field direction number|nil Direction (normalized)
+--- @field orient_towards table|nil Optional orientation hint
+--- @field params PlaceEntityParams ParamSpec instance for _post_run
+
+--- Override _pre_run to build context using GameContext
+--- @param params PlaceEntityParams|table|string
+--- @return PlaceEntityContext
+function PlaceEntityAction:_pre_run(params)
+    -- Call parent to get validated ParamSpec
+    local p = Action._pre_run(self, params)
+    local params_table = p:get_values()
+    
+    -- Build context using GameContext
+    local agent = GameContext.resolve_agent(params_table, self.game_state)
+    
+    -- Return context for run()
+    return {
+        agent = agent,
+        entity_name = params_table.entity_name,
+        position = params_table.position,
+        direction = params_table.direction,
+        orient_towards = params_table.orient_towards,
+        params = p
+    }
+end
+
+--- @param params PlaceEntityParams|table|string
 --- @return table result Data about the placed entity
 function PlaceEntityAction:run(params)
-    local p = self:_pre_run(params)
-    ---@cast p PlaceEntityParams
+    --- @type PlaceEntityContext
+    local context = self:_pre_run(params)
 
-    local agent = self.game_state.agent:get_agent(p.agent_id)
-    if not agent or not agent.valid then
-        error("Agent not found or invalid")
-    end
     local surface = game.surfaces[1]
 
     local placement = {
-        name = p.entity_name,
-        position = p.position,
-        force = agent.force,
+        name = context.entity_name,
+        position = context.position,
+        force = context.agent.force,
     }
 
     -- Direction is already normalized by ParamSpec (string aliases converted to enum numbers)
-    if p.direction ~= nil then
-        placement.direction = p.direction
+    if context.direction ~= nil then
+        placement.direction = context.direction
     end
 
     -- If direction not provided, but orient_towards is provided, derive direction
-    if (not placement.direction) and p.orient_towards then
+    if (not placement.direction) and context.orient_towards then
         local target_pos = nil
         -- Prefer explicit entity lookup when both name and position are provided
-        if p.orient_towards.entity_name and p.orient_towards.position then
+        if context.orient_towards.entity_name and context.orient_towards.position then
             local ok, ent = pcall(function()
-                return surface.find_entity(p.orient_towards.entity_name, p.orient_towards.position)
+                return surface.find_entity(context.orient_towards.entity_name, context.orient_towards.position)
             end)
             if ok and ent and ent.valid then
                 target_pos = ent.position
             end
         end
         -- Fallback: use provided position directly
-        if (not target_pos) and p.orient_towards.position then
-            target_pos = p.orient_towards.position
+        if (not target_pos) and context.orient_towards.position then
+            target_pos = context.orient_towards.position
         end
         if target_pos then
             local dx = target_pos.x - placement.position.x
@@ -88,8 +115,8 @@ function PlaceEntityAction:run(params)
         end
     end
 
-    -- Validate placement
-    local can_place = game.surfaces[1].can_place_entity{
+    -- Logical validation: Check if placement is valid
+    local can_place = surface.can_place_entity{
         name = placement.name,
         position = placement.position,
         direction = placement.direction,
@@ -100,20 +127,21 @@ function PlaceEntityAction:run(params)
         error("Cannot place entity at the specified position")
     end
 
-    -- Ensure agent has the item; we assume item name matches entity prototype name
-    local inv = agent.get_inventory(defines.inventory.character_main) or nil
-    if not inv or inv.get_item_count(p.entity_name) <= 0 then
-        error("Agent does not have item in inventory: " .. tostring(p.entity_name))
+    -- Logical validation: Ensure agent has the item
+    local inv = context.agent.get_inventory(defines.inventory.character_main) or nil
+    if not inv or inv.get_item_count(context.entity_name) <= 0 then
+        error("Agent does not have item in inventory: " .. tostring(context.entity_name))
     end
 
     local entity = surface.create_entity(placement)
     if not entity then
-        error("Failed to place entity: " .. p.entity_name)
+        error("Failed to place entity: " .. context.entity_name)
     end
 
     -- Consume one item on successful placement
-    inv.remove({ name = p.entity_name, count = 1 })
+    inv.remove({ name = context.entity_name, count = 1 })
 
+    local params_table = context.params:get_values()
     local result = {
         name = entity.name,
         position = entity.position,
@@ -133,13 +161,13 @@ function PlaceEntityAction:run(params)
         affected_inventories = {
             {
                 owner_type = "agent",
-                owner_id = p.agent_id,
+                owner_id = params_table.agent_id,
                 inventory_type = "character_main",
-                changes = { [p.entity_name] = -1 } -- Consumed one item
+                changes = { [context.entity_name] = -1 } -- Consumed one item
             }
         }
     }
-    return self:_post_run(result, p)
+    return self:_post_run(result, context.params)
 end
 
 return { action = PlaceEntityAction, params = PlaceEntityParams }

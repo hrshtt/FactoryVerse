@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local GameContext = require("game_state.GameContext")
 
 --- @class GetItemParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -13,76 +14,62 @@ local GetItemParams = Action.ParamSpec:new({
 })
 
 --- @class GetItemAction : Action
-local GetItemAction = Action:new("entity.inventory.get_item", GetItemParams)
+local GetItemAction = Action:new("entity.inventory_get_item", GetItemParams)
 
---- @param params GetItemParams
+--- @class GetItemContext
+--- @field agent LuaEntity Agent character entity
+--- @field entity LuaEntity Target entity
+--- @field entity_proto table Entity prototype
+--- @field inventory LuaInventory Entity inventory
+--- @field items table[] Array of items to retrieve: [{name: string, count: number}, ...]
+--- @field params GetItemParams ParamSpec instance for _post_run
+
+--- Override _pre_run to build context using GameContext
+--- @param params GetItemParams|table|string
+--- @return GetItemContext
+function GetItemAction:_pre_run(params)
+    -- Call parent to get validated ParamSpec
+    local p = Action._pre_run(self, params)
+    local params_table = p:get_values()
+    
+    -- Build context using GameContext
+    local agent = GameContext.resolve_agent(params_table, self.game_state)
+    local entity, entity_proto = GameContext.resolve_entity(params_table, agent)
+    local inventory = GameContext.resolve_inventory(entity, defines.inventory.chest)
+    
+    -- Action-specific validation
+    if not inventory or inventory.is_empty() then
+        error("Entity inventory is empty")
+    end
+    
+    -- Return context for run()
+    return {
+        agent = agent,
+        entity = entity,
+        entity_proto = entity_proto,
+        inventory = inventory,
+        items = params_table.items,
+        params = p  -- Store ParamSpec for _post_run if needed
+    }
+end
+
+--- @param params GetItemParams|table|string
 --- @return table result Data about the item retrieval
 function GetItemAction:run(params)
-    local p = self:_pre_run(params)
-    ---@cast p GetItemParams
-
-    -- Get agent (LuaEntity)
-    local agent = self.game_state.agent:get_agent(p.agent_id)
-    if not agent or not agent.valid then
-        error("Agent not found or invalid")
-    end
-
-    -- Find entity within agent's build_distance
-    local agent_pos = agent.position
-    local build_distance = agent.build_distance or 10
-    local surface = game.surfaces[1]
-    local entity = nil
+    --- @type GetItemContext
+    local context = self:_pre_run(params)
     
-    if p.position and type(p.position.x) == "number" and type(p.position.y) == "number" then
-        -- Try exact position first
-        entity = surface.find_entity(p.entity_name, { x = p.position.x, y = p.position.y })
-        if entity and entity.valid then
-            -- Verify within build_distance
-            local dx = entity.position.x - agent_pos.x
-            local dy = entity.position.y - agent_pos.y
-            local dist_sq = dx * dx + dy * dy
-            if dist_sq > build_distance * build_distance then
-                entity = nil
-            end
-        end
-    end
-
-    -- If not found at exact position, search within radius
-    if not entity or not entity.valid then
-        local entities = surface.find_entities_filtered({
-            position = agent_pos,
-            radius = build_distance,
-            name = p.entity_name
-        })
-        
-        -- Filter to valid entities
-        local valid_entities = {}
-        for _, e in ipairs(entities) do
-            if e and e.valid then
-                table.insert(valid_entities, e)
-            end
-        end
-        
-        if #valid_entities == 0 then
-            error("Entity '" .. p.entity_name .. "' not found within build_distance of agent")
-        elseif #valid_entities > 1 then
-            error("Multiple entities '" .. p.entity_name .. "' found. Provide position parameter to specify which entity.")
-        else
-            entity = valid_entities[1]
-        end
-    end
-
-    -- Process each item (items is already validated as array of {name: string, count: number})
+    -- Now run() uses resolved context, no lookups
     local processed_items = {}
     local total_removed = 0
     local total_inserted = 0
 
-    for i, item in ipairs(p.items) do
+    for i, item in ipairs(context.items) do
         local item_name = item.name
         local item_count = item.count or 1
         
         -- Get available count first (needed for stack keyword resolution)
-        local entity_has = entity.get_item_count(item_name)
+        local entity_has = context.entity.get_item_count(item_name)
         
         -- Handle special keywords
         if item_count == "MAX" then
@@ -114,17 +101,17 @@ function GetItemAction:run(params)
         local items_spec = { name = item_name, count = item_count }
 
         -- Escrow: Insert into agent first (try to insert requested amount)
-        local inserted = agent.insert(items_spec)
+        local inserted = context.agent.insert(items_spec)
         if inserted == 0 then
             error("Agent cannot accept " .. item_count .. " items of: " .. item_name)
-    end
+        end
 
         -- Remove from entity only what was successfully inserted
-        local removed = entity.remove_item({ name = item_name, count = inserted })
+        local removed = context.entity.remove_item({ name = item_name, count = inserted })
         if removed < inserted then
             -- This shouldn't happen since we validated entity has items, but handle it
             -- Remove what we couldn't remove from agent
-            agent.remove_item({ name = item_name, count = inserted - removed })
+            context.agent.remove_item({ name = item_name, count = inserted - removed })
             error("Failed to remove inserted items from entity. Inserted: " .. inserted .. 
                   ", removed: " .. removed)
         end
@@ -141,22 +128,22 @@ function GetItemAction:run(params)
     end
 
     local result = {
-        position = { x = entity.position.x, y = entity.position.y },
-        entity_name = entity.name,
-        entity_type = entity.type,
+        position = { x = context.entity.position.x, y = context.entity.position.y },
+        entity_name = context.entity.name,
+        entity_type = context.entity.type,
         items = processed_items,
         total_removed = total_removed,
         total_inserted = total_inserted,
         affected_positions = { 
             { 
-                position = { x = entity.position.x, y = entity.position.y },
-                entity_name = p.entity_name, 
-                entity_type = entity.type 
+                position = { x = context.entity.position.x, y = context.entity.position.y },
+                entity_name = context.entity.name, 
+                entity_type = context.entity.type 
             }
         }
     }
     
-    return self:_post_run(result, p)
+    return self:_post_run(result, context.params)
 end
 
 return { action = GetItemAction, params = GetItemParams }

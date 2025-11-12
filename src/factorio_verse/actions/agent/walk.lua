@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local GameContext = require("game_state.GameContext")
 local GameStateAliases = require("game_state.GameStateAliases")
 
 --- @class WalkParams : ParamSpec
@@ -38,29 +39,56 @@ local WalkToParams = Action.ParamSpec:new({
 })
 
 --- @class WalkToAction : Action
---- @field validators table<function>
 local WalkToAction = Action:new("agent.walk_to", WalkToParams)
 
---- @param params WalkToParams
---- @return table|boolean Result with async contract or boolean for backwards compatibility
+--- @class WalkToContext
+--- @field agent LuaEntity Agent character entity
+--- @field position table Position to walk to: {x: number, y: number}
+--- @field options table Walk options
+--- @field params WalkToParams ParamSpec instance for _post_run
+
+--- Override _pre_run to build context using GameContext
+--- @param params WalkToParams|table|string
+--- @return WalkToContext
+function WalkToAction:_pre_run(params)
+    -- Call parent to get validated ParamSpec
+    local p = Action._pre_run(self, params)
+    local params_table = p:get_values()
+    
+    -- Build context using GameContext
+    local agent = GameContext.resolve_agent(params_table, self.game_state)
+    
+    -- Return context for run()
+    return {
+        agent = agent,
+        position = params_table.position,
+        options = {
+            arrive_radius = params_table.arrive_radius,
+            lookahead = params_table.lookahead,
+            replan_on_stuck = params_table.replan_on_stuck,
+            max_replans = params_table.max_replans,
+            prefer_cardinal = params_table.prefer_cardinal,
+            diag_band = params_table.diag_band,
+            snap_axis_eps = params_table.snap_axis_eps
+        },
+        params = p
+    }
+end
+
+--- @param params WalkToParams|table|string
+--- @return table Result with async contract
 function WalkToAction:run(params)
-    local p = self:_pre_run(params)
-    ---@cast p WalkToParams
-    local agent_id = p.agent_id
-    local goal = p.position
-    if not (goal and goal.x and goal.y) then return self:_post_run({ success = false }, p) end
+    --- @type WalkToContext
+    local context = self:_pre_run(params)
+    
+    local params_table = context.params:get_values()
+    local agent_id = params_table.agent_id
+    local goal = context.position
+    if not (goal and goal.x and goal.y) then return self:_post_run({ success = false }, context.params) end
 
     -- Delegate to AgentGameState for centralized state management
     local agent_state = self.game_state.agent
-    local job_id = agent_state:start_walk_to_job(agent_id, goal, {
-        arrive_radius = p.arrive_radius,
-        lookahead = p.lookahead,
-        replan_on_stuck = p.replan_on_stuck,
-        max_replans = p.max_replans,
-        prefer_cardinal = p.prefer_cardinal,
-        diag_band = p.diag_band,
-        snap_axis_eps = p.snap_axis_eps
-    })
+    local job_id = agent_state:start_walk_to_job(agent_id, goal, context.options)
 
     if job_id then
         -- Generate unique action_id from tick + agent_id
@@ -81,10 +109,10 @@ function WalkToAction:run(params)
             action_id = action_id,
             tick = rcon_tick
         }
-        return self:_post_run(result, p)
+        return self:_post_run(result, context.params)
     else
         game.print(string.format("[walk_to_action] Failed to start job for agent %d", agent_id))
-        return self:_post_run({ success = false }, p)
+        return self:_post_run({ success = false }, context.params)
     end
 end
 
@@ -97,17 +125,42 @@ local WalkCancelParams = Action.ParamSpec:new({
 --- @class WalkCancelAction : Action
 local WalkCancelAction = Action:new("agent.walk_cancel", WalkCancelParams)
 
---- @param params WalkCancelParams
+--- @class WalkCancelContext
+--- @field agent LuaEntity Agent character entity
+--- @field params WalkCancelParams ParamSpec instance for _post_run
+
+--- Override _pre_run to build context using GameContext
+--- @param params WalkCancelParams|table|string
+--- @return WalkCancelContext
+function WalkCancelAction:_pre_run(params)
+    -- Call parent to get validated ParamSpec
+    local p = Action._pre_run(self, params)
+    local params_table = p:get_values()
+    
+    -- Build context using GameContext
+    local agent = GameContext.resolve_agent(params_table, self.game_state)
+    
+    -- Return context for run()
+    return {
+        agent = agent,
+        params = p
+    }
+end
+
+--- @param params WalkCancelParams|table|string
 --- @return boolean
 function WalkCancelAction:run(params)
-    local p = self:_pre_run(params)
-    local agent_id = p.agent_id
+    --- @type WalkCancelContext
+    local context = self:_pre_run(params)
+    
+    local params_table = context.params:get_values()
+    local agent_id = params_table.agent_id
 
     -- Delegate to AgentGameState for centralized state management
     local agent_state = self.game_state.agent
     agent_state:stop_walking(agent_id)
 
-    return self:_post_run(true, p)
+    return self:_post_run(true, context.params)
 end
 
 -- Event handlers removed - now handled by AgentGameState:get_activity_events()

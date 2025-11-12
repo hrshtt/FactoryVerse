@@ -1,4 +1,5 @@
 local AsyncAction = require("types.AsyncAction")
+local GameContext = require("game_state.GameContext")
 
 --- @class CraftEnqueueParams : ParamSpec
 --- @field agent_id number
@@ -21,55 +22,83 @@ local CraftCancelParams = AsyncAction.ParamSpec:new({
 })
 
 --- @class CraftEnqueueAction : AsyncAction
-local CraftEnqueueAction = AsyncAction:new("agent.crafting.enqueue", CraftEnqueueParams, nil, {
+local CraftEnqueueAction = AsyncAction:new("agent.crafting.enqueue", CraftEnqueueParams, {
     cancel_params = CraftCancelParams,
     cancel_storage_key = "craft_in_progress",
 })
 
---- @param params CraftEnqueueParams
---- @return table
-function CraftEnqueueAction:run(params)
-    local p = self:_pre_run(params)
-    ---@cast p CraftEnqueueParams
+--- @class CraftContext
+--- @field agent LuaEntity Agent character entity
+--- @field recipe LuaRecipe Recipe object (force-specific)
+--- @field recipe_proto table Recipe prototype
+--- @field recipe_name string Recipe name
+--- @field count number|nil Desired crafts count
+--- @field params CraftEnqueueParams ParamSpec instance for _post_run
+
+--- Override _pre_run to build context using GameContext
+--- @param params CraftEnqueueParams|table|string
+--- @return CraftContext
+function CraftEnqueueAction:_pre_run(params)
+    -- Call parent to get validated ParamSpec
+    local p = AsyncAction._pre_run(self, params)
+    local params_table = p:get_values()
     
-    local agent_id = p.agent_id
-    local recipe_name = p.recipe
-    local count_requested = math.max(1, math.floor(p.count or 1))
+    -- Build context using GameContext
+    local agent = GameContext.resolve_agent(params_table, self.game_state)
     
-    -- Get agent
-    local agent = storage.agents[agent_id]
-    if not agent or not agent.valid then
-        return self:_post_run({ success = false, error = "Agent not found or invalid" }, p)
-    end
+    -- Resolve recipe (force-specific)
+    -- Note: GameContext expects recipe_name, but our params use 'recipe'
+    local recipe_params = { recipe_name = params_table.recipe }
+    local recipe = GameContext.resolve_recipe(recipe_params, agent)
     
-    -- Recipe is already validated by ParamSpec against agent's force
     -- Get recipe prototype for craftable_count check
+    local recipe_name = params_table.recipe
     local recipe_proto = (prototypes and prototypes.recipe and prototypes.recipe[recipe_name])
     if not recipe_proto then
-        -- This should not happen if ParamSpec validation worked, but keep as safety check
-        return self:_post_run({ success = false, error = "Recipe prototype not found: " .. recipe_name }, p)
+        error("Recipe prototype not found: " .. recipe_name)
     end
-
-    -- Validate recipe is unlocked for agent's force
-    local force = agent.force
-    local recipe = force.recipes[recipe_name]
-    if not recipe then
-        return self:_post_run({ success = false, error = "Recipe not found in force: " .. recipe_name }, p)
-    end
+    
+    -- Validate recipe is unlocked
     if not recipe.enabled then
-        return self:_post_run({ success = false, error = "Recipe is not unlocked: " .. recipe_name }, p)
+        error("Recipe is not unlocked: " .. recipe_name)
+    end
+    
+    -- Return context for run()
+    return {
+        agent = agent,
+        recipe = recipe,
+        recipe_proto = recipe_proto,
+        recipe_name = recipe_name,
+        count = params_table.count,
+        params = p
+    }
+end
+
+--- @param params CraftEnqueueParams|table|string
+--- @return table
+function CraftEnqueueAction:run(params)
+    --- @type CraftContext
+    local context = self:_pre_run(params)
+    
+    local params_table = context.params:get_values()
+    local agent_id = params_table.agent_id
+    local recipe_name = context.recipe_name
+    local count_requested = math.max(1, math.floor(context.count or 1))
+    
+    if not context.agent or not context.agent.valid then
+        return self:_post_run({ success = false, error = "Agent not found or invalid" }, context.params)
     end
 
     -- game.print("Trying to craft: " .. recipe_name)
     
     -- Validate craftable
-    local craftable_count = agent.get_craftable_count(recipe_proto)
+    local craftable_count = context.agent.get_craftable_count(context.recipe_proto)
     game.print("Craftable count: " .. craftable_count)
     if craftable_count <= 0 then
         return self:_post_run({ 
             success = false,
             error = "Cannot craft recipe: insufficient ingredients or recipe not available" 
-        }, p)
+        }, context.params)
     end
     game.print("Craftable count after validation: " .. craftable_count)
     
@@ -78,7 +107,7 @@ function CraftEnqueueAction:run(params)
     
     -- Get recipe products for tracking
     local products = {}
-    for _, prod in ipairs(recipe_proto.products or {}) do
+    for _, prod in ipairs(context.recipe_proto.products or {}) do
         if prod.type == nil or prod.type == "item" then
             local name = prod.name
             local amount = prod.amount or prod.amount_min or 0
@@ -91,7 +120,7 @@ function CraftEnqueueAction:run(params)
     -- Snapshot current product counts in inventory BEFORE starting craft
     local start_products = {}
     for item_name, _ in pairs(products) do
-        start_products[item_name] = agent.get_item_count(item_name)
+        start_products[item_name] = context.agent.get_item_count(item_name)
     end
     
     -- Debug: log products and start counts
@@ -100,22 +129,22 @@ function CraftEnqueueAction:run(params)
     
     -- Start crafting
     local count_to_queue = math.min(count_requested, craftable_count)
-    local count_started = agent.begin_crafting{
-        recipe = recipe_proto,
+    local count_started = context.agent.begin_crafting{
+        recipe = context.recipe_proto,
         count = count_to_queue,
         silent = true
     }
     
     if count_started == 0 then
-        return self:_post_run({ success = false, error = "Failed to start crafting" }, p)
+        return self:_post_run({ success = false, error = "Failed to start crafting" }, context.params)
     end
     
-    game.print(helpers.table_to_json(agent.crafting_queue))
+    game.print(helpers.table_to_json(context.agent.crafting_queue))
     self:store_tracking("craft_in_progress", agent_id, action_id, rcon_tick, {
         recipe = recipe_name,
         count_requested = count_requested,
         count_queued = count_started,
-        start_queue_size = agent.crafting_queue_size,
+        start_queue_size = context.agent.crafting_queue_size,
         start_products = start_products,
         products = products,
         cancelled = false,
@@ -128,7 +157,7 @@ function CraftEnqueueAction:run(params)
             count_requested = count_requested,
             count_queued = count_started
         }),
-        p
+        context.params
     )
 end
 
