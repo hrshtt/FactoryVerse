@@ -3,6 +3,7 @@
 
 local pairs = pairs
 local math = math
+local snapshot = require("utils.snapshot")
 
 
 --- Calculate squared distance between two positions
@@ -110,11 +111,7 @@ local function _send_walk_completion_udp(job, success)
         }
     }
     
-    local json_payload = helpers.table_to_json(payload)
-    local ok, err = pcall(function() helpers.send_udp(34202, json_payload) end)
-    if not ok then
-        game.print(string.format("[UDP] ERROR sending walk completion: %s", err or "unknown"))
-    end
+    snapshot.send_action_completion_udp(payload)
 end
 
 -- ============================================================================

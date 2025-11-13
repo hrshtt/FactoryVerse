@@ -9,8 +9,12 @@ local ipairs = ipairs
 local GameStateError = require("types.Error")
 local utils = require("utils.utils")
 local Map = require("game_state.Map")
+local snapshot = require("utils.snapshot")
 
 local M = {}
+
+-- Custom event IDs (initialized in init())
+M.custom_events = {}
 
 --- @param area table
 --- @param filter string
@@ -368,7 +372,7 @@ function M.track_all_charted_chunk_entity_status()
     end
 
     if next(all_status_records) ~= nil then
-        helpers.send_udp(30123, all_status_records, 0)
+        snapshot.send_status_snapshot_udp(all_status_records)
     end
 end
 
@@ -381,5 +385,193 @@ function M.get_event_based_snapshot_events()
         }
     }
 end
+
+-- ============================================================================
+-- DISK WRITE SNAPSHOT FUNCTIONALITY
+-- ============================================================================
+
+--- Initialize custom events for entity snapshotting
+--- Must be called during on_init/on_load
+function M.init()
+    -- Generate custom event ID for recipe changes
+    M.custom_events.entity_recipe_changed = script.generate_event_name()
+    log("Entities: Generated custom event 'entity_recipe_changed': " .. tostring(M.custom_events.entity_recipe_changed))
+    
+    -- Build disk_write_snapshot table after events are initialized
+    M.disk_write_snapshot = M._build_disk_write_snapshot()
+end
+
+--- Write entity to disk snapshot
+--- Public function for use by Map deferred scanning
+--- @param entity LuaEntity
+--- @param is_update boolean|nil - True if this is an update to existing entity (default: false, treated as create)
+--- @return boolean - Success status
+function M.write_entity_snapshot(entity, is_update)
+    if not (entity and entity.valid) then
+        return false
+    end
+
+    -- Serialize entity
+    local entity_data = M.serialize_entity(entity)
+    if not entity_data then
+        return false
+    end
+
+    -- Get chunk coordinates
+    local chunk_coords = Map.to_chunk_coordinates(entity.position)
+    if not chunk_coords then
+        return false
+    end
+
+    -- Determine component type
+    local component_type = M._determine_component_type(entity.type, entity.name)
+
+    -- Generate file path
+    local file_path = snapshot.entity_file_path(
+        chunk_coords.x,
+        chunk_coords.y,
+        component_type,
+        entity.position,
+        entity.name
+    )
+
+    -- Write file
+    local success = snapshot.write_entity_file(file_path, entity_data)
+    
+    -- Send UDP notification
+    if success then
+        local event_type = (is_update == true) and "file_updated" or "file_created"
+        snapshot.send_file_event_udp(
+            event_type,
+            "entity",
+            chunk_coords.x,
+            chunk_coords.y,
+            entity.position,
+            entity.name,
+            component_type,
+            file_path
+        )
+    end
+    
+    return success
+end
+
+--- Delete entity from disk snapshot
+--- @param entity LuaEntity
+--- @return boolean - Success status
+function M._delete_entity_snapshot(entity)
+    if not entity then
+        return false
+    end
+
+    -- Get chunk coordinates from entity position (entity may be invalid)
+    local position = entity.position
+    if not position then
+        return false
+    end
+
+    local chunk_coords = Map.to_chunk_coordinates(position)
+    if not chunk_coords then
+        return false
+    end
+
+    -- Determine component type (use entity.type and entity.name if available)
+    local component_type = "entities"
+    if entity.type and entity.name then
+        component_type = M._determine_component_type(entity.type, entity.name)
+    end
+
+    -- Generate file path
+    local file_path = snapshot.entity_file_path(
+        chunk_coords.x,
+        chunk_coords.y,
+        component_type,
+        position,
+        entity.name or "unknown"
+    )
+
+    -- Delete file
+    local success = snapshot.delete_entity_file(file_path)
+    
+    -- Send UDP notification
+    if success then
+        snapshot.send_file_event_udp(
+            "file_deleted",
+            "entity",
+            chunk_coords.x,
+            chunk_coords.y,
+            position,
+            entity.name or "unknown",
+            component_type,
+            file_path
+        )
+    end
+    
+    return success
+end
+
+--- Handle entity built event (on_built_entity, script_raised_built)
+--- @param event table - Event data with entity field
+function M._on_entity_built(event)
+    local entity = event.entity
+    if entity and entity.valid then
+        -- New entity, so this is a create (not update)
+        M.write_entity_snapshot(entity, false)
+    end
+end
+
+--- Handle entity destroyed event (on_player_mined_entity, script_raised_destroy)
+--- @param event table - Event data with entity field
+function M._on_entity_destroyed(event)
+    local entity = event.entity
+    if entity then
+        M._delete_entity_snapshot(entity)
+    end
+end
+
+--- Handle entity settings pasted event
+--- @param event table - Event data with destination field
+function M._on_entity_settings_pasted(event)
+    local entity = event.destination
+    if entity and entity.valid then
+        -- Settings pasted means entity was updated
+        M.write_entity_snapshot(entity, true)
+    end
+end
+
+--- Handle custom recipe changed event
+--- @param event table - Event data with entity field
+function M._on_recipe_changed(event)
+    local entity = event.entity
+    if entity and entity.valid then
+        -- Recipe change means entity was updated
+        M.write_entity_snapshot(entity, true)
+    end
+end
+
+--- Build disk write snapshot events table
+--- Called after init() to populate events
+function M._build_disk_write_snapshot()
+    if not M.custom_events.entity_recipe_changed then
+        -- Events not initialized yet, return empty
+        return { events = {}, nth_tick = {} }
+    end
+
+    return {
+        events = {
+            [defines.events.on_built_entity] = M._on_entity_built,
+            [defines.events.script_raised_built] = M._on_entity_built,
+            [defines.events.on_player_mined_entity] = M._on_entity_destroyed,
+            [defines.events.script_raised_destroy] = M._on_entity_destroyed,
+            [defines.events.on_entity_settings_pasted] = M._on_entity_settings_pasted,
+            [M.custom_events.entity_recipe_changed] = M._on_recipe_changed,
+        },
+        nth_tick = {}
+    }
+end
+
+-- Expose disk_write_snapshot property for GameState aggregation
+-- This will be populated after init() is called
+M.disk_write_snapshot = {}
 
 return M

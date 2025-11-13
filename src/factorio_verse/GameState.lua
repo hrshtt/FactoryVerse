@@ -1,7 +1,7 @@
 --- factorio_verse/core/game_state/GameState.lua
 --- GameState class for managing game state with composable sub-modules.
 
-local AgentGameState = require("game_state.agent.Agent")
+local AgentGameState = require("game_state.Agent")
 local InventoryGameState = require("game_state.Inventory")
 local EntitiesGameState = require("game_state.Entities")
 local PowerGameState = require("game_state.Power")

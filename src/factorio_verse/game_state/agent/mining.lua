@@ -4,6 +4,7 @@
 -- Note: Do not capture 'game' at module level - it may be nil during on_load
 -- Access 'game' directly in functions where it's guaranteed to be available (event handlers)
 local pairs = pairs
+local snapshot = require("utils.snapshot")
 
 --- @class MiningModule
 local M = {}
@@ -50,11 +51,7 @@ local function _send_mining_completion_udp(job)
         payload.cancelled_tick = job.cancelled_tick
     end
     
-    local json_payload = helpers.table_to_json(payload)
-    local ok, err = pcall(function() helpers.send_udp(34202, json_payload) end)
-    if not ok then
-        game.print(string.format("[UDP] ERROR: %s", err or "unknown"))
-    end
+    snapshot.send_action_completion_udp(payload)
 end
 
 

@@ -1,6 +1,8 @@
 --- Agent crafting completion monitoring
 --- Handles crafting job completion detection, inventory tracking, and UDP notifications
 
+local snapshot = require("utils.snapshot")
+
 --- @class CraftingModule
 local M = {}
 M.__index = M
@@ -74,8 +76,7 @@ local function send_craft_udp(tracking, agent_id, agent)
         }
     }
     
-    local json_payload = helpers.table_to_json(payload)
-    pcall(function() helpers.send_udp(34202, json_payload) end)
+    snapshot.send_action_completion_udp(payload)
 end
 
 --- Tick handler for crafting completion monitoring

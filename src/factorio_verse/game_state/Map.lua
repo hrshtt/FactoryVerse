@@ -9,6 +9,8 @@ local ipairs = ipairs
 local Config = require("Config")
 local utils = require("utils.utils")
 local Resource = require("game_state.Resource")
+local Entities = require("game_state.Entities")
+local snapshot = require("utils.snapshot")
 
 local M = {}
 
@@ -297,5 +299,87 @@ M.event_based_snapshot = {
         end,
     }
 }
+
+-- ============================================================================
+-- DEFERRED SCANNING FOR INITIAL SNAPSHOT
+-- ============================================================================
+
+--- Initialize deferred scanning system
+--- Queues all charted chunks for snapshotting
+function M.init_deferred_scanning()
+    if not storage.snapshot_scan_queue then
+        storage.snapshot_scan_queue = {}
+    end
+
+    -- Queue all charted chunks for scanning
+    local charted_chunks = M.get_charted_chunks()
+    for _, chunk in ipairs(charted_chunks) do
+        local chunk_key = utils.chunk_key(chunk.x, chunk.y)
+        storage.snapshot_scan_queue[chunk_key] = { x = chunk.x, y = chunk.y }
+    end
+
+    log("Map: Queued " .. #charted_chunks .. " chunks for deferred snapshotting")
+end
+
+--- Process one chunk from the scan queue
+--- Called on each tick to gradually snapshot all chunks
+function M.process_deferred_scan_queue()
+    if not storage.snapshot_scan_queue then
+        return
+    end
+
+    -- Process one chunk per tick
+    local chunk_key, chunk_data = next(storage.snapshot_scan_queue)
+    if not chunk_key or not chunk_data then
+        return
+    end
+
+    -- Remove from queue
+    storage.snapshot_scan_queue[chunk_key] = nil
+
+    -- Snapshot the chunk
+    M.snapshot_chunk(chunk_data.x, chunk_data.y)
+end
+
+--- Snapshot a single chunk (entities and resources)
+--- @param chunk_x number
+--- @param chunk_y number
+function M.snapshot_chunk(chunk_x, chunk_y)
+    local surface = game.surfaces[1]
+    if not surface then
+        return
+    end
+
+    local chunk_area = {
+        left_top = { x = chunk_x * 32, y = chunk_y * 32 },
+        right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
+    }
+
+    -- Snapshot entities
+    local entities = surface.find_entities_filtered { area = chunk_area }
+    for _, entity in ipairs(entities) do
+        if entity and entity.valid then
+            -- Only snapshot player-placed entities (not resources, trees, etc.)
+            -- Resources are handled separately
+            -- During initial scan, treat as create (is_update = false)
+            if entity.type ~= "resource" and entity.type ~= "tree" and 
+               entity.type ~= "simple-entity" and entity.type ~= "corpse" then
+                Entities.write_entity_snapshot(entity, false)
+            end
+        end
+    end
+
+    -- Snapshot resources
+    local chunk = { x = chunk_x, y = chunk_y, area = chunk_area }
+    local gathered = M.gather_resources_for_chunk(chunk)
+
+    -- Write resources.jsonl
+    local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
+    snapshot.write_resource_file(resources_path, gathered.resources)
+
+    -- Write water.jsonl
+    local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
+    snapshot.write_resource_file(water_path, gathered.water)
+end
 
 return M

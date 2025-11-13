@@ -107,6 +107,9 @@ function PickupEntityAction:run(params)
         error("Failed to mine entity")
     end
 
+    -- Raise script event for entity being destroyed
+    script.raise_script_destroy({ entity = context.entity })
+
     local response = {
         success = true,
         items_obtained = e_inventory,

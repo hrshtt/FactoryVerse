@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local Entities = require("game_state.Entities")
 
 --- @class SetRecipeParams : ParamSpec
 --- @field agent_id number Agent id executing the action
@@ -56,6 +57,14 @@ function SetRecipeAction:run(params)
     if not p.recipe then
         if current_recipe_name then
             entity.set_recipe(nil)
+            
+            -- Raise custom event for recipe change (triggers disk snapshot update)
+            if Entities.custom_events and Entities.custom_events.entity_recipe_changed then
+                script.raise_event(Entities.custom_events.entity_recipe_changed, {
+                    entity = entity
+                })
+            end
+            
             return self:_post_run({
                 position = position,
                 entity_name = p.entity_name,
@@ -132,6 +141,13 @@ function SetRecipeAction:run(params)
     local success = entity.set_recipe(p.recipe)
     if not success then
         error("Failed to set recipe: " .. p.recipe)
+    end
+
+    -- Raise custom event for recipe change (triggers disk snapshot update)
+    if Entities.custom_events and Entities.custom_events.entity_recipe_changed then
+        script.raise_event(Entities.custom_events.entity_recipe_changed, {
+            entity = entity
+        })
     end
 
     local result = {

@@ -72,6 +72,10 @@ function PlaceEntityAction:run(params)
         name = context.entity_name,
         position = context.position,
         force = context.agent.force,
+        source = context.agent,
+        fast_replace = true,
+        raise_built = true,
+        move_stuck_players = true,
     }
 
     -- Direction is already normalized by ParamSpec (string aliases converted to enum numbers)
@@ -137,10 +141,11 @@ function PlaceEntityAction:run(params)
         error("Agent does not have item in inventory: " .. tostring(context.entity_name))
     end
 
+
     local entity = surface.create_entity(placement)
     if not entity then
         error("Failed to place entity: " .. context.entity_name)
-    end
+    end   
 
     -- Consume one item on successful placement
     inv.remove({ name = context.entity_name, count = 1 })

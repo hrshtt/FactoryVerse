@@ -1,4 +1,5 @@
 local Action = require("types.Action")
+local AsyncAction = require("types.AsyncAction")
 local GameContext = require("types.GameContext")
 
 --- @class WalkParams : ParamSpec
@@ -37,8 +38,20 @@ local WalkToParams = Action.ParamSpec:new({
     snap_axis_eps = { type = "number", required = false },
 })
 
---- @class WalkToAction : Action
-local WalkToAction = Action:new("agent.walk_to", WalkToParams)
+--- @class WalkCancelParams : ParamSpec
+--- @field agent_id number
+local WalkCancelParams = Action.ParamSpec:new({
+    agent_id = { type = "number", required = true },
+})
+
+--- @class WalkToAction : AsyncAction
+local WalkToAction = AsyncAction:new("agent.walk_to", WalkToParams, {
+    cancel_params = WalkCancelParams,
+    cancel_storage_key = "walk_in_progress",
+    cancel_tracking_key_fn = function(cancel_params)
+        return cancel_params.agent_id
+    end,
+})
 
 --- @class WalkToContext
 --- @field agent LuaEntity Agent character entity
@@ -51,7 +64,7 @@ local WalkToAction = Action:new("agent.walk_to", WalkToParams)
 --- @return WalkToContext
 function WalkToAction:_pre_run(params)
     -- Call parent to get validated ParamSpec
-    local p = Action._pre_run(self, params)
+    local p = AsyncAction._pre_run(self, params)
     local params_table = p:get_values()
     
     -- Build context using GameContext
@@ -90,36 +103,48 @@ function WalkToAction:run(params)
     local job_id = agent_state:start_walk_to_job(agent_id, goal, context.options)
 
     if job_id then
-        -- Generate unique action_id from tick + agent_id
-        -- Tick is captured at RCON invocation time, ensuring consistency
-        -- between the queued response and eventual UDP completion
-        local rcon_tick = game.tick
-        local action_id = string.format("agent_walk_to_%d_%d", rcon_tick, agent_id)
+        -- Generate unique action_id and rcon_tick using AsyncAction helper
+        local action_id, rcon_tick = self:generate_action_id(agent_id)
         
-        -- Store in progress tracking with both action_id and rcon_tick
-        storage.walk_in_progress = storage.walk_in_progress or {}
-        storage.walk_in_progress[agent_id] = { action_id = action_id, rcon_tick = rcon_tick }
+        -- Store tracking using AsyncAction helper
+        self:store_tracking("walk_in_progress", agent_id, action_id, rcon_tick, {
+            agent_id = agent_id
+        })
         game.print(string.format("[walk_to_action] Queued walk for agent %d at tick %d: %s", agent_id, rcon_tick, action_id))
         
-        -- Return async contract: queued + action_id for UDP tracking
-        local result = {
-            success = true,
-            queued = true,
-            action_id = action_id,
-            tick = rcon_tick
-        }
-        return self:_post_run(result, context.params)
+        -- Return async result using AsyncAction helper
+        return self:_post_run(
+            self:create_async_result(action_id, rcon_tick, {
+                agent_id = agent_id,
+                goal = goal
+            }),
+            context.params
+        )
     else
         game.print(string.format("[walk_to_action] Failed to start job for agent %d", agent_id))
         return self:_post_run({ success = false }, context.params)
     end
 end
 
---- @class WalkCancelParams : ParamSpec
---- @field agent_id number
-local WalkCancelParams = Action.ParamSpec:new({
-    agent_id = { type = "number", required = true },
-})
+--- Cancel walk-to action
+--- @param cancel_params WalkCancelParams
+--- @param tracking table|nil
+--- @return table
+function WalkToAction:_do_cancel(cancel_params, tracking)
+    local agent_id = cancel_params.agent_id
+    local agent_state = self.game_state.agent
+    
+    if not agent_state then
+        return self:create_cancel_result(false, false, tracking and tracking.action_id, { error = "Game state not available" })
+    end
+    
+    -- Cancel the walk job
+    agent_state:cancel_walk_to(agent_id)
+    
+    return self:create_cancel_result(true, true, tracking and tracking.action_id, {
+        agent_id = agent_id
+    })
+end
 
 --- @class WalkCancelAction : Action
 local WalkCancelAction = Action:new("agent.walk_cancel", WalkCancelParams)

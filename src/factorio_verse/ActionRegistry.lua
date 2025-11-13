@@ -16,6 +16,7 @@ local ACTION_MODULES = {
   "actions.agent.walk",
   "actions.agent.teleport",
   "actions.agent.place_entity",
+  "actions.agent.place_in_line",
   "actions.agent.crafting",
   "actions.agent.mining",
   "actions.agent.research",

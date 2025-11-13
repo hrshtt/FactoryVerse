@@ -94,7 +94,13 @@ local function aggregate_all_events()
         end
     end
     
-    -- 5. GameState nth_tick Handlers (legacy map discovery, etc.)
+    -- 5. Deferred scanning handler (process one chunk per tick)
+    add_defined_event(defines.events.on_tick, function(event)
+        local Map = require("game_state.Map")
+        Map.process_deferred_scan_queue()
+    end)
+    
+    -- 6. GameState nth_tick Handlers (legacy map discovery, etc.)
     local gs_nth_tick = game_state:get_nth_tick_handlers()
     for tick_interval, handlers in pairs(gs_nth_tick or {}) do
         if type(handlers) == "table" then
@@ -107,7 +113,7 @@ local function aggregate_all_events()
         end
     end
     
-    -- 6. Player Events (custom handlers)
+    -- 7. Player Events (custom handlers)
     -- add_defined_event(defines.events.on_player_created, function(e)
     --     local player = game.get_player(e.player_index)
     --     if player then
@@ -233,12 +239,37 @@ script.on_init(function()
         log("Initialized empty agents storage for new game")
     end
     
+    -- Initialize game state modules (must happen before event registration)
+    -- This generates custom event IDs that will be used in event handlers
+    local Entities = require("game_state.Entities")
+    local Resource = require("game_state.Resource")
+    local Map = require("game_state.Map")
+    
+    Entities.init()
+    Resource.init()
+    Map.init_deferred_scanning()
+    
+    log("Initialized game state modules and custom events")
+    
     -- Register events (game is available during on_init)
     register_all_events()
 end)
 
 script.on_load(function()
     log("hello from on_load")
+    
+    -- Initialize game state modules (must happen before event registration)
+    -- Custom events are preserved across reload, but we need to rebuild disk_write_snapshot tables
+    local Entities = require("game_state.Entities")
+    local Resource = require("game_state.Resource")
+    local Map = require("game_state.Map")
+    
+    -- Re-initialize (custom events are preserved, but we rebuild tables)
+    Entities.init()
+    Resource.init()
+    -- Don't re-queue chunks on load, just continue processing existing queue
+    
+    log("Re-initialized game state modules after mod reload")
     
     -- Re-register events (game is available during on_load)
     -- This is needed because event handlers may be lost after mod reload

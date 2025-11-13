@@ -15,6 +15,7 @@ local utils = require("utils.utils")
 local Walking = require("game_state.agent.walking")
 local Mining = require("game_state.agent.mining")
 local Crafting = require("game_state.agent.crafting")
+local PlacingInLine = require("game_state.agent.placing_in_line")
 
 --- @param index number
 --- @param total_agents number
@@ -44,6 +45,7 @@ function M:new(game_state)
     storage.walk_to_jobs = storage.walk_to_jobs or {}
     storage.mining_results = storage.mining_results or {}
     storage.walk_intents = storage.walk_intents or {}
+    storage.place_in_line_jobs = storage.place_in_line_jobs or {}
     storage.agent_forces = storage.agent_forces or {}
 
     --- @type table<number, table<string, LuaRenderObject>>
@@ -52,6 +54,8 @@ function M:new(game_state)
     -- Initialize activity modules with control interface
     instance.walking = Walking
     instance.walking:init(instance)  -- Pass self as agent_control interface
+    
+    instance.placing_in_line = PlacingInLine
     
     return instance
 end
@@ -371,14 +375,15 @@ end
 -- EVENT HANDLERS
 -- ============================================================================
 
---- Get activity event handlers (aggregates from walking, mining, and crafting modules)
+--- Get activity event handlers (aggregates from walking, mining, crafting, and placing_in_line modules)
 --- @return table Event handlers keyed by event ID
 function M:get_activity_events()
     local walking_events = self.walking:get_event_handlers(self)
     local mining_events = Mining.get_event_handlers()
     local crafting_events = Crafting.get_event_handlers()
+    local placing_in_line_events = self.placing_in_line:get_event_handlers(self)
     
-    -- Merge event handlers (walking, mining, and crafting all use on_tick)
+    -- Merge event handlers (walking, mining, crafting, and placing_in_line all use on_tick)
     local merged = {}
     
     -- Collect all on_tick handlers
@@ -391,6 +396,9 @@ function M:get_activity_events()
     end
     if crafting_events[defines.events.on_tick] then
         table.insert(on_tick_handlers, crafting_events[defines.events.on_tick])
+    end
+    if placing_in_line_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, placing_in_line_events[defines.events.on_tick])
     end
     
     -- Merge on_tick handlers into single function
@@ -416,6 +424,21 @@ function M:get_activity_events()
     for event_id, handler in pairs(crafting_events) do
         if event_id ~= defines.events.on_tick then
             merged[event_id] = handler
+        end
+    end
+    for event_id, handler in pairs(placing_in_line_events) do
+        if event_id ~= defines.events.on_tick then
+            -- Merge pathfinding events if they exist
+            if merged[event_id] then
+                -- If handler already exists, wrap both
+                local existing = merged[event_id]
+                merged[event_id] = function(e)
+                    existing(e)
+                    handler(e)
+                end
+            else
+                merged[event_id] = handler
+            end
         end
     end
     
