@@ -114,18 +114,17 @@ function MineResourceAction:run(params)
         job.initial_item_count = context.agent.get_item_count(resource_item_mapping[context.resource_name])
         job.item_name = resource_item_mapping[context.resource_name]
     else
-        -- Ores can use position or area (tile-based entities)
+        -- Ores: use position + radius (same as point entities) to match reachability check
+        -- Using 'area' can find entities whose bounding box overlaps but center is outside reach
         search_args.name = context.resource_name
         if context.position then
-            -- When position is provided, search in an area around that position
-            local x = context.position.x
-            local y = context.position.y
-            search_args.area = { { x = x - radius, y = y - radius }, { x = x + radius, y = y + radius } }
+            -- When position is provided, search around that position
+            search_args.position = context.position
+            search_args.radius = radius
         else
             -- When position not provided, search around agent
-            local x = context.agent.position.x
-            local y = context.agent.position.y
-            search_args.area = { { x = x - radius, y = y - radius }, { x = x + radius, y = y + radius } }
+            search_args.position = context.agent.position
+            search_args.radius = radius
         end
         job.initial_item_count = context.agent.get_item_count(context.resource_name)
         job.item_name = context.resource_name
