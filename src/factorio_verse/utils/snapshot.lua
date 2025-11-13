@@ -42,7 +42,7 @@ end
 --- Format: {chunk_x}/{chunk_y}/resources/{filename}.jsonl
 --- @param chunk_x number
 --- @param chunk_y number
---- @param filename string - "resources" or "water"
+--- @param filename string - "resources", "water", or "trees"
 --- @return string - Full file path
 function M.resource_file_path(chunk_x, chunk_y, filename)
     return M.chunk_dir_path(chunk_x, chunk_y) .. "/resources/" .. filename .. ".jsonl"
@@ -205,7 +205,7 @@ end
 --- Send file event UDP notification
 --- Notifies external systems of file create/update/delete events
 --- @param event_type string - "file_created", "file_updated", or "file_deleted"
---- @param file_type string - "entity", "resource", or "water"
+--- @param file_type string - "entity", "resource", "water", or "trees"
 --- @param chunk_x number - Chunk X coordinate
 --- @param chunk_y number - Chunk Y coordinate
 --- @param position table|nil - Entity position {x, y} (for entities)
@@ -216,6 +216,10 @@ end
 function M.send_file_event_udp(event_type, file_type, chunk_x, chunk_y, position, entity_name, component_type, file_path)
     if not event_type or not file_type or not chunk_x or not chunk_y then
         log("Invalid file event payload: missing required fields")
+        if M.DEBUG and game and game.print then
+            game.print(string.format("[snapshot] ERROR: Invalid file event payload - event_type=%s, file_type=%s, chunk_x=%s, chunk_y=%s", 
+                tostring(event_type), tostring(file_type), tostring(chunk_x), tostring(chunk_y)))
+        end
         return false
     end
 

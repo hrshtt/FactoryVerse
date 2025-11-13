@@ -328,9 +328,8 @@ function M.track_chunk_entity_status(chunk_position)
     if not surface then
         return {}
     end
-    local entities = surface.find_entities_filtered {
-        type = "entity",
-        area = {
+    
+    local chunk_area = {
             left_top = {
                 x = chunk_position.x * 32,
                 y = chunk_position.y * 32
@@ -340,6 +339,19 @@ function M.track_chunk_entity_status(chunk_position)
                 y = (chunk_position.y + 1) * 32
             }
         }
+    
+    -- Check count first for early exit
+    local entity_count = surface.count_entities_filtered {
+        type = "entity",
+        area = chunk_area
+    }
+    if entity_count == 0 then
+        return {}
+    end
+    
+    local entities = surface.find_entities_filtered {
+        type = "entity",
+        area = chunk_area
     }
     local status_records = {}
     for _, entity in ipairs(entities) do

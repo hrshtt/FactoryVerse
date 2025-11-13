@@ -103,34 +103,46 @@ function M.gather_resources_for_chunk(chunk)
         water = {}      -- Water tiles
     }
 
-    -- Resources (including crude oil)
-    local resource_entities = surface.find_entities_filtered {
+    -- Resources (including crude oil) - check count first
+    local resource_count = surface.count_entities_filtered {
         area = chunk.area,
         type = "resource"
     }
-    for _, entity in ipairs(resource_entities) do
-        if entity and entity.valid then
-            table.insert(gathered.resources, M.serialize_resource_tile(entity, entity.name))
+    if resource_count > 0 then
+        local resource_entities = surface.find_entities_filtered {
+            area = chunk.area,
+            type = "resource"
+        }
+        for _, entity in ipairs(resource_entities) do
+            if entity and entity.valid then
+                table.insert(gathered.resources, M.serialize_resource_tile(entity, entity.name))
+            end
         end
     end
 
-    -- Rocks
-    local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
-    for _, entity in ipairs(rock_entities) do
-        if entity and entity.valid and entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
-            table.insert(gathered.rocks, M.serialize_rock(entity, chunk))
+    -- Rocks - check count first
+    local rock_count = surface.count_entities_filtered({ area = chunk.area, type = "simple-entity" })
+    if rock_count > 0 then
+        local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
+        for _, entity in ipairs(rock_entities) do
+            if entity and entity.valid and entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
+                table.insert(gathered.rocks, M.serialize_rock(entity, chunk))
+            end
         end
     end
 
-    -- Trees
-    local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
-    for _, entity in ipairs(tree_entities) do
-        if entity and entity.valid then
-            table.insert(gathered.trees, M.serialize_tree(entity, chunk))
+    -- Trees - check count first
+    local tree_count = surface.count_entities_filtered({ area = chunk.area, type = "tree" })
+    if tree_count > 0 then
+        local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
+        for _, entity in ipairs(tree_entities) do
+            if entity and entity.valid then
+                table.insert(gathered.trees, M.serialize_tree(entity, chunk))
+            end
         end
     end
 
-    -- Water tiles
+    -- Water tiles - check count first
     -- Detect water tile names via prototypes for mod compatibility
     local water_tile_names = {}
     local ok_proto, tiles_or_err = pcall(function()
@@ -146,14 +158,20 @@ function M.gather_resources_for_chunk(chunk)
         water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
     end
 
-    local tiles = surface.find_tiles_filtered {
+    local water_count = surface.count_tiles_filtered {
         area = chunk.area,
         name = water_tile_names
     }
-    for _, tile in ipairs(tiles) do
-        local x, y = utils.extract_position(tile)
-        if x and y then
-            table.insert(gathered.water, { kind = "water", x = x, y = y, amount = 0 })
+    if water_count > 0 then
+        local tiles = surface.find_tiles_filtered {
+            area = chunk.area,
+            name = water_tile_names
+        }
+        for _, tile in ipairs(tiles) do
+            local x, y = utils.extract_position(tile)
+            if x and y then
+                table.insert(gathered.water, { kind = "water", x = x, y = y, amount = 0 })
+            end
         end
     end
 
@@ -177,40 +195,73 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
     -- Gather all resources for the chunk
     local gathered = M.gather_resources_for_chunk(chunk)
 
-    -- Write resources.jsonl
-    local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
-    local resources_success = snapshot.write_resource_file(resources_path, gathered.resources)
-    
-    -- Send UDP notification for resources file update
-    if resources_success then
-        snapshot.send_file_event_udp(
-            "file_updated",
-            "resource",
-            chunk_x,
-            chunk_y,
-            nil, -- no position for resource files
-            nil, -- no entity_name
-            nil, -- no component_type
-            resources_path
-        )
+    -- Write resources.jsonl only if resources were found
+    if #gathered.resources > 0 then
+        local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
+        local resources_success = snapshot.write_resource_file(resources_path, gathered.resources)
+        
+        -- Send UDP notification for resources file update
+        if resources_success then
+            local udp_success = snapshot.send_file_event_udp(
+                "file_updated",
+                "resource",
+                chunk_x,
+                chunk_y,
+                nil, -- no position for resource files
+                nil, -- no entity_name
+                nil, -- no component_type
+                resources_path
+            )
+            if not udp_success and snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for resource file: %s", resources_path))
+            end
+        end
     end
 
-    -- Write water.jsonl
-    local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
-    local water_success = snapshot.write_resource_file(water_path, gathered.water)
-    
-    -- Send UDP notification for water file update
-    if water_success then
-        snapshot.send_file_event_udp(
-            "file_updated",
-            "water",
-            chunk_x,
-            chunk_y,
-            nil, -- no position for water files
-            nil, -- no entity_name
-            nil, -- no component_type
-            water_path
-        )
+    -- Write water.jsonl only if water tiles were found
+    if #gathered.water > 0 then
+        local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
+        local water_success = snapshot.write_resource_file(water_path, gathered.water)
+        
+        -- Send UDP notification for water file update
+        if water_success then
+            local udp_success = snapshot.send_file_event_udp(
+                "file_updated",
+                "water",
+                chunk_x,
+                chunk_y,
+                nil, -- no position for water files
+                nil, -- no entity_name
+                nil, -- no component_type
+                water_path
+            )
+            if not udp_success and snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for water file: %s", water_path))
+            end
+        end
+    end
+
+    -- Write trees.jsonl only if trees were found
+    if #gathered.trees > 0 then
+        local trees_path = snapshot.resource_file_path(chunk_x, chunk_y, "trees")
+        local trees_success = snapshot.write_resource_file(trees_path, gathered.trees)
+        
+        -- Send UDP notification for trees file update
+        if trees_success then
+            local udp_success = snapshot.send_file_event_udp(
+                "file_updated",
+                "trees",
+                chunk_x,
+                chunk_y,
+                nil, -- no position for trees files
+                nil, -- no entity_name
+                nil, -- no component_type
+                trees_path
+            )
+            if not udp_success and snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for trees file: %s", trees_path))
+            end
+        end
     end
 end
 

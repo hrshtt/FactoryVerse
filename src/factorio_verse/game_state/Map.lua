@@ -81,17 +81,24 @@ function M.get_resources_in_chunks(chunks)
     local resources_by_name = {}
 
     for _, chunk in ipairs(chunks) do
-        local entities = surface.find_entities_filtered {
+        -- Check count first for early exit
+        local resource_count = surface.count_entities_filtered {
             area = chunk.area,
             type = "resource"
         }
+        if resource_count > 0 then
+            local entities = surface.find_entities_filtered {
+                area = chunk.area,
+                type = "resource"
+            }
 
-        for _, entity in ipairs(entities) do
-            local name = entity.name
-            if not resources_by_name[name] then
-                resources_by_name[name] = {}
+            for _, entity in ipairs(entities) do
+                local name = entity.name
+                if not resources_by_name[name] then
+                    resources_by_name[name] = {}
+                end
+                table.insert(resources_by_name[name], entity)
             end
-            table.insert(resources_by_name[name], entity)
         end
     end
 
@@ -122,12 +129,19 @@ function M.get_water_tiles_in_chunks(chunks)
 
     local all_tiles = {}
     for _, chunk in ipairs(chunks) do
-        local tiles = surface.find_tiles_filtered {
+        -- Check count first for early exit
+        local water_count = surface.count_tiles_filtered {
             area = chunk.area,
             name = water_tile_names
         }
-        for _, tile in ipairs(tiles) do
-            table.insert(all_tiles, tile)
+        if water_count > 0 then
+            local tiles = surface.find_tiles_filtered {
+                area = chunk.area,
+                name = water_tile_names
+            }
+            for _, tile in ipairs(tiles) do
+                table.insert(all_tiles, tile)
+            end
         end
     end
 
@@ -356,18 +370,40 @@ function M.snapshot_chunk_resources(chunk_x, chunk_y)
     local chunk = { x = chunk_x, y = chunk_y, area = chunk_area }
     local gathered = Resource.gather_resources_for_chunk(chunk)
 
-    -- Write resources.jsonl
-    local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
-    local resources_success = snapshot.write_resource_file(resources_path, gathered.resources)
-    if resources_success then
-        snapshot.send_file_event_udp("file_created", "resource", chunk_x, chunk_y, nil, nil, nil, resources_path)
+    -- Write resources.jsonl only if resources were found
+    if #gathered.resources > 0 then
+        local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
+        local resources_success = snapshot.write_resource_file(resources_path, gathered.resources)
+        if resources_success then
+            local udp_success = snapshot.send_file_event_udp("file_created", "resource", chunk_x, chunk_y, nil, nil, nil, resources_path)
+            if not udp_success and snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for resource file: %s", resources_path))
+            end
+        end
     end
 
-    -- Write water.jsonl
-    local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
-    local water_success = snapshot.write_resource_file(water_path, gathered.water)
-    if water_success then
-        snapshot.send_file_event_udp("file_created", "water", chunk_x, chunk_y, nil, nil, nil, water_path)
+    -- Write water.jsonl only if water tiles were found
+    if #gathered.water > 0 then
+        local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
+        local water_success = snapshot.write_resource_file(water_path, gathered.water)
+        if water_success then
+            local udp_success = snapshot.send_file_event_udp("file_created", "water", chunk_x, chunk_y, nil, nil, nil, water_path)
+            if not udp_success and snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for water file: %s", water_path))
+            end
+        end
+    end
+
+    -- Write trees.jsonl only if trees were found
+    if #gathered.trees > 0 then
+        local trees_path = snapshot.resource_file_path(chunk_x, chunk_y, "trees")
+        local trees_success = snapshot.write_resource_file(trees_path, gathered.trees)
+        if trees_success then
+            local udp_success = snapshot.send_file_event_udp("file_created", "trees", chunk_x, chunk_y, nil, nil, nil, trees_path)
+            if not udp_success and snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for trees file: %s", trees_path))
+            end
+        end
     end
 end
 
