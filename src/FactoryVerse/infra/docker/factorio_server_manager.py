@@ -100,6 +100,38 @@ class FactorioServerManager:
         """
         return self.work_dir / ".fv-output" / f"output_{instance_id}"
     
+    def clear_server_snapshot_dir(self, instance_id: int = 0) -> None:
+        """
+        Clear the snapshot directory for a server instance.
+        
+        Removes all files in script-output/factoryverse/snapshots to ensure
+        a clean state on server launch.
+        
+        Args:
+            instance_id: Server instance ID (default: 0)
+        """
+        script_output_dir = self.get_server_script_output_dir(instance_id)
+        snapshot_dir = script_output_dir / "factoryverse" / "snapshots"
+        
+        if snapshot_dir.exists():
+            print(f"🧹 Clearing server {instance_id} snapshot directory: {snapshot_dir}")
+            shutil.rmtree(snapshot_dir)
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            print(f"✓ Server {instance_id} snapshot directory cleared")
+        else:
+            # Ensure parent directories exist
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+    
+    def clear_all_server_snapshot_dirs(self, num_instances: int) -> None:
+        """
+        Clear snapshot directories for all server instances.
+        
+        Args:
+            num_instances: Number of server instances
+        """
+        for i in range(num_instances):
+            self.clear_server_snapshot_dir(i)
+    
     def prepare_mods(self, scenario: str) -> None:
         """Prepare factorio_verse mod for server."""
         if not self.verse_mod_dir.exists():

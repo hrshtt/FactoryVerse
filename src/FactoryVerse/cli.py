@@ -127,6 +127,10 @@ def cmd_start(args):
     print(f"📱 Setting up Factorio client (scenario: {args.scenario})")
     setup_client(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, project_scenarios_dir=server_mgr.scenarios_dir)
     
+    # Clear server snapshot directories before starting
+    print(f"🧹 Clearing server snapshot directories...")
+    server_mgr.clear_all_server_snapshot_dirs(args.num)
+    
     # Prepare server mods
     print(f"🚀 Starting FactoryVerse ({args.num} server(s), scenario: {args.scenario})")
     server_mgr.prepare_mods(args.scenario)

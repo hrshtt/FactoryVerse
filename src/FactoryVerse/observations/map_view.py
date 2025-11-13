@@ -148,15 +148,16 @@ class MapView:
         self.db = duckdb.connect(':memory:')
         self._create_schema()
         
-        # ID counters for resources and water (DuckDB doesn't support auto-increment)
+        # ID counters for resources, water, and trees (DuckDB doesn't support auto-increment)
         self._resource_id_counter = 1
         self._water_id_counter = 1
+        self._tree_id_counter = 1
         
         self.initial_load_complete = False
         self._update_task = None
         
     def _create_schema(self):
-        """Create DuckDB tables for entities, resources, and water."""
+        """Create DuckDB tables for entities, resources, water, and trees."""
         # Entities table
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS entities (
@@ -207,6 +208,24 @@ class MapView:
             )
         """)
         
+        # Trees table
+        # Note: DuckDB doesn't support auto-increment, so we'll generate IDs manually
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS trees (
+                id BIGINT PRIMARY KEY,
+                name TEXT NOT NULL,
+                position_x REAL NOT NULL,
+                position_y REAL NOT NULL,
+                bounding_box_min_x REAL,
+                bounding_box_min_y REAL,
+                bounding_box_max_x REAL,
+                bounding_box_max_y REAL,
+                chunk_x INTEGER NOT NULL,
+                chunk_y INTEGER NOT NULL,
+                tick BIGINT
+            )
+        """)
+        
         # Create indexes for spatial queries
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_entities_position ON entities(position_x, position_y)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_entities_chunk ON entities(chunk_x, chunk_y)")
@@ -214,6 +233,9 @@ class MapView:
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_resources_chunk ON resources(chunk_x, chunk_y)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_water_position ON water(x, y)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_water_chunk ON water(chunk_x, chunk_y)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_trees_position ON trees(position_x, position_y)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_trees_chunk ON trees(chunk_x, chunk_y)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_trees_bbox ON trees(bounding_box_min_x, bounding_box_min_y, bounding_box_max_x, bounding_box_max_y)")
     
     async def start(self):
         """Start the file watcher and begin processing events."""
@@ -253,7 +275,7 @@ class MapView:
                 pos_y = int(position.get('y', 0))
                 filename = f"{pos_x}_{pos_y}_{entity_name}.json"
                 full_path = self.snapshot_dir / str(chunk_x) / str(chunk_y) / component_type / filename
-            elif file_type in ('resource', 'water'):
+            elif file_type in ('resource', 'water', 'trees'):
                 filename = f"{file_type}s.jsonl"
                 full_path = self.snapshot_dir / str(chunk_x) / str(chunk_y) / "resources" / filename
             else:
@@ -276,6 +298,8 @@ class MapView:
             await self._load_resource_file(file_path, chunk_x, chunk_y, event)
         elif file_type == 'water':
             await self._load_water_file(file_path, chunk_x, chunk_y, event)
+        elif file_type == 'trees':
+            await self._load_trees_file(file_path, chunk_x, chunk_y, event)
     
     async def _handle_file_delete(self, file_type: str, chunk_x: int, chunk_y: int,
                                   file_path: Path, event: Dict[str, Any]):
@@ -317,6 +341,9 @@ class MapView:
         elif file_type == 'water':
             # Delete all water in this chunk
             self.db.execute("DELETE FROM water WHERE chunk_x = ? AND chunk_y = ?", [chunk_x, chunk_y])
+        elif file_type == 'trees':
+            # Delete all trees in this chunk
+            self.db.execute("DELETE FROM trees WHERE chunk_x = ? AND chunk_y = ?", [chunk_x, chunk_y])
     
     async def _load_entity_file(self, file_path: Path, chunk_x: int, chunk_y: int, event: Dict[str, Any]):
         """Load an entity JSON file into DuckDB."""
@@ -439,6 +466,49 @@ class MapView:
         except Exception as e:
             print(f"⚠️  Error loading water file {file_path}: {e}")
     
+    async def _load_trees_file(self, file_path: Path, chunk_x: int, chunk_y: int, event: Dict[str, Any]):
+        """Load a trees.jsonl file into DuckDB."""
+        try:
+            # Delete existing trees for this chunk
+            self.db.execute("DELETE FROM trees WHERE chunk_x = ? AND chunk_y = ?", [chunk_x, chunk_y])
+            
+            # Load new trees
+            with open(file_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    tree = json.loads(line)
+                    tree_id = self._tree_id_counter
+                    self._tree_id_counter += 1
+                    
+                    position = tree.get('position', {})
+                    bounding_box = tree.get('bounding_box', {})
+                    
+                    self.db.execute("""
+                        INSERT INTO trees (
+                            id, name, position_x, position_y,
+                            bounding_box_min_x, bounding_box_min_y,
+                            bounding_box_max_x, bounding_box_max_y,
+                            chunk_x, chunk_y, tick
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [
+                        tree_id,
+                        tree.get('name'),
+                        position.get('x', 0),
+                        position.get('y', 0),
+                        bounding_box.get('min_x'),
+                        bounding_box.get('min_y'),
+                        bounding_box.get('max_x'),
+                        bounding_box.get('max_y'),
+                        chunk_x,
+                        chunk_y,
+                        event.get('tick')
+                    ])
+        except Exception as e:
+            print(f"⚠️  Error loading trees file {file_path}: {e}")
+    
     def _determine_component_type(self, entity_type: str, entity_name: str) -> str:
         """Determine component type from entity type and name."""
         if entity_type in ('transport-belt', 'underground-belt', 'splitter', 'loader', 'loader-1x1', 'linked-belt'):
@@ -496,6 +566,11 @@ class MapView:
             water_file = chunk_dir / 'resources' / 'water.jsonl'
             if water_file.exists():
                 await self._load_water_file(water_file, chunk_x, chunk_y, {'tick': 0})
+            
+            # Load trees
+            trees_file = chunk_dir / 'resources' / 'trees.jsonl'
+            if trees_file.exists():
+                await self._load_trees_file(trees_file, chunk_x, chunk_y, {'tick': 0})
             
             loaded += 1
             if loaded % 10 == 0:
@@ -626,6 +701,221 @@ class MapView:
             [chunk_x, chunk_y]
         ).fetchdf()
         return result.to_dict('records') if not result.empty else []
+    
+    # Tree queries
+    def get_trees_in_area(self, min_x: float, min_y: float, max_x: float, max_y: float,
+                          tree_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all trees in a bounding box (by position or bounding box overlap)."""
+        # Trees can be queried by position or by bounding box overlap
+        query = """
+            SELECT * FROM trees
+            WHERE (
+                (position_x >= ? AND position_x <= ? AND position_y >= ? AND position_y <= ?)
+                OR
+                (bounding_box_min_x IS NOT NULL AND bounding_box_max_x IS NOT NULL
+                 AND bounding_box_min_y IS NOT NULL AND bounding_box_max_y IS NOT NULL
+                 AND NOT (bounding_box_max_x < ? OR bounding_box_min_x > ? 
+                          OR bounding_box_max_y < ? OR bounding_box_min_y > ?))
+            )
+        """
+        params = [min_x, max_x, min_y, max_y, min_x, max_x, min_y, max_y]
+        
+        if tree_name:
+            query += " AND name = ?"
+            params.append(tree_name)
+        
+        result = self.db.execute(query, params).fetchdf()
+        return result.to_dict('records') if not result.empty else []
+    
+    def get_trees_near(self, x: float, y: float, radius: float,
+                       tree_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get trees within radius of a point."""
+        query = """
+            SELECT * FROM trees
+            WHERE SQRT(POWER(position_x - ?, 2) + POWER(position_y - ?, 2)) <= ?
+        """
+        params = [x, y, radius]
+        
+        if tree_name:
+            query += " AND name = ?"
+            params.append(tree_name)
+        
+        result = self.db.execute(query, params).fetchdf()
+        return result.to_dict('records') if not result.empty else []
+    
+    def get_tree_at(self, x: float, y: float, tolerance: float = 0.5) -> Optional[Dict[str, Any]]:
+        """Get tree at or near specific position."""
+        query = """
+            SELECT * FROM trees
+            WHERE ABS(position_x - ?) <= ? AND ABS(position_y - ?) <= ?
+            ORDER BY SQRT(POWER(position_x - ?, 2) + POWER(position_y - ?, 2))
+            LIMIT 1
+        """
+        result = self.db.execute(query, [x, tolerance, y, tolerance, x, y]).fetchdf()
+        if result.empty:
+            return None
+        return result.iloc[0].to_dict()
+    
+    def get_chunk_trees(self, chunk_x: int, chunk_y: int) -> List[Dict[str, Any]]:
+        """Get all trees in a chunk."""
+        result = self.db.execute(
+            "SELECT * FROM trees WHERE chunk_x = ? AND chunk_y = ?",
+            [chunk_x, chunk_y]
+        ).fetchdf()
+        return result.to_dict('records') if not result.empty else []
+    
+    # Empty land queries
+    def find_empty_land(self, min_x: float, min_y: float, max_x: float, max_y: float,
+                        min_size: float = 1.0, exclude_entities: bool = True) -> List[Dict[str, Any]]:
+        """
+        Find empty pieces of land in a bounding box.
+        
+        Empty land is defined as areas that have:
+        - No resources
+        - No water
+        - No trees (by position or bounding box overlap)
+        - Optionally: No entities (if exclude_entities=True)
+        
+        Args:
+            min_x, min_y, max_x, max_y: Bounding box to search
+            min_size: Minimum size of empty area to return (in tiles, default: 1.0)
+            exclude_entities: If True, also exclude areas with entities (default: True)
+        
+        Returns:
+            List of empty area dictionaries with 'x', 'y', 'size' fields.
+            Currently returns individual empty tiles. For larger areas, use grid-based approach.
+        """
+        # Generate a grid of potential empty positions
+        # For now, we'll check at integer coordinates
+        empty_areas = []
+        
+        # Check each integer position in the area
+        for x in range(int(min_x), int(max_x) + 1):
+            for y in range(int(min_y), int(max_y) + 1):
+                # Check if this position has resources
+                resource = self.get_resource_at(x, y)
+                if resource:
+                    continue
+                
+                # Check if this position has water
+                water_result = self.db.execute(
+                    "SELECT * FROM water WHERE x = ? AND y = ?",
+                    [x, y]
+                ).fetchdf()
+                if not water_result.empty:
+                    continue
+                
+                # Check if this position has a tree (by position or bounding box)
+                tree_result = self.db.execute("""
+                    SELECT * FROM trees
+                    WHERE (
+                        (position_x = ? AND position_y = ?)
+                        OR
+                        (bounding_box_min_x IS NOT NULL AND bounding_box_max_x IS NOT NULL
+                         AND bounding_box_min_y IS NOT NULL AND bounding_box_max_y IS NOT NULL
+                         AND ? >= bounding_box_min_x AND ? <= bounding_box_max_x
+                         AND ? >= bounding_box_min_y AND ? <= bounding_box_max_y)
+                    )
+                    LIMIT 1
+                """, [x, y, x, x, y, y]).fetchdf()
+                if not tree_result.empty:
+                    continue
+                
+                # Optionally check for entities
+                if exclude_entities:
+                    entity_result = self.db.execute("""
+                        SELECT * FROM entities
+                        WHERE position_x = ? AND position_y = ?
+                        LIMIT 1
+                    """, [x, y]).fetchdf()
+                    if not entity_result.empty:
+                        continue
+                
+                # This position is empty
+                empty_areas.append({
+                    'x': x,
+                    'y': y,
+                    'size': 1.0  # Single tile
+                })
+        
+        return empty_areas
+    
+    def find_empty_land_areas(self, min_x: float, min_y: float, max_x: float, max_y: float,
+                               min_area_size: float = 4.0, grid_size: float = 2.0,
+                               exclude_entities: bool = True) -> List[Dict[str, Any]]:
+        """
+        Find empty land areas of minimum size using a grid-based approach.
+        
+        This checks grid cells and returns those that are completely empty.
+        For contiguous rectangular areas, use find_empty_land() and group results.
+        
+        Args:
+            min_x, min_y, max_x, max_y: Bounding box to search
+            min_area_size: Minimum area size in tiles (default: 4.0, i.e., 2x2)
+            grid_size: Size of grid cells to check (default: 2.0 for 2x2 cells)
+            exclude_entities: If True, also exclude areas with entities (default: True)
+        
+        Returns:
+            List of empty area dictionaries with 'min_x', 'min_y', 'max_x', 'max_y', 'area' fields.
+        """
+        empty_areas = []
+        
+        # Use a grid-based approach
+        x_start = int(min_x / grid_size) * int(grid_size)
+        y_start = int(min_y / grid_size) * int(grid_size)
+        x_end = int(max_x / grid_size) * int(grid_size)
+        y_end = int(max_y / grid_size) * int(grid_size)
+        
+        # Check each grid cell
+        for grid_x in range(x_start, x_end + int(grid_size), int(grid_size)):
+            for grid_y in range(y_start, y_end + int(grid_size), int(grid_size)):
+                cell_min_x = float(grid_x)
+                cell_min_y = float(grid_y)
+                cell_max_x = cell_min_x + grid_size
+                cell_max_y = cell_min_y + grid_size
+                
+                # Check if this cell is empty
+                cell_empty = True
+                
+                # Check resources in cell
+                resources = self.get_resources_in_area(cell_min_x, cell_min_y, cell_max_x, cell_max_y)
+                if resources:
+                    cell_empty = False
+                
+                # Check water in cell
+                if cell_empty:
+                    water_result = self.db.execute("""
+                        SELECT * FROM water
+                        WHERE x >= ? AND x < ? AND y >= ? AND y < ?
+                        LIMIT 1
+                    """, [cell_min_x, cell_max_x, cell_min_y, cell_max_y]).fetchdf()
+                    if not water_result.empty:
+                        cell_empty = False
+                
+                # Check trees in cell (by position or bounding box overlap)
+                if cell_empty:
+                    trees = self.get_trees_in_area(cell_min_x, cell_min_y, cell_max_x, cell_max_y)
+                    if trees:
+                        cell_empty = False
+                
+                # Check entities in cell
+                if cell_empty and exclude_entities:
+                    entities = self.get_entities_in_area(cell_min_x, cell_min_y, cell_max_x, cell_max_y)
+                    if entities:
+                        cell_empty = False
+                
+                if cell_empty:
+                    area = grid_size * grid_size
+                    if area >= min_area_size:
+                        empty_areas.append({
+                            'min_x': cell_min_x,
+                            'min_y': cell_min_y,
+                            'max_x': cell_max_x,
+                            'max_y': cell_max_y,
+                            'area': area
+                        })
+        
+        return empty_areas
     
     async def stop(self):
         """Stop the map view and file watcher."""

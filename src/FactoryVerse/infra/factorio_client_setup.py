@@ -55,6 +55,26 @@ def get_client_script_output_dir() -> Path:
     return _detect_factorio_dir() / "script-output"
 
 
+def clear_client_snapshot_dir() -> None:
+    """
+    Clear the snapshot directory for Factorio client.
+    
+    Removes all files in script-output/factoryverse/snapshots to ensure
+    a clean state on client launch.
+    """
+    script_output_dir = get_client_script_output_dir()
+    snapshot_dir = script_output_dir / "factoryverse" / "snapshots"
+    
+    if snapshot_dir.exists():
+        print(f"🧹 Clearing client snapshot directory: {snapshot_dir}")
+        shutil.rmtree(snapshot_dir)
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        print("✓ Client snapshot directory cleared")
+    else:
+        # Ensure parent directories exist
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+
 def get_factorio_log_path() -> Path:
     """
     Get the path to factorio-current.log file.
@@ -265,6 +285,9 @@ def _find_factorio_executable() -> Path:
 def launch_factorio_client() -> None:
     """Launch Factorio client with optional UDP support."""
     try:
+        # Clear snapshot directory before launch
+        clear_client_snapshot_dir()
+        
         factorio_exe = _find_factorio_executable()
         
         print(f"🎮 Launching Factorio client: {factorio_exe}")
