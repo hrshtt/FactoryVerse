@@ -88,6 +88,18 @@ class FactorioServerManager:
         """Get emulator prefix if needed."""
         return "/bin/box64" if self.arch in ["arm64", "aarch64"] else ""
     
+    def get_server_script_output_dir(self, instance_id: int = 0) -> Path:
+        """
+        Get script-output directory for a server instance.
+        
+        Args:
+            instance_id: Server instance ID (default: 0)
+        
+        Returns:
+            Path to server script-output directory
+        """
+        return self.work_dir / ".fv-output" / f"output_{instance_id}"
+    
     def prepare_mods(self, scenario: str) -> None:
         """Prepare factorio_verse mod for server."""
         if not self.verse_mod_dir.exists():

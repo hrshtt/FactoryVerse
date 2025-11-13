@@ -2,83 +2,74 @@
 
 import json
 import asyncio
-import socket
-import threading
 import time
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+
+from FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
 
 
 class AsyncActionListener:
     """UDP listener for async action completion events."""
     
-    def __init__(self, host: str = "127.0.0.1", port: int = 34202, timeout: int = 30):
+    def __init__(self, udp_dispatcher: Optional[UDPDispatcher] = None, timeout: int = 30):
         """
         Initialize the UDP listener.
         
         Args:
-            host: Host to bind to
-            port: Port to listen on
+            udp_dispatcher: Optional UDPDispatcher instance. If None, uses global dispatcher.
             timeout: Default timeout in seconds for waiting on actions
         """
-        self.host = host
-        self.port = port
+        self.udp_dispatcher = udp_dispatcher
         self.timeout = timeout
         self.pending_actions: Dict[str, asyncio.Event] = {}
         self.action_results: Dict[str, Dict[str, Any]] = {}
-        self.sock = None
-        self.listener_thread = None
+        self.event_loops: Dict[str, asyncio.AbstractEventLoop] = {}  # Store event loop for each action
         self.running = False
         
     async def start(self):
-        """Start the UDP listener in background thread."""
-        # Create socket
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((self.host, self.port))
-        self.sock.settimeout(0.5)  # Non-blocking with timeout
+        """Subscribe to UDP dispatcher for action completion events."""
+        # Get dispatcher (use provided one or global)
+        if self.udp_dispatcher is None:
+            self.udp_dispatcher = get_udp_dispatcher()
+        
+        # Ensure dispatcher is running
+        if not self.udp_dispatcher.is_running():
+            await self.udp_dispatcher.start()
+        
+        # Subscribe to action completion events (messages with action_id)
+        # We use "*" to receive all events and filter by action_id in handler
+        self.udp_dispatcher.subscribe("*", self._handle_udp_message)
         
         self.running = True
-        
-        # Start listener thread
-        self.listener_thread = threading.Thread(target=self._listen_loop, daemon=True)
-        self.listener_thread.start()
-        
-        print(f"✅ AsyncActionListener started on {self.host}:{self.port}")
+        print(f"✅ AsyncActionListener subscribed to UDP dispatcher")
     
-    def _listen_loop(self):
-        """Background thread loop for receiving UDP packets."""
-        while self.running:
-            try:
-                data, addr = self.sock.recvfrom(65535)
-                self._process_udp_message(data)
-            except socket.timeout:
-                continue
-            except Exception as e:
-                if self.running:
-                    print(f"❌ Error in UDP listener: {e}")
-    
-    def _process_udp_message(self, data: bytes):
-        """Process received UDP data and match to pending action."""
-        receive_time = datetime.now()
+    def _handle_udp_message(self, payload: Dict[str, Any]):
+        """Process received UDP message from dispatcher (called by dispatcher thread)."""
         process_start = time.time()
         
         try:
-            payload = json.loads(data.decode('utf-8'))
             action_id = payload.get('action_id')
             
+            # Only process action completion events (have action_id)
             if not action_id:
-                print(f"⚠️  UDP message missing action_id: {payload}")
-                return
+                return  # Not an action completion event, ignore
             
             # Direct lookup by action_id
             if action_id not in self.pending_actions:
                 print(f"⚠️  Received completion for unregistered action: {action_id}")
                 return
             
-            # Store result and signal completion
+            # Store result and signal completion (thread-safe)
             self.action_results[action_id] = payload
             event = self.pending_actions[action_id]
-            event.set()
+            
+            # Use the stored event loop to safely signal from background thread
+            loop = self.event_loops.get(action_id)
+            if loop and loop.is_running():
+                loop.call_soon_threadsafe(event.set)
+            else:
+                # Fallback if no loop or loop not running
+                event.set()
             
             rcon_tick = payload.get('rcon_tick')
             completion_tick = payload.get('completion_tick')
@@ -90,20 +81,16 @@ class AsyncActionListener:
             elapsed_str = f" ({elapsed_ticks} ticks)" if elapsed_ticks else ""
             print(f"✅ {payload.get('action_type', 'action')} completed{elapsed_str}: {action_id} [processed in {process_time_ms:.2f}ms]")
             
-        except json.JSONDecodeError as e:
-            process_time_ms = (time.time() - process_start) * 1000
-            print(f"❌ Failed to decode UDP JSON: {data!r} - {e} [{process_time_ms:.2f}ms]")
         except Exception as e:
             process_time_ms = (time.time() - process_start) * 1000
             print(f"❌ Error processing UDP message: {e} [{process_time_ms:.2f}ms]")
     
     async def stop(self):
-        """Stop the UDP listener."""
+        """Unsubscribe from UDP dispatcher."""
+        if self.udp_dispatcher and self.running:
+            self.udp_dispatcher.unsubscribe("*", self._handle_udp_message)
+        
         self.running = False
-        if self.listener_thread:
-            self.listener_thread.join(timeout=2)
-        if self.sock:
-            self.sock.close()
         print("✅ AsyncActionListener stopped")
     
     def register_action(self, action_id: str):
@@ -111,6 +98,11 @@ class AsyncActionListener:
         event = asyncio.Event()
         self.pending_actions[action_id] = event
         self.action_results[action_id] = None
+        # Capture the running event loop (important for Jupyter and other async contexts)
+        try:
+            self.event_loops[action_id] = asyncio.get_running_loop()
+        except RuntimeError:
+            self.event_loops[action_id] = None
     
     async def wait_for_action(self, action_id: str, timeout: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -147,6 +139,7 @@ class AsyncActionListener:
             # Cleanup
             self.pending_actions.pop(action_id, None)
             self.action_results.pop(action_id, None)
+            self.event_loops.pop(action_id, None)
 
 
 class RconHelper:
@@ -309,6 +302,11 @@ class RconHelper:
         
         # Execute action (returns queued response)
         response = self.run(category, method, args, safe=safe, verbose=verbose)
+        
+        # Check for validation/execution errors first
+        if isinstance(response, dict) and response.get('success') == False:
+            error_msg = response.get('error', 'Unknown error')
+            raise Exception(f"Action failed: {error_msg}")
         
         # Check if it was actually queued
         if not response.get('queued'):

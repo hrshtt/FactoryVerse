@@ -45,6 +45,16 @@ def _get_scenario_path() -> Path:
     return _detect_factorio_dir() / "scenarios"
 
 
+def get_client_script_output_dir() -> Path:
+    """
+    Get script-output directory for Factorio client.
+    
+    Returns:
+        Path to client script-output directory
+    """
+    return _detect_factorio_dir() / "script-output"
+
+
 def get_factorio_log_path() -> Path:
     """
     Get the path to factorio-current.log file.
@@ -262,7 +272,7 @@ def launch_factorio_client() -> None:
         command = [str(factorio_exe)]
         if ENABLE_FACTORIO_UDP:
             print("⚠️  WARNING: Launching Factorio client with UDP enabled (--enable-lua-udp)")
-            command.append("--enable-lua-udp 34200")
+            command.extend(["--enable-lua-udp", "34200"])
         
         subprocess.Popen(command)
         print("✅ Factorio client launched!")
