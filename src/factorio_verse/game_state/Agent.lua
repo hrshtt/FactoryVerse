@@ -589,9 +589,11 @@ end
 --- Inspect agent details
 --- @param agent_id number - agent ID (required)
 --- @param attach_inventory boolean - whether to include inventory (default false)
---- @return table - {agent_id, tick, position {x, y}, inventory?} or {error, agent_id, tick}
-function M:inspect_agent(agent_id, attach_inventory)
+--- @param attach_reachable_entities boolean - whether to include entities within reach (default false)
+--- @return table - {agent_id, tick, position {x, y}, inventory?, nearby_resources?, nearby_entities?} or {error, agent_id, tick}
+function M:inspect_agent(agent_id, attach_inventory, attach_reachable_entities)
     attach_inventory = attach_inventory or false
+    attach_reachable_entities = attach_reachable_entities or false
     
     local agent = self:get_agent(agent_id)
     if not agent or not agent.valid then
@@ -630,6 +632,51 @@ function M:inspect_agent(agent_id, attach_inventory)
         result.inventory = inventory
     end
 
+    -- Get entities within reach only if requested
+    if attach_reachable_entities then
+        local reachable_resources = {}
+        local reachable_entities = {}
+        local surface = agent.surface or game.surfaces[1]
+        
+        -- Find resources within resource_reach_distance
+        local resource_reach = agent.resource_reach_distance
+        local resources = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "resource"
+        })
+        
+        for _, resource in ipairs(resources) do
+            if resource and resource.valid then
+                table.insert(reachable_resources, {
+                    name = resource.name,
+                    position = { x = resource.position.x, y = resource.position.y },
+                    type = resource.type
+                })
+            end
+        end
+        
+        -- Find other entities (non-resources) within build_distance
+        local build_reach = agent.reach_distance
+        local other_entities = surface.find_entities_filtered({
+            position = position,
+            radius = build_reach
+        })
+        
+        for _, entity in ipairs(other_entities) do
+            if entity and entity.valid and entity.type ~= "resource" and entity ~= agent then
+                table.insert(reachable_entities, {
+                    name = entity.name,
+                    position = { x = entity.position.x, y = entity.position.y },
+                    type = entity.type
+                })
+            end
+        end
+        
+        result.reachable_resources = reachable_resources
+        result.reachable_entities = reachable_entities
+    end
+
     return result
 end
 
@@ -662,9 +709,10 @@ end
 --- Includes type and required metadata for validation
 M.AdminApiSpecs = {
     inspect_agent = {
-        _param_order = {"agent_id", "attach_inventory"},
+        _param_order = {"agent_id", "attach_inventory", "attach_entities"},
         agent_id = {type = "number", required = true},
         attach_inventory = {type = "boolean", required = false},
+        attach_entities = {type = "boolean", required = false},
     },
     create_agents = {
         _param_order = {"num_agents", "destroy_existing", "set_unique_forces", "default_common_force"},
