@@ -99,17 +99,7 @@ local function aggregate_all_events()
         end
     end
     
-    -- 5. Deferred dump handler (process one chunk per tick until complete)
-    -- Scan once on init, then dump across ticks. Only runs during initial load for existing saves.
-    add_defined_event(defines.events.on_tick, function(event)
-        -- process_deferred_dump_queue() returns false when dump is complete
-        -- This check ensures we stop calling it once all chunks are processed
-        if not storage.snapshot_dump_complete then
-            Map.process_deferred_dump_queue()
-        end
-    end)
-    
-    -- 5b. Entity status tracking (every 10 ticks)
+    -- 5. Entity status tracking (every 10 ticks)
     -- Map orchestrates getting chunks, Entities provides the tracking logic
     add_nth_tick_handler(10, function()
         local charted_chunks = Map.get_charted_chunks()
@@ -260,7 +250,10 @@ script.on_init(function()
     -- Modules already required at module level above
     Entities.init()
     Resource.init()
-    Map.init_deferred_dump()
+    Map.init()
+    
+    -- Initialize initial 7x7 chunk area from spawn position
+    Map.initialize_initial_chunk_area()
     
     log("Initialized game state modules and custom events")
     
@@ -277,7 +270,7 @@ script.on_load(function()
     -- Re-initialize (custom events are preserved, but we rebuild tables)
     Entities.init()
     Resource.init()
-    -- Don't re-queue chunks on load, just continue processing existing queue
+    Map.init()  -- Will check and queue chunks if needed
     
     log("Re-initialized game state modules after mod reload")
     

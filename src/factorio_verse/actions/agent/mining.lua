@@ -117,8 +117,12 @@ function MineResourceAction:run(params)
         -- Ores can use position or area (tile-based entities)
         search_args.name = context.resource_name
         if context.position then
-            search_args.position = context.position
+            -- When position is provided, search in an area around that position
+            local x = context.position.x
+            local y = context.position.y
+            search_args.area = { { x = x - radius, y = y - radius }, { x = x + radius, y = y + radius } }
         else
+            -- When position not provided, search around agent
             local x = context.agent.position.x
             local y = context.agent.position.y
             search_args.area = { { x = x - radius, y = y - radius }, { x = x + radius, y = y + radius } }

@@ -188,6 +188,7 @@ end
 
 --- Register a charted area by converting it to chunk coordinates
 --- Called after force.chart() to ensure snapshot works on headless servers
+--- Also raises custom event for agent chunk discovery to trigger resource snapshotting
 --- @param area table - {left_top = {x, y}, right_bottom = {x, y}}
 function M.register_charted_area(area)
     if not area or not area.left_top or not area.right_bottom then
@@ -204,11 +205,18 @@ function M.register_charted_area(area)
     local max_chunk_x = math.floor(area.right_bottom.x / 32)
     local max_chunk_y = math.floor(area.right_bottom.y / 32)
     
-    -- Register each chunk in the area
+    -- Register each chunk in the area and raise custom event for resource snapshotting
     for cx = min_chunk_x, max_chunk_x do
         for cy = min_chunk_y, max_chunk_y do
             local chunk_key = utils.chunk_key(cx, cy)
             storage.registered_charted_areas[chunk_key] = { x = cx, y = cy }
+            
+            -- Raise custom event for agent chunk discovery (triggers resource snapshotting)
+            if M.custom_events and M.custom_events.agent_chunk_discovered then
+                script.raise_event(M.custom_events.agent_chunk_discovered, {
+                    position = { x = cx, y = cy }
+                })
+            end
         end
     end
 end
@@ -240,75 +248,100 @@ M.event_based_snapshot = {
     }
 }
 
--- ============================================================================
--- DEFERRED DUMP FOR INITIAL SNAPSHOT
--- ============================================================================
-
---- Scan once and queue chunks for deferred dump
---- Scans all charted chunks once, then queues them for deferred snapshotting across ticks
---- Only needed for existing saves (not new games)
-function M.init_deferred_dump()
-    if not storage.snapshot_dump_queue then
-        storage.snapshot_dump_queue = {}
-    end
-
-    -- Mark dump as in progress
-    storage.snapshot_dump_complete = false
-
-    -- Scan once: get all charted chunks
-    local charted_chunks = M.get_charted_chunks()
+--- Build disk_write_snapshot event handlers table
+--- @return table - {events = {event_id -> handler, ...}}
+function M._build_disk_write_snapshot()
+    local events = {}
     
-    -- Queue all chunks for deferred dump
-    for _, chunk in ipairs(charted_chunks) do
-        local chunk_key = utils.chunk_key(chunk.x, chunk.y)
-        storage.snapshot_dump_queue[chunk_key] = { x = chunk.x, y = chunk.y }
+    -- on_chunk_generated: snapshot resources if in initial 7x7 area
+    events[defines.events.on_chunk_generated] = M._on_chunk_generated
+    
+    -- on_chunk_charted: snapshot resources for charted chunks
+    events[defines.events.on_chunk_charted] = M._on_chunk_charted
+    
+    -- agent_chunk_discovered: custom event for agent chunk discovery
+    if M.custom_events and M.custom_events.agent_chunk_discovered then
+        events[M.custom_events.agent_chunk_discovered] = M._on_agent_chunk_discovered
     end
-
-    if #charted_chunks > 0 then
-        log("Map: Scanned and queued " .. #charted_chunks .. " chunks for deferred dump")
-    else
-        -- No chunks to dump, mark as complete immediately
-        storage.snapshot_dump_complete = true
-    end
+    
+    return { events = events }
 end
 
---- Process one chunk from the dump queue
---- Called on each tick to gradually dump all chunks
---- Returns true if dumping is still in progress, false if complete
---- @return boolean - true if dumping continues, false if complete
-function M.process_deferred_dump_queue()
-    -- Early exit if dump already complete
-    if storage.snapshot_dump_complete then
-        return false
-    end
-
-    if not storage.snapshot_dump_queue then
-        storage.snapshot_dump_complete = true
-        return false
-    end
-
-    -- Process one chunk per tick
-    local chunk_key, chunk_data = next(storage.snapshot_dump_queue)
-    if not chunk_key or not chunk_data then
-        -- Queue is empty, dump complete
-        storage.snapshot_dump_complete = true
-        log("Map: Deferred dump complete - all chunks processed")
-        return false
-    end
-
-    -- Remove from queue
-    storage.snapshot_dump_queue[chunk_key] = nil
-
-    -- Dump the chunk (snapshot entities and resources)
-    M.snapshot_chunk(chunk_data.x, chunk_data.y)
-    
-    return true
+--- Get disk_write_snapshot events
+--- @return table - {events = {event_id -> handler, ...}}
+function M.get_disk_write_snapshot_events()
+    return M.disk_write_snapshot or {}
 end
 
---- Snapshot a single chunk (entities and resources)
+-- ============================================================================
+-- INITIALIZATION
+-- ============================================================================
+
+-- Custom event IDs (initialized in init())
+M.custom_events = {}
+
+--- Initialize Map module
+--- Must be called during on_init/on_load
+--- Creates custom event for agent chunk discovery and builds event handlers
+function M.init()
+    -- Generate custom event ID for agent chunk discovery
+    M.custom_events.agent_chunk_discovered = script.generate_event_name()
+    log("Map: Generated custom event 'agent_chunk_discovered': " .. tostring(M.custom_events.agent_chunk_discovered))
+    
+    -- Build disk_write_snapshot table after events are initialized
+    M.disk_write_snapshot = M._build_disk_write_snapshot()
+end
+
+--- Calculate and store initial 7x7 chunk area from spawn position
+--- Called during on_init to set up initial chunk boundaries
+function M.initialize_initial_chunk_area()
+    local surface = game.surfaces[1]
+    local force = M.get_player_force()
+    if not (surface and force) then
+        return
+    end
+
+    -- Get spawn position (origin)
+    local origin = force.get_spawn_position(surface)
+    local origin_chunk = utils.to_chunk_coordinates(origin)
+    
+    -- Calculate 7x7 chunk area (3 chunks in each direction from center)
+    -- Center chunk is at origin_chunk, so range is -3 to +3
+    local initial_chunks = {}
+    for dx = -3, 3 do
+        for dy = -3, 3 do
+            local chunk_x = origin_chunk.x + dx
+            local chunk_y = origin_chunk.y + dy
+            local chunk_key = utils.chunk_key(chunk_x, chunk_y)
+            initial_chunks[chunk_key] = { x = chunk_x, y = chunk_y }
+        end
+    end
+
+    storage.initial_chunk_area = initial_chunks
+    log("Map: Initialized 7x7 chunk area (49 chunks) from spawn position")
+end
+
+--- Check if a chunk is in the initial 7x7 area
 --- @param chunk_x number
 --- @param chunk_y number
-function M.snapshot_chunk(chunk_x, chunk_y)
+--- @return boolean
+function M.is_in_initial_area(chunk_x, chunk_y)
+    if not storage.initial_chunk_area then
+        return false
+    end
+    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
+    return storage.initial_chunk_area[chunk_key] ~= nil
+end
+
+-- ============================================================================
+-- EVENT-DRIVEN RESOURCE SNAPSHOTTING
+-- ============================================================================
+
+--- Snapshot resources for a chunk
+--- Called by event handlers when chunks are generated/charted/discovered
+--- @param chunk_x number
+--- @param chunk_y number
+function M.snapshot_chunk_resources(chunk_x, chunk_y)
     local surface = game.surfaces[1]
     if not surface then
         return
@@ -319,31 +352,54 @@ function M.snapshot_chunk(chunk_x, chunk_y)
         right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
     }
 
-    -- Snapshot entities
-    local entities = surface.find_entities_filtered { area = chunk_area }
-    for _, entity in ipairs(entities) do
-        if entity and entity.valid then
-            -- Only snapshot player-placed entities (not resources, trees, etc.)
-            -- Resources are handled separately
-            -- During initial scan, treat as create (is_update = false)
-            if entity.type ~= "resource" and entity.type ~= "tree" and 
-               entity.type ~= "simple-entity" and entity.type ~= "corpse" then
-                Entities.write_entity_snapshot(entity, false)
-            end
-        end
-    end
-
-    -- Snapshot resources
+    -- Gather resources for the chunk
     local chunk = { x = chunk_x, y = chunk_y, area = chunk_area }
     local gathered = Resource.gather_resources_for_chunk(chunk)
 
     -- Write resources.jsonl
     local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
-    snapshot.write_resource_file(resources_path, gathered.resources)
+    local resources_success = snapshot.write_resource_file(resources_path, gathered.resources)
+    if resources_success then
+        snapshot.send_file_event_udp("file_created", "resource", chunk_x, chunk_y, nil, nil, nil, resources_path)
+    end
 
     -- Write water.jsonl
     local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
-    snapshot.write_resource_file(water_path, gathered.water)
+    local water_success = snapshot.write_resource_file(water_path, gathered.water)
+    if water_success then
+        snapshot.send_file_event_udp("file_created", "water", chunk_x, chunk_y, nil, nil, nil, water_path)
+    end
+end
+
+--- Handle chunk generated event
+--- Snapshot resources if chunk is in initial 7x7 area
+--- @param event table - on_chunk_generated event
+function M._on_chunk_generated(event)
+    local chunk_x = event.position.x
+    local chunk_y = event.position.y
+    
+    -- Only snapshot if in initial 7x7 area
+    if M.is_in_initial_area(chunk_x, chunk_y) then
+        M.snapshot_chunk_resources(chunk_x, chunk_y)
+    end
+end
+
+--- Handle chunk charted event (by players)
+--- Snapshot resources for the charted chunk
+--- @param event table - on_chunk_charted event
+function M._on_chunk_charted(event)
+    local chunk_x = event.position.x
+    local chunk_y = event.position.y
+    M.snapshot_chunk_resources(chunk_x, chunk_y)
+end
+
+--- Handle agent chunk discovered event (custom event)
+--- Snapshot resources for the discovered chunk
+--- @param event table - agent_chunk_discovered custom event
+function M._on_agent_chunk_discovered(event)
+    local chunk_x = event.position.x
+    local chunk_y = event.position.y
+    M.snapshot_chunk_resources(chunk_x, chunk_y)
 end
 
 return M
