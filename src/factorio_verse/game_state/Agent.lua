@@ -638,8 +638,9 @@ function M:inspect_agent(agent_id, attach_inventory, attach_reachable_entities)
         local reachable_entities = {}
         local surface = agent.surface or game.surfaces[1]
         
-        -- Find resources within resource_reach_distance
+        -- Find resources within resource_reach_distance (includes resources, trees, and rocks)
         local resource_reach = agent.resource_reach_distance
+        -- Search for resources, trees, and simple-entities (rocks) separately
         local resources = surface.find_entities_filtered({
             position = position,
             radius = resource_reach,
@@ -656,7 +657,41 @@ function M:inspect_agent(agent_id, attach_inventory, attach_reachable_entities)
             end
         end
         
-        -- Find other entities (non-resources) within build_distance
+        -- Find trees within resource_reach_distance
+        local trees = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "tree"
+        })
+        
+        for _, tree in ipairs(trees) do
+            if tree and tree.valid then
+                table.insert(reachable_resources, {
+                    name = tree.name,
+                    position = { x = tree.position.x, y = tree.position.y },
+                    type = tree.type
+                })
+            end
+        end
+        
+        -- Find simple-entities (rocks) within resource_reach_distance
+        local rocks = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "simple-entity"
+        })
+        
+        for _, rock in ipairs(rocks) do
+            if rock and rock.valid then
+                table.insert(reachable_resources, {
+                    name = rock.name,
+                    position = { x = rock.position.x, y = rock.position.y },
+                    type = rock.type
+                })
+            end
+        end
+        
+        -- Find other entities (non-resources, non-trees, non-rocks) within reach_distance
         local build_reach = agent.reach_distance
         local other_entities = surface.find_entities_filtered({
             position = position,
@@ -664,12 +699,22 @@ function M:inspect_agent(agent_id, attach_inventory, attach_reachable_entities)
         })
         
         for _, entity in ipairs(other_entities) do
-            if entity and entity.valid and entity.type ~= "resource" and entity ~= agent then
-                table.insert(reachable_entities, {
-                    name = entity.name,
-                    position = { x = entity.position.x, y = entity.position.y },
-                    type = entity.type
-                })
+            if entity and entity.valid 
+               and entity.type ~= "resource" 
+               and entity.type ~= "tree" 
+               and entity.type ~= "simple-entity" 
+               and entity ~= agent then
+                -- Exclude tree stumps and other tree-related corpses
+                local is_tree_corpse = (entity.type == "corpse" and 
+                                       (string.find(entity.name, "stump") or 
+                                        string.find(entity.name, "tree")))
+                if not is_tree_corpse then
+                    table.insert(reachable_entities, {
+                        name = entity.name,
+                        position = { x = entity.position.x, y = entity.position.y },
+                        type = entity.type
+                    })
+                end
             end
         end
         

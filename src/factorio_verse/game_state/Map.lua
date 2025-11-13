@@ -353,11 +353,20 @@ end
 
 --- Snapshot resources for a chunk
 --- Called by event handlers when chunks are generated/charted/discovered
+--- Skips if chunk has already been processed to avoid duplicate dumps of resources, water, and trees
 --- @param chunk_x number
 --- @param chunk_y number
 function M.snapshot_chunk_resources(chunk_x, chunk_y)
     local surface = game.surfaces[1]
     if not surface then
+        return
+    end
+
+    -- Check if chunk has already been charted and resources/water/trees dumped
+    if snapshot.is_chunk_charted(chunk_x, chunk_y) then
+        if snapshot.DEBUG and game and game.print then
+            game.print(string.format("[snapshot] Skipping chunk (%d, %d) - already charted and resources/water/trees dumped", chunk_x, chunk_y))
+        end
         return
     end
 
@@ -405,6 +414,10 @@ function M.snapshot_chunk_resources(chunk_x, chunk_y)
             end
         end
     end
+
+    -- Mark chunk as charted after successfully processing (even if no resources/water/trees found)
+    -- This prevents re-processing the same chunk when discovered again by agents or players
+    snapshot.mark_chunk_charted(chunk_x, chunk_y)
 end
 
 --- Handle chunk generated event
