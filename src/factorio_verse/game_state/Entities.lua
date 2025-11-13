@@ -8,7 +8,6 @@ local ipairs = ipairs
 
 local GameStateError = require("types.Error")
 local utils = require("utils.utils")
-local Map = require("game_state.Map")
 local snapshot = require("utils.snapshot")
 
 local M = {}
@@ -359,8 +358,14 @@ function M.track_chunk_entity_status(chunk_position)
 end
 
 --- Run track_chunk_entity_status on all charted chunks
-function M.track_all_charted_chunk_entity_status()
-    local charted_chunks = Map.get_charted_chunks()
+--- Note: This function is called from get_event_based_snapshot_events() which is aggregated by GameState
+--- GameState can pass charted_chunks to avoid circular dependency
+--- @param charted_chunks table - List of chunks to process
+function M.track_all_charted_chunk_entity_status(charted_chunks)
+    if not charted_chunks then
+        return
+    end
+    
     local all_status_records = {}
 
     for _, chunk in ipairs(charted_chunks) do
@@ -377,13 +382,10 @@ function M.track_all_charted_chunk_entity_status()
 end
 
 function M.get_event_based_snapshot_events()
-    return {
-        nth_tick = {
-            [10] = function()
-                M.track_all_charted_chunk_entity_status()
-            end
-        }
-    }
+    -- Note: This event handler needs chunks, but Entities shouldn't depend on Map
+    -- GameState/control.lua will orchestrate getting chunks and calling track_all_charted_chunk_entity_status
+    -- For now, return empty - chunks will be provided by orchestrator
+    return {}
 end
 
 -- ============================================================================
@@ -402,7 +404,7 @@ function M.init()
 end
 
 --- Write entity to disk snapshot
---- Public function for use by Map deferred scanning
+--- Public function for use by Map deferred dump
 --- @param entity LuaEntity
 --- @param is_update boolean|nil - True if this is an update to existing entity (default: false, treated as create)
 --- @return boolean - Success status
@@ -418,7 +420,7 @@ function M.write_entity_snapshot(entity, is_update)
     end
 
     -- Get chunk coordinates
-    local chunk_coords = Map.to_chunk_coordinates(entity.position)
+    local chunk_coords = utils.to_chunk_coordinates(entity.position)
     if not chunk_coords then
         return false
     end
@@ -470,7 +472,7 @@ function M._delete_entity_snapshot(entity)
         return false
     end
 
-    local chunk_coords = Map.to_chunk_coordinates(position)
+    local chunk_coords = utils.to_chunk_coordinates(position)
     if not chunk_coords then
         return false
     end

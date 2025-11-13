@@ -6,6 +6,11 @@ local ActionRegistry = require("ActionRegistry")
 local GameState = require("GameState")
 local utils = require("utils.utils")
 
+-- Require game state modules at module level (required by Factorio)
+local Entities = require("game_state.Entities")
+local Resource = require("game_state.Resource")
+local Map = require("game_state.Map")
+
 -- Initialize core instances
 local game_state = GameState:new()
 local action_registry = ActionRegistry
@@ -94,10 +99,21 @@ local function aggregate_all_events()
         end
     end
     
-    -- 5. Deferred scanning handler (process one chunk per tick)
+    -- 5. Deferred dump handler (process one chunk per tick until complete)
+    -- Scan once on init, then dump across ticks. Only runs during initial load for existing saves.
     add_defined_event(defines.events.on_tick, function(event)
-        local Map = require("game_state.Map")
-        Map.process_deferred_scan_queue()
+        -- process_deferred_dump_queue() returns false when dump is complete
+        -- This check ensures we stop calling it once all chunks are processed
+        if not storage.snapshot_dump_complete then
+            Map.process_deferred_dump_queue()
+        end
+    end)
+    
+    -- 5b. Entity status tracking (every 10 ticks)
+    -- Map orchestrates getting chunks, Entities provides the tracking logic
+    add_nth_tick_handler(10, function()
+        local charted_chunks = Map.get_charted_chunks()
+        Entities.track_all_charted_chunk_entity_status(charted_chunks)
     end)
     
     -- 6. GameState nth_tick Handlers (legacy map discovery, etc.)
@@ -241,13 +257,10 @@ script.on_init(function()
     
     -- Initialize game state modules (must happen before event registration)
     -- This generates custom event IDs that will be used in event handlers
-    local Entities = require("game_state.Entities")
-    local Resource = require("game_state.Resource")
-    local Map = require("game_state.Map")
-    
+    -- Modules already required at module level above
     Entities.init()
     Resource.init()
-    Map.init_deferred_scanning()
+    Map.init_deferred_dump()
     
     log("Initialized game state modules and custom events")
     
@@ -260,10 +273,7 @@ script.on_load(function()
     
     -- Initialize game state modules (must happen before event registration)
     -- Custom events are preserved across reload, but we need to rebuild disk_write_snapshot tables
-    local Entities = require("game_state.Entities")
-    local Resource = require("game_state.Resource")
-    local Map = require("game_state.Map")
-    
+    -- Modules already required at module level above
     -- Re-initialize (custom events are preserved, but we rebuild tables)
     Entities.init()
     Resource.init()

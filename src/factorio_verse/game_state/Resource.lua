@@ -7,7 +7,6 @@ local pairs = pairs
 
 local GameStateError = require("types.Error")
 local utils = require("utils.utils")
-local Map = require("game_state.Map")
 local snapshot = require("utils.snapshot")
 
 local M = {}
@@ -88,6 +87,79 @@ function M.init()
     M.disk_write_snapshot = M._build_disk_write_snapshot()
 end
 
+--- Gather all resources for a specific chunk
+--- @param chunk table - {x, y, area}
+--- @return table - {resources = {...}, rocks = {...}, trees = {...}, water = {...}}
+function M.gather_resources_for_chunk(chunk)
+    local surface = game.surfaces[1]
+    if not surface then
+        return { resources = {}, rocks = {}, trees = {}, water = {} }
+    end
+
+    local gathered = {
+        resources = {}, -- Mineable resources (iron, copper, coal, crude-oil, etc.)
+        rocks = {},     -- Simple entities (rock-huge, rock-big, etc.)
+        trees = {},     -- Tree entities
+        water = {}      -- Water tiles
+    }
+
+    -- Resources (including crude oil)
+    local resource_entities = surface.find_entities_filtered {
+        area = chunk.area,
+        type = "resource"
+    }
+    for _, entity in ipairs(resource_entities) do
+        if entity and entity.valid then
+            table.insert(gathered.resources, M.serialize_resource_tile(entity, entity.name))
+        end
+    end
+
+    -- Rocks
+    local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
+    for _, entity in ipairs(rock_entities) do
+        if entity and entity.valid and entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
+            table.insert(gathered.rocks, M.serialize_rock(entity, chunk))
+        end
+    end
+
+    -- Trees
+    local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
+    for _, entity in ipairs(tree_entities) do
+        if entity and entity.valid then
+            table.insert(gathered.trees, M.serialize_tree(entity, chunk))
+        end
+    end
+
+    -- Water tiles
+    -- Detect water tile names via prototypes for mod compatibility
+    local water_tile_names = {}
+    local ok_proto, tiles_or_err = pcall(function()
+        return prototypes.get_tile_filtered({ { filter = "collision-mask", mask = "water-tile" } })
+    end)
+
+    if ok_proto and tiles_or_err then
+        for _, t in pairs(tiles_or_err) do
+            table.insert(water_tile_names, t.name)
+        end
+    else
+        -- fallback to vanilla names
+        water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
+    end
+
+    local tiles = surface.find_tiles_filtered {
+        area = chunk.area,
+        name = water_tile_names
+    }
+    for _, tile in ipairs(tiles) do
+        local x, y = utils.extract_position(tile)
+        if x and y then
+            table.insert(gathered.water, { kind = "water", x = x, y = y, amount = 0 })
+        end
+    end
+
+    return gathered
+end
+
 --- Rewrite resource file for a chunk
 --- Called when resources are depleted or changed
 --- @param chunk_x number
@@ -103,7 +175,7 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
     }
 
     -- Gather all resources for the chunk
-    local gathered = Map.gather_resources_for_chunk(chunk)
+    local gathered = M.gather_resources_for_chunk(chunk)
 
     -- Write resources.jsonl
     local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
@@ -151,7 +223,7 @@ function M._on_resource_depleted(event)
     end
 
     -- Get chunk coordinates
-    local chunk_coords = Map.to_chunk_coordinates(entity.position)
+    local chunk_coords = utils.to_chunk_coordinates(entity.position)
     if not chunk_coords then
         return
     end

@@ -12,6 +12,9 @@ M.SNAPSHOT_BASE_DIR = "factoryverse/snapshots"
 -- UDP port for all notifications (action port as source of truth)
 M.UDP_PORT = 34202
 
+-- Debug flag for verbose logging
+M.DEBUG = true
+
 --- Generate chunk directory path
 --- @param chunk_x number
 --- @param chunk_y number
@@ -66,6 +69,10 @@ function M.write_entity_file(file_path, entity_data)
         return false
     end
 
+    if M.DEBUG and game and game.print then
+        game.print(string.format("[snapshot] Wrote entity file: %s", file_path))
+    end
+
     return true
 end
 
@@ -81,6 +88,10 @@ function M.delete_entity_file(file_path)
     if not ok then
         log("Failed to delete entity file: " .. tostring(file_path))
         return false
+    end
+
+    if M.DEBUG and game and game.print then
+        game.print(string.format("[snapshot] Deleted entity file: %s", file_path))
     end
 
     return true
@@ -109,6 +120,9 @@ function M.write_resource_file(file_path, resources)
     if #lines == 0 then
         -- Write empty file if no resources
         local ok_write = pcall(helpers.write_file, file_path, "", false)
+        if M.DEBUG and game and game.print then
+            game.print(string.format("[snapshot] Wrote empty resource file: %s", file_path))
+        end
         return ok_write
     end
 
@@ -117,6 +131,10 @@ function M.write_resource_file(file_path, resources)
     if not ok_write then
         log("Failed to write resource file: " .. tostring(file_path))
         return false
+    end
+
+    if M.DEBUG and game and game.print then
+        game.print(string.format("[snapshot] Wrote resource file: %s (%d entries)", file_path, #lines))
     end
 
     return true
@@ -151,6 +169,11 @@ function M.send_udp_notification(payload)
             game.print(string.format("[UDP] ERROR: %s", error_msg))
         end
         return false
+    end
+
+    if M.DEBUG and game and game.print then
+        local event_type = payload.event_type or "unknown"
+        game.print(string.format("[snapshot] Sent UDP notification: %s (port %d)", event_type, M.UDP_PORT))
     end
 
     return true

@@ -70,16 +70,6 @@ function M.get_charted_chunks(sort_by_distance)
     return charted_chunks
 end
 
--- Returns chunk coordinates from a position object using Factorio's logic (same as LuaSurface::get_chunk_position)
--- See: https://lua-api.factorio.com/latest/LuaSurface.html#LuaSurface.get_chunk_position
-function M.to_chunk_coordinates(position)
-    -- position may be {x=..., y=...} or {1=..., 2=...}, prefer .x/.y
-    local x = position.x or position[1]
-    local y = position.y or position[2]
-    local chunk_x = math.floor(x / 32)
-    local chunk_y = math.floor(y / 32)
-    return { x = chunk_x, y = chunk_y }
-end
 
 --- Get all resource entities in specified chunks
 --- @param chunks table - list of chunk areas
@@ -169,56 +159,6 @@ function M.get_connected_water_tiles(position, water_tile_names)
     return (ok and connected) or {}
 end
 
---- Gather all resources for a specific chunk
---- @param chunk table - {x, y, area}
---- @return table - {resources = {...}, rocks = {...}, trees = {...}, water = {...}}
-function M.gather_resources_for_chunk(chunk)
-    local surface = game.surfaces[1]
-
-    local gathered = {
-        resources = {}, -- Mineable resources (iron, copper, coal, crude-oil, etc.)
-        rocks = {},     -- Simple entities (rock-huge, rock-big, etc.)
-        trees = {},     -- Tree entities
-        water = {}      -- Water tiles
-    }
-
-    -- Resources (including crude oil)
-    local resources_in_chunk = M.get_resources_in_chunks({ chunk })
-    if resources_in_chunk then
-        for resource_name, entities in pairs(resources_in_chunk) do
-            for _, entity in ipairs(entities) do
-                table.insert(gathered.resources, Resource.serialize_resource_tile(entity, resource_name))
-            end
-        end
-    end
-
-    -- Rocks
-    local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
-    for _, entity in ipairs(rock_entities) do
-        if entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
-            table.insert(gathered.rocks, Resource.serialize_rock(entity, chunk))
-        end
-    end
-
-    -- Trees
-    local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
-    for _, entity in ipairs(tree_entities) do
-        table.insert(gathered.trees, Resource.serialize_tree(entity, chunk))
-    end
-
-    -- Water
-    local water_data = M.get_water_tiles_in_chunks({ chunk })
-    if water_data and water_data.tiles then
-        for _, tile in ipairs(water_data.tiles) do
-            local x, y = utils.extract_position(tile)
-            if x and y then
-                table.insert(gathered.water, { kind = "water", x = x, y = y, amount = 0 })
-            end
-        end
-    end
-
-    return gathered
-end
 
 --- Prints to rcon (as JSON string) or writes to a file the comprehensive state of the map area.
 --- This module SHOULD NOT own all the logic; it is a wrapper around helpers exposed by Entities.lua, Inventory.lua, and Resources.lua.
@@ -301,44 +241,68 @@ M.event_based_snapshot = {
 }
 
 -- ============================================================================
--- DEFERRED SCANNING FOR INITIAL SNAPSHOT
+-- DEFERRED DUMP FOR INITIAL SNAPSHOT
 -- ============================================================================
 
---- Initialize deferred scanning system
---- Queues all charted chunks for snapshotting
-function M.init_deferred_scanning()
-    if not storage.snapshot_scan_queue then
-        storage.snapshot_scan_queue = {}
+--- Scan once and queue chunks for deferred dump
+--- Scans all charted chunks once, then queues them for deferred snapshotting across ticks
+--- Only needed for existing saves (not new games)
+function M.init_deferred_dump()
+    if not storage.snapshot_dump_queue then
+        storage.snapshot_dump_queue = {}
     end
 
-    -- Queue all charted chunks for scanning
+    -- Mark dump as in progress
+    storage.snapshot_dump_complete = false
+
+    -- Scan once: get all charted chunks
     local charted_chunks = M.get_charted_chunks()
+    
+    -- Queue all chunks for deferred dump
     for _, chunk in ipairs(charted_chunks) do
         local chunk_key = utils.chunk_key(chunk.x, chunk.y)
-        storage.snapshot_scan_queue[chunk_key] = { x = chunk.x, y = chunk.y }
+        storage.snapshot_dump_queue[chunk_key] = { x = chunk.x, y = chunk.y }
     end
 
-    log("Map: Queued " .. #charted_chunks .. " chunks for deferred snapshotting")
+    if #charted_chunks > 0 then
+        log("Map: Scanned and queued " .. #charted_chunks .. " chunks for deferred dump")
+    else
+        -- No chunks to dump, mark as complete immediately
+        storage.snapshot_dump_complete = true
+    end
 end
 
---- Process one chunk from the scan queue
---- Called on each tick to gradually snapshot all chunks
-function M.process_deferred_scan_queue()
-    if not storage.snapshot_scan_queue then
-        return
+--- Process one chunk from the dump queue
+--- Called on each tick to gradually dump all chunks
+--- Returns true if dumping is still in progress, false if complete
+--- @return boolean - true if dumping continues, false if complete
+function M.process_deferred_dump_queue()
+    -- Early exit if dump already complete
+    if storage.snapshot_dump_complete then
+        return false
+    end
+
+    if not storage.snapshot_dump_queue then
+        storage.snapshot_dump_complete = true
+        return false
     end
 
     -- Process one chunk per tick
-    local chunk_key, chunk_data = next(storage.snapshot_scan_queue)
+    local chunk_key, chunk_data = next(storage.snapshot_dump_queue)
     if not chunk_key or not chunk_data then
-        return
+        -- Queue is empty, dump complete
+        storage.snapshot_dump_complete = true
+        log("Map: Deferred dump complete - all chunks processed")
+        return false
     end
 
     -- Remove from queue
-    storage.snapshot_scan_queue[chunk_key] = nil
+    storage.snapshot_dump_queue[chunk_key] = nil
 
-    -- Snapshot the chunk
+    -- Dump the chunk (snapshot entities and resources)
     M.snapshot_chunk(chunk_data.x, chunk_data.y)
+    
+    return true
 end
 
 --- Snapshot a single chunk (entities and resources)
@@ -371,7 +335,7 @@ function M.snapshot_chunk(chunk_x, chunk_y)
 
     -- Snapshot resources
     local chunk = { x = chunk_x, y = chunk_y, area = chunk_area }
-    local gathered = M.gather_resources_for_chunk(chunk)
+    local gathered = Resource.gather_resources_for_chunk(chunk)
 
     -- Write resources.jsonl
     local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")

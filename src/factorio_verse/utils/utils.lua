@@ -162,6 +162,19 @@ function M.floor(v)
     return math.floor(v)
 end
 
+--- Returns chunk coordinates from a position object using Factorio's logic (same as LuaSurface::get_chunk_position)
+--- See: https://lua-api.factorio.com/latest/LuaSurface.html#LuaSurface.get_chunk_position
+--- @param position table - Position with x/y or [1]/[2]
+--- @return table - {x: number, y: number} chunk coordinates
+function M.to_chunk_coordinates(position)
+    -- position may be {x=..., y=...} or {1=..., 2=...}, prefer .x/.y
+    local x = position.x or position[1]
+    local y = position.y or position[2]
+    local chunk_x = math.floor(x / 32)
+    local chunk_y = math.floor(y / 32)
+    return { x = chunk_x, y = chunk_y }
+end
+
 --- Extract x,y coordinates from various Factorio position objects
 --- @param obj table - position object (LuaTile, LuaEntity, or {x,y} table)
 --- @return number|nil, number|nil - x, y coordinates or nil if invalid
