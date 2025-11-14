@@ -10,7 +10,7 @@ local Action = require("types.Action")
 --- @field game_state GameState|nil (set during action registration)
 --- @field is_async boolean Always true for async actions
 --- @field cancel_params ParamSpec|nil Parameter specification for cancel action
---- @field cancel_storage_key string|nil Storage key for tracking (e.g., "walk_in_progress")
+--- @field cancel_storage_key string|nil Storage key for tracking (e.g., "walking_in_progress")
 --- @field cancel_tracking_key_fn function|nil Function to extract tracking key from cancel params
 --- @field run function
 --- @field cancel function
@@ -101,7 +101,7 @@ end
 
 --- Store tracking information for async action completion
 --- Helper to standardize storage pattern across async actions
---- @param storage_key string Storage key (e.g., "walk_in_progress", "mine_resource_in_progress")
+--- @param storage_key string Storage key (e.g., "walking_in_progress", "mining_in_progress")
 --- @param tracking_key string|number Key within storage table (e.g., agent_id, resource position)
 --- @param action_id string Unique action identifier
 --- @param rcon_tick number Game tick when action was queued
