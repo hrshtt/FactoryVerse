@@ -1,313 +1,32 @@
 --- factorio_verse/core/game_state/EntitiesGameState.lua
 --- EntitiesGameState sub-module for managing entity-related functionality.
 --- Static module - no instantiation required.
+--- 
+--- Responsibilities:
+--- 1. Entity status tracking (for UDP snapshots)
+--- 2. Disk snapshot management (file I/O for entity persistence)
+--- 3. Admin remote interface facade for EntityInterface
 
--- Module-level local references for global lookups (performance optimization)
+-- Module-level local references for performance optimization
 local pairs = pairs
 local ipairs = ipairs
 
-local GameStateError = require("types.Error")
+local EntityInterface = require("types.EntityInterface")
+local serialize = require("utils.serialize")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
 
 local M = {}
 
--- Custom event IDs (initialized in init())
-M.custom_events = {}
+-- ============================================================================
+-- ENTITY STATUS TRACKING (for UDP snapshots)
+-- ============================================================================
 
---- @param area table
---- @param filter string
---- @return table
-function M.get_entities_in_area(area, filter)
-    local surface = game.surfaces[1]  -- Uses module-level local 'game'
-    if not surface then
-        return {}
-    end
-
-    local entities = surface.find_entities_filtered {
-        area = area,
-        type = filter
-    }
-    return entities
-end
-
-function M.find_entity(entity_name, position)
-    local surface = game.surfaces[1]
-    local entity = surface.find_entity(entity_name, position)
-    if not entity or not entity.valid then
-        return GameStateError:new("No entity found at position")
-    end
-    return entity
-end
-
---- Get a single entity, input can be a JSON string or a table.
---- @param input string|table - JSON string or argument table ({name=..., position={x=..., y=...}})
---- @return LuaEntity|GameStateError
-function M.get_entity(input)
-    local params = input
-
-    -- If input is a string, try to parse as JSON
-    if type(input) == "string" then
-        local status, result = pcall(function()
-            helpers.json_to_table(input)
-        end)
-        if not status or type(result) ~= "table" then
-            return GameStateError:new("Failed to parse JSON input")
-        end
-        params = result
-    end
-
-    -- Table check
-    if type(params) ~= "table" then
-        return GameStateError:new("Input must be a table or valid JSON string")
-    end
-
-    if type(params.name) ~= "string" or not params.position then
-        return GameStateError:new("Missing required fields: 'name' (string) and 'position' (table)")
-    end
-
-    local pos = params.position
-    if type(pos) ~= "table" or type(pos.x) ~= "number" or type(pos.y) ~= "number" then
-        return GameStateError:new("Position must be a table containing numeric 'x' and 'y'")
-    end
-
-    return M.find_entity(params.name, { x = pos.x, y = pos.y })
-end
-
-function M.can_place_entity(entity_name, position)
-    local surface = game.surfaces[1]
-    if not surface then
-        return GameStateError:new("No surface available")
-    end
-
-    return surface.can_place_entity {
-        name = entity_name,
-        position = position
-    }
-end
-
---- Determine component type for an entity
---- @param entity_type string - entity type from Factorio API
---- @param entity_name string - entity prototype name
---- @return string - component type ("belts", "pipes", "poles", "entities")
-function M._determine_component_type(entity_type, entity_name)
-    -- Belt types
-    if entity_type == "transport-belt" or entity_type == "underground-belt" or
-        entity_type == "splitter" or entity_type == "loader" or
-        entity_type == "loader-1x1" or entity_type == "linked-belt" then
-        return "belts"
-    end
-
-    -- Pipe types
-    if entity_type == "pipe" or entity_type == "pipe-to-ground" then
-        return "pipes"
-    end
-
-    -- Electric pole types
-    if entity_type == "electric-pole" or entity_type == "power-switch" or
-        entity_type == "substation" then
-        return "poles"
-    end
-
-    -- Default to entities for all other player-placed entities
-    return "entities"
-end
-
---- Serialize base properties common to all entities
+--- Track entity status change
 --- @param entity LuaEntity
---- @param out table - output table to populate
---- @return table
-function M._serialize_base_properties(entity, out)
-    local proto = entity.prototype
-
-    -- Base identity and spatial properties
-    out.unit_number = entity.unit_number
-    out.name = entity.name
-    out.type = entity.type
-    out.force = (entity.force and entity.force.name) or nil
-    out.position = entity.position
-    out.direction = entity.direction
-    out.direction_name = utils.direction_to_name(entity.direction and tonumber(tostring(entity.direction)) or nil)
-    out.orientation = entity.orientation
-    out.orientation_name = utils.orientation_to_name(entity.orientation)
-
-    -- Electric network id
-    if entity.electric_network_id ~= nil then
-        out.electric_network_id = entity.electric_network_id
-    end
-
-    -- Tile dimensions from prototype
-    if proto then
-        if proto.tile_width ~= nil then out.tile_width = proto.tile_width end
-        if proto.tile_height ~= nil then out.tile_height = proto.tile_height end
-    end
-
-    -- Crafting / recipe (gate to crafting machines only)
-    local is_crafter = (entity.type == "assembling-machine" or entity.type == "furnace")
-    if not is_crafter and proto and proto.crafting_categories then
-        is_crafter = true
-    end
-
-    if is_crafter then
-        -- Per docs, LuaEntity::get_recipe() is the supported way to read the current recipe
-        local r = entity.get_recipe()
-        if r then out.recipe = r.name end
-    end
-
-    -- Bounding box
-    local bb = entity.bounding_box
-    if bb and bb.left_top and bb.right_bottom then
-        out.bounding_box = {
-            min_x = bb.left_top.x,
-            min_y = bb.left_top.y,
-            max_x = bb.right_bottom.x,
-            max_y = bb.right_bottom.y
-        }
-    end
-end
-
---- Serialize belt-specific data
---- @param entity LuaEntity
---- @param out table - output table to populate
---- @return table
-function M._serialize_belt_data(entity, out)
-    -- Belt item lines
-    local item_lines = {}
-    local max_index = 0
-    local v = (entity.get_max_transport_line_index and entity.get_max_transport_line_index()) or 0
-    max_index = (type(v) == "number" and v > 0) and v or 0
-
-    for li = 1, max_index do
-        local tl = entity.get_transport_line and entity.get_transport_line(li) or nil
-        if tl then
-            local contents = tl.get_contents and tl.get_contents() or nil
-            if contents and next(contents) ~= nil then
-                item_lines[#item_lines + 1] = { index = li, items = contents }
-            end
-        end
-    end
-
-    -- Belt neighbours (inputs/outputs)
-    local inputs_ids, outputs_ids = {}, {}
-    local bn = entity.belt_neighbours
-    if bn then
-        if bn.inputs then
-            for _, n in ipairs(bn.inputs) do
-                if n and n.valid and n.unit_number then inputs_ids[#inputs_ids + 1] = n.unit_number end
-            end
-        end
-        if bn.outputs then
-            for _, n in ipairs(bn.outputs) do
-                if n and n.valid and n.unit_number then outputs_ids[#outputs_ids + 1] = n.unit_number end
-            end
-        end
-    end
-
-    -- Underground belt pairing
-    local underground_other = nil
-    local belt_to_ground_type = nil
-    if entity.type == "underground-belt" then
-        belt_to_ground_type = entity.belt_to_ground_type
-        local un = entity.neighbours -- for underground belts this is the other end (or nil)
-        if un and un.valid and un.unit_number then underground_other = un.unit_number end
-    end
-
-    out.belt_data = {
-        item_lines = item_lines,
-        belt_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or
-        nil,
-        belt_to_ground_type = belt_to_ground_type,
-        underground_neighbour_unit = underground_other
-    }
-end
-
---- Serialize pipe-specific data
---- @param entity LuaEntity
---- @param out table - output table to populate
---- @return table
-function M._serialize_pipe_data(entity, out)
-    local inputs_ids, outputs_ids = {}, {}
-    local fb = entity.fluidbox
-    if fb then
-        for k = 1, #fb do
-            local connections = fb.get_connections and fb.get_connections(k) or {}
-            for _, conn in ipairs(connections) do
-                if conn.owner and conn.owner.valid and conn.owner.unit_number then
-                    local conn_entity = conn.owner
-                    local conn_unit = conn_entity.unit_number
-
-                    -- Categorize connections based on entity type and relative position
-                    if conn_entity.type == "pipe" or conn_entity.type == "pipe-to-ground" then
-                        if conn_entity.position and entity.position then
-                            local dx = conn_entity.position.x - entity.position.x
-                            local dy = conn_entity.position.y - entity.position.y
-                            if dx > 0 or dy > 0 then
-                                inputs_ids[#inputs_ids + 1] = conn_unit
-                            else
-                                outputs_ids[#outputs_ids + 1] = conn_unit
-                            end
-                        else
-                            inputs_ids[#inputs_ids + 1] = conn_unit
-                        end
-                    else
-                        inputs_ids[#inputs_ids + 1] = conn_unit
-                    end
-                end
-            end
-        end
-    end
-
-    out.pipe_data = {
-        pipe_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or
-        nil
-    }
-end
-
---- Serialize inserter-specific data
---- @param entity LuaEntity
---- @param out table - output table to populate
---- @return table
-function M._serialize_inserter_data(entity, out)
-    local ins = {
-        pickup_position = entity.pickup_position,
-        drop_position = entity.drop_position,
-    }
-    local pt = entity.pickup_target
-    if pt and pt.valid and pt.unit_number then ins.pickup_target_unit = pt.unit_number end
-    local dt = entity.drop_target
-    if dt and dt.valid and dt.unit_number then ins.drop_target_unit = dt.unit_number end
-    if next(ins) ~= nil then out.inserter = ins end
-end
-
---- Serialize entity data for JSON storage
---- @param entity LuaEntity
---- @return table|nil - serialized entity data or nil if invalid
-function M.serialize_entity(entity)
-    if not (entity and entity.valid) then return nil end
-
-    local out = {}
-
-    -- Serialize base properties
-    M._serialize_base_properties(entity, out)
-
-    -- Determine component type and serialize component-specific data
-    local component_type = M._determine_component_type(entity.type, entity.name)
-
-    if component_type == "belts" then
-        M._serialize_belt_data(entity, out)
-    elseif component_type == "pipes" then
-        M._serialize_pipe_data(entity, out)
-    end
-
-    -- Inserter IO (pickup/drop positions and resolved targets)
-    if entity.type == "inserter" then
-        M._serialize_inserter_data(entity, out)
-    end
-
-    return out
-end
-
+--- @return table {is_new_record: boolean, status: string}
 function M.track_entity_status(entity)
+    storage.entity_status = storage.entity_status or {}
     local last_record = storage.entity_status[entity.unit_number] or nil
     local is_new_record = false
     if last_record and (last_record.status == entity.status) then
@@ -323,6 +42,9 @@ function M.track_entity_status(entity)
     return { is_new_record = is_new_record, status = last_record.status }
 end
 
+--- Track entity status for all entities in a chunk
+--- @param chunk_position table {x: number, y: number} Chunk coordinates
+--- @return table Status records keyed by unit_number
 function M.track_chunk_entity_status(chunk_position)
     local surface = game.surfaces[1]
     if not surface then
@@ -330,15 +52,15 @@ function M.track_chunk_entity_status(chunk_position)
     end
     
     local chunk_area = {
-            left_top = {
-                x = chunk_position.x * 32,
-                y = chunk_position.y * 32
-            },
-            right_bottom = {
-                x = (chunk_position.x + 1) * 32,
-                y = (chunk_position.y + 1) * 32
-            }
+        left_top = {
+            x = chunk_position.x * 32,
+            y = chunk_position.y * 32
+        },
+        right_bottom = {
+            x = (chunk_position.x + 1) * 32,
+            y = (chunk_position.y + 1) * 32
         }
+    }
     
     -- Check count first for early exit
     local entity_count = surface.count_entities_filtered {
@@ -369,10 +91,8 @@ function M.track_chunk_entity_status(chunk_position)
     return status_records
 end
 
---- Run track_chunk_entity_status on all charted chunks
---- Note: This function is called from get_event_based_snapshot_events() which is aggregated by GameState
---- GameState can pass charted_chunks to avoid circular dependency
---- @param charted_chunks table - List of chunks to process
+--- Track entity status for all charted chunks
+--- @param charted_chunks table List of chunks to process
 function M.track_all_charted_chunk_entity_status(charted_chunks)
     if not charted_chunks then
         return
@@ -396,7 +116,6 @@ end
 function M.get_event_based_snapshot_events()
     -- Note: This event handler needs chunks, but Entities shouldn't depend on Map
     -- GameState/control.lua will orchestrate getting chunks and calling track_all_charted_chunk_entity_status
-    -- For now, return empty - chunks will be provided by orchestrator
     return {}
 end
 
@@ -404,29 +123,25 @@ end
 -- DISK WRITE SNAPSHOT FUNCTIONALITY
 -- ============================================================================
 
---- Initialize custom events for entity snapshotting
+--- Initialize disk write snapshot events
 --- Must be called during on_init/on_load
+--- Note: EntityInterface owns the entity_configuration_changed event
 function M.init()
-    -- Generate custom event ID for recipe changes
-    M.custom_events.entity_recipe_changed = script.generate_event_name()
-    log("Entities: Generated custom event 'entity_recipe_changed': " .. tostring(M.custom_events.entity_recipe_changed))
-    
     -- Build disk_write_snapshot table after events are initialized
     M.disk_write_snapshot = M._build_disk_write_snapshot()
 end
 
 --- Write entity to disk snapshot
---- Public function for use by Map deferred dump
 --- @param entity LuaEntity
---- @param is_update boolean|nil - True if this is an update to existing entity (default: false, treated as create)
---- @return boolean - Success status
+--- @param is_update boolean|nil True if this is an update to existing entity (default: false)
+--- @return boolean Success status
 function M.write_entity_snapshot(entity, is_update)
     if not (entity and entity.valid) then
         return false
     end
 
-    -- Serialize entity
-    local entity_data = M.serialize_entity(entity)
+    -- Serialize entity using utils/serialize
+    local entity_data = serialize.serialize_entity(entity)
     if not entity_data then
         return false
     end
@@ -438,7 +153,7 @@ function M.write_entity_snapshot(entity, is_update)
     end
 
     -- Determine component type
-    local component_type = M._determine_component_type(entity.type, entity.name)
+    local component_type = serialize.get_component_type(entity.type, entity.name)
 
     -- Generate file path
     local file_path = snapshot.entity_file_path(
@@ -472,7 +187,7 @@ end
 
 --- Delete entity from disk snapshot
 --- @param entity LuaEntity
---- @return boolean - Success status
+--- @return boolean Success status
 function M._delete_entity_snapshot(entity)
     if not entity then
         return false
@@ -492,7 +207,7 @@ function M._delete_entity_snapshot(entity)
     -- Determine component type (use entity.type and entity.name if available)
     local component_type = "entities"
     if entity.type and entity.name then
-        component_type = M._determine_component_type(entity.type, entity.name)
+        component_type = serialize.get_component_type(entity.type, entity.name)
     end
 
     -- Generate file path
@@ -525,18 +240,17 @@ function M._delete_entity_snapshot(entity)
 end
 
 --- Handle entity built event (on_built_entity, script_raised_built)
---- @param event table - Event data with entity field
-function M._on_entity_built(event)
+--- @param event table Event data with entity field
+local function _on_entity_built(event)
     local entity = event.entity
     if entity and entity.valid then
-        -- New entity, so this is a create (not update)
         M.write_entity_snapshot(entity, false)
     end
 end
 
 --- Handle entity destroyed event (on_player_mined_entity, script_raised_destroy)
---- @param event table - Event data with entity field
-function M._on_entity_destroyed(event)
+--- @param event table Event data with entity field
+local function _on_entity_destroyed(event)
     local entity = event.entity
     if entity then
         M._delete_entity_snapshot(entity)
@@ -544,21 +258,21 @@ function M._on_entity_destroyed(event)
 end
 
 --- Handle entity settings pasted event
---- @param event table - Event data with destination field
-function M._on_entity_settings_pasted(event)
+--- @param event table Event data with destination field
+local function _on_entity_settings_pasted(event)
     local entity = event.destination
     if entity and entity.valid then
-        -- Settings pasted means entity was updated
         M.write_entity_snapshot(entity, true)
     end
 end
 
---- Handle custom recipe changed event
---- @param event table - Event data with entity field
-function M._on_recipe_changed(event)
+--- Handle entity configuration changed event (from EntityInterface)
+--- Listens to EntityInterface's entity_configuration_changed event
+--- @param event table Event data with entity and change_type fields
+local function _on_entity_configuration_changed(event)
     local entity = event.entity
     if entity and entity.valid then
-        -- Recipe change means entity was updated
+        -- Write snapshot for any configuration change (recipe, filter, inventory_limit)
         M.write_entity_snapshot(entity, true)
     end
 end
@@ -566,26 +280,184 @@ end
 --- Build disk write snapshot events table
 --- Called after init() to populate events
 function M._build_disk_write_snapshot()
-    if not M.custom_events.entity_recipe_changed then
-        -- Events not initialized yet, return empty
+    if not EntityInterface.on_entity_configuration_changed then
         return { events = {}, nth_tick = {} }
     end
 
     return {
         events = {
-            [defines.events.on_built_entity] = M._on_entity_built,
-            [defines.events.script_raised_built] = M._on_entity_built,
-            [defines.events.on_player_mined_entity] = M._on_entity_destroyed,
-            [defines.events.script_raised_destroy] = M._on_entity_destroyed,
-            [defines.events.on_entity_settings_pasted] = M._on_entity_settings_pasted,
-            [M.custom_events.entity_recipe_changed] = M._on_recipe_changed,
+            [defines.events.on_built_entity] = _on_entity_built,
+            [defines.events.script_raised_built] = _on_entity_built,
+            [defines.events.on_player_mined_entity] = _on_entity_destroyed,
+            [defines.events.script_raised_destroy] = _on_entity_destroyed,
+            [defines.events.on_entity_settings_pasted] = _on_entity_settings_pasted,
+            [EntityInterface.on_entity_configuration_changed] = _on_entity_configuration_changed,
         },
         nth_tick = {}
     }
 end
 
 -- Expose disk_write_snapshot property for GameState aggregation
--- This will be populated after init() is called
 M.disk_write_snapshot = {}
+
+-- ============================================================================
+-- ADMIN REMOTE INTERFACE (Facade over EntityInterface)
+-- ============================================================================
+
+--- Get admin remote interface for EntityInterface methods
+--- Thin facade that wraps EntityInterface methods for remote interface exposure
+--- @return table Remote interface table with EntityInterface methods
+function M.get_admin_remote_interface()
+    return {
+        -- Recipe operations
+        set_recipe = function(entity_name, position, recipe_name, overwrite, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,  -- Admin can handle multiple matches
+            })
+            overwrite = overwrite ~= false  -- Default true for admin
+            return entity_interface:set_recipe(recipe_name, overwrite)
+        end,
+        
+        -- Filter operations
+        set_filter = function(entity_name, position, inventory_type, filter_index, filter_item, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:set_filter(inventory_type, filter_index, filter_item)
+        end,
+        
+        -- Inventory limit operations
+        set_inventory_limit = function(entity_name, position, inventory_type, limit, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:set_inventory_limit(inventory_type, limit)
+        end,
+        
+        -- Inventory item operations
+        get_inventory_item = function(entity_name, position, inventory_type, item_name, count, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:extract_inventory_items(inventory_type, item_name, count)
+        end,
+        
+        set_inventory_item = function(entity_name, position, inventory_type, item_name, count, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            
+            -- Resolve inventory type
+            local inv_index = inventory_type
+            if type(inventory_type) == "string" then
+                local inv_map = {
+                    chest = defines.inventory.chest,
+                    fuel = defines.inventory.fuel,
+                    input = defines.inventory.assembling_machine_input,
+                    output = defines.inventory.assembling_machine_output,
+                }
+                inv_index = inv_map[inventory_type]
+                if not inv_index then
+                    error("Admin EntityInterface: Unknown inventory type name: " .. inventory_type)
+                end
+            end
+            
+            -- Insert items
+            local inventory = entity_interface.entity.get_inventory(inv_index --[[@as defines.inventory]])
+            if not inventory then
+                error("Admin EntityInterface: Entity does not have inventory at index " .. tostring(inv_index))
+            end
+            
+            local inserted = inventory.insert({ name = item_name, count = count })
+            if inserted < count then
+                error("Admin EntityInterface: Failed to insert " .. count .. " items (only " .. inserted .. " inserted)")
+            end
+            
+            return true
+        end,
+        
+        extract_inventory_items = function(entity_name, position, inventory_type, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:extract_inventory_items(inventory_type)
+        end,
+        
+        -- Entity manipulation
+        rotate = function(entity_name, position, direction, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:rotate(direction)
+        end,
+        
+        -- Entity queries
+        get_position = function(entity_name, position, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:get_position()
+        end,
+        
+        get_name = function(entity_name, position, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:get_name()
+        end,
+        
+        get_type = function(entity_name, position, radius)
+            local entity_interface = EntityInterface:new({
+                entity_name = entity_name,
+                position = position,
+                radius = radius,
+                strict = false,
+            })
+            return entity_interface:get_type()
+        end,
+        
+        is_valid = function(entity_name, position, radius)
+            local ok, entity_interface = pcall(function()
+                return EntityInterface:new({
+                    entity_name = entity_name,
+                    position = position,
+                    radius = radius,
+                    strict = false,
+                })
+            end)
+            if not ok then
+                return false
+            end
+            return entity_interface:is_valid()
+        end,
+    }
+end
 
 return M
