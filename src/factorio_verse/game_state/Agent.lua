@@ -172,7 +172,7 @@ function M.destroy_agent(agent_id, remove_force)
     if not agent then
         error("Agent " .. tostring(agent_id) .. " not found")
     end
-    
+
     -- Use Agent:destroy() which handles all cleanup
     agent:destroy(remove_force)
 end
@@ -412,7 +412,27 @@ M.admin_api = {
 --- @return table {defined_events = {}, nth_tick = {}}
 function M.get_events()
     return {
-        defined_events = {},
+        defined_events = {
+            [defines.events.on_script_path_request_finished] = function(event)
+                if not event.path then
+                    game.print("path request for " .. event.id .. " failed")
+                end
+                if not (storage.agents and event.id) then return end
+
+                local path_id = event.id
+                for _, agent in pairs(storage.agents) do
+                    if agent.walking.path_id == path_id then
+                        if not event.path then
+                            game.print("path request for " .. event.id .. " failed")
+                            return
+                        end
+                        agent.walking.path = event.path
+                        agent.walking.progress = 1
+                        break
+                    end
+                end
+            end
+        },
         nth_tick = {}
     }
 end

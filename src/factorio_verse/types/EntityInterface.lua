@@ -23,7 +23,6 @@ script.register_metatable('EntityInterface', EntityInterface)
 -- This event is raised whenever entity configuration changes (recipe, filter, inventory_limit, etc.)
 EntityInterface.on_entity_configuration_changed = script.generate_event_name()
 log("EntityInterface: Generated custom event 'entity_configuration_changed': " .. tostring(EntityInterface.on_entity_configuration_changed))
-game.print("EntityInterface: Generated custom event 'entity_configuration_changed': " .. tostring(EntityInterface.on_entity_configuration_changed))
 
 -- ============================================================================
 -- ENTITY RESOLUTION

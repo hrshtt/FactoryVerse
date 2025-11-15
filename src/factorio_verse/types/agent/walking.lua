@@ -22,6 +22,11 @@ end
 ---@param goal {x:number, y:number}
 ---@param options table|nil
 WalkingActions.walk_to = function(self, goal, adjust_to_non_colliding, options)
+
+    if self.entity.walking_state["walking"] then
+        error("Agent is already walking")
+    end
+
     if not goal then
         error("Goal is required")
     end
@@ -30,21 +35,15 @@ WalkingActions.walk_to = function(self, goal, adjust_to_non_colliding, options)
     options = options or {}
     options.goal = goal
     options.start = self.entity.position
-    options.bounding_box = self.entity.prototype.collision_box  -- Centered at {0,0}
+    options.bounding_box = self.entity.prototype.collision_box
     options.collision_mask = self.entity.prototype.collision_mask
     options.force = self.entity.force.name
     options.radius = get_goal_radius(self.entity.surface, goal)
-    options.entity_to_ignore = self.entity
-
-    game.print("walking options: " .. helpers.table_to_json(options))
+    options.entity_to_ignore = self.entity -- entity pathfinding has to ignore itself 
 
     if options.radius > 0 and not adjust_to_non_colliding then
         error(
             "Cannot reach goal due to collisions. Provide adjust_to_non_colliding=true to adjust the goal position to a non-colliding position.")
-    end
-
-    if self.entity.walking_state["walking"] then
-        error("Agent is already walking")
     end
     local job_id = self.entity.surface.request_path(options)
     self.walking.path_id = job_id
@@ -91,6 +90,24 @@ WalkingActions.process_walking = function(self)
         defines.direction.south, defines.direction.southeast, }
 
     self.entity.walking_state = { walking = true, direction = dirs[math.floor(octant) % 8 + 1] }
+end
+
+WalkingActions.stop_walking = function(self)
+    local is_walking = self.entity.walking_state["walking"]
+    if not is_walking then
+        return {
+            success = false,
+            error = "Agent is not walking"
+        }
+    end
+    self.entity.walking_state = { walking = false }
+    self.walking.path = nil
+    self.walking.path_id = nil
+    self.walking.progress = 0
+    return {
+        success = true,
+        position = self.entity.position
+    }
 end
 
 return WalkingActions

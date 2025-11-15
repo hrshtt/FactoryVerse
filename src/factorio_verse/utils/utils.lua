@@ -76,7 +76,7 @@ function M.min_position(a, b)
     }
 end
 
-function M.chart_native_start_area(surface, force, position, game_state)
+function M.chart_native_start_area(surface, force, position, map_module)
     local radius_tiles = 150 -- Hacky but accepted vanilla feel
     local area = {
         { x = position.x - radius_tiles, y = position.y - radius_tiles },
@@ -84,9 +84,9 @@ function M.chart_native_start_area(surface, force, position, game_state)
     }
     force.chart(surface, area)
 
-    -- Register charted area for headless server fallback (if game_state provided)
-    if game_state and game_state.map then
-        game_state.map.register_charted_area({
+    -- Register charted area for headless server fallback (if map_module provided)
+    if map_module and map_module.register_charted_area then
+        map_module.register_charted_area({
             left_top = { x = area[1].x, y = area[1].y },
             right_bottom = { x = area[2].x, y = area[2].y }
         })

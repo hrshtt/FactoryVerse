@@ -13,7 +13,7 @@ M.SNAPSHOT_BASE_DIR = "factoryverse/snapshots"
 M.UDP_PORT = 34202
 
 -- Debug flag for verbose logging
-M.DEBUG = true
+M.DEBUG = false
 
 -- Storage key for tracking charted chunks
 M.CHARTED_CHUNKS_STORAGE_KEY = "factoryverse_charted_chunks"

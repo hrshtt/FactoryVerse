@@ -1,20 +1,27 @@
 --- Agent mining action methods
 --- Methods operate directly on Agent instances (self)
---- State is stored in self.mining (job)
+--- State is stored in self.mining (count_progress, target_count, mine_entity)
 --- These methods are mixed into the Agent class at module level
 
 local MiningActions = {}
 
+--- Resource type mappings for trees/rocks
+local RESOURCE_TYPE_MAP = {
+    ["tree"] = "tree",
+    ["rock"] = "simple-entity",
+}
+
+--- Resource item mappings for trees/rocks
+local RESOURCE_ITEM_MAP = {
+    ["tree"] = "wood",
+    ["rock"] = "stone",
+}
+
 --- Start mining a resource (async)
---- @param resource_name string Resource name
---- @param position table|nil Position {x, y} (nil to use agent position with radius search)
---- @param max_count number|nil Maximum count to mine (default: 10)
+--- @param resource_name string Resource name (e.g., "iron-ore", "tree", "rock")
+--- @param max_count number|nil Maximum count to mine (only for ores/coal/stone, ignored for trees/rocks)
 --- @return table Result with {success, queued, action_id, tick}
-function MiningActions.mine_resource(self, resource_name, position, max_count)
-    if not (self.entity and self.entity.valid) then
-        error("Agent: Agent entity is invalid")
-    end
-    
+function MiningActions.mine_resource(self, resource_name, max_count)
     if not resource_name or type(resource_name) ~= "string" then
         error("Agent: resource_name (string) is required")
     end
@@ -24,98 +31,67 @@ function MiningActions.mine_resource(self, resource_name, position, max_count)
         error("Agent: Cannot mine oil resources")
     end
     
-    max_count = max_count or 10
-    
-    -- Resolve position (use agent position if not provided)
-    local search_position = position
-    if not search_position then
-        local agent_pos = self.entity.position
-        search_position = { x = agent_pos.x, y = agent_pos.y }
-    end
-    
-    -- Resource type mappings
-    local resource_type_mapping = {
-        ["tree"] = "tree",
-        ["rock"] = "simple-entity",
-    }
-    
-    local resource_item_mapping = {
-        ["tree"] = "wood",
-        ["rock"] = "stone",
-    }
-    
-    -- Build search arguments
-    local is_point_entity = (resource_name == "tree" or resource_name == "rock")
+    -- Use agent position and resource reach distance for search
+    local agent_pos = self.entity.position
     local radius = self.entity.resource_reach_distance or 2.5
-    local search_args = {}
+    local surface = self.entity.surface or game.surfaces[1]
+    
+    -- Determine if this is a tree/rock (point entity) or ore/coal/stone
+    local is_point_entity = (resource_name == "tree" or resource_name == "rock")
+    local search_args = {
+        position = { x = agent_pos.x, y = agent_pos.y },
+        radius = radius,
+    }
     
     if is_point_entity then
-        search_args.type = resource_type_mapping[resource_name]
-        search_args.position = search_position
-        search_args.radius = radius
+        search_args.type = RESOURCE_TYPE_MAP[resource_name]
     else
         search_args.name = resource_name
-        search_args.position = search_position
-        search_args.radius = radius
     end
     
-    -- Find resource entity
-    local surface = self.entity.surface or game.surfaces[1]
-    local resource_entity = surface.find_entities_filtered(search_args)[1]
+    -- Find resource entity (not strict - take first result)
+    local entities = surface.find_entities_filtered(search_args)
+    if not entities or #entities == 0 then
+        error("Agent: Resource not found within reach")
+    end
     
+    local resource_entity = entities[1]
     if not resource_entity or not resource_entity.valid then
-        error("Agent: Resource not found")
+        error("Agent: Resource entity is invalid")
     end
     
-    -- Validate reachability
-    local agent_pos = self.entity.position
-    local resource_pos = resource_entity.position
-    local dx = resource_pos.x - agent_pos.x
-    local dy = resource_pos.y - agent_pos.y
-    local dist_sq = dx * dx + dy * dy
-    local reach = self.entity.resource_reach_distance or 2.5
+    -- Determine item name
+    local item_name = is_point_entity and RESOURCE_ITEM_MAP[resource_name] or resource_name
     
-    if dist_sq > (reach * reach) then
-        error("Agent: Resource out of reach")
-    end
+    -- Initialize mining state
+    local current_count = self.entity.get_item_count(item_name)
+    self.mining.count_progress = current_count
+    self.mining.mine_entity = resource_entity
+    self.mining.item_name = item_name  -- Store for completion message
     
-    -- Determine item name and initial count
-    local item_name = nil
-    local initial_count = 0
-    
+    -- Set target_count only for ores/coal/stone (not trees/rocks)
     if is_point_entity then
-        item_name = resource_item_mapping[resource_name]
-        initial_count = self.entity.get_item_count(item_name)
+        self.mining.target_count = nil  -- Mine until depleted
     else
-        item_name = resource_name
-        initial_count = self.entity.get_item_count(item_name)
+        max_count = max_count or 10
+        self.mining.target_count = current_count + max_count
     end
     
-    -- Generate action ID
+    -- Start mining on entity (stop walking, set mining state)
+    if self.entity.walking_state and self.entity.walking_state.walking then
+        self.entity.walking_state = { walking = false }
+    end
+    
+    self.entity.mining_state = {
+        mining = true,
+        position = { x = resource_entity.position.x, y = resource_entity.position.y }
+    }
+    self.entity.selected = resource_entity
+    
+    -- Generate action ID and enqueue message
     local action_id = string.format("mine_resource_%d_%d", game.tick, self.agent_id)
     local rcon_tick = game.tick
     
-    -- Create mining job
-    local job = {
-        resource_name = resource_name,
-        resource_entity = resource_entity,  -- Store reference (will be validated each tick)
-        resource_position = { x = resource_pos.x, y = resource_pos.y },
-        item_name = item_name,
-        initial_count = initial_count,
-        target_count = initial_count + max_count,
-        mine_till_depleted = (resource_entity.type == "tree" or resource_entity.type == "simple-entity"),
-        action_id = action_id,
-        start_tick = rcon_tick,
-        cancelled = false,
-    }
-    
-    -- Store job
-    self.mining.job = job
-    
-    -- Start mining on entity
-    self:set_mining(true, resource_entity)
-    
-    -- Enqueue async result message
     self:enqueue_message({
         action = "mine_resource",
         agent_id = self.agent_id,
@@ -124,7 +100,7 @@ function MiningActions.mine_resource(self, resource_name, position, max_count)
         action_id = action_id,
         tick = rcon_tick,
         resource_name = resource_name,
-        position = { x = resource_pos.x, y = resource_pos.y },
+        position = { x = resource_entity.position.x, y = resource_entity.position.y },
     }, "mining")
     
     return {
@@ -137,63 +113,139 @@ end
 
 --- Cancel active mining
 --- @return table Result
-function MiningActions.cancel_mining(self)
-    if not (self.entity and self.entity.valid) then
-        error("Agent: Agent entity is invalid")
-    end
+function MiningActions.stop_mining(self)
+    local was_mining = (self.mining.mine_entity ~= nil)
     
-    local job = self.mining.job
-    local action_id = job and job.action_id or nil
-    
-    -- Clear job
-    self.mining.job = nil
+    -- Clear mining state
+    self.mining.count_progress = 0
+    self.mining.target_count = nil
+    self.mining.mine_entity = nil
+    self.mining.item_name = nil
     
     -- Stop mining on entity
-    self:set_mining(false, nil)
+    if self.entity.mining_state then
+        self.entity.mining_state = { mining = false }
+    end
+    if self.entity.clear_selected_entity then
+        self.entity.clear_selected_entity()
+    end
     
     -- Enqueue cancel message
     self:enqueue_message({
         action = "cancel_mining",
         agent_id = self.agent_id,
         success = true,
-        cancelled = job ~= nil,
-        action_id = action_id,
+        cancelled = was_mining,
         tick = game.tick or 0,
     }, "mining")
     
     return {
         success = true,
-        cancelled = job ~= nil,
-        action_id = action_id,
+        cancelled = was_mining,
     }
 end
 
---- Set mining state on entity (internal helper)
---- @param mining boolean
---- @param target table|LuaEntity|nil Target position or entity
-function MiningActions.set_mining(self, mining, target)
-    if not (self.entity and self.entity.valid) then return end
+--- Process mining state (called from Agent:process())
+function MiningActions.process_mining(self)
+    if not self.mining.mine_entity then
+        return
+    end
     
-    if mining then
-        -- Exclusivity: stop walking
-        self:stop_walking()
-        
-        local pos = target and (target.position or target) or nil
-        if pos then
-            self.entity.mining_state = { mining = true, position = { x = pos.x, y = pos.y } }
-        else
-            self.entity.mining_state = { mining = true }
+    local entity = self.mining.mine_entity
+    
+    -- Check if entity is still valid (for trees/rocks, invalid means depleted)
+    if not entity.valid then
+        -- Entity depleted - complete mining
+        self:complete_mining()
+        return
+    end
+    
+    -- For ores/coal/stone: check if target count reached
+    if self.mining.target_count then
+        -- Determine item name from entity type
+        local item_name = nil
+        if entity.type == "resource" then
+            item_name = entity.name  -- e.g., "iron-ore", "copper-ore"
+        elseif entity.type == "tree" then
+            item_name = "wood"
+        elseif entity.type == "simple-entity" then
+            item_name = "stone"
         end
         
-        -- Set selected entity if target is an entity
-        if target and target.valid == true then
-            self.entity.selected = target
+        if item_name then
+            local current_count = self.entity.get_item_count(item_name)
+            self.mining.count_progress = current_count
+            
+            if current_count >= self.mining.target_count then
+                -- Target count reached - complete mining
+                self:complete_mining()
+                return
+            end
+        end
+    end
+    -- For trees/rocks: continue mining until entity becomes invalid (depleted)
+end
+
+--- Complete mining and send completion message
+function MiningActions.complete_mining(self)
+    if not self.mining.mine_entity then
+        return
+    end
+    
+    local entity = self.mining.mine_entity
+    local item_name = self.mining.item_name
+    local was_valid = entity.valid
+    
+    -- Determine resource name from entity if still valid, otherwise infer from item_name
+    local resource_name = nil
+    if was_valid then
+        if entity.type == "resource" then
+            resource_name = entity.name
+        elseif entity.type == "tree" then
+            resource_name = "tree"
+        elseif entity.type == "simple-entity" then
+            resource_name = "rock"
         end
     else
+        -- Infer from item_name
+        if item_name == "wood" then
+            resource_name = "tree"
+        elseif item_name == "stone" then
+            resource_name = "rock"
+        else
+            resource_name = item_name  -- For ores, item_name == resource_name
+        end
+    end
+    
+    local current_count = item_name and self.entity.get_item_count(item_name) or 0
+    local initial_count = self.mining.count_progress or 0
+    local mined_count = current_count - initial_count
+    
+    -- Send completion message
+    self:enqueue_message({
+        action = "mine_resource",
+        agent_id = self.agent_id,
+        success = true,
+        tick = game.tick or 0,
+        resource_name = resource_name,
+        position = was_valid and { x = entity.position.x, y = entity.position.y } or nil,
+        item_name = item_name,
+        count = mined_count,
+    }, "mining")
+    
+    -- Clear mining state
+    self.mining.count_progress = 0
+    self.mining.target_count = nil
+    self.mining.mine_entity = nil
+    self.mining.item_name = nil
+    
+    -- Stop mining on entity
+    if self.entity.mining_state then
         self.entity.mining_state = { mining = false }
+    end
+    if self.entity.clear_selected_entity then
         self.entity.clear_selected_entity()
     end
 end
 
 return MiningActions
-

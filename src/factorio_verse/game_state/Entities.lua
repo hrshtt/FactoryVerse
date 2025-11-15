@@ -52,15 +52,15 @@ function M.track_chunk_entity_status(chunk_position)
     end
     
     local chunk_area = {
-        left_top = {
-            x = chunk_position.x * 32,
-            y = chunk_position.y * 32
-        },
-        right_bottom = {
-            x = (chunk_position.x + 1) * 32,
-            y = (chunk_position.y + 1) * 32
+            left_top = {
+                x = chunk_position.x * 32,
+                y = chunk_position.y * 32
+            },
+            right_bottom = {
+                x = (chunk_position.x + 1) * 32,
+                y = (chunk_position.y + 1) * 32
+            }
         }
-    }
     
     -- Check count first for early exit
     local entity_count = surface.count_entities_filtered {

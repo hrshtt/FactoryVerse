@@ -22,7 +22,8 @@
 --- @field progress number Current waypoint index
 
 --- @class AgentMiningState : table
---- @field job table|nil Active mining job {resource_name, position, target_count, action_id, ...}
+--- @field count_progress number Current count of mined items
+--- @field target_count number|nil Target count of mined items (nil for trees and rocks)
 
 --- @class AgentCraftingState : table
 --- @field in_progress table|nil Active crafting tracking {recipe, count, action_id, ...}
@@ -265,16 +266,16 @@ function Agent:register_remote_interface()
         walk_to = function(goal, adjust_to_non_colliding, options)
             return self:walk_to(goal, adjust_to_non_colliding, options)
         end,
-        cancel_walking = function(job_id)
-            return self:cancel_walking(job_id)
+        stop_walking = function()
+            return self:stop_walking()
         end,
         
         -- Mining
-        mine_resource = function(resource_name, position, max_count)
-            return self:mine_resource(resource_name, position, max_count)
+        mine_resource = function(resource_name, max_count)
+            return self:mine_resource(resource_name, max_count)
         end,
-        cancel_mining = function()
-            return self:cancel_mining()
+        stop_mining = function()
+            return self:stop_mining()
         end,
         
         -- Crafting
@@ -395,7 +396,7 @@ end
 -- ============================================================================
 -- Action methods are defined in separate modules and mixed in above:
 -- - types/agent/walking.lua: walk_to, cancel_walking, stop_walking, set_walking, sustain_walking, clear_walking_intent
--- - types/agent/mining.lua: mine_resource, cancel_mining, set_mining
+-- - types/agent/mining.lua: mine_resource, stop_mining, process_mining, complete_mining
 -- - types/agent/crafting.lua: craft_enqueue, craft_dequeue
 -- - types/agent/placement.lua: place_entity, cancel_placement
 -- - types/agent/entity_ops.lua: set_entity_recipe, set_entity_filter, set_inventory_limit, get_inventory_item, set_inventory_item, pickup_entity
@@ -542,80 +543,8 @@ end
     -- Process walking jobs
     WalkingActions.process_walking(self)
     
-    -- Process mining job
-    if self.mining.job then
-        local job = self.mining.job
-        
-        -- Validate resource entity is still valid
-        if job.resource_entity and not job.resource_entity.valid then
-            -- Resource depleted or invalid, complete mining
-            local item_name = job.item_name
-            local current_count = self.entity.get_item_count(item_name)
-            local mined_count = current_count - job.initial_count
-            
-            self:enqueue_message({
-                action = "mine_resource",
-                agent_id = self.agent_id,
-                success = true,
-                action_id = job.action_id,
-                tick = current_tick,
-                resource_name = job.resource_name,
-                position = job.resource_position,
-                item_name = item_name,
-                count = mined_count,
-            }, "mining")
-            
-            self.mining.job = nil
-            self:set_mining(false, nil)
-        elseif job.mine_till_depleted then
-            -- Check if resource is depleted (for trees/rocks)
-            if job.resource_entity and job.resource_entity.valid then
-                -- Still mining, continue
-            else
-                -- Resource depleted
-                local item_name = job.item_name
-                local current_count = self.entity.get_item_count(item_name)
-                local mined_count = current_count - job.initial_count
-                
-                self:enqueue_message({
-                    action = "mine_resource",
-                    agent_id = self.agent_id,
-                    success = true,
-                    action_id = job.action_id,
-                    tick = current_tick,
-                    resource_name = job.resource_name,
-                    position = job.resource_position,
-                    item_name = item_name,
-                    count = mined_count,
-                }, "mining")
-                
-                self.mining.job = nil
-                self:set_mining(false, nil)
-            end
-        elseif job.target_count then
-            -- Check if target count reached
-            local current_count = self.entity.get_item_count(job.item_name)
-            if current_count >= job.target_count then
-                -- Target reached
-                local mined_count = current_count - job.initial_count
-                
-                self:enqueue_message({
-                    action = "mine_resource",
-                    agent_id = self.agent_id,
-                    success = true,
-                    action_id = job.action_id,
-                    tick = current_tick,
-                    resource_name = job.resource_name,
-                    position = job.resource_position,
-                    item_name = job.item_name,
-                    count = mined_count,
-                }, "mining")
-                
-                self.mining.job = nil
-                self:set_mining(false, nil)
-            end
-        end
-    end
+    -- Process mining
+    MiningActions.process_mining(self)
     
     -- Process crafting
     if self.crafting.in_progress then

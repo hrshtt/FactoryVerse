@@ -56,10 +56,10 @@ local function aggregate_all_events()
         if module and module.get_on_tick_handlers then
             local handlers = module.get_on_tick_handlers()
             if handlers then
-                for _, handler in ipairs(handlers) do
+        for _, handler in ipairs(handlers) do
                     add_defined_event(defines.events.on_tick, handler)
-                end
-            end
+        end
+    end
         end
     end
     
@@ -71,9 +71,9 @@ local function aggregate_all_events()
                 -- Aggregate defined events
                 if events.defined_events then
                     for event_id, handler in pairs(events.defined_events) do
-                        add_defined_event(event_id, handler)
-                    end
-                end
+            add_defined_event(event_id, handler)
+        end
+    end
                 
                 -- Aggregate nth_tick events
                 if events.nth_tick then
@@ -86,11 +86,11 @@ local function aggregate_all_events()
                             end
                         else
                             -- Single handler
-                            add_nth_tick_handler(tick_interval, handler)
-                        end
-                    end
-                end
-            end
+            add_nth_tick_handler(tick_interval, handler)
+        end
+    end
+        end
+    end
         end
     end
     
@@ -168,7 +168,7 @@ local function register_all_remote_interfaces()
                 if remote.interfaces[interface_name] then
                     log("Removing existing '" .. interface_name .. "' interface")
                     remote.remove_interface(interface_name)
-                end
+    end
                 local method_count = 0
                 for _ in pairs(interface) do method_count = method_count + 1 end
                 log("Registering '" .. interface_name .. "' interface with " .. method_count .. " methods")
