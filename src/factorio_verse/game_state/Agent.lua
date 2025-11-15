@@ -1,28 +1,14 @@
 --- factorio_verse/core/game_state/AgentGameState.lua
 --- AgentGameState sub-module for managing agent-related functionality.
+--- Static module - no instantiation required.
 --- Uses new Agent class with metatable registration for OOP-based state management.
 
 local Agent = require("types.Agent")
 local snapshot = require("utils.snapshot")
 local utils = require("utils.utils")
+local Map = require("game_state.Map")
 
---- @class AgentGameState : GameStateModule
 local M = {}
-M.__index = M
-
---- @param game_state GameState
---- @return AgentGameState
-function M:new(game_state)
-    local instance = {
-        game_state = game_state,
-    }
-    setmetatable(instance, self)
-    
-    -- Initialize storage if needed
-    storage.agents = storage.agents or {}
-    
-    return instance
-end
 
 -- ============================================================================
 -- AGENT LIFECYCLE MANAGEMENT
@@ -31,7 +17,7 @@ end
 --- Create or get a force by name, setting default friendly relationships
 --- @param force_name string Force name
 --- @return LuaForce
-function M:create_or_get_force(force_name)
+function M.create_or_get_force(force_name)
     if not force_name or force_name == "" then
         error("Force name cannot be empty")
     end
@@ -81,7 +67,7 @@ end
 --- @param force_name string|nil Optional force name (if nil, uses agent-{agent_id})
 --- @param spawn_position table|nil Optional spawn position {x, y}
 --- @return Agent Agent instance
-function M:create_agent(agent_id, color, force_name, spawn_position)
+function M.create_agent(agent_id, color, force_name, spawn_position)
     -- Use Agent:new() which handles all initialization
     local agent = Agent:new(agent_id, color, force_name, spawn_position)
     
@@ -89,7 +75,7 @@ function M:create_agent(agent_id, color, force_name, spawn_position)
     if agent.entity and agent.entity.valid then
         local surface = agent.entity.surface or game.surfaces[1]
         local position = agent.entity.position
-        utils.chart_native_start_area(surface, agent.entity.force, position, self.game_state)
+        utils.chart_native_start_area(surface, agent.entity.force, position, Map)
     end
     
     return agent
@@ -98,7 +84,7 @@ end
 --- Get agent by ID
 --- @param agent_id number
 --- @return Agent|nil Agent instance or nil if not found
-function M:get_agent(agent_id)
+function M.get_agent(agent_id)
     if not storage.agents then
         storage.agents = {}
         return nil
@@ -121,7 +107,7 @@ end
 --- @param set_unique_forces boolean|nil Default true - each agent gets unique force
 --- @param default_common_force string|nil Force name to use if set_unique_forces=false
 --- @return table Array of created agent info {agent_id, force_name}
-function M:create_agents(num_agents, destroy_existing, set_unique_forces, default_common_force)
+function M.create_agents(num_agents, destroy_existing, set_unique_forces, default_common_force)
     if not storage.agents then
         storage.agents = {}
     end
@@ -150,7 +136,7 @@ function M:create_agents(num_agents, destroy_existing, set_unique_forces, defaul
             end
         else
             -- Create default force if it doesn't exist
-            self:create_or_get_force(common_force_name)
+            M.create_or_get_force(common_force_name)
         end
     end
 
@@ -167,7 +153,7 @@ function M:create_agents(num_agents, destroy_existing, set_unique_forces, defaul
         end
         
         local color = generate_agent_color(i, num_agents)
-        local agent = self:create_agent(i, color, force_name, position)
+        local agent = M.create_agent(i, color, force_name, position)
         
         table.insert(created_agents, {
             agent_id = agent.agent_id,
@@ -181,8 +167,8 @@ end
 --- Destroy an agent
 --- @param agent_id number
 --- @param remove_force boolean|nil If true, merge force with player force
-function M:destroy_agent(agent_id, remove_force)
-    local agent = self:get_agent(agent_id)
+function M.destroy_agent(agent_id, remove_force)
+    local agent = M.get_agent(agent_id)
     if not agent then
         error("Agent " .. tostring(agent_id) .. " not found")
     end
@@ -195,13 +181,13 @@ end
 --- @param agent_ids table<number> Array of agent IDs to destroy
 --- @param remove_forces boolean|nil If true, merge forces with player force
 --- @return table {destroyed: number[], errors: table[]}
-function M:destroy_agents(agent_ids, remove_forces)
+function M.destroy_agents(agent_ids, remove_forces)
     local destroyed = {}
     local errors = {}
     
     for _, agent_id in ipairs(agent_ids or {}) do
         local ok, err = pcall(function()
-            self:destroy_agent(agent_id, remove_forces)
+            M.destroy_agent(agent_id, remove_forces)
         end)
         if ok then
             table.insert(destroyed, agent_id)
@@ -273,7 +259,7 @@ end
 --- Process all agents on each tick
 --- Updates agent state machines and processes message queues
 --- @param event table on_tick event
-function M:on_tick(event)
+function M.on_tick(event)
     if not storage.agents then
         return
     end
@@ -294,15 +280,13 @@ function M:on_tick(event)
         process_agent_messages(agent)
         
         ::continue::
+        end
     end
-end
-
---- Get on_tick event handler for agent processing
---- @return function|nil Event handler function
-function M:get_on_tick_handler()
-    return function(event)
-        self:on_tick(event)
-    end
+    
+--- Get on_tick handlers for agent processing
+--- @return table Array of handler functions
+function M.get_on_tick_handlers()
+    return { M.on_tick }
 end
 
 -- ============================================================================
@@ -312,8 +296,8 @@ end
 --- Update friendly relationships for an agent's force
 --- @param agent_id number
 --- @param force_names table<string> Array of force names to set as friendly
-function M:update_agent_friends(agent_id, force_names)
-    local agent = self:get_agent(agent_id)
+function M.update_agent_friends(agent_id, force_names)
+    local agent = M.get_agent(agent_id)
     if not agent then
         error("Agent " .. tostring(agent_id) .. " not found")
     end
@@ -339,8 +323,8 @@ end
 --- Update enemy relationships for an agent's force
 --- @param agent_id number
 --- @param force_names table<string> Array of force names to set as enemy
-function M:update_agent_enemies(agent_id, force_names)
-    local agent = self:get_agent(agent_id)
+function M.update_agent_enemies(agent_id, force_names)
+    local agent = M.get_agent(agent_id)
     if not agent then
         error("Agent " .. tostring(agent_id) .. " not found")
     end
@@ -367,7 +351,7 @@ end
 
 --- List all agent-to-force mappings
 --- @return table<number, string> Mapping of agent_id -> force_name
-function M:list_agent_forces()
+function M.list_agent_forces()
     local mapping = {}
     if storage.agents then
         for agent_id, agent in pairs(storage.agents) do
@@ -383,36 +367,8 @@ end
 -- ADMIN API AND SNAPSHOTS
 -- ============================================================================
 
---- Inspect agent details
---- @param agent_id number Agent ID
---- @param attach_inventory boolean|nil Include inventory
---- @param attach_reachable_entities boolean|nil Include reachable entities
---- @return table Inspection result
-function M:inspect_agent(agent_id, attach_inventory, attach_reachable_entities)
-    attach_inventory = attach_inventory or false
-    attach_reachable_entities = attach_reachable_entities or false
-    
-    local agent = self:get_agent(agent_id)
-    if not agent then
-        return {
-            error = "Agent not found",
-            agent_id = agent_id,
-            tick = game.tick or 0
-        }
-    end
-
-    -- Use Agent:inspect() method
-    return agent:inspect(attach_inventory, attach_reachable_entities)
-end
-
 --- Specifications for admin API methods
 M.AdminApiSpecs = {
-    inspect_agent = {
-        _param_order = {"agent_id", "attach_inventory", "attach_entities"},
-        agent_id = {type = "number", required = true},
-        attach_inventory = {type = "boolean", required = false},
-        attach_entities = {type = "boolean", required = false},
-    },
     create_agents = {
         _param_order = {"num_agents", "destroy_existing", "set_unique_forces", "default_common_force"},
         num_agents = {type = "number", required = true},
@@ -441,7 +397,6 @@ M.AdminApiSpecs = {
 }
 
 M.admin_api = {
-    inspect_agent = M.inspect_agent,
     create_agents = M.create_agents,
     destroy_agents = M.destroy_agents,
     update_agent_friends = M.update_agent_friends,
@@ -449,8 +404,39 @@ M.admin_api = {
     list_agent_forces = M.list_agent_forces,
 }
 
-M.on_demand_snapshots = {
-    inspect_agent = M.inspect_agent,
-}
+-- ============================================================================
+-- EVENT HANDLERS
+-- ============================================================================
+
+--- Get events (defined events and nth_tick)
+--- @return table {defined_events = {}, nth_tick = {}}
+function M.get_events()
+    return {
+        defined_events = {},
+        nth_tick = {}
+    }
+end
+
+-- ============================================================================
+-- REMOTE INTERFACE REGISTRATION
+-- ============================================================================
+
+--- Register remote interface for agent admin methods
+--- @return table Remote interface table
+function M.register_remote_interface()
+    local ParamSpec = require("types.ParamSpec")
+    local interface = {}
+    
+    -- Register all admin methods with parameter normalization
+    for api_name, api_func in pairs(M.admin_api) do
+        local spec = M.AdminApiSpecs[api_name]
+        interface[api_name] = function(...)
+            local normalized_args = ParamSpec:normalize_varargs(spec, ...)
+            return api_func(table.unpack(normalized_args))
+        end
+    end
+    
+    return interface
+end
 
 return M

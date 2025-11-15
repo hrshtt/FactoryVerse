@@ -32,9 +32,29 @@ function M.inspect_power()
     }))
 end
 
-M.on_demand_snapshots = { inspect_power = M.inspect_power }
 M.admin_api = {
     inspect_power = M.inspect_power,
 }
+
+--- Get on_tick handlers
+--- @return table Array of handler functions
+function M.get_on_tick_handlers()
+    return {}
+end
+
+--- Get events (defined events and nth_tick)
+--- @return table {defined_events = {}, nth_tick = {}}
+function M.get_events()
+    return {
+        defined_events = {},
+        nth_tick = {}
+    }
+end
+
+--- Register remote interface for power admin methods
+--- @return table Remote interface table
+function M.register_remote_interface()
+    return M.admin_api
+end
 
 return M

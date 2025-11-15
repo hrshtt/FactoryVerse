@@ -294,9 +294,46 @@ function M._build_disk_write_snapshot()
     }
 end
 
--- Expose disk_write_snapshot property for GameState aggregation
+-- Expose disk_write_snapshot property
 -- This will be populated after init() is called
 M.disk_write_snapshot = {}
+
+--- Get on_tick handlers
+--- @return table Array of handler functions
+function M.get_on_tick_handlers()
+    return {}
+end
+
+--- Get events (defined events and nth_tick)
+--- @return table {defined_events = {event_id -> handler, ...}, nth_tick = {tick_interval -> handler, ...}}
+function M.get_events()
+    local events = {}
+    local nth_tick = {}
+    
+    if M.disk_write_snapshot then
+        if M.disk_write_snapshot.events then
+            for event_id, handler in pairs(M.disk_write_snapshot.events) do
+                events[event_id] = handler
+            end
+        end
+        if M.disk_write_snapshot.nth_tick then
+            for tick_interval, handler in pairs(M.disk_write_snapshot.nth_tick) do
+                nth_tick[tick_interval] = handler
+            end
+        end
+    end
+    
+    return {
+        defined_events = events,
+        nth_tick = nth_tick
+    }
+end
+
+--- Register remote interface for resource admin methods
+--- @return table Remote interface table
+function M.register_remote_interface()
+    return {}
+end
 
 return M
 

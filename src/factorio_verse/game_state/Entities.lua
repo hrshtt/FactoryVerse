@@ -113,10 +113,36 @@ function M.track_all_charted_chunk_entity_status(charted_chunks)
     end
 end
 
-function M.get_event_based_snapshot_events()
-    -- Note: This event handler needs chunks, but Entities shouldn't depend on Map
-    -- GameState/control.lua will orchestrate getting chunks and calling track_all_charted_chunk_entity_status
+--- Get on_tick handlers
+--- @return table Array of handler functions
+function M.get_on_tick_handlers()
     return {}
+end
+
+--- Get events (defined events and nth_tick)
+--- @return table {defined_events = {event_id -> handler, ...}, nth_tick = {tick_interval -> handler, ...}}
+function M.get_events()
+    -- Return disk_write_snapshot events
+    local events = {}
+    local nth_tick = {}
+    
+    if M.disk_write_snapshot then
+        if M.disk_write_snapshot.events then
+            for event_id, handler in pairs(M.disk_write_snapshot.events) do
+                events[event_id] = handler
+            end
+        end
+        if M.disk_write_snapshot.nth_tick then
+            for tick_interval, handler in pairs(M.disk_write_snapshot.nth_tick) do
+                nth_tick[tick_interval] = handler
+            end
+        end
+    end
+    
+    return {
+        defined_events = events,
+        nth_tick = nth_tick
+    }
 end
 
 -- ============================================================================
@@ -304,10 +330,10 @@ M.disk_write_snapshot = {}
 -- ADMIN REMOTE INTERFACE (Facade over EntityInterface)
 -- ============================================================================
 
---- Get admin remote interface for EntityInterface methods
+--- Register remote interface for EntityInterface admin methods
 --- Thin facade that wraps EntityInterface methods for remote interface exposure
 --- @return table Remote interface table with EntityInterface methods
-function M.get_admin_remote_interface()
+function M.register_remote_interface()
     return {
         -- Recipe operations
         set_recipe = function(entity_name, position, recipe_name, overwrite, radius)
@@ -413,26 +439,6 @@ function M.get_admin_remote_interface()
         end,
         
         -- Entity queries
-        get_position = function(entity_name, position, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
-            return entity_interface:get_position()
-        end,
-        
-        get_name = function(entity_name, position, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
-            return entity_interface:get_name()
-        end,
-        
         get_type = function(entity_name, position, radius)
             local entity_interface = EntityInterface:new({
                 entity_name = entity_name,

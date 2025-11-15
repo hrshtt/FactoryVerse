@@ -281,10 +281,56 @@ function M._build_disk_write_snapshot()
     return { events = events }
 end
 
---- Get disk_write_snapshot events
---- @return table - {events = {event_id -> handler, ...}}
-function M.get_disk_write_snapshot_events()
-    return M.disk_write_snapshot or {}
+--- Get on_tick handlers
+--- @return table Array of handler functions
+function M.get_on_tick_handlers()
+    return {}
+end
+
+--- Get events (defined events and nth_tick)
+--- @return table {defined_events = {event_id -> handler, ...}, nth_tick = {tick_interval -> handler, ...}}
+function M.get_events()
+    local events = {}
+    local nth_tick = {}
+    
+    -- Add event_based_snapshot events
+    if M.event_based_snapshot then
+        if M.event_based_snapshot.nth_tick then
+            for tick_interval, handler in pairs(M.event_based_snapshot.nth_tick) do
+                nth_tick[tick_interval] = handler
+            end
+        end
+    end
+    
+    -- Add disk_write_snapshot events
+    if M.disk_write_snapshot then
+        if M.disk_write_snapshot.events then
+            for event_id, handler in pairs(M.disk_write_snapshot.events) do
+                events[event_id] = handler
+            end
+        end
+        if M.disk_write_snapshot.nth_tick then
+            for tick_interval, handler in pairs(M.disk_write_snapshot.nth_tick) do
+                nth_tick[tick_interval] = nth_tick[tick_interval] or {}
+                if type(nth_tick[tick_interval]) == "table" then
+                    table.insert(nth_tick[tick_interval], handler)
+                else
+                    nth_tick[tick_interval] = handler
+                end
+            end
+        end
+    end
+    
+    return {
+        defined_events = events,
+        nth_tick = nth_tick
+    }
+end
+
+--- Register remote interface for map admin methods
+--- @return table Remote interface table
+function M.register_remote_interface()
+    return M.admin_api
 end
 
 -- ============================================================================
