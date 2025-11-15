@@ -17,9 +17,9 @@
 --- @field map_tag LuaRenderObject Map tag rendering object
 
 --- @class AgentWalkingState : table
---- @field jobs table<number, table> Active walk-to jobs keyed by job_id
---- @field intent table|nil Sustained walking intent {direction, end_tick, walking}
---- @field next_job_id number Next job ID for walk-to jobs
+--- @field path nil|PathfinderWaypoint[]
+--- @field path_id nil|number
+--- @field progress number Current waypoint index
 
 --- @class AgentMiningState : table
 --- @field job table|nil Active mining job {resource_name, position, target_count, action_id, ...}
@@ -99,11 +99,7 @@ function Agent:new(agent_id, color, force_name, spawn_position)
         labels = {},
         
         -- Consolidated activity state
-        walking = {
-            jobs = {},
-            intent = nil,
-            next_job_id = 1,
-        },
+        walking = {},
         mining = {
             job = nil,
         },
@@ -266,8 +262,8 @@ function Agent:register_remote_interface()
     -- Create interface with direct method proxies
     local interface = {
         -- Walking
-        walk_to = function(position, options)
-            return self:walk_to(position, options)
+        walk_to = function(goal, adjust_to_non_colliding, options)
+            return self:walk_to(goal, adjust_to_non_colliding, options)
         end,
         cancel_walking = function(job_id)
             return self:cancel_walking(job_id)
@@ -543,9 +539,8 @@ function Agent:process(event)
         end
 end
 
-    -- Process walking jobs (walk-to)
-    -- TODO: Implement walk-to job processing with pathfinding
-    -- For now, jobs are queued but not processed
+    -- Process walking jobs
+    WalkingActions.process_walking(self)
     
     -- Process mining job
     if self.mining.job then

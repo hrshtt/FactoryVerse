@@ -5,177 +5,92 @@
 
 local WalkingActions = {}
 
---- Start a walk-to job (async)
---- @param goal table Position {x, y}
---- @param options table|nil Walk options {arrive_radius, lookahead, replan_on_stuck, max_replans, prefer_cardinal, diag_band, snap_axis_eps}
---- @return table Result with {success, queued, action_id, tick, job_id}
-function WalkingActions.walk_to(self, goal, options)
-    if not (self.entity and self.entity.valid) then
-        error("Agent: Agent entity is invalid")
+local function get_goal_radius(surface, goal)
+    local entities = surface.find_entities_filtered({ position = goal })
+    if #entities == 0 then return 0.0 end
+
+    local max_radius = 0
+    for _, entity in pairs(entities) do
+        max_radius = math.max(max_radius, entity.get_radius())
     end
-    
-    if not goal or type(goal.x) ~= "number" or type(goal.y) ~= "number" then
-        error("Agent: Goal position {x, y} is required")
+
+    return max_radius + 0.1
+end
+
+
+---@param self Agent
+---@param goal {x:number, y:number}
+---@param options table|nil
+WalkingActions.walk_to = function(self, goal, adjust_to_non_colliding, options)
+    if not goal then
+        error("Goal is required")
     end
-    
+
+    adjust_to_non_colliding = adjust_to_non_colliding or false
     options = options or {}
-    
-    -- Generate job ID
-    local job_id = self.walking.next_job_id
-    self.walking.next_job_id = self.walking.next_job_id + 1
-    
-    -- Generate action ID for tracking
-    local action_id = string.format("agent_walk_to_%d_%d", game.tick, self.agent_id)
-    local rcon_tick = game.tick
-    
-    -- Create walk job
-    local job = {
-        job_id = job_id,
-        goal = { x = goal.x, y = goal.y },
-        action_id = action_id,
-        start_tick = rcon_tick,
-        arrive_radius = options.arrive_radius or 0.5,
-        lookahead = options.lookahead or 2.0,
-        replan_on_stuck = options.replan_on_stuck ~= false,
-        max_replans = options.max_replans or 3,
-        prefer_cardinal = options.prefer_cardinal ~= false,
-        diag_band = options.diag_band or 0.1,
-        snap_axis_eps = options.snap_axis_eps or 0.1,
-        cancelled = false,
-    }
-    
-    -- Store job
-    self.walking.jobs[job_id] = job
-    
-    -- Enqueue async result message
-    self:enqueue_message({
-        action = "walk_to",
-        agent_id = self.agent_id,
-        success = true,
-        queued = true,
-        action_id = action_id,
-        tick = rcon_tick,
-        job_id = job_id,
-        goal = { x = goal.x, y = goal.y },
-    }, "walking")
-    
-    return {
-        success = true,
-        queued = true,
-        action_id = action_id,
-        tick = rcon_tick,
-        job_id = job_id,
-    }
+    options.goal = goal
+    options.start = self.entity.position
+    options.bounding_box = self.entity.prototype.collision_box  -- Centered at {0,0}
+    options.collision_mask = self.entity.prototype.collision_mask
+    options.force = self.entity.force.name
+    options.radius = get_goal_radius(self.entity.surface, goal)
+    options.entity_to_ignore = self.entity
+
+    game.print("walking options: " .. helpers.table_to_json(options))
+
+    if options.radius > 0 and not adjust_to_non_colliding then
+        error(
+            "Cannot reach goal due to collisions. Provide adjust_to_non_colliding=true to adjust the goal position to a non-colliding position.")
+    end
+
+    if self.entity.walking_state["walking"] then
+        error("Agent is already walking")
+    end
+    local job_id = self.entity.surface.request_path(options)
+    self.walking.path_id = job_id
 end
 
---- Cancel a walk-to job
---- @param job_id number|nil If nil, cancels all walk-to jobs
---- @return table Result
-function WalkingActions.cancel_walking(self, job_id)
-    if not (self.entity and self.entity.valid) then
-        error("Agent: Agent entity is invalid")
+-- Add to WalkingActions
+WalkingActions.process_walking = function(self)
+    local walking = self.walking
+    if walking.progress == 0 or not walking.path then return end
+    local path = walking.path
+
+    if not path then
+        error("No path found for Agent-" .. self.agent_id)
     end
-    
-    local cancelled_jobs = {}
-    
-    if job_id then
-        -- Cancel specific job
-        local job = self.walking.jobs[job_id]
-        if job then
-            job.cancelled = true
-            job.cancelled_tick = game.tick
-            table.insert(cancelled_jobs, job_id)
-            
-            -- Remove from jobs table
-            self.walking.jobs[job_id] = nil
+
+    if not path or walking.progress > #path then
+        walking.progress = 0
+        walking.path = {}
+        self.entity.walking_state = { walking = false }
+        return
+    end
+
+    local waypoint = path[walking.progress]
+    local pos = self.entity.position
+    local dx, dy = waypoint.position.x - pos.x, waypoint.position.y - pos.y
+
+    if dx * dx + dy * dy < 0.0625 then -- 0.25^2
+        walking.progress = walking.progress + 1
+        if walking.progress > #path then
+            walking.progress = 0
+            walking.path = {}
+            self.entity.walking_state = { walking = false }
+            return
         end
-    else
-        -- Cancel all jobs
-        for id, job in pairs(self.walking.jobs) do
-            job.cancelled = true
-            job.cancelled_tick = game.tick
-            table.insert(cancelled_jobs, id)
-        end
-        self.walking.jobs = {}
+        waypoint = path[walking.progress]
+        dx, dy = waypoint.position.x - pos.x, waypoint.position.y - pos.y
     end
-    
-    -- Clear sustained intent
-    self.walking.intent = nil
-    
-    -- Stop walking on entity
-    self:stop_walking()
-    
-    -- Enqueue cancel message
-    self:enqueue_message({
-        action = "cancel_walking",
-        agent_id = self.agent_id,
-        success = true,
-        cancelled = #cancelled_jobs > 0,
-        cancelled_jobs = cancelled_jobs,
-        tick = game.tick or 0,
-    }, "walking")
-    
-    return {
-        success = true,
-        cancelled = #cancelled_jobs > 0,
-        cancelled_jobs = cancelled_jobs,
-    }
-end
 
---- Stop all walking activities (internal helper)
---- @return boolean
-function WalkingActions.stop_walking(self)
-    -- Clear sustained intent
-    self.walking.intent = nil
-    
-    -- Stop walking on entity
-    if self.entity and self.entity.valid then
-        local current_dir = (self.entity.walking_state and self.entity.walking_state.direction) or defines.direction.north
-        self.entity.walking_state = { walking = false, direction = current_dir }
-    end
-    
-    return true
-end
+    local angle = math.atan2(dy, -dx)
+    local octant = (angle + math.pi) / (math.pi / 4) + 0.5
+    local dirs = { defines.direction.east, defines.direction.northeast,
+        defines.direction.north, defines.direction.northwest,
+        defines.direction.west, defines.direction.southwest,
+        defines.direction.south, defines.direction.southeast, }
 
---- Set walking state for current tick (internal helper)
---- @param direction defines.direction|nil
---- @param walking boolean|nil
-function WalkingActions.set_walking(self, direction, walking)
-    if not (self.entity and self.entity.valid) then return end
-    
-    -- If starting to walk, stop mining per exclusivity policy
-    if walking then
-        if self.entity.mining_state and self.entity.mining_state.mining then
-            self.entity.mining_state = { mining = false }
-        end
-    end
-    
-    -- Apply walking state
-    local dir = direction or (self.entity.walking_state and self.entity.walking_state.direction) or defines.direction.north
-    self.entity.walking_state = { walking = (walking ~= false), direction = dir }
-end
-
---- Sustain walking for a number of ticks (internal helper)
---- @param direction defines.direction
---- @param ticks number
-function WalkingActions.sustain_walking(self, direction, ticks)
-    if not ticks or ticks <= 0 then return end
-    
-    local end_tick = (game and game.tick or 0) + ticks
-    self.walking.intent = {
-        direction = direction,
-        end_tick = end_tick,
-        walking = true
-    }
-    
-    -- Apply immediately for current tick
-    self:set_walking(direction, true)
-end
-
---- Clear sustained walking intent (internal helper)
-function WalkingActions.clear_walking_intent(self)
-    self.walking.intent = nil
+    self.entity.walking_state = { walking = true, direction = dirs[math.floor(octant) % 8 + 1] }
 end
 
 return WalkingActions
-
