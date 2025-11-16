@@ -8,8 +8,9 @@
 --- @field mining AgentMiningState Mining state (active job)
 --- @field crafting AgentCraftingState Crafting state (in-progress tracking)
 --- @field placing AgentPlacementState Placement state (active jobs)
---- @field charted_chunks AgentChartedChunks List of charted chunk coordinates
+--- @field charted_chunks table[] List of charted chunk coordinates
 --- @field message_queue table[] Queue of UDP messages to be sent (processed by game state)
+--- @field on_chunk_charted string Event name for chunk charted event
 
 --- @class AgentLabels : table
 --- @field main_tag LuaRenderObject Main name tag rendering object
@@ -33,15 +34,13 @@
 --- @field progress number Current progress of placement
 --- @field undo_stack table[] Undo stack for placement jobs
 
---- List of charted chunk {x:number, y:number} coordinates
---- @class AgentChartedChunks : table[]
-
 -- Require action modules at module level (Factorio requirement)
-local WalkingActions = require("types.agent.walking")
-local MiningActions = require("types.agent.mining")
-local CraftingActions = require("types.agent.crafting")
-local PlacementActions = require("types.agent.placement")
-local EntityOpsActions = require("types.agent.entity_ops")
+local WalkingActions = require("agent_actions.walking")
+local MiningActions = require("agent_actions.mining")
+local CraftingActions = require("agent_actions.crafting")
+local PlacementActions = require("agent_actions.placement")
+local EntityOpsActions = require("agent_actions.entity_ops")
+local ChartingActions = require("agent_actions.charting")
 
 -- ============================================================================
 -- METATABLE REGISTRATION (must be at module load time)
@@ -49,6 +48,8 @@ local EntityOpsActions = require("types.agent.entity_ops")
 
 local Agent = {}
 Agent.__index = Agent
+
+Agent.on_chunk_charted = script.generate_event_name()
 
 -- Register metatable for save/load persistence
 -- This must happen at module load time, not in on_init/on_load
@@ -69,6 +70,10 @@ for k, v in pairs(PlacementActions) do
     Agent[k] = v
 end
 for k, v in pairs(EntityOpsActions) do
+    Agent[k] = v
+end
+
+for k, v in pairs(ChartingActions) do
     Agent[k] = v
 end
 
@@ -125,6 +130,8 @@ function Agent:new(agent_id, color, force_name, spawn_position)
 
     -- Register per-agent remote interface
     agent:register_remote_interface()
+
+    agent:chart_spawn_area()
 
     return agent
 end

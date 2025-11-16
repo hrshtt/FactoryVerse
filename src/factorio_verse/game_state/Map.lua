@@ -6,11 +6,11 @@
 local pairs = pairs
 local ipairs = ipairs
 
-local Config = require("Config")
 local utils = require("utils.utils")
 local Resource = require("game_state.Resource")
 local Entities = require("game_state.Entities")
 local snapshot = require("utils.snapshot")
+local Agent = require("Agent")
 
 local M = {}
 
@@ -18,48 +18,22 @@ function M.get_charted_chunks(sort_by_distance)
     local surface = game.surfaces[1]  -- Uses module-level local 'game'
     local force = M.get_player_force()
     local charted_chunks = {}
-    local generated_count = 0
 
     if not (surface and force) then
         return charted_chunks
     end
 
-    -- ========================================================================
-    -- SOURCE 1: PLAYER-CHARTED CHUNKS (Primary method - most reliable)
-    -- ========================================================================
-    -- Try to get chunks charted by LuaPlayer characters via force.is_chunk_charted()
+    -- Get chunks charted by player force via force.is_chunk_charted()
     -- This works reliably on:
     --   - Saves where players have explored the map
     --   - Any server with connected LuaPlayer characters
     -- This does NOT work reliably on:
     --   - Headless servers with no connected players (known Factorio limitation)
     --   - force.chart() called but is_chunk_charted() still returns false
+    -- Note: Agents now track their own charted chunks via Agent.charted_chunks field
     for chunk in surface.get_chunks() do
-        generated_count = generated_count + 1
         if force.is_chunk_charted(surface, chunk) then
             table.insert(charted_chunks, { x = chunk.x, y = chunk.y, area = chunk.area })
-        end
-    end
-
-    -- ========================================================================
-    -- SOURCE 2: AGENT-TRACKED CHUNKS (Fallback - headless servers)
-    -- ========================================================================
-    -- If is_chunk_charted() returned empty, fall back to manually registered areas
-    -- This is populated by:
-    --   - MapDiscovery:scan_and_discover() (on agent movement)
-    --   - MapDiscovery.initialize() (on initial setup)
-    -- We explicitly call gs:register_charted_area() because LuaEntity agents
-    -- don't auto-chart chunks like LuaPlayer does
-    if #charted_chunks == 0 and storage.registered_charted_areas then
-        for _, chunk_data in pairs(storage.registered_charted_areas) do
-            if chunk_data then
-                -- Reconstruct area for registered chunk
-                local area = {
-                    left_top = { x = chunk_data.x * 32, y = chunk_data.y * 32 },
-                    right_bottom = { x = (chunk_data.x + 1) * 32, y = (chunk_data.y + 1) * 32 }
-                }
-                table.insert(charted_chunks, { x = chunk_data.x, y = chunk_data.y, area = area })
-            end
         end
     end
 
@@ -200,52 +174,6 @@ function M.get_player_force()
     return game.forces["player"]
 end
 
---- Register a charted area by converting it to chunk coordinates
---- Called after force.chart() to ensure snapshot works on headless servers
---- Also raises custom event for agent chunk discovery to trigger resource snapshotting
---- @param area table - {left_top = {x, y}, right_bottom = {x, y}}
-function M.register_charted_area(area)
-    if not area or not area.left_top or not area.right_bottom then
-        return
-    end
-    
-    if not storage.registered_charted_areas then
-        storage.registered_charted_areas = {}
-    end
-    
-    -- Convert world coordinates to chunk coordinates
-    local min_chunk_x = math.floor(area.left_top.x / 32)
-    local min_chunk_y = math.floor(area.left_top.y / 32)
-    local max_chunk_x = math.floor(area.right_bottom.x / 32)
-    local max_chunk_y = math.floor(area.right_bottom.y / 32)
-    
-    -- Register each chunk in the area and raise custom event for resource snapshotting
-    for cx = min_chunk_x, max_chunk_x do
-        for cy = min_chunk_y, max_chunk_y do
-            local chunk_key = utils.chunk_key(cx, cy)
-            storage.registered_charted_areas[chunk_key] = { x = cx, y = cy }
-            
-            -- Raise custom event for agent chunk discovery (triggers resource snapshotting)
-            if M.custom_events and M.custom_events.agent_chunk_discovered then
-                script.raise_event(M.custom_events.agent_chunk_discovered, {
-                    position = { x = cx, y = cy }
-                })
-            end
-        end
-    end
-end
-
---- Check if a chunk was registered as charted (fallback for headless servers)
---- @param chunk_x number
---- @param chunk_y number
---- @return boolean
-function M.is_registered_charted(chunk_x, chunk_y)
-    if not storage.registered_charted_areas then
-        return false
-    end
-    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
-    return storage.registered_charted_areas[chunk_key] ~= nil
-end
 
 M.admin_api = {
     get_charted_chunks = M.get_charted_chunks,
@@ -270,12 +198,12 @@ function M._build_disk_write_snapshot()
     -- on_chunk_generated: snapshot resources if in initial 7x7 area
     events[defines.events.on_chunk_generated] = M._on_chunk_generated
     
-    -- on_chunk_charted: snapshot resources for charted chunks
+    -- on_chunk_charted: snapshot resources for charted chunks (by players)
     events[defines.events.on_chunk_charted] = M._on_chunk_charted
     
-    -- agent_chunk_discovered: custom event for agent chunk discovery
-    if M.custom_events and M.custom_events.agent_chunk_discovered then
-        events[M.custom_events.agent_chunk_discovered] = M._on_agent_chunk_discovered
+    -- Agent.on_chunk_charted: snapshot resources for chunks charted by agents
+    if Agent.on_chunk_charted then
+        events[Agent.on_chunk_charted] = M._on_agent_chunk_charted
     end
     
     return { events = events }
@@ -337,17 +265,10 @@ end
 -- INITIALIZATION
 -- ============================================================================
 
--- Custom event IDs (initialized in init())
-M.custom_events = {}
-
 --- Initialize Map module
 --- Must be called during on_init/on_load
---- Creates custom event for agent chunk discovery and builds event handlers
+--- Builds event handlers for resource snapshotting
 function M.init()
-    -- Generate custom event ID for agent chunk discovery
-    M.custom_events.agent_chunk_discovered = script.generate_event_name()
-    log("Map: Generated custom event 'agent_chunk_discovered': " .. tostring(M.custom_events.agent_chunk_discovered))
-    
     -- Build disk_write_snapshot table after events are initialized
     M.disk_write_snapshot = M._build_disk_write_snapshot()
 end
@@ -488,12 +409,12 @@ function M._on_chunk_charted(event)
     M.snapshot_chunk_resources(chunk_x, chunk_y)
 end
 
---- Handle agent chunk discovered event (custom event)
---- Snapshot resources for the discovered chunk
---- @param event table - agent_chunk_discovered custom event
-function M._on_agent_chunk_discovered(event)
-    local chunk_x = event.position.x
-    local chunk_y = event.position.y
+--- Handle agent chunk charted event
+--- Snapshot resources for chunks charted by agents
+--- @param event table - Agent.on_chunk_charted event with {chunk_x, chunk_y}
+function M._on_agent_chunk_charted(event)
+    local chunk_x = event.chunk_x
+    local chunk_y = event.chunk_y
     M.snapshot_chunk_resources(chunk_x, chunk_y)
 end
 

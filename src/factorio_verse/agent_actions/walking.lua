@@ -5,6 +5,8 @@
 
 local WalkingActions = {}
 
+DEBUG = true
+
 local function get_goal_radius(surface, goal)
     local entities = surface.find_entities_filtered({ position = goal })
     if #entities == 0 then return 0.0 end
@@ -115,6 +117,7 @@ WalkingActions.process_walking = function(self)
         defines.direction.west, defines.direction.southwest,
         defines.direction.south, defines.direction.southeast, }
 
+    self:chart()
     self.entity.walking_state = { walking = true, direction = dirs[math.floor(octant) % 8 + 1] }
 end
 
