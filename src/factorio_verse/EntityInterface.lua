@@ -30,19 +30,16 @@ log("EntityInterface: Generated custom event 'entity_configuration_changed': " .
 
 --- Resolve entity from resolution parameters
 --- Agent-agnostic: only supports exact lookup or radius search
---- @param resolution_params table Resolution parameters:
----   - entity_name (string, required): Entity prototype name
----   - position (table, required): Position {x, y} for lookup
----   - radius (number, optional): Search radius (if provided, uses radius search; if nil, uses exact lookup)
----   - strict (boolean, optional): If true, error on multiple matches in radius search (default: true)
+--- @param entity_name string Entity prototype name
+--- @param position table Position {x, y} for lookup
+--- @param radius number|nil Search radius (if provided, uses radius search; if nil, uses exact lookup)
+--- @param strict boolean|nil If true, error on multiple matches in radius search (default: true)
 --- @return LuaEntity|nil Resolved entity or nil if not found
-local function _resolve_entity(resolution_params)
-    local entity_name = resolution_params.entity_name
+local function _resolve_entity(entity_name, position, radius, strict)
     if not entity_name or type(entity_name) ~= "string" then
         error("EntityInterface: entity_name (string) is required")
     end
     
-    local position = resolution_params.position
     if not position or type(position.x) ~= "number" or type(position.y) ~= "number" then
         error("EntityInterface: position {x, y} is required")
     end
@@ -58,8 +55,7 @@ local function _resolve_entity(resolution_params)
         error("EntityInterface: Unknown entity prototype: " .. entity_name)
     end
     
-    local radius = resolution_params.radius
-    local strict = resolution_params.strict ~= false  -- Default true
+    strict = strict ~= false  -- Default true
     
     -- Exact lookup: position + name (no radius)
     if not radius then
@@ -103,31 +99,34 @@ end
 
 --- Create EntityInterface wrapper around a LuaEntity
 --- Agent-agnostic: only accepts position-based resolution or direct LuaEntity wrapping
---- @param resolution_params table|LuaEntity Resolution parameters or LuaEntity to wrap directly
----   If table: {entity_name (string), position ({x, y}), radius? (number), strict? (boolean)}
----   If LuaEntity: wraps directly (for internal/admin use)
+--- @param entity_name string|nil Entity prototype name (required if lua_entity is nil)
+--- @param position table|nil Position {x, y} for lookup (required if lua_entity is nil)
+--- @param radius number|nil Search radius (optional, if provided uses radius search)
+--- @param strict boolean|nil If true, error on multiple matches in radius search (default: true)
+--- @param lua_entity LuaEntity|nil Direct LuaEntity to wrap (if provided, other params ignored)
 --- @return EntityInterface
-function EntityInterface:new(resolution_params)
-    local lua_entity = nil
+function EntityInterface:new(entity_name, position, radius, strict, lua_entity)
+    local resolved_entity = nil
     
-    -- If already a LuaEntity, wrap it directly
-    if type(resolution_params) == "table" and resolution_params.valid ~= nil then
-        -- Assume it's a LuaEntity (has .valid property)
-        if not resolution_params.valid then
+    -- If lua_entity is provided, use it directly
+    if lua_entity then
+        if not lua_entity.valid then
             error("EntityInterface: Cannot wrap invalid LuaEntity")
         end
-        lua_entity = resolution_params
-    else
+        resolved_entity = lua_entity
+    elseif entity_name and position then
         -- Resolve entity from params (agent-agnostic: requires explicit position)
-        lua_entity = _resolve_entity(resolution_params)
+        resolved_entity = _resolve_entity(entity_name, position, radius, strict)
+    else
+        error("EntityInterface: Either lua_entity must be provided, or both entity_name and position are required")
     end
     
-    if not lua_entity or not lua_entity.valid then
+    if not resolved_entity or not resolved_entity.valid then
         error("EntityInterface: Entity is invalid")
     end
     
     return setmetatable({
-        entity = lua_entity,
+        entity = resolved_entity,
     }, EntityInterface)
 end
 

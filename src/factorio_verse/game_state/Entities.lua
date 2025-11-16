@@ -11,7 +11,7 @@
 local pairs = pairs
 local ipairs = ipairs
 
-local EntityInterface = require("types.EntityInterface")
+local EntityInterface = require("EntityInterface")
 local serialize = require("utils.serialize")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
@@ -337,56 +337,31 @@ function M.register_remote_interface()
     return {
         -- Recipe operations
         set_recipe = function(entity_name, position, recipe_name, overwrite, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,  -- Admin can handle multiple matches
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)  -- Admin can handle multiple matches
             overwrite = overwrite ~= false  -- Default true for admin
             return entity_interface:set_recipe(recipe_name, overwrite)
         end,
         
         -- Filter operations
         set_filter = function(entity_name, position, inventory_type, filter_index, filter_item, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:set_filter(inventory_type, filter_index, filter_item)
         end,
         
         -- Inventory limit operations
         set_inventory_limit = function(entity_name, position, inventory_type, limit, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:set_inventory_limit(inventory_type, limit)
         end,
         
         -- Inventory item operations
         get_inventory_item = function(entity_name, position, inventory_type, item_name, count, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:extract_inventory_items(inventory_type, item_name, count)
         end,
         
         set_inventory_item = function(entity_name, position, inventory_type, item_name, count, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             
             -- Resolve inventory type
             local inv_index = inventory_type
@@ -418,45 +393,25 @@ function M.register_remote_interface()
         end,
         
         extract_inventory_items = function(entity_name, position, inventory_type, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:extract_inventory_items(inventory_type)
         end,
         
         -- Entity manipulation
         rotate = function(entity_name, position, direction, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:rotate(direction)
         end,
         
         -- Entity queries
         get_type = function(entity_name, position, radius)
-            local entity_interface = EntityInterface:new({
-                entity_name = entity_name,
-                position = position,
-                radius = radius,
-                strict = false,
-            })
+            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:get_type()
         end,
         
         is_valid = function(entity_name, position, radius)
             local ok, entity_interface = pcall(function()
-                return EntityInterface:new({
-                    entity_name = entity_name,
-                    position = position,
-                    radius = radius,
-                    strict = false,
-                })
+                return EntityInterface:new(entity_name, position, radius, false)
             end)
             if not ok then
                 return false

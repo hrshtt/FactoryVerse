@@ -3,7 +3,7 @@
 --- Uses EntityInterface for low-level entity operations
 --- These methods are mixed into the Agent class at module level
 
-local EntityInterface = require("types.EntityInterface")
+local EntityInterface = require("EntityInterface")
 
 local EntityOpsActions = {}
 
@@ -78,16 +78,7 @@ function EntityOpsActions.set_entity_recipe(self, entity_name, position, recipe_
     local pos, radius = _resolve_entity_position(self, position, 5.0)
     
     -- Create EntityInterface instance
-    local resolution_params = {
-        entity_name = entity_name,
-        position = pos,
-    }
-    if radius then
-        resolution_params.radius = radius
-        resolution_params.strict = true
-    end
-    
-    local entity_interface = EntityInterface:new(resolution_params)
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
@@ -137,16 +128,7 @@ function EntityOpsActions.set_entity_filter(self, entity_name, position, invento
     local pos, radius = _resolve_entity_position(self, position, 5.0)
     
     -- Create EntityInterface instance
-    local resolution_params = {
-        entity_name = entity_name,
-        position = pos,
-    }
-    if radius then
-        resolution_params.radius = radius
-        resolution_params.strict = true
-    end
-    
-    local entity_interface = EntityInterface:new(resolution_params)
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
@@ -194,16 +176,7 @@ function EntityOpsActions.set_inventory_limit(self, entity_name, position, inven
     local pos, radius = _resolve_entity_position(self, position, 5.0)
     
     -- Create EntityInterface instance
-    local resolution_params = {
-        entity_name = entity_name,
-        position = pos,
-    }
-    if radius then
-        resolution_params.radius = radius
-        resolution_params.strict = true
-    end
-    
-    local entity_interface = EntityInterface:new(resolution_params)
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
@@ -250,16 +223,7 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
     local pos, radius = _resolve_entity_position(self, position, 5.0)
     
     -- Create EntityInterface instance
-    local resolution_params = {
-        entity_name = entity_name,
-        position = pos,
-    }
-    if radius then
-        resolution_params.radius = radius
-        resolution_params.strict = true
-    end
-    
-    local entity_interface = EntityInterface:new(resolution_params)
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
@@ -365,16 +329,7 @@ function EntityOpsActions.set_inventory_item(self, entity_name, position, invent
     local pos, radius = _resolve_entity_position(self, position, 5.0)
     
     -- Create EntityInterface instance
-    local resolution_params = {
-        entity_name = entity_name,
-        position = pos,
-    }
-    if radius then
-        resolution_params.radius = radius
-        resolution_params.strict = true
-    end
-    
-    local entity_interface = EntityInterface:new(resolution_params)
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
@@ -467,16 +422,7 @@ function EntityOpsActions.pickup_entity(self, entity_name, position)
     local pos, radius = _resolve_entity_position(self, position, 5.0)
     
     -- Create EntityInterface instance
-    local resolution_params = {
-        entity_name = entity_name,
-        position = pos,
-    }
-    if radius then
-        resolution_params.radius = radius
-        resolution_params.strict = true
-    end
-    
-    local entity_interface = EntityInterface:new(resolution_params)
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
