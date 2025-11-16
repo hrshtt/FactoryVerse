@@ -461,21 +461,122 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
     end
     
     local position = self.entity.position
+    if not position then
+        return {
+            error = "Agent has no position",
+            agent_id = self.agent_id,
+            tick = game.tick or 0
+        }
+    end
+    
     local result = {
         agent_id = self.agent_id,
         tick = game.tick or 0,
         position = { x = position.x, y = position.y }
     }
     
+    -- Get agent inventory only if requested
     if attach_inventory then
-        result.inventory = self:get_inventory()
+        local inventory = {}
+        local main_inventory = self.entity.get_inventory(defines.inventory.character_main)
+        if main_inventory then
+            local contents = main_inventory.get_contents()
+            if contents and next(contents) ~= nil then
+                inventory = contents
+            end
+        end
+        result.inventory = inventory
     end
     
+    -- Get entities within reach only if requested
     if attach_reachable_entities then
-        -- TODO: Implement reachable entities query
-        result.reachable_entities = {}
-        result.reachable_resources = {}
+        local reachable_resources = {}
+        local reachable_entities = {}
+        local surface = self.entity.surface or game.surfaces[1]
+        
+        -- Find resources within resource_reach_distance (includes resources, trees, and rocks)
+        local resource_reach = self.entity.resource_reach_distance
+        -- Search for resources, trees, and simple-entities (rocks) separately
+        local resources = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "resource"
+        })
+        
+        for _, resource in ipairs(resources) do
+            if resource and resource.valid then
+                table.insert(reachable_resources, {
+                    name = resource.name,
+                    position = { x = resource.position.x, y = resource.position.y },
+                    type = resource.type
+                })
+            end
         end
+        
+        -- Find trees within resource_reach_distance
+        local trees = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "tree"
+        })
+        
+        for _, tree in ipairs(trees) do
+            if tree and tree.valid then
+                table.insert(reachable_resources, {
+                    name = tree.name,
+                    position = { x = tree.position.x, y = tree.position.y },
+                    type = tree.type
+                })
+            end
+        end
+        
+        -- Find simple-entities (rocks) within resource_reach_distance
+        local rocks = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "simple-entity"
+        })
+        
+        for _, rock in ipairs(rocks) do
+            if rock and rock.valid then
+                table.insert(reachable_resources, {
+                    name = rock.name,
+                    position = { x = rock.position.x, y = rock.position.y },
+                    type = rock.type
+                })
+            end
+        end
+        
+        -- Find other entities (non-resources, non-trees, non-rocks) within reach_distance
+        local build_reach = self.entity.reach_distance
+        local other_entities = surface.find_entities_filtered({
+            position = position,
+            radius = build_reach
+        })
+        
+        for _, entity in ipairs(other_entities) do
+            if entity and entity.valid 
+               and entity.type ~= "resource" 
+               and entity.type ~= "tree" 
+               and entity.type ~= "simple-entity" 
+               and entity ~= self.entity then
+                -- Exclude tree stumps and other tree-related corpses
+                local is_tree_corpse = (entity.type == "corpse" and 
+                                       (string.find(entity.name, "stump") or 
+                                        string.find(entity.name, "tree")))
+                if not is_tree_corpse then
+                    table.insert(reachable_entities, {
+                        name = entity.name,
+                        position = { x = entity.position.x, y = entity.position.y },
+                        type = entity.type
+                    })
+                end
+            end
+        end
+        
+        result.reachable_resources = reachable_resources
+        result.reachable_entities = reachable_entities
+    end
     
     return result
 end

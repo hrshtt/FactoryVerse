@@ -11,17 +11,33 @@ local function get_goal_radius(surface, goal)
 
     local max_radius = 0
     for _, entity in pairs(entities) do
-        max_radius = math.max(max_radius, entity.get_radius())
+        -- Get the entity's bounding box
+        local bbox = entity.bounding_box
+        
+        -- Calculate how far the furthest corner is from the goal point
+        local corners = {
+            {x = bbox.left_top.x, y = bbox.left_top.y},
+            {x = bbox.right_bottom.x, y = bbox.left_top.y},
+            {x = bbox.left_top.x, y = bbox.right_bottom.y},
+            {x = bbox.right_bottom.x, y = bbox.right_bottom.y}
+        }
+        
+        for _, corner in pairs(corners) do
+            local dx = corner.x - goal.x
+            local dy = corner.y - goal.y
+            local distance = math.sqrt(dx * dx + dy * dy)
+            max_radius = math.max(max_radius, distance)
+        end
     end
-
-    return max_radius + 0.1
+    
+    return max_radius
 end
 
 
 ---@param self Agent
 ---@param goal {x:number, y:number}
 ---@param options table|nil
-WalkingActions.walk_to = function(self, goal, adjust_to_non_colliding, options)
+WalkingActions.walk_to = function(self, goal, strict_goal, options)
 
     if self.entity.walking_state["walking"] then
         error("Agent is already walking")
@@ -31,7 +47,7 @@ WalkingActions.walk_to = function(self, goal, adjust_to_non_colliding, options)
         error("Goal is required")
     end
 
-    adjust_to_non_colliding = adjust_to_non_colliding or false
+    strict_goal = strict_goal or false
     options = options or {}
     options.goal = goal
     options.start = self.entity.position
@@ -41,12 +57,22 @@ WalkingActions.walk_to = function(self, goal, adjust_to_non_colliding, options)
     options.radius = get_goal_radius(self.entity.surface, goal)
     options.entity_to_ignore = self.entity -- entity pathfinding has to ignore itself 
 
-    if options.radius > 0 and not adjust_to_non_colliding then
+    if options.radius > 0 and strict_goal then
         error(
-            "Cannot reach goal due to collisions. Provide adjust_to_non_colliding=true to adjust the goal position to a non-colliding position.")
+            "There are entities at the goal position."
+            ..
+            "Provide strict_goal=false to approximate to non-colliding position.")
     end
     local job_id = self.entity.surface.request_path(options)
     self.walking.path_id = job_id
+    options.entity_to_ignore = options.entity_to_ignore.name .. "_" .. options.entity_to_ignore.name_tag
+    return {
+        success = true,
+        result = {
+            path_id = job_id,
+            options_used = options,
+        }
+    }
 end
 
 -- Add to WalkingActions
