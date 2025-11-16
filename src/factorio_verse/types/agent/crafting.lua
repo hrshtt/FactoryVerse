@@ -5,6 +5,45 @@
 
 local CraftingActions = {}
 
+--- Calculate estimated crafting time in ticks
+--- @param entity LuaEntity Character entity
+--- @param recipe_proto table Recipe prototype (from prototypes.recipe)
+--- @param count number Number of items to craft
+--- @return number|nil Estimated ticks (nil if cannot calculate)
+local function calculate_crafting_time_ticks(entity, recipe_proto, count)
+    if not entity or not entity.valid or not recipe_proto then
+        return nil
+    end
+    
+    -- Recipe energy is base crafting time in seconds at speed 1.0
+    local recipe_energy = recipe_proto.energy
+    if not recipe_energy then
+        return nil
+    end
+    
+    -- Get character prototype
+    local character_proto = entity.prototype
+    if not character_proto then
+        return nil
+    end
+    
+    -- Get base crafting speed (typically 1.0 for characters)
+    local base_crafting_speed = character_proto.get_crafting_speed() or 1.0
+    
+    -- Get modifiers
+    local force = entity.force
+    local force_modifier = force and force.manual_crafting_speed_modifier or 0
+    local character_modifier = entity.character_crafting_speed_modifier or 0
+    
+    -- Calculate effective crafting speed
+    local effective_crafting_speed = base_crafting_speed * (1 + force_modifier + character_modifier)
+    
+    -- Time in ticks: (recipe_energy / effective_speed) * count * 60
+    local ticks_for_batch = (recipe_energy / effective_crafting_speed) * count * 60
+    
+    return math.ceil(ticks_for_batch)
+end
+
 --- Enqueue crafting recipe (async)
 --- @param recipe_name string Recipe name
 --- @param count number|nil Count to craft (default: 1)
@@ -77,6 +116,13 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
         error("Agent: Failed to start crafting")
     end
     
+    -- Calculate estimated crafting time
+    local estimated_ticks = calculate_crafting_time_ticks(
+        self.entity,
+        recipe_proto,
+        count_started
+    )
+    
     -- Store tracking
     self.crafting.in_progress = {
         action_id = action_id,
@@ -87,6 +133,7 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
         start_products = start_products,
         products = products,
         cancelled = false,
+        start_tick = rcon_tick,  -- Store start tick for actual time calculation
     }
     
     -- Enqueue async result message
@@ -100,6 +147,7 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
         recipe = recipe_name,
         count_requested = count,
         count_queued = count_started,
+        estimated_ticks = estimated_ticks,
     }, "crafting")
     
     return {
@@ -109,6 +157,7 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
         tick = rcon_tick,
         recipe = recipe_name,
         count_queued = count_started,
+        estimated_ticks = estimated_ticks,
     }
 end
 
@@ -198,6 +247,83 @@ function CraftingActions.craft_dequeue(self, recipe_name, count)
         count_cancelled = count_to_cancel,
         remaining_queue_size = remaining_queue_size,
     }
+end
+
+CraftingActions.process_crafting = function(self)
+
+    local current_tick = game.tick or 0
+    -- Process crafting
+    if self.crafting.in_progress then
+        local tracking = self.crafting.in_progress
+
+        -- Check if crafting queue is empty (crafting completed)
+        local queue_size = self.entity.crafting_queue_size or 0
+
+        if queue_size == 0 and tracking.start_queue_size > 0 then
+            -- Crafting completed
+            local products = tracking.products or {}
+            local actual_products = {}
+
+            -- Calculate actual products crafted
+            for item_name, amount_per_craft in pairs(products) do
+                local current_count = self.entity.get_item_count(item_name)
+                local start_count = tracking.start_products[item_name] or 0
+                local delta = current_count - start_count
+                if delta > 0 then
+                    actual_products[item_name] = delta
+                end
+            end
+
+            -- Estimate count_crafted from product deltas
+            local count_crafted = 0
+            for item_name, amount_per_craft in pairs(products) do
+                local delta = actual_products[item_name] or 0
+                if amount_per_craft > 0 then
+                    local estimated = math.floor(delta / amount_per_craft)
+                    if estimated > count_crafted then
+                        count_crafted = estimated
+                    end
+                end
+            end
+
+            -- Calculate actual time taken
+            local actual_ticks = nil
+            if tracking.start_tick then
+                actual_ticks = current_tick - tracking.start_tick
+            end
+
+            self:enqueue_message({
+                action = "craft_enqueue",
+                agent_id = self.agent_id,
+                success = true,
+                action_id = tracking.action_id,
+                tick = current_tick,
+                recipe = tracking.recipe,
+                count_requested = tracking.count_requested,
+                count_queued = tracking.count_queued,
+                count_crafted = count_crafted,
+                products = actual_products,
+                actual_ticks = actual_ticks,
+            }, "crafting")
+
+            self.crafting.in_progress = nil
+        elseif tracking.cancelled then
+            -- Crafting was cancelled
+            self:enqueue_message({
+                action = "craft_dequeue",
+                agent_id = self.agent_id,
+                success = true,
+                cancelled = true,
+                action_id = tracking.action_id,
+                tick = current_tick,
+                recipe = tracking.recipe,
+                count_cancelled = tracking.count_cancelled or 0,
+            }, "crafting")
+
+            self.crafting.in_progress = nil
+        end
+    end
+
 end
 
 return CraftingActions

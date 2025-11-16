@@ -17,6 +17,38 @@ local RESOURCE_ITEM_MAP = {
     ["rock"] = "stone",
 }
 
+--- Calculate estimated mining time in ticks
+--- @param mining_speed number Mining speed
+--- @param resource_entity LuaEntity Resource entity to mine
+--- @param count number|nil Number of entities to mine (only used for ores, ignored for trees/rocks)
+--- @return number|nil Estimated ticks (nil if cannot calculate)
+local function calculate_mining_time_ticks(mining_speed, resource_entity, count)
+    
+    local proto = resource_entity.prototype
+    if not proto or not proto.mineable_properties then
+        return nil
+    end
+    
+    local mineable_props = proto.mineable_properties
+    local mining_time_seconds = mineable_props.mining_time  -- Base time in seconds at speed 1.0
+    
+    -- Validate mining_time exists and is positive
+    if not mining_time_seconds or mining_time_seconds <= 0 then
+        return nil
+    end
+    
+    -- Calculate ticks to mine one entity: (mining_time_seconds / mining_speed) * 60
+    local ticks_per_entity = (mining_time_seconds / mining_speed) * 60
+    
+    -- For ores: multiply by count if specified
+    if count and count > 1 then
+        return math.ceil(ticks_per_entity * count)
+    end
+    
+    -- For trees/rocks or single ore: just return time for one entity
+    return math.ceil(ticks_per_entity)
+end
+
 --- Start mining a resource (async)
 --- @param resource_name string Resource name (e.g., "iron-ore", "tree", "rock")
 --- @param max_count number|nil Maximum count to mine (only for ores/coal/stone, ignored for trees/rocks)
@@ -38,6 +70,12 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     
     -- Determine if this is a tree/rock (point entity) or ore/coal/stone
     local is_point_entity = (resource_name == "tree" or resource_name == "rock")
+    
+    -- For trees/rocks, ignore max_count parameter
+    if is_point_entity then
+        max_count = nil
+    end
+    
     local search_args = {
         position = { x = agent_pos.x, y = agent_pos.y },
         radius = radius,
@@ -68,6 +106,7 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     self.mining.count_progress = current_count
     self.mining.mine_entity = resource_entity
     self.mining.item_name = item_name  -- Store for completion message
+    self.mining.start_tick = game.tick  -- Store start tick for actual time calculation
     
     -- Set target_count only for ores/coal/stone (not trees/rocks)
     if is_point_entity then
@@ -92,6 +131,23 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     local action_id = string.format("mine_resource_%d_%d", game.tick, self.agent_id)
     local rcon_tick = game.tick
     
+    -- Calculate estimated mining time
+    -- For trees/rocks, ignore max_count and only calculate time for one entity
+    -- For ores, use max_count if provided
+    local count_for_calculation = is_point_entity and nil or max_count
+    local estimated_ticks = calculate_mining_time_ticks(
+        self.entity.prototype.mining_speed,
+        resource_entity,
+        count_for_calculation
+    )
+    
+    -- Get products from mineable_properties
+    local products = nil
+    local proto = resource_entity.prototype
+    if proto and proto.mineable_properties and proto.mineable_properties.products then
+        products = proto.mineable_properties.products
+    end
+    
     self:enqueue_message({
         action = "mine_resource",
         agent_id = self.agent_id,
@@ -101,6 +157,8 @@ function MiningActions.mine_resource(self, resource_name, max_count)
         tick = rcon_tick,
         resource_name = resource_name,
         position = { x = resource_entity.position.x, y = resource_entity.position.y },
+        estimated_ticks = estimated_ticks,
+        products = products,
     }, "mining")
     
     return {
@@ -108,6 +166,8 @@ function MiningActions.mine_resource(self, resource_name, max_count)
         queued = true,
         action_id = action_id,
         tick = rcon_tick,
+        estimated_ticks = estimated_ticks,
+        products = products,
     }
 end
 
@@ -121,6 +181,7 @@ function MiningActions.stop_mining(self)
     self.mining.target_count = nil
     self.mining.mine_entity = nil
     self.mining.item_name = nil
+    self.mining.start_tick = nil
     
     -- Stop mining on entity
     if self.entity.mining_state then
@@ -221,6 +282,12 @@ function MiningActions.complete_mining(self)
     local initial_count = self.mining.count_progress or 0
     local mined_count = current_count - initial_count
     
+    -- Calculate actual time taken
+    local actual_ticks = nil
+    if self.mining.start_tick then
+        actual_ticks = (game.tick or 0) - self.mining.start_tick
+    end
+    
     -- Send completion message
     self:enqueue_message({
         action = "mine_resource",
@@ -231,6 +298,7 @@ function MiningActions.complete_mining(self)
         position = was_valid and { x = entity.position.x, y = entity.position.y } or nil,
         item_name = item_name,
         count = mined_count,
+        actual_ticks = actual_ticks,
     }, "mining")
     
     -- Clear mining state

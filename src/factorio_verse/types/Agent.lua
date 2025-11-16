@@ -29,13 +29,12 @@
 --- @field in_progress table|nil Active crafting tracking {recipe, count, action_id, ...}
 
 --- @class AgentPlacementState : table
---- @field jobs table<number, table> Active placement jobs keyed by job_id
---- @field next_job_id number Next job ID for placement jobs
+--- @field entities_to_place table[] Entities to place keyed by entity_name
+--- @field progress number Current progress of placement
+--- @field undo_stack table[] Undo stack for placement jobs
 
 --- List of charted chunk {x:number, y:number} coordinates
 --- @class AgentChartedChunks : table[]
-
-local utils = require("utils.utils")
 
 -- Require action modules at module level (Factorio requirement)
 local WalkingActions = require("types.agent.walking")
@@ -86,19 +85,19 @@ end
 function Agent:new(agent_id, color, force_name, spawn_position)
     -- Initialize storage if needed
     storage.agents = storage.agents or {}
-    
+
     -- If agent already exists, return it
     if storage.agents[agent_id] then
         return storage.agents[agent_id]
     end
-    
+
     -- Create agent instance with all state consolidated
     local agent = setmetatable({
         agent_id = agent_id,
-        entity = nil,  -- Will be set in _create_entity
-        force_name = nil,  -- Will be set in _create_entity
+        entity = nil,     -- Will be set in _create_entity
+        force_name = nil, -- Will be set in _create_entity
         labels = {},
-        
+
         -- Consolidated activity state
         walking = {},
         mining = {
@@ -112,21 +111,21 @@ function Agent:new(agent_id, color, force_name, spawn_position)
             next_job_id = 1,
         },
         charted_chunks = {},
-        
+
         -- Message queue for UDP notifications (processed by game state)
         -- Structure: message_queue[category_string] = {message1, message2, ...}
         message_queue = {},
     }, Agent)
-    
+
     -- Create entity and initialize
     agent:_create_entity(color, force_name, spawn_position)
-    
+
     -- Store agent instance
     storage.agents[agent_id] = agent
-    
+
     -- Register per-agent remote interface
     agent:register_remote_interface()
-    
+
     return agent
 end
 
@@ -195,13 +194,13 @@ function Agent:_create_entity(color, force_name, spawn_position)
     if not char_entity or not char_entity.valid then
         error("Failed to create character for agent " .. tostring(self.agent_id))
     end
-    
+
     if color then
         char_entity.color = color
     end
 
     char_entity.name_tag = name_tag
-    
+
     -- Create rendering labels
     local main_tag = rendering.draw_text {
         text = name_tag,
@@ -213,7 +212,7 @@ function Agent:_create_entity(color, force_name, spawn_position)
         alignment = "center",
         vertical_alignment = "middle"
     }
-    
+
     local map_marker = rendering.draw_circle {
         color = char_entity.color,
         radius = 2.5,
@@ -223,7 +222,7 @@ function Agent:_create_entity(color, force_name, spawn_position)
         render_mode = "chart",
         scale_with_zoom = true
     }
-    
+
     local map_tag = rendering.draw_text {
         text = name_tag,
         surface = char_entity.surface,
@@ -254,12 +253,12 @@ end
 --- Interface name: "agent_{agent_id}"
 function Agent:register_remote_interface()
     local interface_name = "agent_" .. self.agent_id
-    
+
     -- Remove existing interface if present
     if remote.interfaces[interface_name] then
         remote.remove_interface(interface_name)
     end
-    
+
     -- Create interface with direct method proxies
     local interface = {
         -- Walking
@@ -269,7 +268,7 @@ function Agent:register_remote_interface()
         stop_walking = function()
             return self:stop_walking()
         end,
-        
+
         -- Mining
         mine_resource = function(resource_name, max_count)
             return self:mine_resource(resource_name, max_count)
@@ -277,7 +276,7 @@ function Agent:register_remote_interface()
         stop_mining = function()
             return self:stop_mining()
         end,
-        
+
         -- Crafting
         craft_enqueue = function(recipe_name, count)
             return self:craft_enqueue(recipe_name, count)
@@ -285,7 +284,7 @@ function Agent:register_remote_interface()
         craft_dequeue = function(recipe_name, count)
             return self:craft_dequeue(recipe_name, count)
         end,
-        
+
         -- Entity operations
         set_entity_recipe = function(entity_name, position, recipe_name)
             return self:set_entity_recipe(entity_name, position, recipe_name)
@@ -302,7 +301,7 @@ function Agent:register_remote_interface()
         set_inventory_item = function(entity_name, position, inventory_type, item_name, count)
             return self:set_inventory_item(entity_name, position, inventory_type, item_name, count)
         end,
-        
+
         -- Placement
         place_entity = function(entity_name, position, options)
             return self:place_entity(entity_name, position, options)
@@ -310,18 +309,18 @@ function Agent:register_remote_interface()
         cancel_placement = function(job_id)
             return self:cancel_placement(job_id)
         end,
-        
+
         -- Teleport
         teleport = function(position)
             return self:teleport(position)
         end,
-        
+
         -- State queries
         inspect = function(attach_inventory, attach_entities)
             return self:inspect(attach_inventory, attach_entities)
         end,
     }
-    
+
     remote.add_interface(interface_name, interface)
 end
 
@@ -342,15 +341,15 @@ end
 --- @return boolean
 function Agent:destroy(remove_force)
     remove_force = remove_force or false
-    
+
     -- Unregister remote interface
     self:unregister_remote_interface()
-    
+
     -- Destroy entity
     if self.entity and self.entity.valid then
         self.entity.destroy()
     end
-    
+
     -- Destroy rendering labels
     if self.labels.main_tag then
         self.labels.main_tag.destroy()
@@ -361,18 +360,18 @@ function Agent:destroy(remove_force)
     if self.labels.map_tag then
         self.labels.map_tag.destroy()
     end
-    
+
     -- Handle force cleanup
     if remove_force and self.force_name then
         local agent_force = game.forces[self.force_name]
         if agent_force then
-        game.merge_forces(agent_force, game.forces.player)
+            game.merge_forces(agent_force, game.forces.player)
         end
     end
-    
+
     -- Remove from storage
     storage.agents[self.agent_id] = nil
-    
+
     return true
 end
 
@@ -383,11 +382,11 @@ function Agent:merge_force(destination_force)
     if not game.forces[destination_force] then
         error("Force " .. tostring(destination_force) .. " not found")
     end
-    
+
     if self.force_name then
         game.merge_forces(self.force_name, destination_force)
     end
-    
+
     return true
 end
 
@@ -395,10 +394,10 @@ end
 -- ACTION METHODS
 -- ============================================================================
 -- Action methods are defined in separate modules and mixed in above:
--- - types/agent/walking.lua: walk_to, cancel_walking, stop_walking, set_walking, sustain_walking, clear_walking_intent
--- - types/agent/mining.lua: mine_resource, stop_mining, process_mining, complete_mining
+-- - types/agent/walking.lua: walk_to, stop_walking
+-- - types/agent/mining.lua: mine_resource, stop_mining
 -- - types/agent/crafting.lua: craft_enqueue, craft_dequeue
--- - types/agent/placement.lua: place_entity, cancel_placement
+-- - types/agent/placement.lua: place_entity, TODO: place_in_line, cancel_place_in_line, undo_place_in_line
 -- - types/agent/entity_ops.lua: set_entity_recipe, set_entity_filter, set_inventory_limit, get_inventory_item, set_inventory_item, pickup_entity
 -- ============================================================================
 
@@ -413,7 +412,7 @@ function Agent:teleport(position)
     if not (self.entity and self.entity.valid) then
         return false
     end
-    
+
     self.entity.teleport(position)
     return true
 end
@@ -424,25 +423,25 @@ function Agent:get_position()
     if not (self.entity and self.entity.valid) then
         return nil
     end
-    
+
     local pos = self.entity.position
     return { x = pos.x, y = pos.y }
 end
 
 --- Get agent inventory contents
 --- @return table|nil Inventory contents {item_name = count, ...}
-function Agent:get_inventory()
+function Agent:get_inventory_contents()
     if not (self.entity and self.entity.valid) then
         return nil
     end
-    
+
     local main_inventory = self.entity.get_inventory(defines.inventory.character_main)
     if main_inventory then
         return main_inventory.get_contents()
     end
-    
+
     return {}
-    end
+end
 
 --- Inspect agent details
 --- @param attach_inventory boolean|nil Include inventory
@@ -451,7 +450,7 @@ function Agent:get_inventory()
 function Agent:inspect(attach_inventory, attach_reachable_entities)
     attach_inventory = attach_inventory or false
     attach_reachable_entities = attach_reachable_entities or false
-    
+
     if not (self.entity and self.entity.valid) then
         return {
             error = "Agent not found or invalid",
@@ -459,7 +458,7 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
             tick = game.tick or 0
         }
     end
-    
+
     local position = self.entity.position
     if not position then
         return {
@@ -468,32 +467,29 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
             tick = game.tick or 0
         }
     end
-    
+
     local result = {
         agent_id = self.agent_id,
         tick = game.tick or 0,
         position = { x = position.x, y = position.y }
     }
-    
+
     -- Get agent inventory only if requested
     if attach_inventory then
         local inventory = {}
-        local main_inventory = self.entity.get_inventory(defines.inventory.character_main)
-        if main_inventory then
-            local contents = main_inventory.get_contents()
-            if contents and next(contents) ~= nil then
-                inventory = contents
-            end
+        local contents = self:get_inventory_contents()
+        if contents and next(contents) ~= nil then
+            inventory = contents
         end
         result.inventory = inventory
     end
-    
+
     -- Get entities within reach only if requested
     if attach_reachable_entities then
         local reachable_resources = {}
         local reachable_entities = {}
         local surface = self.entity.surface or game.surfaces[1]
-        
+
         -- Find resources within resource_reach_distance (includes resources, trees, and rocks)
         local resource_reach = self.entity.resource_reach_distance
         -- Search for resources, trees, and simple-entities (rocks) separately
@@ -502,7 +498,7 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
             radius = resource_reach,
             type = "resource"
         })
-        
+
         for _, resource in ipairs(resources) do
             if resource and resource.valid then
                 table.insert(reachable_resources, {
@@ -512,58 +508,60 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
                 })
             end
         end
-        
+
         -- Find trees within resource_reach_distance
         local trees = surface.find_entities_filtered({
             position = position,
             radius = resource_reach,
             type = "tree"
         })
-        
+
         for _, tree in ipairs(trees) do
             if tree and tree.valid then
                 table.insert(reachable_resources, {
                     name = tree.name,
                     position = { x = tree.position.x, y = tree.position.y },
-                    type = tree.type
+                    type = tree.type,
+                    products = tree.prototype.mineable_properties.products
                 })
             end
         end
-        
+
         -- Find simple-entities (rocks) within resource_reach_distance
         local rocks = surface.find_entities_filtered({
             position = position,
             radius = resource_reach,
             type = "simple-entity"
         })
-        
+
         for _, rock in ipairs(rocks) do
             if rock and rock.valid then
                 table.insert(reachable_resources, {
                     name = rock.name,
                     position = { x = rock.position.x, y = rock.position.y },
-                    type = rock.type
+                    type = rock.type,
+                    products = rock.prototype.mineable_properties.products
                 })
             end
         end
-        
+
         -- Find other entities (non-resources, non-trees, non-rocks) within reach_distance
         local build_reach = self.entity.reach_distance
         local other_entities = surface.find_entities_filtered({
             position = position,
             radius = build_reach
         })
-        
+
         for _, entity in ipairs(other_entities) do
-            if entity and entity.valid 
-               and entity.type ~= "resource" 
-               and entity.type ~= "tree" 
-               and entity.type ~= "simple-entity" 
-               and entity ~= self.entity then
+            if entity and entity.valid
+                and entity.type ~= "resource"
+                and entity.type ~= "tree"
+                and entity.type ~= "simple-entity"
+                and entity ~= self.entity then
                 -- Exclude tree stumps and other tree-related corpses
-                local is_tree_corpse = (entity.type == "corpse" and 
-                                       (string.find(entity.name, "stump") or 
-                                        string.find(entity.name, "tree")))
+                local is_tree_corpse = (entity.type == "corpse" and
+                    (string.find(entity.name, "stump") or
+                        string.find(entity.name, "tree")))
                 if not is_tree_corpse then
                     table.insert(reachable_entities, {
                         name = entity.name,
@@ -573,11 +571,11 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
                 end
             end
         end
-        
+
         result.reachable_resources = reachable_resources
         result.reachable_entities = reachable_entities
     end
-    
+
     return result
 end
 
@@ -592,12 +590,12 @@ end
 function Agent:enqueue_message(message, category)
     self.message_queue = self.message_queue or {}
     category = category or "default"
-    
+
     -- Initialize category array if needed
     if not self.message_queue[category] then
         self.message_queue[category] = {}
     end
-    
+
     table.insert(self.message_queue[category], message)
 end
 
@@ -626,92 +624,15 @@ function Agent:process(event)
     if not (self.entity and self.entity.valid) then
         return
     end
-    
-    local current_tick = game.tick or 0
-    
-    -- Process walking intent (sustained walking)
-    if self.walking.intent then
-        if self.walking.intent.end_tick and current_tick >= self.walking.intent.end_tick then
-            -- Intent expired, clear it
-            self.walking.intent = nil
-            self:set_walking(nil, false)
-        else
-            -- Continue sustained walking
-            self:set_walking(self.walking.intent.direction, self.walking.intent.walking ~= false)
-        end
-end
-
     -- Process walking jobs
     WalkingActions.process_walking(self)
-    
+
     -- Process mining
     MiningActions.process_mining(self)
-    
-    -- Process crafting
-    if self.crafting.in_progress then
-        local tracking = self.crafting.in_progress
-        
-        -- Check if crafting queue is empty (crafting completed)
-        local queue_size = self.entity.crafting_queue_size or 0
-        
-        if queue_size == 0 and tracking.start_queue_size > 0 then
-            -- Crafting completed
-            local products = tracking.products or {}
-            local actual_products = {}
-            
-            -- Calculate actual products crafted
-            for item_name, amount_per_craft in pairs(products) do
-                local current_count = self.entity.get_item_count(item_name)
-                local start_count = tracking.start_products[item_name] or 0
-                local delta = current_count - start_count
-                if delta > 0 then
-                    actual_products[item_name] = delta
-                end
-            end
-            
-            -- Estimate count_crafted from product deltas
-            local count_crafted = 0
-            for item_name, amount_per_craft in pairs(products) do
-                local delta = actual_products[item_name] or 0
-                if amount_per_craft > 0 then
-                    local estimated = math.floor(delta / amount_per_craft)
-                    if estimated > count_crafted then
-                        count_crafted = estimated
-                    end
-    end
-end
 
-            self:enqueue_message({
-                action = "craft_enqueue",
-                agent_id = self.agent_id,
-                success = true,
-                action_id = tracking.action_id,
-                tick = current_tick,
-                recipe = tracking.recipe,
-                count_requested = tracking.count_requested,
-                count_queued = tracking.count_queued,
-                count_crafted = count_crafted,
-                products = actual_products,
-            }, "crafting")
-            
-            self.crafting.in_progress = nil
-        elseif tracking.cancelled then
-            -- Crafting was cancelled
-            self:enqueue_message({
-                action = "craft_dequeue",
-                agent_id = self.agent_id,
-                success = true,
-                cancelled = true,
-                action_id = tracking.action_id,
-                tick = current_tick,
-                recipe = tracking.recipe,
-                count_cancelled = tracking.count_cancelled or 0,
-            }, "crafting")
-            
-            self.crafting.in_progress = nil
-        end
-    end
-    
+    -- Process crafting
+    CraftingActions.process_crafting(self)
+
     -- Process placement jobs
     -- TODO: Implement placement job processing
     -- For now, jobs are queued but not processed

@@ -1,6 +1,6 @@
 --- Agent walking action methods
 --- Methods operate directly on Agent instances (self)
---- State is stored in self.walking (jobs, intent, next_job_id)
+--- State is stored in self.walking (path, path_id, progress)
 --- These methods are mixed into the Agent class at module level
 
 local WalkingActions = {}
