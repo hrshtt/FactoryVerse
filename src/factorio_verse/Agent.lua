@@ -255,6 +255,10 @@ end
 -- ============================================================================
 -- REMOTE INTERFACE REGISTRATION
 -- ============================================================================
+local valid_recipe_categories = {
+    ["crafting"] = true,
+    ["smelting"] = true,
+}
 
 --- Register per-agent remote interface
 --- Interface name: "agent_{agent_id}"
@@ -302,10 +306,10 @@ function Agent:register_remote_interface()
         set_inventory_limit = function(entity_name, position, inventory_type, limit)
             return self:set_inventory_limit(entity_name, position, inventory_type, limit)
         end,
-        get_inventory_item = function(entity_name, position, inventory_type, item_name, count)
+        take_inventory_item = function(entity_name, position, inventory_type, item_name, count)
             return self:get_inventory_item(entity_name, position, inventory_type, item_name, count)
         end,
-        set_inventory_item = function(entity_name, position, inventory_type, item_name, count)
+        put_inventory_item = function(entity_name, position, inventory_type, item_name, count)
             return self:set_inventory_item(entity_name, position, inventory_type, item_name, count)
         end,
 
@@ -325,6 +329,69 @@ function Agent:register_remote_interface()
         -- State queries
         inspect = function(attach_inventory, attach_entities)
             return self:inspect(attach_inventory, attach_entities)
+        end,
+
+        -- Placement cues
+        get_placement_cues = function(entity_name)
+            return self:get_placement_cues(entity_name)
+        end,
+
+        -- Chunk queries
+        get_chunks_in_view = function()
+            return self:get_chunks_in_view()
+        end,
+
+        -- Recipe queries
+        get_recipes = function(category)
+            if category and not valid_recipe_categories[category] then
+                return {
+                    error = "Invalid recipe category",
+                    valid_categories = valid_recipe_categories,
+                }
+            end
+            local recipes = self.entity.force.recipes
+            local valid_recipes = {}
+            for recipe_name, recipe in pairs(recipes) do
+                if recipe.category == "parameters" or (category and category ~= recipe.category) then
+                    goto skip
+                end
+                local details = {
+                    name = recipe_name,
+                    category = recipe.category,
+                    energy = recipe.energy,
+                    ingredients = recipe.ingredients,
+                }
+                if recipe.enabled then
+                    table.insert(valid_recipes, details)
+                end
+                ::skip::
+            end
+            return valid_recipes
+        end,
+
+        -- Technology queries
+        get_technologies = function()
+            local technologies = self.entity.force.technologies
+            local valid_technologies = {}
+            for technology_name, technology in pairs(technologies) do
+                local details = {
+                    name = technology.name,
+                    researched = technology.researched,
+                    enabled = technology.enabled,
+                    prerequisites = technology.prerequisites,
+                    successors = technology.successors,
+                    research_unit_ingredients = technology.research_unit_ingredients,
+                    research_unit_count = technology.research_unit_count,
+                    research_unit_energy = technology.research_unit_energy,
+                    saved_progress = technology.saved_progress,
+                    effects = technology.prototype.effects,
+                    research_trigger = technology.prototype.research_trigger,
+                }
+                if technology.enabled then
+                    table.insert(valid_technologies, details)
+                end
+            end
+            return valid_technologies or {}
         end,
     }
 
@@ -422,17 +489,6 @@ function Agent:teleport(position)
 
     self.entity.teleport(position)
     return true
-end
-
---- Get agent position
---- @return table|nil Position {x, y}
-function Agent:get_position()
-    if not (self.entity and self.entity.valid) then
-        return nil
-    end
-
-    local pos = self.entity.position
-    return { x = pos.x, y = pos.y }
 end
 
 --- Get agent inventory contents

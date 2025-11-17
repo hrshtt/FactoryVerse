@@ -12,7 +12,214 @@ local Entities = require("game_state.Entities")
 local snapshot = require("utils.snapshot")
 local Agent = require("Agent")
 
+--- State tracker for charted chunks for agent utility, uses storage for persistence and registered_metatable for save/load persistence   
+---@class ChunkTracker
+---@field chunk_lookup table Chunk lookup structure (chunk-first)
+--- Structure: chunk_lookup[{c_x, c_y}].resource[resource_name] = true
+--- Structure: chunk_lookup[{c_x, c_y}].entities[entity_name] = true
+--- Structure: chunk_lookup[{c_x, c_y}].water = true
+--- Resource types: copper_ore, iron_ore, uranium_ore, coal, stone, crude_oil
+--- Entity types: trees, rocks
+local ChunkTracker = {}
+ChunkTracker.__index = ChunkTracker
+
+-- ============================================================================
+-- METATABLE REGISTRATION (must be at module load time)
+-- ====================================================c========================
+
+-- Register metatable for save/load persistence
+-- This must happen at module load time, not in on_init/on_load
+script.register_metatable('ChunkTracker', ChunkTracker)
+
+-- ============================================================================
+-- CHUNK TRACKER CREATION
+-- ============================================================================
+
+--- Create or get the singleton ChunkTracker instance
+--- @return ChunkTracker
+function ChunkTracker:new()
+    -- If tracker already exists, return it
+    if storage.chunk_tracker then
+        return storage.chunk_tracker
+    end
+
+    -- Create tracker instance with chunk-first lookup structure
+    -- Chunks are added dynamically: chunk_lookup[{c_x, c_y}][category][name] = true
+    local tracker = setmetatable({
+        chunk_lookup = {}
+    }, ChunkTracker)
+
+    -- Store tracker instance
+    storage.chunk_tracker = tracker
+
+    return tracker
+end
+
+-- ============================================================================
+-- CHUNK TRACKER UTILITY METHODS
+-- ============================================================================
+
+--- Get or create chunk entry in lookup
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+--- @return table Chunk entry
+function ChunkTracker:_get_chunk_entry(chunk_x, chunk_y)
+    local chunk_key = chunk_x .. "," .. chunk_y
+    local chunk_entry = self.chunk_lookup[chunk_key]
+    if not chunk_entry then
+        chunk_entry = {
+            resource = {},
+            entities = {},
+            water = false,
+            snapshot_tick = nil,  -- Tick when chunk was last snapshotted (nil = not snapshotted yet)
+            dirty = false  -- True if chunk needs re-snapshotting due to mutation
+        }
+        self.chunk_lookup[chunk_key] = chunk_entry
+    end
+    return chunk_entry
+end
+
+--- Mark a chunk as containing a specific resource/entity type
+--- @param category string Category: "resource", "entities", or "water"
+--- @param name string|nil Resource/entity name (e.g., "copper_ore", "trees"). Required for "resource" and "entities", ignored for "water"
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+function ChunkTracker:mark_chunk_has(category, name, chunk_x, chunk_y)
+    local chunk_entry = self:_get_chunk_entry(chunk_x, chunk_y)
+    
+    if category == "water" then
+        chunk_entry.water = true
+    elseif category == "resource" then
+        if not name then
+            error("name parameter is required for 'resource' category")
+        end
+        chunk_entry.resource[name] = true
+    elseif category == "entities" then
+        if not name then
+            error("name parameter is required for 'entities' category")
+        end
+        chunk_entry.entities[name] = true
+    end
+end
+
+--- Check if a chunk contains a specific resource/entity type
+--- @param category string Category: "resource", "entities", or "water"
+--- @param name string|nil Resource/entity name (e.g., "copper_ore", "trees"). Required for "resource" and "entities", ignored for "water"
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+--- @return boolean
+function ChunkTracker:chunk_has(category, name, chunk_x, chunk_y)
+    local chunk_key = chunk_x .. "," .. chunk_y
+    local chunk_entry = self.chunk_lookup[chunk_key]
+    
+    if not chunk_entry then
+        return false
+    end
+    
+    if category == "water" then
+        return chunk_entry.water == true
+    elseif category == "resource" then
+        if not name then
+            return false
+        end
+        return chunk_entry.resource[name] == true
+    elseif category == "entities" then
+        if not name then
+            return false
+        end
+        return chunk_entry.entities[name] == true
+    end
+    
+    return false
+end
+
+--- Get chunk entry (for accessing all resources/entities at once)
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+--- @return table|nil Chunk entry with resource, entities, water, and snapshot_tick fields
+function ChunkTracker:get_chunk_entry(chunk_x, chunk_y)
+    local chunk_key = chunk_x .. "," .. chunk_y
+    return self.chunk_lookup[chunk_key]
+end
+
+--- Check if a chunk has been snapshotted
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+--- @return boolean True if chunk has been snapshotted, false otherwise
+function ChunkTracker:is_chunk_snapshotted(chunk_x, chunk_y)
+    local chunk_entry = self:get_chunk_entry(chunk_x, chunk_y)
+    if not chunk_entry then
+        return false
+    end
+    return chunk_entry.snapshot_tick ~= nil
+end
+
+--- Mark a chunk as snapshotted
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+--- @return boolean Success status
+function ChunkTracker:mark_chunk_snapshotted(chunk_x, chunk_y)
+    local chunk_entry = self:_get_chunk_entry(chunk_x, chunk_y)
+    chunk_entry.snapshot_tick = game and game.tick or 0
+    chunk_entry.dirty = false
+    return true
+end
+
+--- Mark a chunk as needing snapshotting (e.g., when charted)
+--- Creates chunk entry if it doesn't exist (with snapshot_tick = nil)
+--- IMPORTANT: This just sets the flag - on_tick handler will check and process
+--- Agents should overwrite flags, not read them, for safe control flow
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+function ChunkTracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+    local chunk_entry = self:_get_chunk_entry(chunk_x, chunk_y)
+    -- Just ensure snapshot_tick is nil (needs snapshotting)
+    -- If already snapshotted, this will re-queue it (which is fine - worst case it gets snapshotted again)
+    chunk_entry.snapshot_tick = nil
+end
+
+--- Mark a chunk as dirty (needs re-snapshotting due to mutation)
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+function ChunkTracker:mark_chunk_dirty(chunk_x, chunk_y)
+    local chunk_entry = self:_get_chunk_entry(chunk_x, chunk_y)
+    chunk_entry.dirty = true
+end
+
+--- Check if a chunk needs snapshotting (never snapshotted or dirty)
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
+--- @return boolean True if chunk needs snapshotting
+function ChunkTracker:chunk_needs_snapshot(chunk_x, chunk_y)
+    local chunk_entry = self:get_chunk_entry(chunk_x, chunk_y)
+    if not chunk_entry then
+        return false
+    end
+    return chunk_entry.snapshot_tick == nil or chunk_entry.dirty == true
+end
+
+
 local M = {}
+
+-- ============================================================================
+-- CHUNK TRACKER HELPER FUNCTIONS
+-- ============================================================================
+
+--- Map Factorio resource entity names to ChunkTracker resource names
+--- Converts hyphenated names to underscore names (e.g., "copper-ore" -> "copper_ore")
+--- @param factorio_name string Factorio resource entity name
+--- @return string|nil Tracker resource name, or nil if not a tracked resource
+local function map_resource_name(factorio_name)
+    local resource_map = {
+        ["copper-ore"] = "copper_ore",
+        ["iron-ore"] = "iron_ore",
+        ["uranium-ore"] = "uranium_ore",
+        ["coal"] = "coal",
+        ["stone"] = "stone",
+        ["crude-oil"] = "crude_oil"
+    }
+    return resource_map[factorio_name]
+end
 
 function M.get_charted_chunks(sort_by_distance)
     local surface = game.surfaces[1]  -- Uses module-level local 'game'
@@ -46,15 +253,20 @@ end
 
 
 --- Get all resource entities in specified chunks
---- @param chunks table - list of chunk areas
+--- Also updates ChunkTracker to mark chunks containing resources
+--- @param chunks table - list of chunk areas {x, y, area}
 --- @return table - entities grouped by resource name
 function M.get_resources_in_chunks(chunks)
     local surface = game.surfaces[1]
     if not surface then return {} end
 
+    local tracker = M.get_chunk_tracker()
     local resources_by_name = {}
 
     for _, chunk in ipairs(chunks) do
+        local chunk_x = chunk.x
+        local chunk_y = chunk.y
+        
         -- Check count first for early exit
         local resource_count = surface.count_entities_filtered {
             area = chunk.area,
@@ -66,12 +278,22 @@ function M.get_resources_in_chunks(chunks)
                 type = "resource"
             }
 
+            -- Track unique resource types found in this chunk
+            local tracked_resources = {}
+
             for _, entity in ipairs(entities) do
                 local name = entity.name
                 if not resources_by_name[name] then
                     resources_by_name[name] = {}
                 end
                 table.insert(resources_by_name[name], entity)
+                
+                -- Map Factorio resource name to tracker name and mark in ChunkTracker
+                local tracker_name = map_resource_name(name)
+                if tracker_name and not tracked_resources[tracker_name] then
+                    tracker:mark_chunk_has("resource", tracker_name, chunk_x, chunk_y)
+                    tracked_resources[tracker_name] = true
+                end
             end
         end
     end
@@ -80,11 +302,14 @@ function M.get_resources_in_chunks(chunks)
 end
 
 --- Get water tiles using prototype detection for mod compatibility
---- @param chunks table - list of chunk areas
+--- Also updates ChunkTracker to mark chunks containing water tiles
+--- @param chunks table - list of chunk areas {x, y, area}
 --- @return table - water tiles and tile names
 function M.get_water_tiles_in_chunks(chunks)
     local surface = game.surfaces[1]
     if not surface then return { tiles = {}, tile_names = {} } end
+
+    local tracker = M.get_chunk_tracker()
 
     -- Detect water tile names via prototypes for mod compatibility
     local water_tile_names = {}
@@ -103,12 +328,18 @@ function M.get_water_tiles_in_chunks(chunks)
 
     local all_tiles = {}
     for _, chunk in ipairs(chunks) do
+        local chunk_x = chunk.x
+        local chunk_y = chunk.y
+        
         -- Check count first for early exit
         local water_count = surface.count_tiles_filtered {
             area = chunk.area,
             name = water_tile_names
         }
         if water_count > 0 then
+            -- Mark chunk as having water in ChunkTracker
+            tracker:mark_chunk_has("water", nil, chunk_x, chunk_y)
+            
             local tiles = surface.find_tiles_filtered {
                 area = chunk.area,
                 name = water_tile_names
@@ -123,6 +354,80 @@ function M.get_water_tiles_in_chunks(chunks)
         tiles = all_tiles,
         tile_names = water_tile_names
     }
+end
+
+--- Get entities in a chunk (trees and rocks)
+--- Also updates ChunkTracker to mark chunks containing trees and rocks
+--- TODO: Move entity chunk lookups from Entities module to Map module (avoid circular deps)
+--- @param chunk table - chunk area {x, y, area}
+--- @return table - entities in chunk grouped by type
+function M.get_entities_in_chunk(chunk)
+    local surface = game.surfaces[1]
+    if not surface then return {} end
+
+    local tracker = M.get_chunk_tracker()
+    local chunk_x = chunk.x
+    local chunk_y = chunk.y
+    
+    local entities_by_type = {
+        trees = {},
+        rocks = {}
+    }
+    
+    -- Find trees in chunk
+    local tree_count = surface.count_entities_filtered {
+        area = chunk.area,
+        type = "tree"
+    }
+    if tree_count > 0 then
+        local trees = surface.find_entities_filtered {
+            area = chunk.area,
+            type = "tree"
+        }
+        for _, tree in ipairs(trees) do
+            table.insert(entities_by_type.trees, tree)
+        end
+        -- Mark chunk as having trees
+        tracker:mark_chunk_has("entities", "trees", chunk_x, chunk_y)
+    end
+    
+    -- Find rocks (simple-entities) in chunk
+    -- Rocks are typically simple-entity type with names like "rock-big", "rock-huge", etc.
+    local rock_count = surface.count_entities_filtered {
+        area = chunk.area,
+        type = "simple-entity"
+    }
+    if rock_count > 0 then
+        local simple_entities = surface.find_entities_filtered {
+            area = chunk.area,
+            type = "simple-entity"
+        }
+        -- Filter for rocks (entities that are mineable and produce stone)
+        for _, entity in ipairs(simple_entities) do
+            if entity.valid and entity.prototype.mineable_properties then
+                local products = entity.prototype.mineable_properties.products
+                -- Check if it produces stone (typical rock behavior)
+                local is_rock = false
+                if products then
+                    for _, product in ipairs(products) do
+                        if product.name == "stone" then
+                            is_rock = true
+                            break
+                        end
+                    end
+                end
+                if is_rock then
+                    table.insert(entities_by_type.rocks, entity)
+                end
+            end
+        end
+        -- Mark chunk as having rocks if any were found
+        if #entities_by_type.rocks > 0 then
+            tracker:mark_chunk_has("entities", "rocks", chunk_x, chunk_y)
+        end
+    end
+    
+    return entities_by_type
 end
 
 --- Get connected water tiles from a starting position using flood fill
@@ -174,12 +479,17 @@ function M.get_player_force()
     return game.forces["player"]
 end
 
+function M.get_chunk_lookup()
+    return M.get_chunk_tracker().chunk_lookup
+end
+
 
 M.admin_api = {
     get_charted_chunks = M.get_charted_chunks,
     get_map_area_state = M.get_map_area_state,
     set_map_area_state = M.set_map_area_state,
     clear_map_area = M.clear_map_area,
+    get_chunk_lookup = M.get_chunk_lookup,
 }
 
 M.event_based_snapshot = {
@@ -195,13 +505,11 @@ M.event_based_snapshot = {
 function M._build_disk_write_snapshot()
     local events = {}
     
-    -- on_chunk_generated: snapshot resources if in initial 7x7 area
-    events[defines.events.on_chunk_generated] = M._on_chunk_generated
-    
-    -- on_chunk_charted: snapshot resources for charted chunks (by players)
+    -- on_chunk_charted: mark chunks for snapshotting when charted by players
     events[defines.events.on_chunk_charted] = M._on_chunk_charted
     
-    -- Agent.on_chunk_charted: snapshot resources for chunks charted by agents
+    -- Agent.on_chunk_charted: mark chunks for snapshotting when charted by agents
+    -- Note: Agents also mark chunks directly in charting.lua, but this handles the event for consistency
     if Agent.on_chunk_charted then
         events[Agent.on_chunk_charted] = M._on_agent_chunk_charted
     end
@@ -209,10 +517,54 @@ function M._build_disk_write_snapshot()
     return { events = events }
 end
 
+--- Process one chunk snapshot per tick (serialized snapshotting)
+--- @param event table on_tick event
+function M._on_tick_snapshot_chunks(event)
+    -- game.print(string.format("[snapshot] Processing chunks on tick %d", game.tick))
+    local tracker = M.get_chunk_tracker()
+    local chunk_x, chunk_y = nil, nil
+    for chunk_key, chunk_entry in pairs(tracker.chunk_lookup) do
+        if chunk_key and (chunk_entry.snapshot_tick == nil or chunk_entry.dirty == true) then
+            if snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] Found chunk to process: %s", chunk_key))
+            end
+            local xstr, ystr = string.match(chunk_key, "([^,]+),([^,]+)")
+            chunk_x = tonumber(xstr)
+            chunk_y = tonumber(ystr)
+            break
+        end
+    end
+    
+    if chunk_x and chunk_y then
+        -- Double-check that chunk still needs snapshotting (may have been processed by another handler)
+        if not tracker:chunk_needs_snapshot(chunk_x, chunk_y) then
+            return
+        end
+        
+        if snapshot.DEBUG and game and game.print then
+            game.print(string.format("[snapshot] Processing chunk (%d, %d)", chunk_x, chunk_y))
+        end
+        
+        -- Snapshot the chunk (this will mark it as snapshotted on success)
+        local success = M.snapshot_chunk_resources(chunk_x, chunk_y)
+        
+        if not success and snapshot.DEBUG and game and game.print then
+            game.print(string.format("[snapshot] WARNING: Failed to snapshot chunk (%d, %d)", chunk_x, chunk_y))
+        end
+    -- else
+    --     -- Debug: uncomment to verify handler is running when no chunks need snapshotting
+    --     -- if snapshot.DEBUG and game and game.print then
+    --     --     game.print("[snapshot] No chunks need snapshotting")
+    --     -- end
+    end
+end
+
 --- Get on_tick handlers
 --- @return table Array of handler functions
 function M.get_on_tick_handlers()
-    return {}
+    return {
+        M._on_tick_snapshot_chunks
+    }
 end
 
 --- Get events (defined events and nth_tick)
@@ -269,82 +621,71 @@ end
 --- Must be called during on_init/on_load
 --- Builds event handlers for resource snapshotting
 function M.init()
+    -- Initialize ChunkTracker singleton
+    ChunkTracker:new()
+    
     -- Build disk_write_snapshot table after events are initialized
     M.disk_write_snapshot = M._build_disk_write_snapshot()
 end
 
---- Calculate and store initial 7x7 chunk area from spawn position
---- Called during on_init to set up initial chunk boundaries
-function M.initialize_initial_chunk_area()
-    local surface = game.surfaces[1]
-    local force = M.get_player_force()
-    if not (surface and force) then
-        return
-    end
-
-    -- Get spawn position (origin)
-    local origin = force.get_spawn_position(surface)
-    local origin_chunk = utils.to_chunk_coordinates(origin)
-    
-    -- Calculate 7x7 chunk area (3 chunks in each direction from center)
-    -- Center chunk is at origin_chunk, so range is -3 to +3
-    local initial_chunks = {}
-    for dx = -3, 3 do
-        for dy = -3, 3 do
-            local chunk_x = origin_chunk.x + dx
-            local chunk_y = origin_chunk.y + dy
-            local chunk_key = utils.chunk_key(chunk_x, chunk_y)
-            initial_chunks[chunk_key] = { x = chunk_x, y = chunk_y }
-        end
-    end
-
-    storage.initial_chunk_area = initial_chunks
-    log("Map: Initialized 7x7 chunk area (49 chunks) from spawn position")
+--- Get the ChunkTracker singleton instance
+--- @return ChunkTracker
+function M.get_chunk_tracker()
+    return ChunkTracker:new()
 end
 
---- Check if a chunk is in the initial 7x7 area
---- @param chunk_x number
---- @param chunk_y number
---- @return boolean
-function M.is_in_initial_area(chunk_x, chunk_y)
-    if not storage.initial_chunk_area then
-        return false
-    end
-    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
-    return storage.initial_chunk_area[chunk_key] ~= nil
-end
 
 -- ============================================================================
 -- EVENT-DRIVEN RESOURCE SNAPSHOTTING
 -- ============================================================================
 
 --- Snapshot resources for a chunk
---- Called by event handlers when chunks are generated/charted/discovered
---- Skips if chunk has already been processed to avoid duplicate dumps of resources, water, and trees
+--- Called by on_tick handler to serialize snapshotting (one chunk per tick)
+--- Also updates ChunkTracker with resource/entity/water tracking
 --- @param chunk_x number
 --- @param chunk_y number
 function M.snapshot_chunk_resources(chunk_x, chunk_y)
     local surface = game.surfaces[1]
     if not surface then
-        return
+        return false
     end
 
-    -- Check if chunk has already been charted and resources/water/trees dumped
-    if snapshot.is_chunk_charted(chunk_x, chunk_y) then
-        if snapshot.DEBUG and game and game.print then
-            game.print(string.format("[snapshot] Skipping chunk (%d, %d) - already charted and resources/water/trees dumped", chunk_x, chunk_y))
-        end
-        return
-    end
+    local tracker = M.get_chunk_tracker()
 
     local chunk_area = {
         left_top = { x = chunk_x * 32, y = chunk_y * 32 },
-        right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
+        right_bottom = { x = chunk_x * 32 + 31, y = chunk_y * 32 + 31 }
     }
 
     -- Gather resources for the chunk
     local chunk = { x = chunk_x, y = chunk_y, area = chunk_area }
     local gathered = Resource.gather_resources_for_chunk(chunk)
+    
+    -- Update ChunkTracker with gathered data
+    -- Track resources
+    local tracked_resources = {}
+    for _, resource_data in ipairs(gathered.resources) do
+        local tracker_name = map_resource_name(resource_data.kind)
+        if tracker_name and not tracked_resources[tracker_name] then
+            tracker:mark_chunk_has("resource", tracker_name, chunk_x, chunk_y)
+            tracked_resources[tracker_name] = true
+        end
+    end
+    
+    -- Track water
+    if #gathered.water > 0 then
+        tracker:mark_chunk_has("water", nil, chunk_x, chunk_y)
+    end
+    
+    -- Track trees
+    if #gathered.trees > 0 then
+        tracker:mark_chunk_has("entities", "trees", chunk_x, chunk_y)
+    end
+    
+    -- Track rocks
+    if #gathered.rocks > 0 then
+        tracker:mark_chunk_has("entities", "rocks", chunk_x, chunk_y)
+    end
 
     -- Write resources.jsonl only if resources were found
     if #gathered.resources > 0 then
@@ -382,40 +723,33 @@ function M.snapshot_chunk_resources(chunk_x, chunk_y)
         end
     end
 
-    -- Mark chunk as charted after successfully processing (even if no resources/water/trees found)
+    -- Mark chunk as snapshotted after successfully processing (even if no resources/water/trees found)
     -- This prevents re-processing the same chunk when discovered again by agents or players
-    snapshot.mark_chunk_charted(chunk_x, chunk_y)
-end
-
---- Handle chunk generated event
---- Snapshot resources if chunk is in initial 7x7 area
---- @param event table - on_chunk_generated event
-function M._on_chunk_generated(event)
-    local chunk_x = event.position.x
-    local chunk_y = event.position.y
+    -- IMPORTANT: This must be called to prevent infinite re-processing of the same chunk
+    tracker:mark_chunk_snapshotted(chunk_x, chunk_y)
     
-    -- Only snapshot if in initial 7x7 area
-    if M.is_in_initial_area(chunk_x, chunk_y) then
-        M.snapshot_chunk_resources(chunk_x, chunk_y)
-    end
+    return true
 end
 
 --- Handle chunk charted event (by players)
---- Snapshot resources for the charted chunk
+--- Mark chunk as needing snapshot (on_tick handler will process it)
 --- @param event table - on_chunk_charted event
 function M._on_chunk_charted(event)
     local chunk_x = event.position.x
     local chunk_y = event.position.y
-    M.snapshot_chunk_resources(chunk_x, chunk_y)
+    local tracker = M.get_chunk_tracker()
+    tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
 end
 
 --- Handle agent chunk charted event
---- Snapshot resources for chunks charted by agents
+--- Mark chunk as needing snapshot (on_tick handler will process it)
+--- Note: Agents also mark chunks directly in charting.lua, but this handles the event for consistency
 --- @param event table - Agent.on_chunk_charted event with {chunk_x, chunk_y}
 function M._on_agent_chunk_charted(event)
     local chunk_x = event.chunk_x
     local chunk_y = event.chunk_y
-    M.snapshot_chunk_resources(chunk_x, chunk_y)
+    local tracker = M.get_chunk_tracker()
+    tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
 end
 
 return M

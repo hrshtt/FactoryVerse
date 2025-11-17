@@ -30,8 +30,17 @@ function ChartingHelpers._chart_chunk(self, chunk_x, chunk_y, rechart)
     local force = self.entity.force
     rechart = rechart or false
 
-    -- Skip if already charted
-    if force.is_chunk_charted(surface, {x = chunk_x, y = chunk_y}) and not rechart then
+    local was_already_charted = force.is_chunk_charted(surface, {x = chunk_x, y = chunk_y})
+
+    game.print(string.format("Chunk (%d, %d) was already charted: %s", chunk_x, chunk_y, tostring(was_already_charted)))
+    
+    -- Skip charting if already charted (unless rechart is true)
+    if was_already_charted and not rechart then
+        -- Chunk is already charted, but still mark for snapshotting if needed
+        -- (chunks may have been charted by player but not snapshotted yet)
+        if storage.chunk_tracker then
+            storage.chunk_tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+        end
         return false
     end
     
@@ -42,7 +51,19 @@ function ChartingHelpers._chart_chunk(self, chunk_x, chunk_y, rechart)
     -- Track chunk in agent's charted_chunks
     table.insert(self.charted_chunks, {x = chunk_x, y = chunk_y})
     
-    -- Raise custom event for resource snapshotting
+    -- Mark chunk as needing snapshot (on_tick handler will process it)
+    -- IMPORTANT: Access ChunkTracker via storage to avoid circular dependency
+    -- (Map requires Agent, Agent requires charting, so charting cannot require Map)
+    -- ChunkTracker is stored in storage.chunk_tracker and initialized by Map.init()
+    if storage.chunk_tracker then
+        storage.chunk_tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+        game.print(string.format("Marked chunk (%d, %d) as needing snapshot", chunk_x, chunk_y))
+        -- game.print(helpers.table_to_json(storage.chunk_tracker.chunk_lookup))
+    else
+        game.print(string.format("Chunk (%d, %d) was not already charted: %s", chunk_x, chunk_y, tostring(was_already_charted)))
+    end
+    
+    -- Raise custom event (for any other listeners)
     script.raise_event(self.on_chunk_charted, {chunk_x = chunk_x, chunk_y = chunk_y})
     
     return true
@@ -67,33 +88,39 @@ function ChartingHelpers.chart_spawn_area(self)
             local chunk_x = spawn_chunk.x + dx
             local chunk_y = spawn_chunk.y + dy
             ChartingHelpers._chart_chunk(self, chunk_x, chunk_y)
+            -- game.print(string.format("Charting chunk (%d, %d)", chunk_x, chunk_y))
         end
     end
     
     return true
 end
 
---- Chart a 5x5 chunk area around the agent's current position
---- Mimics LuaPlayer charting behavior: reveals 5x5 chunks centered on current chunk
---- @param self Agent
---- @return boolean
-function ChartingHelpers.chart(self, rechart)
-    local position = self.entity.position
-    rechart = rechart or false
-    
-    -- Calculate the chunk the agent is currently in
-    local center_chunk = map_to_chunk_coords(position)
-    
+function ChartingHelpers.get_chunks_in_view(self)
+    local center_chunk = map_to_chunk_coords(self.entity.position)
+    local chunks_in_view = {}
+
     -- Chart 5x5 chunks centered on the agent's current chunk
     -- This means 2 chunks in each direction from center
     for dx = -2, 2 do
         for dy = -2, 2 do
             local chunk_x = center_chunk.x + dx
             local chunk_y = center_chunk.y + dy
-            ChartingHelpers._chart_chunk(self, chunk_x, chunk_y, rechart)
+            table.insert(chunks_in_view, {x = chunk_x, y = chunk_y})
         end
     end
-    
+    return chunks_in_view
+end
+
+--- Chart a 5x5 chunk area around the agent's current position
+--- Mimics LuaPlayer charting behavior: reveals 5x5 chunks centered on current chunk
+--- @param self Agent
+--- @return boolean
+function ChartingHelpers.chart_view(self, rechart)
+    rechart = rechart or false
+    local chunks_in_view = ChartingHelpers.get_chunks_in_view(self)
+    for _, chunk in pairs(chunks_in_view) do
+        ChartingHelpers._chart_chunk(self, chunk.x, chunk.y, rechart)
+    end
     return true
 end
 

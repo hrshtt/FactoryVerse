@@ -13,48 +13,7 @@ M.SNAPSHOT_BASE_DIR = "factoryverse/snapshots"
 M.UDP_PORT = 34202
 
 -- Debug flag for verbose logging
-M.DEBUG = false
-
--- Storage key for tracking charted chunks
-M.CHARTED_CHUNKS_STORAGE_KEY = "factoryverse_charted_chunks"
-
--- ============================================================================
--- CHARTED CHUNK TRACKING
--- ============================================================================
-
---- Initialize charted chunks storage table if it doesn't exist
---- @return table - The charted chunks storage table
-function M._init_charted_chunks_storage()
-    if not storage[M.CHARTED_CHUNKS_STORAGE_KEY] then
-        storage[M.CHARTED_CHUNKS_STORAGE_KEY] = {}
-    end
-    return storage[M.CHARTED_CHUNKS_STORAGE_KEY]
-end
-
---- Check if a chunk has already been charted and had resources/water/trees dumped
---- @param chunk_x number
---- @param chunk_y number
---- @return boolean - True if chunk has been processed
-function M.is_chunk_charted(chunk_x, chunk_y)
-    local charted_chunks = M._init_charted_chunks_storage()
-    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
-    return charted_chunks[chunk_key] ~= nil
-end
-
---- Mark a chunk as charted (resources/water/trees have been dumped)
---- @param chunk_x number
---- @param chunk_y number
---- @return boolean - Success status
-function M.mark_chunk_charted(chunk_x, chunk_y)
-    local charted_chunks = M._init_charted_chunks_storage()
-    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
-    charted_chunks[chunk_key] = {
-        x = chunk_x,
-        y = chunk_y,
-        tick = game and game.tick or 0
-    }
-    return true
-end
+M.DEBUG = true
 
 --- Generate chunk directory path
 --- @param chunk_x number

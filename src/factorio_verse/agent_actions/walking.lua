@@ -117,7 +117,7 @@ WalkingActions.process_walking = function(self)
         defines.direction.west, defines.direction.southwest,
         defines.direction.south, defines.direction.southeast, }
 
-    self:chart()
+    self:chart_view()
     self.entity.walking_state = { walking = true, direction = dirs[math.floor(octant) % 8 + 1] }
 end
 
