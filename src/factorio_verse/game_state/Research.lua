@@ -2,7 +2,7 @@
 --- ResearchGameState sub-module for managing research-related functionality.
 --- Static module - no instantiation required.
 
-local GameStateError = require("types.Error")
+local GameStateError = require("utils.Error")
 
 local M = {}
 
