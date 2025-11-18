@@ -6,53 +6,22 @@ local GameStateError = require("utils.Error")
 
 local M = {}
 
-function M.save_research(agent_id, research_id)
-    local player = storage.agents[agent_id]
-    local force = player.force
-
-    local research_state = {
-        technologies = {},
-        current_research = nil,
-        research_progress = 0,
-        research_queue = {},
-        progress = {}
-    }
-
-    -- Save all technology states
-    -- for name, tech in pairs(force.technologies) do
-    --     research_state.technologies[name] = serialize_technology(tech)
-    -- end
-
-    -- Save current research and progress
-    if force.current_research then
-        research_state.current_research = "\"" .. force.current_research.name .. "\""
-        research_state.research_progress = force.research_progress
-
-        research_state.progress[force.current_research.name] = force.research_progress or 0
+function M.reset_research(agent_id)
+    if not storage.agents[agent_id] or not storage.agents[agent_id].entity.valid then
+        return {
+            error = "Agent not found or invalid",
+        }
     end
 
-    -- Save research queue if it exists
-    if force.research_queue then
-        for _, tech in pairs(force.research_queue) do
-            table.insert(research_state.research_queue, "\"" .. tech.name .. "\"")
-        end
-    end
-    return research_state
-end
+    local agent = storage.agents[agent_id] ---@type Agent
 
-function M.reset_research(input)
-    local agent_id = input.agent_id
-    local player = storage.agents[agent_id]
-    local force = player.force
+    local force = agent.entity.force
     force.cancel_current_research()
-    force.research_queue = {}
-    force.research_progress = 0
+    force.reset_technology_effects()
+    force.reset_technologies()
 end
 
-function M.inspect_research(agent_id)
-end
-
-M.admin_api = {
+M.research_api = {
     reset_research = M.reset_research,
     inspect_research = M.inspect_research,
 }
@@ -75,7 +44,7 @@ end
 --- Register remote interface for research admin methods
 --- @return table Remote interface table
 function M.register_remote_interface()
-    return M.admin_api
+    return M.research_api
 end
 
 return M
