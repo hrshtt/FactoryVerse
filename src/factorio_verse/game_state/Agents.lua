@@ -3,12 +3,13 @@
 --- Static module - no instantiation required.
 --- Uses new Agent class with metatable registration for OOP-based state management.
 
-local Agent = require("types.Agent")
+local Agent = require("Agent")
 local snapshot = require("utils.snapshot")
 local utils = require("utils.utils")
 local Map = require("game_state.Map")
 
 local M = {}
+
 
 -- ============================================================================
 -- AGENT LIFECYCLE MANAGEMENT
@@ -71,13 +72,6 @@ function M.create_agent(agent_id, color, force_name, spawn_position)
     -- Use Agent:new() which handles all initialization
     local agent = Agent:new(agent_id, color, force_name, spawn_position)
     
-    -- Chart the starting area
-    if agent.entity and agent.entity.valid then
-        local surface = agent.entity.surface or game.surfaces[1]
-        local position = agent.entity.position
-        utils.chart_native_start_area(surface, agent.entity.force, position, Map)
-    end
-    
     return agent
 end
 
@@ -104,8 +98,8 @@ end
 --- Create multiple agents
 --- @param num_agents number Number of agents to create
 --- @param destroy_existing boolean|nil If true, destroy existing agents
---- @param set_unique_forces boolean|nil Default true - each agent gets unique force
---- @param default_common_force string|nil Force name to use if set_unique_forces=false
+--- @param set_unique_forces boolean|nil Default false - use player force; if true, each agent gets unique force
+--- @param default_common_force string|nil Force name to use if set_unique_forces=false (default: "player")
 --- @return table Array of created agent info {agent_id, force_name}
 function M.create_agents(num_agents, destroy_existing, set_unique_forces, default_common_force)
     if not storage.agents then
@@ -123,11 +117,19 @@ function M.create_agents(num_agents, destroy_existing, set_unique_forces, defaul
     end
     
     -- Determine force strategy
-    local use_unique_forces = set_unique_forces ~= false  -- Default true
+    -- Default to false (use player force) instead of unique forces
+    local use_unique_forces = set_unique_forces == true
+    
+    -- Warn if using unique forces about charting/radar/bots limitations
+    if use_unique_forces then
+        local warning_msg = "WARNING: Using unique forces for agents. In-engine charting updates will not work for forces without a connected LuaPlayer, for the character, radar and bots."
+        game.print(warning_msg)
+        log(warning_msg)
+    end
     
     if not use_unique_forces then
-        -- Use common force
-        local common_force_name = default_common_force or "agent_force"
+        -- Use common force (default to "player")
+        local common_force_name = default_common_force or "player"
         
         -- Verify force exists if provided
         if default_common_force then
@@ -135,8 +137,10 @@ function M.create_agents(num_agents, destroy_existing, set_unique_forces, defaul
                 error("Force '" .. common_force_name .. "' does not exist")
             end
         else
-            -- Create default force if it doesn't exist
-            M.create_or_get_force(common_force_name)
+            -- Player force always exists, no need to create it
+            if not game.forces.player then
+                error("Player force does not exist")
+            end
         end
     end
 
@@ -149,7 +153,7 @@ function M.create_agents(num_agents, destroy_existing, set_unique_forces, defaul
         if use_unique_forces then
             force_name = nil  -- Will auto-generate agent-{agent_id}
         else
-            force_name = default_common_force or "agent_force"
+            force_name = default_common_force or "player"
         end
         
         local color = generate_agent_color(i, num_agents)
@@ -275,6 +279,8 @@ function M.on_tick(event)
         -- This updates walking, mining, crafting, placement state machines
         -- and enqueues completion messages
         agent:process(event)
+
+        -- game.print(string.format("Processing agent %d", agent_id))
         
         -- Process and send UDP messages from agent's message queue
         process_agent_messages(agent)
@@ -363,6 +369,30 @@ function M.list_agent_forces()
     return mapping
 end
 
+function M._on_nth_tick_agent_production_snapshot()
+    local agents = M.list_agent_forces()
+    for agent_id, force_name in pairs(agents) do
+        local agent = M.get_agent(agent_id)
+        if agent and agent.entity.valid then
+            stats = agent:get_production_statistics()
+            if not stats then goto continue end
+            -- Append a snapshot entry in JSONL format
+            local entry = {
+                tick = game.tick,
+                statistics = stats
+            }
+            local json_line = helpers.table_to_json(entry) .. "\n"
+            helpers.write_file(
+                snapshot.SNAPSHOT_BASE_DIR .. "/" .. agent_id .. "/production_statistics.jsonl",
+                json_line,
+                true -- append
+                -- for_player omitted (server/global)
+            )
+        end
+        ::continue::
+    end
+end
+
 -- ============================================================================
 -- ADMIN API AND SNAPSHOTS
 -- ============================================================================
@@ -444,7 +474,7 @@ end
 --- Register remote interface for agent admin methods
 --- @return table Remote interface table
 function M.register_remote_interface()
-    local ParamSpec = require("types.ParamSpec")
+    local ParamSpec = require("utils.ParamSpec")
     local interface = {}
     
     -- Register all admin methods with parameter normalization

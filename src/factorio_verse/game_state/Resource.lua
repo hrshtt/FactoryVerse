@@ -5,7 +5,7 @@
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
 
-local GameStateError = require("types.Error")
+local GameStateError = require("utils.Error")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
 
@@ -188,7 +188,7 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
         y = chunk_y,
         area = {
             left_top = { x = chunk_x * 32, y = chunk_y * 32 },
-            right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
+            right_bottom = { x = chunk_x * 32 + 31, y = chunk_y * 32 + 31 }
         }
     }
 

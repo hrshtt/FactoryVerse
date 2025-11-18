@@ -355,7 +355,7 @@ function M.register_remote_interface()
         end,
         
         -- Inventory item operations
-        get_inventory_item = function(entity_name, position, inventory_type, item_name, count, radius)
+        remove_inventory_item = function(entity_name, position, inventory_type, item_name, count, radius)
             local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:extract_inventory_items(inventory_type, item_name, count)
         end,
@@ -403,21 +403,6 @@ function M.register_remote_interface()
             return entity_interface:rotate(direction)
         end,
         
-        -- Entity queries
-        get_type = function(entity_name, position, radius)
-            local entity_interface = EntityInterface:new(entity_name, position, radius, false)
-            return entity_interface:get_type()
-        end,
-        
-        is_valid = function(entity_name, position, radius)
-            local ok, entity_interface = pcall(function()
-                return EntityInterface:new(entity_name, position, radius, false)
-            end)
-            if not ok then
-                return false
-            end
-            return entity_interface:is_valid()
-        end,
     }
 end
 
