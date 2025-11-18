@@ -1,16 +1,3 @@
---- Agent OOP class with metatable registration for save/load persistence
---- @class Agent
---- @field agent_id number Agent ID
---- @field entity LuaEntity Character entity for the agent
---- @field force_name string Force name (access force via entity.force)
---- @field labels AgentLabels Rendering labels for the agent
---- @field walking AgentWalkingState Walking state (jobs, intents)
---- @field mining AgentMiningState Mining state (active job)
---- @field crafting AgentCraftingState Crafting state (in-progress tracking)
---- @field placing AgentPlacementState Placement state (active jobs)
---- @field charted_chunks table[] List of charted chunk coordinates
---- @field message_queue table[] Queue of UDP messages to be sent (processed by game state)
---- @field on_chunk_charted string Event name for chunk charted event
 
 --- @class AgentLabels : table
 --- @field main_tag LuaRenderObject Main name tag rendering object
@@ -25,6 +12,9 @@
 --- @class AgentMiningState : table
 --- @field count_progress number Current count of mined items
 --- @field target_count number|nil Target count of mined items (nil for trees and rocks)
+--- @field mine_entity LuaEntity|nil Entity being mined
+--- @field item_name string|nil Item name being mined (for completion tracking)
+--- @field start_tick number|nil Tick when mining started (for time calculation)
 
 --- @class AgentCraftingState : table
 --- @field in_progress table|nil Active crafting tracking {recipe, count, action_id, ...}
@@ -33,20 +23,54 @@
 --- @field entities_to_place table[] Entities to place keyed by entity_name
 --- @field progress number Current progress of placement
 --- @field undo_stack table[] Undo stack for placement jobs
+--- @field jobs table[] Active placement jobs
+--- @field next_job_id number Next job ID to assign
 
--- Require action modules at module level (Factorio requirement)
-local WalkingActions = require("agent_actions.walking")
-local MiningActions = require("agent_actions.mining")
-local CraftingActions = require("agent_actions.crafting")
-local PlacementActions = require("agent_actions.placement")
-local EntityOpsActions = require("agent_actions.entity_ops")
-local ChartingActions = require("agent_actions.charting")
+--- Agent class definition, wraps all agent actions and state
+--- @class Agent
+--- @field agent_id number Agent ID
+--- @field entity LuaEntity Character entity for the agent
+--- @field force_name string Force name (access force via entity.force)
+--- @field labels AgentLabels Rendering labels for the agent
+--- @field get_production_statistics function Production statistics
+--- @field message_queue table[] Queue of UDP messages to be sent (processed by game state)
+--- @field on_chunk_charted defines.events Event name for chunk charted event
+--- @field walking AgentWalkingState Walking state (jobs, intents)
+--- @field mining AgentMiningState Mining state (active job)
+--- @field crafting AgentCraftingState Crafting state (in-progress tracking)
+--- @field placing AgentPlacementState Placement state (active jobs)
+--- @field charted_chunks table[] List of charted chunk coordinates
+--- @field walk_to fun(self: Agent, goal: {x: number, y: number}, strict_goal?: boolean, options?: table): table
+--- @field stop_walking fun(self: Agent): table
+--- @field process_walking fun(self: Agent)
+--- @field mine_resource fun(self: Agent, resource_name: string, max_count?: number): table
+--- @field stop_mining fun(self: Agent): table
+--- @field process_mining fun(self: Agent)
+--- @field complete_mining fun(self: Agent): table
+--- @field craft_enqueue fun(self: Agent, recipe_name: string, count?: number): table
+--- @field craft_dequeue fun(self: Agent, recipe_name: string, count?: number): table
+--- @field process_crafting fun(self: Agent)
+--- @field place_entity fun(self: Agent, entity_name: string, position: {x: number, y: number}, options?: table): table
+--- @field cancel_placement fun(self: Agent, job_id: number): table
+--- @field get_placement_cues fun(self: Agent, entity_name: string): table
+--- @field set_entity_recipe fun(self: Agent, entity_name: string, position?: {x: number, y: number}, recipe_name?: string): table
+--- @field set_entity_filter fun(self: Agent, entity_name: string, position?: {x: number, y: number}, inventory_type: number|string, filter_index?: number, filter_item?: string): table
+--- @field set_inventory_limit fun(self: Agent, entity_name: string, position?: {x: number, y: number}, inventory_type: number|string, limit: number): table
+--- @field get_inventory_item fun(self: Agent, entity_name: string, position?: {x: number, y: number}, inventory_type: number|string, item_name: string, count: number): table
+--- @field set_inventory_item fun(self: Agent, entity_name: string, position?: {x: number, y: number}, inventory_type: number|string, item_name: string, count: number): table
+--- @field pickup_entity fun(self: Agent, entity_name: string, position?: {x: number, y: number}): table
+--- @field get_technologies fun(self: Agent, only_available?: boolean): table[]
+--- @field enqueue_research fun(self: Agent, technology_name: string): table
+--- @field cancel_current_research fun(self: Agent): table
+--- @field chart_spawn_area fun(self: Agent): boolean
+--- @field get_chunks_in_view fun(self: Agent): table[]
+--- @field chart_view fun(self: Agent, rechart?: boolean): boolean
+local Agent = {}
 
 -- ============================================================================
 -- METATABLE REGISTRATION (must be at module load time)
 -- ============================================================================
 
-local Agent = {}
 Agent.__index = Agent
 
 Agent.on_chunk_charted = script.generate_event_name()
@@ -55,26 +79,21 @@ Agent.on_chunk_charted = script.generate_event_name()
 -- This must happen at module load time, not in on_init/on_load
 script.register_metatable('Agent', Agent)
 
--- Mix in action methods from modules
--- This must happen at module level before Agent:new() can be called
-for k, v in pairs(WalkingActions) do
-    Agent[k] = v
-end
-for k, v in pairs(MiningActions) do
-    Agent[k] = v
-end
-for k, v in pairs(CraftingActions) do
-    Agent[k] = v
-end
-for k, v in pairs(PlacementActions) do
-    Agent[k] = v
-end
-for k, v in pairs(EntityOpsActions) do
-    Agent[k] = v
-end
+local modules = {
+    "walking",
+    "mining",
+    "crafting",
+    "placement",
+    "entity_ops",
+    "charting",
+    "researching",
+}
 
-for k, v in pairs(ChartingActions) do
-    Agent[k] = v
+for _, module in ipairs(modules) do
+    local module_actions = require("agent_actions." .. module)
+    for k, v in pairs(module_actions) do
+        Agent[k] = v
+    end
 end
 
 -- ============================================================================
@@ -272,6 +291,8 @@ function Agent:register_remote_interface()
 
     -- Create interface with direct method proxies
     local interface = {
+        -- actions
+
         -- Walking
         walk_to = function(goal, adjust_to_non_colliding, options)
             return self:walk_to(goal, adjust_to_non_colliding, options)
@@ -326,6 +347,8 @@ function Agent:register_remote_interface()
             return self:teleport(position)
         end,
 
+        -- queries
+
         -- State queries
         inspect = function(attach_inventory, attach_entities)
             return self:inspect(attach_inventory, attach_entities)
@@ -343,55 +366,20 @@ function Agent:register_remote_interface()
 
         -- Recipe queries
         get_recipes = function(category)
-            if category and not valid_recipe_categories[category] then
-                return {
-                    error = "Invalid recipe category",
-                    valid_categories = valid_recipe_categories,
-                }
-            end
-            local recipes = self.entity.force.recipes
-            local valid_recipes = {}
-            for recipe_name, recipe in pairs(recipes) do
-                if recipe.category == "parameters" or (category and category ~= recipe.category) then
-                    goto skip
-                end
-                local details = {
-                    name = recipe_name,
-                    category = recipe.category,
-                    energy = recipe.energy,
-                    ingredients = recipe.ingredients,
-                }
-                if recipe.enabled then
-                    table.insert(valid_recipes, details)
-                end
-                ::skip::
-            end
-            return valid_recipes
+            return self:get_recipes(category)
         end,
 
         -- Technology queries
-        get_technologies = function()
-            local technologies = self.entity.force.technologies
-            local valid_technologies = {}
-            for technology_name, technology in pairs(technologies) do
-                local details = {
-                    name = technology.name,
-                    researched = technology.researched,
-                    enabled = technology.enabled,
-                    prerequisites = technology.prerequisites,
-                    successors = technology.successors,
-                    research_unit_ingredients = technology.research_unit_ingredients,
-                    research_unit_count = technology.research_unit_count,
-                    research_unit_energy = technology.research_unit_energy,
-                    saved_progress = technology.saved_progress,
-                    effects = technology.prototype.effects,
-                    research_trigger = technology.prototype.research_trigger,
-                }
-                if technology.enabled then
-                    table.insert(valid_technologies, details)
-                end
-            end
-            return valid_technologies or {}
+        get_technologies = function(only_available)
+            return self:get_technologies(only_available)
+        end,
+
+        -- Research actions
+        enqueue_research = function(technology_name)
+            return self:enqueue_research(technology_name)
+        end,
+        cancel_current_research = function()
+            return self:cancel_current_research()
         end,
     }
 
@@ -642,6 +630,42 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
     return result
 end
 
+function Agent:get_recipes(category)
+    if category and not valid_recipe_categories[category] then
+        return {
+            error = "Invalid recipe category",
+            valid_categories = valid_recipe_categories,
+        }
+    end
+    local recipes = self.entity.force.recipes
+    local valid_recipes = {}
+    for recipe_name, recipe in pairs(recipes) do
+        if recipe.category == "parameters" or (category and category ~= recipe.category) then
+            goto skip
+        end
+        local details = {
+            name = recipe_name,
+            category = recipe.category,
+            energy = recipe.energy,
+            ingredients = recipe.ingredients,
+        }
+        if recipe.enabled then
+            table.insert(valid_recipes, details)
+        end
+        ::skip::
+    end
+    return valid_recipes
+end
+
+
+function Agent:get_production_statistics()
+    local stats = self.entity.force.get_item_production_statistics(game.surfaces[1]);
+    return {
+        input = stats.input_counts,
+        output = stats.output_counts,
+    }
+end
+
 -- ============================================================================
 -- MESSAGE QUEUE MANAGEMENT
 -- ============================================================================
@@ -688,13 +712,13 @@ function Agent:process(event)
         return
     end
     -- Process walking jobs
-    WalkingActions.process_walking(self)
+    self:process_walking()
 
     -- Process mining
-    MiningActions.process_mining(self)
+    self:process_mining()
 
     -- Process crafting
-    CraftingActions.process_crafting(self)
+    self:process_crafting()
 
     -- Process placement jobs
     -- TODO: Implement placement job processing
