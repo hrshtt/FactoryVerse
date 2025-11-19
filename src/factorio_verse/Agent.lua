@@ -8,6 +8,9 @@
 --- @field path nil|PathfinderWaypoint[]
 --- @field path_id nil|number
 --- @field progress number Current waypoint index
+--- @field action_id string|nil Action ID for completion tracking
+--- @field start_tick number|nil Tick when walking started (for time calculation)
+--- @field goal table|nil Goal position {x, y} for completion tracking
 
 --- @class AgentMiningState : table
 --- @field count_progress number Current count of mined items
@@ -293,7 +296,7 @@ function Agent:register_remote_interface()
     local interface = {
         -- actions
 
-        -- Walking
+        -- Walking, Async
         walk_to = function(goal, adjust_to_non_colliding, options)
             return self:walk_to(goal, adjust_to_non_colliding, options)
         end,
@@ -301,7 +304,7 @@ function Agent:register_remote_interface()
             return self:stop_walking()
         end,
 
-        -- Mining
+        -- Mining, Async
         mine_resource = function(resource_name, max_count)
             return self:mine_resource(resource_name, max_count)
         end,
@@ -309,7 +312,7 @@ function Agent:register_remote_interface()
             return self:stop_mining()
         end,
 
-        -- Crafting
+        -- Crafting, Async
         craft_enqueue = function(recipe_name, count)
             return self:craft_enqueue(recipe_name, count)
         end,

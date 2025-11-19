@@ -94,9 +94,9 @@ local function aggregate_all_events()
         end
     end
 
-    -- 3. Entity status tracking (every 10 ticks)
+    -- 3. Entity status tracking (every 60 ticks)
     -- Map orchestrates getting chunks, Entities provides the tracking logic
-    add_nth_tick_handler(10, function()
+    add_nth_tick_handler(60, function()
         local charted_chunks = Map.get_charted_chunks()
         Entities.track_all_charted_chunk_entity_status(charted_chunks)
     end)

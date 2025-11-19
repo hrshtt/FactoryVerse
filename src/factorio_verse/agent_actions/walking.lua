@@ -67,9 +67,20 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options)
     end
     local job_id = self.entity.surface.request_path(options)
     self.walking.path_id = job_id
+    
+    -- Generate action ID and store for completion tracking
+    local action_id = string.format("walk_to_%d_%d", game.tick, self.agent_id)
+    local rcon_tick = game.tick
+    self.walking.action_id = action_id
+    self.walking.start_tick = rcon_tick
+    self.walking.goal = goal
+    
     options.entity_to_ignore = options.entity_to_ignore.name .. "_" .. options.entity_to_ignore.name_tag
     return {
         success = true,
+        queued = true,
+        action_id = action_id,
+        tick = rcon_tick,
         result = {
             path_id = job_id,
             options_used = options,
@@ -88,6 +99,30 @@ WalkingActions.process_walking = function(self)
     end
 
     if not path or walking.progress > #path then
+        -- Walking completed - send completion message
+        if walking.action_id then
+            local actual_ticks = nil
+            if walking.start_tick then
+                actual_ticks = (game.tick or 0) - walking.start_tick
+            end
+            
+            self:enqueue_message({
+                action = "walk_to",
+                agent_id = self.agent_id,
+                action_id = walking.action_id,
+                success = true,
+                tick = game.tick or 0,
+                position = { x = self.entity.position.x, y = self.entity.position.y },
+                goal = walking.goal,
+                actual_ticks = actual_ticks,
+            }, "walking")
+            
+            -- Clear tracking
+            walking.action_id = nil
+            walking.start_tick = nil
+            walking.goal = nil
+        end
+        
         walking.progress = 0
         walking.path = {}
         self.entity.walking_state = { walking = false }
@@ -101,6 +136,30 @@ WalkingActions.process_walking = function(self)
     if dx * dx + dy * dy < 0.0625 then -- 0.25^2
         walking.progress = walking.progress + 1
         if walking.progress > #path then
+            -- Walking completed - send completion message
+            if walking.action_id then
+                local actual_ticks = nil
+                if walking.start_tick then
+                    actual_ticks = (game.tick or 0) - walking.start_tick
+                end
+                
+                self:enqueue_message({
+                    action = "walk_to",
+                    agent_id = self.agent_id,
+                    action_id = walking.action_id,
+                    success = true,
+                    tick = game.tick or 0,
+                    position = { x = self.entity.position.x, y = self.entity.position.y },
+                    goal = walking.goal,
+                    actual_ticks = actual_ticks,
+                }, "walking")
+                
+                -- Clear tracking
+                walking.action_id = nil
+                walking.start_tick = nil
+                walking.goal = nil
+            end
+            
             walking.progress = 0
             walking.path = {}
             self.entity.walking_state = { walking = false }
@@ -129,6 +188,12 @@ WalkingActions.stop_walking = function(self)
             error = "Agent is not walking"
         }
     end
+    
+    -- Clear walking tracking (don't send completion message for cancellation)
+    self.walking.action_id = nil
+    self.walking.start_tick = nil
+    self.walking.goal = nil
+    
     self.entity.walking_state = { walking = false }
     self.walking.path = nil
     self.walking.path_id = nil

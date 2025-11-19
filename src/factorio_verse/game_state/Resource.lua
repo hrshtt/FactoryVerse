@@ -29,13 +29,6 @@ end
 --- @param chunk table - {x, y, area}
 --- @return table - serialized rock data
 function M.serialize_rock(entity, chunk)
-    local size = 1
-    if entity.name:match("huge") then
-        size = 3
-    elseif entity.name:match("big") then
-        size = 2
-    end
-
     local resources = {}
     if entity.prototype and entity.prototype.mineable_properties and entity.prototype.mineable_properties.products then
         for _, product in pairs(entity.prototype.mineable_properties.products) do
@@ -51,7 +44,12 @@ function M.serialize_rock(entity, chunk)
         name = entity.name,
         type = entity.type,
         position = entity.position,
-        size = size,
+        bounding_box = {
+            min_x = entity.bounding_box.left_top.x,
+            min_y = entity.bounding_box.left_top.y,
+            max_x = entity.bounding_box.right_bottom.x,
+            max_y = entity.bounding_box.right_bottom.y
+        },
         resources = resources,
         chunk = { x = chunk.x, y = chunk.y }
     }
@@ -62,8 +60,20 @@ end
 --- @param chunk table - {x, y, area}
 --- @return table - serialized tree data
 function M.serialize_tree(entity, chunk)
+    local resources = {}
+    if entity.prototype and entity.prototype.mineable_properties and entity.prototype.mineable_properties.products then
+        for _, product in pairs(entity.prototype.mineable_properties.products) do
+            table.insert(resources, {
+                name = product.name,
+                amount = product.amount or product.amount_min or 1,
+                probability = product.probability or 1
+            })
+        end
+    end
+
     return {
         name = entity.name,
+        type = entity.type,
         position = entity.position,
         bounding_box = {
             min_x = entity.bounding_box.left_top.x,
@@ -71,6 +81,7 @@ function M.serialize_tree(entity, chunk)
             max_x = entity.bounding_box.right_bottom.x,
             max_y = entity.bounding_box.right_bottom.y
         },
+        resources = resources,
         chunk = { x = chunk.x, y = chunk.y }
     }
 end
@@ -195,71 +206,78 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
     -- Gather all resources for the chunk
     local gathered = M.gather_resources_for_chunk(chunk)
 
-    -- Write resources.jsonl only if resources were found
+    -- Write tiles.jsonl (resource tiles like ores) only if resources were found
     if #gathered.resources > 0 then
-        local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
-        local resources_success = snapshot.write_resource_file(resources_path, gathered.resources)
+        local tiles_path = snapshot.resource_file_path(chunk_x, chunk_y, "tiles")
+        local tiles_success = snapshot.write_resource_file(tiles_path, gathered.resources)
         
-        -- Send UDP notification for resources file update
-        if resources_success then
+        -- Send UDP notification for tiles file update
+        if tiles_success then
             local udp_success = snapshot.send_file_event_udp(
                 "file_updated",
                 "resource",
                 chunk_x,
                 chunk_y,
-                nil, -- no position for resource files
+                nil, -- no position for tiles files
                 nil, -- no entity_name
                 nil, -- no component_type
-                resources_path
+                tiles_path
             )
             if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for resource file: %s", resources_path))
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for tiles file: %s", tiles_path))
             end
         end
     end
 
-    -- Write water.jsonl only if water tiles were found
+    -- Write water-tiles.jsonl only if water tiles were found
     if #gathered.water > 0 then
-        local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
-        local water_success = snapshot.write_resource_file(water_path, gathered.water)
+        local water_tiles_path = snapshot.resource_file_path(chunk_x, chunk_y, "water-tiles")
+        local water_tiles_success = snapshot.write_resource_file(water_tiles_path, gathered.water)
         
-        -- Send UDP notification for water file update
-        if water_success then
+        -- Send UDP notification for water-tiles file update
+        if water_tiles_success then
             local udp_success = snapshot.send_file_event_udp(
                 "file_updated",
                 "water",
                 chunk_x,
                 chunk_y,
-                nil, -- no position for water files
+                nil, -- no position for water-tiles files
                 nil, -- no entity_name
                 nil, -- no component_type
-                water_path
+                water_tiles_path
             )
             if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for water file: %s", water_path))
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for water-tiles file: %s", water_tiles_path))
             end
         end
     end
 
-    -- Write trees.jsonl only if trees were found
-    if #gathered.trees > 0 then
-        local trees_path = snapshot.resource_file_path(chunk_x, chunk_y, "trees")
-        local trees_success = snapshot.write_resource_file(trees_path, gathered.trees)
+    -- Write entities.jsonl (rocks and trees combined) only if entities were found
+    local entities = {}
+    for _, rock in ipairs(gathered.rocks) do
+        table.insert(entities, rock)
+    end
+    for _, tree in ipairs(gathered.trees) do
+        table.insert(entities, tree)
+    end
+    if #entities > 0 then
+        local entities_path = snapshot.resource_file_path(chunk_x, chunk_y, "entities")
+        local entities_success = snapshot.write_resource_file(entities_path, entities)
         
-        -- Send UDP notification for trees file update
-        if trees_success then
+        -- Send UDP notification for entities file update
+        if entities_success then
             local udp_success = snapshot.send_file_event_udp(
                 "file_updated",
-                "trees",
+                "entity",
                 chunk_x,
                 chunk_y,
-                nil, -- no position for trees files
+                nil, -- no position for entities files
                 nil, -- no entity_name
                 nil, -- no component_type
-                trees_path
+                entities_path
             )
             if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for trees file: %s", trees_path))
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for entities file: %s", entities_path))
             end
         end
     end

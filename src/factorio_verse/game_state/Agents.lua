@@ -7,7 +7,7 @@ local Agent = require("Agent")
 local snapshot = require("utils.snapshot")
 local utils = require("utils.utils")
 local Map = require("game_state.Map")
-
+local ParamSpec = require("utils.ParamSpec")
 local M = {}
 
 
@@ -474,7 +474,7 @@ end
 --- Register remote interface for agent admin methods
 --- @return table Remote interface table
 function M.register_remote_interface()
-    local ParamSpec = require("utils.ParamSpec")
+    
     local interface = {}
     
     -- Register all admin methods with parameter normalization

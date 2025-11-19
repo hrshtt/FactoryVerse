@@ -42,7 +42,7 @@ end
 --- Format: {chunk_x}/{chunk_y}/resources/{filename}.jsonl
 --- @param chunk_x number
 --- @param chunk_y number
---- @param filename string - "resources", "water", or "trees"
+--- @param filename string - "tiles", "water-tiles", "entities", or legacy names
 --- @return string - Full file path
 function M.resource_file_path(chunk_x, chunk_y, filename)
     return M.chunk_dir_path(chunk_x, chunk_y) .. "/resources/" .. filename .. ".jsonl"

@@ -72,7 +72,7 @@ function ChunkTracker:_get_chunk_entry(chunk_x, chunk_y)
             entities = {},
             water = false,
             snapshot_tick = nil,  -- Tick when chunk was last snapshotted (nil = not snapshotted yet)
-            dirty = false  -- True if chunk needs re-snapshotting due to mutation
+            dirty = false  -- TODO: True if chunk needs re-snapshotting due to mutation (not yet implemented)
         }
         self.chunk_lookup[chunk_key] = chunk_entry
     end
@@ -169,16 +169,27 @@ end
 --- Creates chunk entry if it doesn't exist (with snapshot_tick = nil)
 --- IMPORTANT: This just sets the flag - on_tick handler will check and process
 --- Agents should overwrite flags, not read them, for safe control flow
+--- NOTE: Will not re-queue chunks that have already been snapshotted
 --- @param chunk_x number Chunk X coordinate
 --- @param chunk_y number Chunk Y coordinate
 function ChunkTracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
     local chunk_entry = self:_get_chunk_entry(chunk_x, chunk_y)
-    -- Just ensure snapshot_tick is nil (needs snapshotting)
-    -- If already snapshotted, this will re-queue it (which is fine - worst case it gets snapshotted again)
-    chunk_entry.snapshot_tick = nil
+    -- Never re-snapshot an existing chunk
+    -- If chunk has already been snapshotted, do nothing
+    if chunk_entry.snapshot_tick ~= nil then
+        -- Chunk has already been snapshotted, don't re-queue it
+        return
+    end
+    -- Chunk entry already has snapshot_tick = nil (needs snapshotting)
+    -- No change needed, chunk will be processed by on_tick handler
 end
 
 --- Mark a chunk as dirty (needs re-snapshotting due to mutation)
+--- TODO: Implement entity mutation tracking to call this function when:
+---   - Entities are placed/destroyed in a chunk
+---   - Resources are mined/depleted in a chunk
+---   - Other chunk mutations occur
+--- Once implemented, update chunk_needs_snapshot() and _on_tick_snapshot_chunks() to check dirty flag
 --- @param chunk_x number Chunk X coordinate
 --- @param chunk_y number Chunk Y coordinate
 function ChunkTracker:mark_chunk_dirty(chunk_x, chunk_y)
@@ -186,7 +197,9 @@ function ChunkTracker:mark_chunk_dirty(chunk_x, chunk_y)
     chunk_entry.dirty = true
 end
 
---- Check if a chunk needs snapshotting (never snapshotted or dirty)
+--- Check if a chunk needs snapshotting (never snapshotted)
+--- Never returns true for chunks that have already been snapshotted
+--- TODO: When mark_chunk_dirty() is implemented, add: or chunk_entry.dirty == true
 --- @param chunk_x number Chunk X coordinate
 --- @param chunk_y number Chunk Y coordinate
 --- @return boolean True if chunk needs snapshotting
@@ -195,7 +208,9 @@ function ChunkTracker:chunk_needs_snapshot(chunk_x, chunk_y)
     if not chunk_entry then
         return false
     end
-    return chunk_entry.snapshot_tick == nil or chunk_entry.dirty == true
+    -- Only return true if chunk has never been snapshotted
+    -- TODO: Add dirty check when mark_chunk_dirty() is implemented: or chunk_entry.dirty == true
+    return chunk_entry.snapshot_tick == nil
 end
 
 
@@ -518,13 +533,18 @@ function M._build_disk_write_snapshot()
 end
 
 --- Process one chunk snapshot per tick (serialized snapshotting)
+--- Only snapshots chunks that have never been snapshotted before
+--- TODO: When mark_chunk_dirty() is implemented, also process chunks with dirty == true
 --- @param event table on_tick event
 function M._on_tick_snapshot_chunks(event)
     -- game.print(string.format("[snapshot] Processing chunks on tick %d", game.tick))
     local tracker = M.get_chunk_tracker()
     local chunk_x, chunk_y = nil, nil
     for chunk_key, chunk_entry in pairs(tracker.chunk_lookup) do
-        if chunk_key and (chunk_entry.snapshot_tick == nil or chunk_entry.dirty == true) then
+        -- Only process chunks that have never been snapshotted (snapshot_tick == nil)
+        -- Never re-snapshot existing chunks
+        -- TODO: When mark_chunk_dirty() is implemented, add: or chunk_entry.dirty == true
+        if chunk_key and chunk_entry.snapshot_tick == nil then
             if snapshot.DEBUG and game and game.print then
                 game.print(string.format("[snapshot] Found chunk to process: %s", chunk_key))
             end
@@ -642,6 +662,7 @@ end
 --- Snapshot resources for a chunk
 --- Called by on_tick handler to serialize snapshotting (one chunk per tick)
 --- Also updates ChunkTracker with resource/entity/water tracking
+--- Never snapshots chunks that have already been snapshotted
 --- @param chunk_x number
 --- @param chunk_y number
 function M.snapshot_chunk_resources(chunk_x, chunk_y)
@@ -651,6 +672,14 @@ function M.snapshot_chunk_resources(chunk_x, chunk_y)
     end
 
     local tracker = M.get_chunk_tracker()
+    
+    -- Defensive check: never snapshot a chunk that has already been snapshotted
+    if tracker:is_chunk_snapshotted(chunk_x, chunk_y) then
+        if snapshot.DEBUG and game and game.print then
+            game.print(string.format("[snapshot] Skipping chunk (%d, %d) - already snapshotted", chunk_x, chunk_y))
+        end
+        return false
+    end
 
     local chunk_area = {
         left_top = { x = chunk_x * 32, y = chunk_y * 32 },
@@ -687,43 +716,50 @@ function M.snapshot_chunk_resources(chunk_x, chunk_y)
         tracker:mark_chunk_has("entities", "rocks", chunk_x, chunk_y)
     end
 
-    -- Write resources.jsonl only if resources were found
+    -- Write tiles.jsonl (resource tiles like ores) only if resources were found
     if #gathered.resources > 0 then
-        local resources_path = snapshot.resource_file_path(chunk_x, chunk_y, "resources")
-        local resources_success = snapshot.write_resource_file(resources_path, gathered.resources)
-        if resources_success then
-            local udp_success = snapshot.send_file_event_udp("file_created", "resource", chunk_x, chunk_y, nil, nil, nil, resources_path)
+        local tiles_path = snapshot.resource_file_path(chunk_x, chunk_y, "tiles")
+        local tiles_success = snapshot.write_resource_file(tiles_path, gathered.resources)
+        if tiles_success then
+            local udp_success = snapshot.send_file_event_udp("file_created", "resource", chunk_x, chunk_y, nil, nil, nil, tiles_path)
             if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for resource file: %s", resources_path))
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for tiles file: %s", tiles_path))
             end
         end
     end
 
-    -- Write water.jsonl only if water tiles were found
+    -- Write water-tiles.jsonl only if water tiles were found
     if #gathered.water > 0 then
-        local water_path = snapshot.resource_file_path(chunk_x, chunk_y, "water")
-        local water_success = snapshot.write_resource_file(water_path, gathered.water)
-        if water_success then
-            local udp_success = snapshot.send_file_event_udp("file_created", "water", chunk_x, chunk_y, nil, nil, nil, water_path)
+        local water_tiles_path = snapshot.resource_file_path(chunk_x, chunk_y, "water-tiles")
+        local water_tiles_success = snapshot.write_resource_file(water_tiles_path, gathered.water)
+        if water_tiles_success then
+            local udp_success = snapshot.send_file_event_udp("file_created", "water", chunk_x, chunk_y, nil, nil, nil, water_tiles_path)
             if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for water file: %s", water_path))
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for water-tiles file: %s", water_tiles_path))
             end
         end
     end
 
-    -- Write trees.jsonl only if trees were found
-    if #gathered.trees > 0 then
-        local trees_path = snapshot.resource_file_path(chunk_x, chunk_y, "trees")
-        local trees_success = snapshot.write_resource_file(trees_path, gathered.trees)
-        if trees_success then
-            local udp_success = snapshot.send_file_event_udp("file_created", "trees", chunk_x, chunk_y, nil, nil, nil, trees_path)
+    -- Write entities.jsonl (rocks and trees combined) only if entities were found
+    local entities = {}
+    for _, rock in ipairs(gathered.rocks) do
+        table.insert(entities, rock)
+    end
+    for _, tree in ipairs(gathered.trees) do
+        table.insert(entities, tree)
+    end
+    if #entities > 0 then
+        local entities_path = snapshot.resource_file_path(chunk_x, chunk_y, "entities")
+        local entities_success = snapshot.write_resource_file(entities_path, entities)
+        if entities_success then
+            local udp_success = snapshot.send_file_event_udp("file_created", "entity", chunk_x, chunk_y, nil, nil, nil, entities_path)
             if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for trees file: %s", trees_path))
+                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for entities file: %s", entities_path))
             end
         end
     end
 
-    -- Mark chunk as snapshotted after successfully processing (even if no resources/water/trees found)
+    -- Mark chunk as snapshotted after successfully processing (even if no resources/water/entities found)
     -- This prevents re-processing the same chunk when discovered again by agents or players
     -- IMPORTANT: This must be called to prevent infinite re-processing of the same chunk
     tracker:mark_chunk_snapshotted(chunk_x, chunk_y)
