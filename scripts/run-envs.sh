@@ -1,353 +1,214 @@
 #!/bin/bash
 
-# Function to detect and set host architecture
-setup_platform() {
-    ARCH=$(uname -m)
-    OS=$(uname -s)
-    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
-        export EMULATOR="/bin/box64"
-        export DOCKER_PLATFORM="linux/arm64"
+# FactoryVerse Server Management Script
+# Manages Factorio servers with automatic mod deployment and client synchronization
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ============================================================================
+# CONFIGURATION DETECTION
+# ============================================================================
+
+# Detect platform and emulator
+if [ "$(uname -m)" = "arm64" ] || [ "$(uname -m)" = "aarch64" ]; then
+    export EMULATOR="/bin/box64"
+    export DOCKER_PLATFORM="linux/arm64"
+else
+    export EMULATOR=""
+    export DOCKER_PLATFORM="linux/amd64"
+fi
+
+# Detect local Factorio mod directory
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    LOCAL_MODS_PATH="$HOME/Library/Application Support/Factorio/mods"
+elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    LOCAL_MODS_PATH="$HOME/.factorio/mods"
+elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
+    LOCAL_MODS_PATH="$USERPROFILE/AppData/Roaming/Factorio/mods"
+fi
+
+# Verify paths exist
+if [ ! -d "$LOCAL_MODS_PATH" ]; then
+    echo "❌ Error: Local Factorio mods directory not found at $LOCAL_MODS_PATH"
+    exit 1
+fi
+
+# ============================================================================
+# STEP 1: HANDLE MODS
+# ============================================================================
+
+prepare_mods() {
+    echo "📦 Preparing FactoryVerse mod..."
+    
+    # Zip mod if needed
+    VERSION=$(grep -o '"version"\s*:\s*"[^"]*"' "${SCRIPT_DIR}/src/factorio_verse/info.json" | cut -d'"' -f4)
+    MOD_NAME="factorio_verse_${VERSION}"
+    MOD_ZIP="${LOCAL_MODS_PATH}/${MOD_NAME}.zip"
+    
+    if [ ! -f "$MOD_ZIP" ] || [ "${SCRIPT_DIR}/src/factorio_verse" -nt "$MOD_ZIP" ]; then
+        TEMP_DIR=$(mktemp -d)
+        mkdir -p "$TEMP_DIR/$MOD_NAME"
+        cp -r "${SCRIPT_DIR}/src/factorio_verse"/* "$TEMP_DIR/$MOD_NAME/"
+        (cd "$TEMP_DIR" && zip -r "$MOD_ZIP" "$MOD_NAME" >/dev/null 2>&1)
+        rm -rf "$TEMP_DIR"
+    fi
+    
+    # Update mod-list.json
+    if [ -f "${LOCAL_MODS_PATH}/mod-list.json" ]; then
+        jq '.mods += [{"name": "factorio_verse", "enabled": true}] | 
+             .mods += [{"name": "elevated-rails", "enabled": false}] | 
+             .mods += [{"name": "quality", "enabled": false}] | 
+             .mods += [{"name": "space-age", "enabled": false}] | 
+             .mods |= unique_by(.name) |
+             .mods |= map(if .name == "factorio_verse" then .enabled = true 
+                         elif .name == "elevated-rails" then .enabled = false 
+                         elif .name == "quality" then .enabled = false 
+                         elif .name == "space-age" then .enabled = false else . end)' \
+            "${LOCAL_MODS_PATH}/mod-list.json" > "${LOCAL_MODS_PATH}/mod-list.json.tmp"
+        mv "${LOCAL_MODS_PATH}/mod-list.json.tmp" "${LOCAL_MODS_PATH}/mod-list.json"
     else
-        export DOCKER_PLATFORM="linux/amd64"
+        cat > "${LOCAL_MODS_PATH}/mod-list.json" << 'EOF'
+{
+  "mods": [
+    {"name": "base", "enabled": true},
+    {"name": "factorio_verse", "enabled": true},
+    {"name": "elevated-rails", "enabled": false},
+    {"name": "quality", "enabled": false},
+    {"name": "space-age", "enabled": false}
+  ]
+}
+EOF
     fi
-    # Detect OS for mods path
-    if [[ "$OS" == *"MINGW"* ]] || [[ "$OS" == *"MSYS"* ]] || [[ "$OS" == *"CYGWIN"* ]]; then
-        # Windows detected
-        export OS_TYPE="windows"
-        # Use %APPDATA% which is available in Windows bash environments
-        export MODS_PATH="${APPDATA}/Factorio/mods"
-        # Fallback if APPDATA isn't available
-        if [ -z "$MODS_PATH" ] || [ "$MODS_PATH" == "/Factorio/mods" ]; then
-            export MODS_PATH="${USERPROFILE}/AppData/Roaming/Factorio/mods"
-        fi
-    else
-        # Assume Unix-like OS (Linux, macOS)
-        export OS_TYPE="unix"
-        export MODS_PATH="~/Applications/Factorio.app/Contents/Resources/mods"
-    fi
-    # Expand leading ~ in MODS_PATH so docker-compose gets an absolute path
-    if [[ "$MODS_PATH" == ~* ]]; then
-        MODS_PATH="${HOME}${MODS_PATH:1}"
-    fi
-    echo "Detected architecture: $ARCH, using platform: $DOCKER_PLATFORM"
-    echo "Using mods path: $MODS_PATH"
+    
+    echo "✓ Mod prepared"
 }
 
-# Function to check for docker compose command
-setup_compose_cmd() {
-    if command -v docker &> /dev/null; then
-        COMPOSE_CMD="docker compose"
-    else
-        echo "Error: Docker not found. Please install Docker."
+# ============================================================================
+# STEP 2: HANDLE SCENARIO/SAVE
+# ============================================================================
+
+validate_scenario() {
+    local scenario=$1
+    if [ ! -d "${SCRIPT_DIR}/src/factorio/scenarios/${scenario}" ]; then
+        echo "❌ Error: Scenario '${scenario}' not found"
         exit 1
     fi
+    echo "✓ Scenario validated: $scenario"
 }
 
-# Generate the dynamic docker-compose.yml file
-generate_compose_file() {
-    NUM_INSTANCES=${1:-1}
-    SCENARIO=${2:-"factorio_verse"}
-    COMMAND=${3:-"--start-server-load-scenario ${SCENARIO}"}
+# ============================================================================
+# STEP 3: GENERATE DOCKER COMPOSE
+# ============================================================================
 
-    # Build optional mods volume block based on ATTACH_MOD
-    MODS_VOLUME=""
-    if [ "$ATTACH_MOD" = true ]; then
-        MODS_VOLUME=$(printf "    - source: %s\n      target: /opt/factorio/mods\n      type: bind\n" "$MODS_PATH")
-    fi
-
-    # Always create saves directory and mount it
-    mkdir -p .fv-output/saves
+generate_compose() {
+    local num_instances=$1
+    local scenario=$2
     
-    # Build save file volume block - always include saves volume
-    SAVE_VOLUME="    - source: .fv-output/saves
-      target: /opt/factorio/saves
-      type: bind"
-    
-    # Build optional save file logic based on SAVE_ADDED
-    if [ "$SAVE_ADDED" = true ]; then
-        # Check if SAVE_FILE is a .zip file
-        if [[ "$SAVE_FILE" != *.zip ]]; then
-            echo "Error: Save file must be a .zip file."
-            exit 1
-        fi
-        
-        # Get the save file name (basename)
-        SAVE_FILE_NAME=$(basename "$SAVE_FILE")
-        
-        # Copy the save file to the local saves directory
-        # cp "$SAVE_FILE" "../../.fle/saves/$SAVE_FILE_NAME"
-        
-        # Create variable for the container path
-        CONTAINER_SAVE_PATH="/opt/factorio/saves/$SAVE_FILE_NAME"
-        
-        COMMAND="--start-server ${CONTAINER_SAVE_PATH}"
-    fi
-    
-    # Validate scenario
-    if [ "$SCENARIO" != "open_world" ] && [ "$SCENARIO" != "factorio_verse" ]; then
-        echo "Error: Scenario must be either 'open_world' or 'factorio_verse'."
-        exit 1
-    fi
-    
-    # Validate input
-    if ! [[ "$NUM_INSTANCES" =~ ^[0-9]+$ ]]; then
-        echo "Error: Number of instances must be a positive integer."
-        exit 1
-    fi
-    
-    if [ "$NUM_INSTANCES" -lt 1 ] || [ "$NUM_INSTANCES" -gt 33 ]; then
-        echo "Error: Number of instances must be between 1 and 33."
-        exit 1
-    fi
-    
-    # Create the docker-compose file
-    cat > docker-compose.yml << EOF
+    cat > "${SCRIPT_DIR}/docker-compose.yml" <<EOF
 services:
 EOF
     
-    # Add the specified number of factorio services
-    for i in $(seq 0 $(($NUM_INSTANCES - 1))); do
-        UDP_PORT=$((34197 + i))
-        TCP_PORT=$((27000 + i))
+    for i in $(seq 0 $((num_instances - 1))); do
+        local udp_port=$((34197 + i))
+        local tcp_port=$((27000 + i))
+        local output_dir="${SCRIPT_DIR}/.fv-output/output_${i}"
         
-        cat >> docker-compose.yml << EOF
+        mkdir -p "$output_dir"
+        
+        cat >> "${SCRIPT_DIR}/docker-compose.yml" <<EOF
   factorio_${i}:
     image: factoriotools/factorio:2.0.60
     platform: ${DOCKER_PLATFORM}
     entrypoint: []
-    command: ${EMULATOR} /opt/factorio/bin/x64/factorio ${COMMAND}
-      --port 34197 --server-settings /factorio/config/server-settings.json --map-gen-settings \
-      /factorio/config/map-gen-settings.json --map-settings /factorio/config/map-settings.json \
-      --server-banlist /factorio/config/server-banlist.json --rcon-port 27015 \
-      --rcon-password "factorio" --server-whitelist /factorio/config/server-whitelist.json \
-      --use-server-whitelist --server-adminlist /factorio/config/server-adminlist.json \
-      --mod-directory /opt/factorio/mods --map-gen-seed 44340
+    command: ${EMULATOR} /opt/factorio/bin/x64/factorio --start-server-load-scenario ${scenario} --port 34197 --rcon-port 27015 --rcon-password "factorio" --server-settings /factorio/config/server-settings.json --map-gen-settings /factorio/config/map-gen-settings.json --map-settings /factorio/config/map-settings.json --server-whitelist /factorio/config/server-whitelist.json --use-server-whitelist --server-adminlist /factorio/config/server-adminlist.json --mod-directory /opt/factorio/mods --map-gen-seed 44340
     environment:
       - DLC_SPACE_AGE=false
-      - RCON_PORT=27015
     deploy:
       resources:
         limits:
           cpus: '1'
           memory: 1024m
     ports:
-    - ${UDP_PORT}:34197/udp
-    - ${TCP_PORT}:27015/tcp
-    pull_policy: missing
-    # restart: unless-stopped
-    # user: factorio
+      - ${udp_port}:34197/udp
+      - ${tcp_port}:27015/tcp
     volumes:
-    - source: ./src/factorio/factorio_verse/
-      target: /opt/factorio/scenarios/factorio_verse
-      type: bind
-    - source: ./src/factorio/mods/
-      target: /opt/factorio/mods
-      type: bind
-    - source: ./src/factorio/config/
-      target: /factorio/config
-      type: bind
-    - source: .fv-output/output_${i}
-      target: /opt/factorio/script-output
-      type: bind
-${SAVE_VOLUME}
-${MODS_VOLUME}
+      - source: ${SCRIPT_DIR}/src/factorio/scenarios
+        target: /opt/factorio/scenarios
+        type: bind
+      - source: "${LOCAL_MODS_PATH}"
+        target: /opt/factorio/mods
+        type: bind
+      - source: ${SCRIPT_DIR}/src/factorio/config
+        target: /factorio/config
+        type: bind
+      - source: ${output_dir}
+        target: /opt/factorio/script-output
+        type: bind
 EOF
     done
     
-    echo "Generated docker-compose.yml with $NUM_INSTANCES Factorio instance(s) using scenario $SCENARIO"
+    echo "✓ docker-compose.yml generated"
 }
 
-# Function to start Factorio cluster
+# ============================================================================
+# COMMANDS
+# ============================================================================
+
 start_cluster() {
-    NUM_INSTANCES=$1
-    SCENARIO=$2
+    local num_instances=$1
+    local scenario=${2:-test_scenario}
     
-    setup_platform
-    setup_compose_cmd
+    echo "🚀 Starting Factorio cluster (${num_instances} instance(s), scenario: ${scenario})"
     
-    # Generate the docker-compose file
-    generate_compose_file "$NUM_INSTANCES" "$SCENARIO"
+    validate_scenario "$scenario"
+    prepare_mods
+    generate_compose "$num_instances" "$scenario"
     
-    # Run the docker-compose file
-    echo "Starting $NUM_INSTANCES Factorio instance(s) with scenario $SCENARIO..."
-    export NUM_INSTANCES  # Make it available to docker-compose
-    $COMPOSE_CMD -f docker-compose.yml up -d
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" up -d
     
-    echo "Factorio cluster started with $NUM_INSTANCES instance(s) using platform $DOCKER_PLATFORM and scenario $SCENARIO"
+    echo "✅ Cluster started!"
+    for i in $(seq 0 $((num_instances - 1))); do
+        echo "  Server $i: localhost:$((34197 + i))"
+    done
 }
 
-# Function to stop Factorio cluster
 stop_cluster() {
-    setup_compose_cmd
-    
-    if [ -f "docker-compose.yml" ]; then
-        echo "Kicking all players before stopping servers..."
-        
-        # Get list of running factorio containers
-        RUNNING_CONTAINERS=$($COMPOSE_CMD -f docker-compose.yml ps --services --filter "status=running" 2>/dev/null | grep "factorio_" || true)
-        
-        if [ -n "$RUNNING_CONTAINERS" ]; then
-            echo "$RUNNING_CONTAINERS" | while read -r container_name; do
-                PLAYER_NAMES=$($COMPOSE_CMD -f docker-compose.yml exec -T "$container_name" rcon '/c for _,p in pairs(game.connected_players) do rcon.print(p.name) end' 2>/dev/null || true)
-                echo "$PLAYER_NAMES" | while read -r player_name; do
-                    [ -n "$player_name" ] && $COMPOSE_CMD -f docker-compose.yml exec -T "$container_name" rcon "/kick $player_name Server restart" 2>/dev/null
-                done
-            done
-            sleep 1
-        fi
-        
-        echo "Stopping Factorio cluster..."
-        $COMPOSE_CMD -f docker-compose.yml down && docker network prune -f
-        echo "Cluster stopped."
-    else
-        echo "Error: docker-compose.yml not found. No cluster to stop."
-        exit 1
-    fi
-}
-
-# Function to restart Factorio cluster
-restart_cluster() {
-    setup_compose_cmd
-    
-    if [ ! -f "docker-compose.yml" ]; then
-        echo "Error: docker-compose.yml not found. No cluster to restart."
+    if [ ! -f "${SCRIPT_DIR}/docker-compose.yml" ]; then
+        echo "❌ No cluster running"
         exit 1
     fi
     
-    echo "Restarting existing Factorio services without regenerating docker-compose..."
-    $COMPOSE_CMD -f docker-compose.yml restart
-    echo "Factorio services restarted."
+    echo "🛑 Stopping cluster..."
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" down
+    echo "✅ Cluster stopped"
 }
 
-# Show usage information
-show_help() {
-    echo "Usage: $0 [COMMAND] [OPTIONS]"
-    echo ""
-    echo "Commands:"
-    echo "  start         Start Factorio instances (default command)"
-    echo "  stop          Stop all running instances"
-    echo "  restart       Restart the current cluster with the same configuration"
-    echo "  help          Show this help message"
-    echo ""
-    echo "Options:"
-    echo "  -n NUMBER     Number of Factorio instances to run (1-33, default: 1)"
-    echo "  -s SCENARIO   Scenario to run (open_world or factorio_verse, default: factorio_verse)"
-    echo "  -sv SAVE_FILE, --use_save SAVE_FILE Use a .zip save file from factorio"
-    echo "  -m, --attach_mods Attach mods to the instances"
-    echo "  -f86, --force_amd Force AMD platform"
-    echo ""
-    echo "Examples:"
-    echo "  $0                           Start 1 instance with factorio_verse"
-    echo "  $0 -n 5                      Start 5 instances with factorio_verse"
-    echo "  $0 -n 3 -s open_world        Start 3 instances with open_world"
-    echo "  $0 start -n 10 -s open_world Start 10 instances with open_world"
-    echo "  $0 stop                      Stop all running instances"
-    echo "  $0 restart                   Restart the current cluster"
-}
+# ============================================================================
+# MAIN
+# ============================================================================
 
-# Main script execution
-COMMAND="start"
-NUM_INSTANCES=1
-SCENARIO="factorio_verse"
-SAVE_FILE=""
-EMULATOR=""
+if ! command -v docker &>/dev/null; then
+    echo "❌ Docker not found"
+    exit 1
+fi
 
-# Boolean: attach mods or not
-ATTACH_MOD=false
-SAVE_ADDED=false
+COMMAND="${1:-start}"
+NUM_INSTANCES="${2:-1}"
+SCENARIO="${3:-test_scenario}"
 
-# Parse args (supporting both short and long options)
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    start|stop|restart|help)
-      COMMAND="$1"
-      shift
-      ;;
-    -n|--number)
-      if [[ -z "$2" || "$2" == -* ]]; then
-        echo "Error: -n|--number requires an argument."
-        show_help
-        exit 1
-      fi
-      if ! [[ "$2" =~ ^[0-9]+$ ]]; then
-        echo "Error: Number of instances must be a positive integer."
-        exit 1
-      fi
-      NUM_INSTANCES="$2"
-      shift 2
-      ;;
-    -s|--scenario)
-      if [[ -z "$2" || "$2" == -* ]]; then
-        echo "Error: -s|--scenario requires an argument."
-        show_help
-        exit 1
-      fi
-      case "$2" in
-        open_world|factorio_verse)
-          SCENARIO="$2"
-          ;;
-        *)
-          echo "Error: Scenario must be either 'open_world' or 'factorio_verse'."
-          exit 1
-          ;;
-      esac
-      shift 2
-      ;;
-    -sv|--use_save)
-      if [[ -z "$2" || "$2" == -* ]]; then
-        echo "Error: -sv|--use_save requires an argument."
-        show_help
-        exit 1
-      fi
-      if [[ ! -f "$2" ]]; then
-        echo "Error: Save file '$2' does not exist."
-        exit 1
-      fi
-      SAVE_FILE="$2"
-      SAVE_ADDED=true
-      shift 2
-      ;;
-    -m|--attach_mods)
-      ATTACH_MOD=true
-      shift
-      ;;
-    -h|--help)
-      show_help
-      exit 0
-      ;;
-    --)
-      shift
-      break
-      ;;
-    -*)
-      echo "Error: Invalid option: $1"
-      show_help
-      exit 1
-      ;;
-    *)
-      # Unrecognized positional; ignore and continue
-      shift
-      ;;
-  esac
-done
-
-# Execute the appropriate command
 case "$COMMAND" in
-    start)
+    start|'')
         start_cluster "$NUM_INSTANCES" "$SCENARIO"
         ;;
     stop)
         stop_cluster
         ;;
     restart)
-        restart_cluster
-        ;;
-    help)
-        show_help
+        docker compose -f "${SCRIPT_DIR}/docker-compose.yml" restart
         ;;
     *)
-        echo "Error: Unknown command '$COMMAND'"
-        show_help
-        exit 1
+        echo "Usage: $0 [start|stop|restart] [num_instances] [scenario]"
         ;;
 esac
