@@ -153,7 +153,12 @@ class ExperimentManager:
         # Run the setup scripts in order using psql through the container
         setup_scripts = [
             "01_setup_template.sql",
-            "01_experiments.sql"
+            "01_experiments.sql", 
+            "02_map_snapshot.sql",
+            "03_recurring_snapshot.sql",
+            "04_ondemand_snapshot.sql",
+            "05_spatial_views.sql",
+            "06_load_functions.sql"
         ]
         
         for script in setup_scripts:
@@ -534,12 +539,68 @@ class ExperimentManager:
             print(f"Warning: Could not reload snapshots for {db_name}: {e}")
     
     def _start_factorio_server(self, instance_id: int, scenario: str, rcon_port: int, game_port: int) -> None:
-        """Start a Factorio server instance."""
-        # For now, we'll just print that the server would be started
-        # In a full implementation, this would start a single Factorio container
-        # without recreating the entire platform
+        """Start a Factorio server instance and wait for initial snapshot."""
+        print(f"Starting Factorio server {instance_id}...")
+        
+        # Regenerate compose file with this instance
+        self.cluster_manager.generate_compose(
+            num_instances=instance_id + 1,
+            scenario=scenario,
+            attach_mod=True
+        )
+        
+        # Start the Factorio service
+        self.cluster_manager.start_services()
+        
+        # Wait for Factorio to take initial snapshot
+        print(f"Waiting for Factorio server {instance_id} to take initial snapshot...")
+        self._wait_for_initial_snapshot(instance_id)
+        
         print(f"✅ Factorio server {instance_id} started (RCON: {rcon_port}, Game: {game_port})")
-        print("Note: Factorio server management is simplified in this implementation")
+    
+    def _wait_for_initial_snapshot(self, instance_id: int) -> None:
+        """Wait for Factorio to take initial snapshot and load it into database."""
+        import time
+        import subprocess
+        
+        rcon_port = START_RCON_PORT + instance_id
+        
+        # Wait for Factorio server to be ready
+        print(f"Waiting for Factorio server {instance_id} to be ready...")
+        time.sleep(5)  # Give Factorio time to start
+        
+        # Trigger map snapshot via RCON
+        print(f"Triggering map snapshot via RCON...")
+        try:
+            # Use rcon-cli to send the command
+            cmd = [
+                "docker", "exec", "factoryverse-factorio_0-1",
+                "rcon-cli", "--host", "localhost", "--port", str(rcon_port), "--password", "factorio",
+                "take_map_snapshot"
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                print("✅ Map snapshot triggered successfully")
+            else:
+                print(f"⚠️  RCON command failed: {result.stderr}")
+        except Exception as e:
+            print(f"⚠️  Could not trigger map snapshot: {e}")
+        
+        # Wait for snapshot files to be created
+        snapshot_dir = self.work_dir / ".fv" / "snapshots" / f"factorio_{instance_id}" / "chunks"
+        max_wait = 30  # 30 seconds timeout
+        for i in range(max_wait):
+            if snapshot_dir.exists() and any(snapshot_dir.iterdir()):
+                print(f"✅ Snapshot directory found: {snapshot_dir}")
+                break
+            time.sleep(1)
+        else:
+            print(f"⚠️  Warning: No snapshot found after {max_wait} seconds")
+            return
+        
+        # Load the snapshot data into the database
+        print(f"Loading snapshot data for instance {instance_id}...")
+        self._reload_database_snapshots(instance_id)
     
     def _stop_factorio_server(self, instance_id: int) -> None:
         """Stop a Factorio server instance."""

@@ -1,0 +1,801 @@
+--- factorio_verse/core/game_state/AgentGameState.lua
+--- AgentGameState sub-module for managing agent-related functionality.
+--- Core agent management: lifecycle, force management, queries, and control interfaces.
+--- Walking and mining logic are delegated to agent/walking.lua and agent/mining.lua.
+
+-- Module-level local references for global lookups (performance optimization)
+-- Note: Do not capture 'game' at module level - it may be nil during on_load
+-- Access 'game' directly in functions where it's guaranteed to be available
+local pairs = pairs
+local ipairs = ipairs
+
+local utils = require("utils.utils")
+
+-- Agent activity modules
+local Walking = require("game_state.agent.walking")
+local Mining = require("game_state.agent.mining")
+local Crafting = require("game_state.agent.crafting")
+local PlacingInLine = require("game_state.agent.placing_in_line")
+
+--- @param index number
+--- @param total_agents number
+--- @return table
+local function generate_agent_color(index, total_agents)
+    local hue = (index - 1) / total_agents
+    local saturation = 1.0
+    local value = 1.0
+    return utils.hsv_to_rgb(hue, saturation, value)
+end
+
+--- @class AgentGameState : GameStateModule
+--- @field walking WalkingModule
+local M = {}
+M.__index = M
+
+--- @param game_state GameState
+--- @return AgentGameState
+function M:new(game_state)
+    local instance = {
+        game_state = game_state,
+    }
+
+    setmetatable(instance, self)
+    
+    -- Initialize storage tables for activity state machines
+    storage.walk_to_jobs = storage.walk_to_jobs or {}
+    storage.mining_results = storage.mining_results or {}
+    storage.walk_intents = storage.walk_intents or {}
+    storage.place_in_line_jobs = storage.place_in_line_jobs or {}
+    storage.agent_forces = storage.agent_forces or {}
+
+    --- @type table<number, table<string, LuaRenderObject>>
+    storage.agent_name_tags = storage.agent_name_tags or {}
+    
+    -- Initialize activity modules with control interface
+    instance.walking = Walking
+    instance.walking:init(instance)  -- Pass self as agent_control interface
+    
+    instance.placing_in_line = PlacingInLine
+    
+    return instance
+end
+
+-- ============================================================================
+-- AGENT LIFECYCLE MANAGEMENT
+-- ============================================================================
+
+--- Create or get a force by name, setting default friendly relationships
+--- @param force_name string Force name
+--- @return LuaForce
+function M:create_or_get_force(force_name)
+    if not force_name or force_name == "" then
+        error("Force name cannot be empty")
+    end
+    
+    local force = game.forces[force_name]
+    if not force then
+        force = game.create_force(force_name)
+        
+        -- Set default friendly relationships with player force and all existing agent forces
+        local player_force = game.forces.player
+        if player_force then
+            force.set_friend(player_force, true)
+            player_force.set_friend(force, true)
+        end
+        
+        -- Set friendly with all existing agent forces
+        if storage.agent_forces then
+            for _, existing_force_name in pairs(storage.agent_forces) do
+                local existing_force = game.forces[existing_force_name]
+                if existing_force and existing_force.name ~= force_name then
+                    force.set_friend(existing_force, true)
+                    existing_force.set_friend(force, true)
+                end
+            end
+        end
+    end
+    
+    return force
+end
+
+--- @param agent_id number
+--- @param position table
+--- @param color table|nil
+--- @param force_name string|nil Optional force name (if nil, uses agent-{agent_id})
+--- @return LuaEntity? character
+--- @return string force_name
+function M:create_agent(agent_id, position, color, force_name)
+    if not position then
+        position = { x = 0, y = (agent_id - 1) * 2 }
+    end
+    
+    -- Determine force name
+    local final_force_name = force_name
+    if not final_force_name then
+        final_force_name = "agent-" .. tostring(agent_id)
+    end
+    
+    -- Create or get force
+    local force = self:create_or_get_force(final_force_name)
+    
+    -- Store force mapping
+    storage.agent_forces = storage.agent_forces or {}
+    storage.agent_forces[agent_id] = final_force_name
+
+    local surface = game.surfaces[1]
+    -- Find non-colliding position for character placement
+    local spawn_position = force.get_spawn_position(surface)
+    local safe_position = surface.find_non_colliding_position("character", spawn_position, 10, 2)
+    
+    local char = surface.create_entity {
+        name = "character",
+        position = safe_position or spawn_position,
+        force = force
+    }
+    -- Set color after creation (characters don't accept color in create_entity)
+    if color then
+        char.color = color
+    end
+    -- Set name tag for identification (visible in editor mode)
+    local name_tag = "Agent-" .. tostring(agent_id)
+    if char and char.valid then
+        char.name_tag = name_tag
+        -- Render name tag for regular gameplay visibility (name_tag only works in editor mode)
+        local main_tag = rendering.draw_text{
+            text = name_tag,
+            target = char,
+            surface = char.surface,
+            color = {r = 1, g = 1, b = 1, a = 1},
+            scale = 1.2,
+            font = "default-game",
+            alignment = "center",
+            vertical_alignment = "middle"
+        }
+        -- Create circle marker on map
+        local map_marker = rendering.draw_circle{
+            color = char.color,
+            radius = 2.5,
+            filled = true,
+            target = char,
+            surface = char.surface,
+            render_mode = "chart",
+            scale_with_zoom = true
+        }
+        -- Create text label on map
+        local map_tag = rendering.draw_text{
+            text = name_tag,
+            surface = char.surface,
+            target = char,
+            color = {r = 1, g = 1, b = 1},
+            scale = 1,
+            alignment = "left",
+            vertical_alignment = "middle",
+            render_mode = "chart",
+            scale_with_zoom = true
+        }
+        storage.agent_name_tags[agent_id] = {
+            main_tag = main_tag,
+            map_marker = map_marker,
+            map_tag = map_tag
+        }
+    end
+    -- Chart the starting area (safe now - doesn't force sync chunk generation)
+    utils.chart_native_start_area(surface, force, safe_position or spawn_position, self.game_state)
+    return char, final_force_name
+end
+
+--- @param agent_id number
+--- @return LuaEntity|nil
+function M:get_agent(agent_id)
+    if not storage.agents then
+        storage.agents = {}
+        return nil
+    end
+    
+    local agent = storage.agents[agent_id]
+    -- Clean up invalid references (can happen when loading saves)
+    if agent and not agent.valid then
+        storage.agents[agent_id] = nil
+        return nil
+    end
+    return agent
+end
+
+--- @param num_agents number
+--- @param destroy_existing boolean|nil
+--- @param set_unique_forces boolean|nil Default true - each agent gets unique force
+--- @param default_common_force string|nil Force name to use if set_unique_forces=false
+--- @return table agents created (array of {character, force_name})
+function M:create_agents(num_agents, destroy_existing, set_unique_forces, default_common_force)
+    if not storage.agents then
+        storage.agents = {}
+    end
+    
+    if destroy_existing and storage.agents then
+        -- Destroy existing agents directly
+        for _, char in pairs(storage.agents) do
+            if char and char.valid then
+                char.destroy()
+            end
+        end
+        storage.agents = {}
+        storage.agent_forces = {}
+    end
+    
+    -- Determine force strategy
+    local use_unique_forces = set_unique_forces ~= false  -- Default true
+    
+    if not use_unique_forces then
+        -- Use common force
+        local common_force_name = default_common_force or "agent_force"
+        
+        -- Verify force exists if provided
+        if default_common_force then
+            if not game.forces[common_force_name] then
+                error("Force '" .. common_force_name .. "' does not exist")
+            end
+        else
+            -- Create default force if it doesn't exist
+            self:create_or_get_force(common_force_name)
+        end
+    end
+
+    local created_agents = {}
+    for i = 1, num_agents do
+        log("Creating agent character " .. i .. " of " .. num_agents)
+        position = { x = 0, y = (i - 1) * 2 }
+        
+        local force_name = nil
+        if use_unique_forces then
+            force_name = nil  -- Will auto-generate agent-{agent_id}
+        else
+            force_name = default_common_force or "agent_force"
+        end
+        
+        local char, final_force_name = self:create_agent(i, position, generate_agent_color(i, num_agents), force_name)
+        
+        -- Store direct LuaEntity reference
+        storage.agents[i] = char
+        -- Return only serializable data (LuaEntity cannot be JSON serialized)
+        table.insert(created_agents, {agent_id = i, force_name = final_force_name})
+    end
+    return created_agents
+end
+
+-- ============================================================================
+-- AGENT CONTROL INTERFACE (used by walking and mining modules)
+-- ============================================================================
+
+-- Internal helper to fetch the agent's LuaEntity (character)
+local function _get_control_for_agent(agent_id)
+    local agents = storage.agents
+    if agents and agents[agent_id] and agents[agent_id].valid then
+        return agents[agent_id]
+    end
+    return nil
+end
+
+-- Hard exclusivity policy: only one activity active at a time for stability
+-- Stop all walking-related activities (intents and immediate walking state)
+function M:stop_walking(agent_id)
+    -- Clear sustained intents
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+    -- Stop walking immediately on the entity
+    local control = _get_control_for_agent(agent_id)
+    if control and control.valid then
+        local current_dir = (control.walking_state and control.walking_state.direction) or defines.direction.north
+        control.walking_state = { walking = false, direction = current_dir }
+    end
+end
+
+-- Start or stop walking for this tick. Enforces exclusivity with mining when starting.
+function M:set_walking(agent_id, direction, walking)
+    local control = _get_control_for_agent(agent_id)
+    if not (control and control.valid) then return end
+    -- If starting to walk, stop mining per exclusivity policy
+    if walking then
+        if control.mining_state and control.mining_state.mining then
+            control.mining_state = { mining = false }
+        end
+    end
+    -- Apply walking state
+    local dir = direction or (control.walking_state and control.walking_state.direction) or defines.direction.north
+    control.walking_state = { walking = (walking ~= false), direction = dir }
+end
+
+-- Sustain walking for a number of ticks; immediately applies for current tick as well
+function M:sustain_walking(agent_id, direction, ticks)
+    if not ticks or ticks <= 0 then return end
+    storage.walk_intents = storage.walk_intents or {}
+    -- Access game.tick directly when function runs (available during runtime)
+    local end_tick = (game and game.tick or 0) + ticks
+    storage.walk_intents[agent_id] = {
+        direction = direction,
+        end_tick = end_tick,
+        walking = true
+    }
+    -- Immediate apply this tick
+    self:set_walking(agent_id, direction, true)
+end
+
+-- Clear any sustained walking intent for the agent, without changing walk_to jobs
+function M:clear_walking_intent(agent_id)
+    if storage.walk_intents then
+        storage.walk_intents[agent_id] = nil
+    end
+end
+
+--- Cancel any active walk_to jobs for the agent (without touching walking intents)
+function M:cancel_walk_to(agent_id)
+    if self.walking then
+        self.walking:cancel_walk_to(agent_id)
+    end
+end
+
+-- Start/stop mining on the entity; when starting, enforce exclusivity by stopping walking
+-- target may be a position {x,y} or an entity with .position
+function M:set_mining(agent_id, mining, target)
+    local control = _get_control_for_agent(agent_id)
+    if not (control and control.valid) then return end
+    if mining then
+        -- Exclusivity: stop any walking and walk_to jobs
+        self:stop_walking(agent_id)
+        local pos = target and (target.position or target) or nil
+        if pos then
+            control.mining_state = { mining = true, position = { x = pos.x, y = pos.y } }
+        else
+            control.mining_state = { mining = true }
+        end
+        -- Set selected entity if target is an entity (required for zombie characters)
+        if target and target.valid == true then
+            control.selected = target
+        end
+    else
+        control.mining_state = { mining = false }
+    end
+end
+
+-- ============================================================================
+-- JOB MANAGEMENT API (delegates to activity modules)
+-- ============================================================================
+
+--- Start a walk-to job for an agent
+--- @param agent_id number
+--- @param goal {x:number, y:number}
+--- @param options table|nil Options: arrive_radius, lookahead, replan_on_stuck, max_replans, prefer_cardinal, diag_band, snap_axis_eps
+--- @return number|nil job_id
+function M:start_walk_to_job(agent_id, goal, options)
+    return self.walking:start_walk_to_job(agent_id, goal, options)
+end
+
+
+-- ============================================================================
+-- EVENT HANDLERS
+-- ============================================================================
+
+--- Get activity event handlers (aggregates from walking, mining, crafting, and placing_in_line modules)
+--- @return table Event handlers keyed by event ID
+function M:get_activity_events()
+    local walking_events = self.walking:get_event_handlers(self)
+    local mining_events = Mining.get_event_handlers()
+    local crafting_events = Crafting.get_event_handlers()
+    local placing_in_line_events = self.placing_in_line:get_event_handlers(self)
+    
+    -- Merge event handlers (walking, mining, crafting, and placing_in_line all use on_tick)
+    local merged = {}
+    
+    -- Collect all on_tick handlers
+    local on_tick_handlers = {}
+    if walking_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, walking_events[defines.events.on_tick])
+    end
+    if mining_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, mining_events[defines.events.on_tick])
+    end
+    if crafting_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, crafting_events[defines.events.on_tick])
+    end
+    if placing_in_line_events[defines.events.on_tick] then
+        table.insert(on_tick_handlers, placing_in_line_events[defines.events.on_tick])
+    end
+    
+    -- Merge on_tick handlers into single function
+    if #on_tick_handlers > 0 then
+        merged[defines.events.on_tick] = function(event)
+            for _, handler in ipairs(on_tick_handlers) do
+                handler(event)
+            end
+        end
+    end
+    
+    -- Copy other events (non-on_tick)
+    for event_id, handler in pairs(walking_events) do
+        if event_id ~= defines.events.on_tick then
+            merged[event_id] = handler
+        end
+    end
+    for event_id, handler in pairs(mining_events) do
+        if event_id ~= defines.events.on_tick then
+            merged[event_id] = handler
+        end
+    end
+    for event_id, handler in pairs(crafting_events) do
+        if event_id ~= defines.events.on_tick then
+            merged[event_id] = handler
+        end
+    end
+    for event_id, handler in pairs(placing_in_line_events) do
+        if event_id ~= defines.events.on_tick then
+            -- Merge pathfinding events if they exist
+            if merged[event_id] then
+                -- If handler already exists, wrap both
+                local existing = merged[event_id]
+                merged[event_id] = function(e)
+                    existing(e)
+                    handler(e)
+                end
+            else
+                merged[event_id] = handler
+            end
+        end
+    end
+    
+    return merged
+end
+
+-- ============================================================================
+-- FORCE MANAGEMENT
+-- ============================================================================
+
+--- Update friendly relationships for an agent's force
+--- @param agent_id number
+--- @param force_names table<string> Array of force names to set as friendly
+function M:update_agent_friends(agent_id, force_names)
+    if not storage.agent_forces then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    local agent_force_name = storage.agent_forces[agent_id]
+    if not agent_force_name then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    
+    local agent_force = game.forces[agent_force_name]
+    if not agent_force then
+        error("Agent force '" .. agent_force_name .. "' does not exist")
+    end
+    
+    for _, force_name in ipairs(force_names or {}) do
+        local other_force = game.forces[force_name]
+        if other_force then
+            agent_force.set_friend(other_force, true)
+            other_force.set_friend(agent_force, true)
+        end
+    end
+end
+
+--- Update enemy relationships for an agent's force
+--- @param agent_id number
+--- @param force_names table<string> Array of force names to set as enemy
+function M:update_agent_enemies(agent_id, force_names)
+    if not storage.agent_forces then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    local agent_force_name = storage.agent_forces[agent_id]
+    if not agent_force_name then
+        error("Agent " .. tostring(agent_id) .. " has no force assigned")
+    end
+    
+    local agent_force = game.forces[agent_force_name]
+    if not agent_force then
+        error("Agent force '" .. agent_force_name .. "' does not exist")
+    end
+    
+    for _, force_name in ipairs(force_names or {}) do
+        local other_force = game.forces[force_name]
+        if other_force then
+            agent_force.set_cease_fire(other_force, false)
+            agent_force.set_friend(other_force, false)
+            other_force.set_cease_fire(agent_force, false)
+            other_force.set_friend(agent_force, false)
+        end
+    end
+end
+
+--- Destroy an agent with optional force cleanup
+--- @param agent_id number
+--- @param destroy_force boolean|nil If true, destroy force (errors if other agents use it)
+function M:destroy_agent(agent_id, destroy_force)
+    local agent = self:get_agent(agent_id)
+    if not agent then
+        error("Agent " .. tostring(agent_id) .. " not found")
+    end
+    
+    -- Destroy character
+    if agent.valid then
+        agent.destroy()
+    end
+    
+    -- Cleanup storage
+    if storage.agents then
+        storage.agents[agent_id] = nil
+    end
+    
+    -- Cleanup rendered name tag
+    if storage.agent_name_tags and storage.agent_name_tags[agent_id] then
+        pcall(function()
+            local render_objects = storage.agent_name_tags[agent_id]
+            if type(render_objects) == "table" then
+                if render_objects.main_tag then
+                    render_objects.main_tag.destroy()
+                end
+                if render_objects.map_marker then
+                    render_objects.map_marker.destroy()
+                end
+                if render_objects.map_tag then
+                    render_objects.map_tag.destroy()
+                end
+            end
+        end)
+        storage.agent_name_tags[agent_id] = nil
+    end
+    
+    -- Handle force cleanup
+    if destroy_force then
+        local agent_force_name = storage.agent_forces and storage.agent_forces[agent_id]
+        if agent_force_name then
+            -- Check if other agents use this force
+            local other_agents_using_force = false
+            for other_id, force_name in pairs(storage.agent_forces) do
+                if other_id ~= agent_id and force_name == agent_force_name then
+                    other_agents_using_force = true
+                    break
+                end
+            end
+            
+            if other_agents_using_force then
+                error("Cannot destroy force '" .. agent_force_name .. "': other agents still use it")
+            end
+            
+            -- Destroy force (Note: Forces cannot be deleted in Factorio API, so we just remove from tracking)
+            -- The force will remain in game but won't be tracked by our system
+            if game.forces[agent_force_name] then
+                -- Forces are permanent in Factorio - cannot be deleted
+                -- We just remove from our tracking
+            end
+            
+            -- Cleanup force mapping
+            storage.agent_forces[agent_id] = nil
+        end
+    else
+        -- Just remove from mapping, keep force alive
+        if storage.agent_forces then
+            storage.agent_forces[agent_id] = nil
+        end
+    end
+end
+
+--- List all agent-to-force mappings
+--- @return table<number, string> Mapping of agent_id -> force_name
+function M:list_agent_forces()
+    return storage.agent_forces or {}
+end
+
+-- ============================================================================
+-- ADMIN API AND SNAPSHOTS
+-- ============================================================================
+
+--- Inspect agent details
+--- @param agent_id number - agent ID (required)
+--- @param attach_inventory boolean - whether to include inventory (default false)
+--- @param attach_reachable_entities boolean - whether to include entities within reach (default false)
+--- @return table - {agent_id, tick, position {x, y}, inventory?, nearby_resources?, nearby_entities?} or {error, agent_id, tick}
+function M:inspect_agent(agent_id, attach_inventory, attach_reachable_entities)
+    attach_inventory = attach_inventory or false
+    attach_reachable_entities = attach_reachable_entities or false
+    
+    local agent = self:get_agent(agent_id)
+    if not agent or not agent.valid then
+        return {
+            error = "Agent not found or invalid",
+            agent_id = agent_id,
+            tick = game.tick or 0
+        }
+    end
+
+    local position = agent.position
+    if not position then
+        return {
+            error = "Agent has no position",
+            agent_id = agent_id,
+            tick = game.tick or 0
+        }
+    end
+
+    local result = {
+        agent_id = agent_id,
+        tick = game.tick or 0,
+        position = { x = position.x, y = position.y }
+    }
+
+    -- Get agent inventory only if requested
+    if attach_inventory then
+        local inventory = {}
+        local main_inventory = agent.get_inventory(defines.inventory.character_main)
+        if main_inventory then
+            local contents = main_inventory.get_contents()
+            if contents and next(contents) ~= nil then
+                inventory = contents
+            end
+        end
+        result.inventory = inventory
+    end
+
+    -- Get entities within reach only if requested
+    if attach_reachable_entities then
+        local reachable_resources = {}
+        local reachable_entities = {}
+        local surface = agent.surface or game.surfaces[1]
+        
+        -- Find resources within resource_reach_distance (includes resources, trees, and rocks)
+        local resource_reach = agent.resource_reach_distance
+        -- Search for resources, trees, and simple-entities (rocks) separately
+        local resources = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "resource"
+        })
+        
+        for _, resource in ipairs(resources) do
+            if resource and resource.valid then
+                table.insert(reachable_resources, {
+                    name = resource.name,
+                    position = { x = resource.position.x, y = resource.position.y },
+                    type = resource.type
+                })
+            end
+        end
+        
+        -- Find trees within resource_reach_distance
+        local trees = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "tree"
+        })
+        
+        for _, tree in ipairs(trees) do
+            if tree and tree.valid then
+                table.insert(reachable_resources, {
+                    name = tree.name,
+                    position = { x = tree.position.x, y = tree.position.y },
+                    type = tree.type
+                })
+            end
+        end
+        
+        -- Find simple-entities (rocks) within resource_reach_distance
+        local rocks = surface.find_entities_filtered({
+            position = position,
+            radius = resource_reach,
+            type = "simple-entity"
+        })
+        
+        for _, rock in ipairs(rocks) do
+            if rock and rock.valid then
+                table.insert(reachable_resources, {
+                    name = rock.name,
+                    position = { x = rock.position.x, y = rock.position.y },
+                    type = rock.type
+                })
+            end
+        end
+        
+        -- Find other entities (non-resources, non-trees, non-rocks) within reach_distance
+        local build_reach = agent.reach_distance
+        local other_entities = surface.find_entities_filtered({
+            position = position,
+            radius = build_reach
+        })
+        
+        for _, entity in ipairs(other_entities) do
+            if entity and entity.valid 
+               and entity.type ~= "resource" 
+               and entity.type ~= "tree" 
+               and entity.type ~= "simple-entity" 
+               and entity ~= agent then
+                -- Exclude tree stumps and other tree-related corpses
+                local is_tree_corpse = (entity.type == "corpse" and 
+                                       (string.find(entity.name, "stump") or 
+                                        string.find(entity.name, "tree")))
+                if not is_tree_corpse then
+                    table.insert(reachable_entities, {
+                        name = entity.name,
+                        position = { x = entity.position.x, y = entity.position.y },
+                        type = entity.type
+                    })
+                end
+            end
+        end
+        
+        result.reachable_resources = reachable_resources
+        result.reachable_entities = reachable_entities
+    end
+
+    return result
+end
+
+--- Destroy multiple agents with optional force cleanup
+--- @param agent_ids table<number> Array of agent IDs to destroy
+--- @param destroy_forces boolean|nil If true, destroy forces (errors if other agents use them)
+function M:destroy_agents(agent_ids, destroy_forces)
+    local destroyed = {}
+    local errors = {}
+    
+    for _, agent_id in ipairs(agent_ids or {}) do
+        local ok, err = pcall(function()
+            self:destroy_agent(agent_id, destroy_forces)
+        end)
+        if ok then
+            table.insert(destroyed, agent_id)
+        else
+            table.insert(errors, {agent_id = agent_id, error = tostring(err)})
+        end
+    end
+    
+    return {
+        destroyed = destroyed,
+        errors = errors
+    }
+end
+
+--- Specifications for admin API methods - enables multiple calling conventions
+--- Each spec has _param_order to map positional args to named parameters
+--- Includes type and required metadata for validation
+M.AdminApiSpecs = {
+    inspect_agent = {
+        _param_order = {"agent_id", "attach_inventory", "attach_entities"},
+        agent_id = {type = "number", required = true},
+        attach_inventory = {type = "boolean", required = false},
+        attach_entities = {type = "boolean", required = false},
+    },
+    create_agents = {
+        _param_order = {"num_agents", "destroy_existing", "set_unique_forces", "default_common_force"},
+        num_agents = {type = "number", required = true},
+        destroy_existing = {type = "boolean", required = false},
+        set_unique_forces = {type = "boolean", required = false},
+        default_common_force = {type = "string", required = false},
+    },
+    destroy_agents = {
+        _param_order = {"agent_ids", "destroy_forces"},
+        agent_ids = {type = "table", required = true},
+        destroy_forces = {type = "boolean", required = false},
+    },
+    update_agent_friends = {
+        _param_order = {"agent_id", "force_names"},
+        agent_id = {type = "number", required = true},
+        force_names = {type = "table", required = true},
+    },
+    update_agent_enemies = {
+        _param_order = {"agent_id", "force_names"},
+        agent_id = {type = "number", required = true},
+        force_names = {type = "table", required = true},
+    },
+    list_agent_forces = {
+        _param_order = {},
+    },
+}
+
+M.admin_api = {
+    inspect_agent = M.inspect_agent,
+    create_agents = M.create_agents,
+    destroy_agents = M.destroy_agents,
+    update_agent_friends = M.update_agent_friends,
+    update_agent_enemies = M.update_agent_enemies,
+    list_agent_forces = M.list_agent_forces,
+}
+
+M.on_demand_snapshots = { inspect_agent = M.inspect_agent }
+
+return M
+

@@ -1,520 +1,314 @@
 #!/usr/bin/env python3
 """
-FactoryVerse CLI
+FactoryVerse CLI - File-based experiment tracking.
 
-Unified command-line interface for:
-- Platform management (PostgreSQL + Jupyter)
-- Experiment lifecycle (Factorio servers + databases + notebooks)
-- Checkpoint management (save/load stubs)
-- Database operations (debugging/analysis)
+Manages Jupyter notebook server and multiple Factorio servers.
 """
 
 import argparse
 import sys
+import json
 from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Any
 
-from .infra.experiments import ExperimentManager
-from .infra.experiments.checkpoints import CheckpointManager
+from .infra.docker import DockerComposeManager, FactorioServerManager, JupyterManager, HotreloadWatcher
+from .infra.factorio_client_setup import setup_client, launch_factorio_client, sync_hotreload_to_client, read_factorio_log
 
 
-def cmd_platform_start(args):
-    """Start the FactoryVerse platform (PostgreSQL + Jupyter)."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
+class SimpleExperimentTracker:
+    """File-based experiment tracking."""
     
-    if manager.is_platform_running():
-        print("Platform services are already running.")
-        return
+    def __init__(self, work_dir: Path):
+        self.work_dir = work_dir
+        self.experiments_file = work_dir / ".fv-output" / "experiments.json"
+        self.experiments_file.parent.mkdir(parents=True, exist_ok=True)
+        self.experiments: Dict[str, Any] = {}
+        self._load()
     
-    manager.start_platform()
+    def _load(self):
+        """Load experiments from file."""
+        if self.experiments_file.exists():
+            with open(self.experiments_file) as f:
+                self.experiments = json.load(f)
+    
+    def _save(self):
+        """Save experiments to file."""
+        with open(self.experiments_file, 'w') as f:
+            json.dump(self.experiments, f, indent=2, default=str)
+    
+    def list_experiments(self) -> List[Dict]:
+        """List all experiments."""
+        return list(self.experiments.values())
+    
+    def add_experiment(self, experiment_id: str, name: str, num_servers: int, scenario: str):
+        """Add a new experiment."""
+        self.experiments[experiment_id] = {
+            "id": experiment_id,
+            "name": name,
+            "scenario": scenario,
+            "num_servers": num_servers,
+            "created_at": datetime.now().isoformat(),
+            "status": "running"
+        }
+        self._save()
+    
+    def update_status(self, experiment_id: str, status: str):
+        """Update experiment status."""
+        if experiment_id in self.experiments:
+            self.experiments[experiment_id]["status"] = status
+            self._save()
+    
+    def get_experiment(self, experiment_id: str) -> Dict:
+        """Get experiment by ID."""
+        return self.experiments.get(experiment_id)
 
 
-def cmd_platform_stop(args):
-    """Stop the FactoryVerse platform."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
+def cmd_client_launch(args):
+    """Setup and launch Factorio client."""
+    from pathlib import Path
     
-    if not manager.is_platform_running():
-        print("Platform services are not running.")
-        return
+    work_dir = Path.cwd()
+    server_mgr = FactorioServerManager(work_dir)
     
-    manager.stop_platform()
-
-
-def cmd_platform_status(args):
-    """Show platform status."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
-    
-    if manager.is_platform_running():
-        print("✅ Platform services are running")
-        print("  📊 PostgreSQL: localhost:5432")
-        print("  📓 Jupyter: http://localhost:8888")
+    # Setup client
+    if args.as_mod:
+        # Setup as mod
+        print(f"📱 Setting up Factorio client (factorio_verse as MOD)")
+        setup_client(server_mgr.verse_mod_dir, scenario="test_scenario", force=args.force, 
+                    project_scenarios_dir=server_mgr.scenarios_dir)
+        
+        if args.watch:
+            print("⚠️  --watch not supported when using factorio_verse as MOD")
+            print("   Hotreload only works with scenario mode")
     else:
-        print("❌ Platform services are not running")
-        print("  Run 'factoryverse platform start' to start services")
-
-
-def cmd_experiment_create(args):
-    """Create a new experiment."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
+        # Setup as scenario
+        print(f"📱 Setting up Factorio client (factorio_verse as SCENARIO)")
+        setup_client(server_mgr.verse_mod_dir, scenario="factorio_verse", force=args.force,
+                    project_scenarios_dir=server_mgr.scenarios_dir)
     
-    # Check if platform is running, prompt to start if not
-    if not manager.is_platform_running():
-        response = input("Platform services not running. Start now? [Y/n]: ")
-        if response.lower() in ['', 'y', 'yes']:
-            manager.start_platform()
-        else:
-            print("Cannot create experiment without platform services.")
-            sys.exit(1)
+    # Launch client
+    print("\n🚀 Launching Factorio client...")
+    launch_factorio_client()
     
-    # Parse agent names
-    agent_names = args.agents.split(',') if args.agents else ['agent_0']
-    agent_names = [name.strip() for name in agent_names]
-    
-    print(f"Creating experiment '{args.name}' with {len(agent_names)} agent(s)...")
-    
-    try:
-        exp_info = manager.create_experiment(
-            experiment_name=args.name,
-            scenario=args.scenario,
-            agent_names=agent_names
-        )
+    # Start hotreload watcher if requested (only for scenario mode)
+    if args.watch and not args.as_mod:
+        print("\n🔥 Starting hot-reload watcher...")
+        watcher = HotreloadWatcher(server_mgr.verse_mod_dir, debounce_ms=2000)  # 2 second debounce for IDE flush
         
-        print(f"\n✅ Experiment created successfully!")
-        print(f"  Experiment ID: {exp_info.experiment_id}")
-        print(f"  Factorio Instance: {exp_info.factorio_instance_id}")
-        print(f"  Database: {exp_info.database_name}")
-        print(f"  RCON Port: {exp_info.rcon_port}")
-        print(f"  Game Port: {exp_info.game_port}")
-        print(f"  Scenario: {exp_info.scenario}")
-        print(f"\n  Agents:")
-        for agent in exp_info.agents:
-            print(f"    - {agent.agent_name}: {agent.notebook_path}")
+        def sync_and_reload():
+            sync_hotreload_to_client(server_mgr.verse_mod_dir)
         
-        print(f"\n  Next steps:")
-        print(f"    1. Open Jupyter: http://localhost:8888")
-        print(f"    2. Open notebook: {Path(exp_info.agents[0].notebook_path).name}")
-        print(f"    3. Connect to Factorio: localhost:{exp_info.rcon_port}")
+        watcher.start(sync_and_reload)
         
-    except Exception as e:
-        print(f"❌ Failed to create experiment: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        try:
+            print("Press Ctrl+C to stop watching...")
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nStopping watcher...")
+            watcher.stop()
 
 
-def cmd_experiment_list(args):
+def cmd_client_log(args):
+    """Display Factorio client log file."""
+    read_factorio_log(follow=args.follow)
+
+
+def cmd_start(args):
+    """Start Factorio servers with Jupyter AND setup client."""
+    from pathlib import Path
+    
+    work_dir = Path.cwd()
+    
+    # Setup client first
+    server_mgr = FactorioServerManager(work_dir)
+    print(f"📱 Setting up Factorio client (scenario: {args.scenario})")
+    setup_client(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, project_scenarios_dir=server_mgr.scenarios_dir)
+    
+    # Clear server snapshot directories before starting
+    print(f"🧹 Clearing server snapshot directories...")
+    server_mgr.clear_all_server_snapshot_dirs(args.num)
+    
+    # Prepare server mods
+    print(f"🚀 Starting FactoryVerse ({args.num} server(s), scenario: {args.scenario})")
+    server_mgr.prepare_mods(args.scenario)
+    
+    # Build compose file with services from both managers
+    compose_mgr = DockerComposeManager(work_dir)
+    jupyter_mgr = JupyterManager(work_dir)
+    
+    compose_mgr.add_services("jupyter", jupyter_mgr.get_services())
+    compose_mgr.add_services("factorio", server_mgr.get_services(args.num, args.scenario))
+    compose_mgr.write_compose()
+    compose_mgr.up()
+    
+    # Print server info
+    for i in range(args.num):
+        print(f"  Server {i}: localhost:{34197 + i}")
+    print(f"📓 Jupyter: http://localhost:8888")
+    
+    # Track experiment
+    if args.name:
+        tracker = SimpleExperimentTracker(work_dir)
+        experiment_id = f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        tracker.add_experiment(experiment_id, args.name, args.num, args.scenario)
+        print(f"📝 Experiment '{args.name}' tracked (ID: {experiment_id})")
+    
+    # Start hotreload watcher if requested
+    if args.watch:
+        print("\n🔥 Starting hot-reload watcher...")
+        watcher = HotreloadWatcher(server_mgr.verse_mod_dir, debounce_ms=2000)  # 2 second debounce for IDE flush
+        
+        def sync_and_reload():
+            # Sync to all running servers
+            for i in range(args.num):
+                server_mgr.sync_hotreload_to_server(compose_mgr, server_id=i)
+        
+        watcher.start(sync_and_reload)
+        
+        try:
+            print("Press Ctrl+C to stop watching...")
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nStopping watcher...")
+            watcher.stop()
+
+
+def cmd_stop(args):
+    """Stop all services."""
+    from pathlib import Path
+    compose_mgr = DockerComposeManager(Path.cwd())
+    compose_mgr.down()
+    print("✅ Services stopped")
+
+
+def cmd_restart(args):
+    """Restart all services."""
+    from pathlib import Path
+    compose_mgr = DockerComposeManager(Path.cwd())
+    compose_mgr.restart()
+    print("✅ Services restarted")
+
+
+def cmd_list(args):
     """List experiments."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
+    from pathlib import Path
+    work_dir = Path.cwd()
+    tracker = SimpleExperimentTracker(work_dir)
     
-    try:
-        experiments = manager.list_experiments(status=args.status)
-        
-        if not experiments:
-            status_filter = f" with status '{args.status}'" if args.status else ""
-            print(f"No experiments found{status_filter}.")
-            return
-        
-        print(f"Experiments ({len(experiments)}):")
-        print()
-        print(f"{'Name':<20} {'Status':<10} {'Instance':<8} {'Agents':<20} {'Created'}")
-        print("-" * 80)
-        
-        for exp in experiments:
-            agent_names = ', '.join([agent.agent_name for agent in exp.agents])
-            print(f"{exp.experiment_name:<20} {exp.status:<10} {exp.factorio_instance_id:<8} {agent_names:<20} {exp.created_at.strftime('%Y-%m-%d %H:%M')}")
-            
-    except Exception as e:
-        print(f"❌ Failed to list experiments: {e}")
-        sys.exit(1)
-
-
-def cmd_experiment_stop(args):
-    """Stop an experiment."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
+    experiments = tracker.list_experiments()
+    if not experiments:
+        print("No experiments found.")
+        return
     
-    try:
-        exp_info = manager.get_experiment_info(args.experiment_id)
-        manager.stop_experiment(args.experiment_id)
-        print(f"✅ Experiment '{exp_info.experiment_name}' stopped.")
-        
-    except ValueError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to stop experiment: {e}")
-        sys.exit(1)
+    print(f"Experiments ({len(experiments)}):")
+    print(f"{'ID':<20} {'Name':<20} {'Servers':<8} {'Scenario':<15} {'Status':<10} {'Created'}")
+    print("-" * 100)
+    for exp in experiments:
+        created = datetime.fromisoformat(exp['created_at']).strftime('%Y-%m-%d %H:%M')
+        print(f"{exp['id']:<20} {exp['name']:<20} {exp['num_servers']:<8} {exp['scenario']:<15} {exp['status']:<10} {created}")
 
 
-def cmd_experiment_restart(args):
-    """Restart an experiment."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
+def cmd_logs(args):
+    """Show logs for a service."""
+    from pathlib import Path
+    compose_mgr = DockerComposeManager(Path.cwd())
+    compose_mgr.logs(args.service, follow=args.follow)
+
+
+def cmd_server(args):
+    """Control individual servers."""
+    from pathlib import Path
+    compose_mgr = DockerComposeManager(Path.cwd())
+    service_name = f"factorio_{args.server_id}"
     
-    try:
-        exp_info = manager.get_experiment_info(args.experiment_id)
-        manager.restart_experiment(args.experiment_id, clean_db=args.clean_db)
-        print(f"✅ Experiment '{exp_info.experiment_name}' restarted.")
-        
-    except ValueError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to restart experiment: {e}")
-        sys.exit(1)
-
-
-def cmd_experiment_info(args):
-    """Show detailed information about an experiment."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
-    
-    try:
-        exp_info = manager.get_experiment_info(args.experiment_id)
-        
-        print(f"Experiment: {exp_info.experiment_name}")
-        print(f"  ID: {exp_info.experiment_id}")
-        print(f"  Status: {exp_info.status}")
-        print(f"  Factorio Instance: {exp_info.factorio_instance_id}")
-        print(f"  Database: {exp_info.database_name}")
-        print(f"  Scenario: {exp_info.scenario}")
-        print(f"  RCON Port: {exp_info.rcon_port}")
-        print(f"  Game Port: {exp_info.game_port}")
-        print(f"  Created: {exp_info.created_at}")
-        print(f"  Agents ({len(exp_info.agents)}):")
-        
-        for agent in exp_info.agents:
-            print(f"    - {agent.agent_name}")
-            print(f"      Notebook: {agent.notebook_path}")
-            print(f"      Status: {agent.status}")
-            if agent.jupyter_kernel_id:
-                print(f"      Kernel: {agent.jupyter_kernel_id}")
-        
-    except ValueError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to get experiment info: {e}")
-        sys.exit(1)
-
-
-def cmd_checkpoint_save(args):
-    """Save a checkpoint for an experiment (stub)."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
-    
-    checkpoint_manager = CheckpointManager(manager.pg_dsn)
-    
-    try:
-        checkpoint_id = checkpoint_manager.save_checkpoint(
-            experiment_id=args.experiment_id,
-            name=args.name or f"checkpoint_{args.experiment_id}",
-            metadata={"created_by": "cli"}
-        )
-        print(f"✅ Checkpoint saved: {checkpoint_id}")
-        
-    except NotImplementedError as e:
-        print(f"⚠️  Checkpoint functionality not yet implemented: {e}")
-    except Exception as e:
-        print(f"❌ Failed to save checkpoint: {e}")
-        sys.exit(1)
-
-
-def cmd_checkpoint_list(args):
-    """List checkpoints for an experiment."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
-    
-    checkpoint_manager = CheckpointManager(manager.pg_dsn)
-    
-    try:
-        checkpoints = checkpoint_manager.list_checkpoints(args.experiment_id)
-        
-        if not checkpoints:
-            print(f"No checkpoints found for experiment {args.experiment_id}.")
-            return
-        
-        print(f"Checkpoints for experiment {args.experiment_id} ({len(checkpoints)}):")
-        print()
-        print(f"{'ID':<36} {'Name':<20} {'Tick':<10} {'Created'}")
-        print("-" * 80)
-        
-        for cp in checkpoints:
-            print(f"{cp.checkpoint_id:<36} {cp.checkpoint_name or 'N/A':<20} {cp.game_tick:<10} {cp.created_at.strftime('%Y-%m-%d %H:%M')}")
-            
-    except Exception as e:
-        print(f"❌ Failed to list checkpoints: {e}")
-        sys.exit(1)
-
-
-def cmd_checkpoint_load(args):
-    """Load a checkpoint (stub)."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
-    
-    checkpoint_manager = CheckpointManager(manager.pg_dsn)
-    
-    try:
-        checkpoint_info = checkpoint_manager.load_checkpoint(args.checkpoint_id)
-        print(f"✅ Checkpoint loaded: {checkpoint_info.checkpoint_name}")
-        
-    except NotImplementedError as e:
-        print(f"⚠️  Checkpoint functionality not yet implemented: {e}")
-    except Exception as e:
-        print(f"❌ Failed to load checkpoint: {e}")
-        sys.exit(1)
-
-
-def cmd_db_query(args):
-    """Execute a SQL query against an experiment's database."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
-    
-    try:
-        exp_info = manager.get_experiment_info(args.experiment_id)
-        
-        # Connect to experiment-specific database
-        instance_dsn = manager.pg_dsn.replace('/postgres', f'/{exp_info.database_name}')
-        
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
-        with psycopg2.connect(instance_dsn) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                print(f"Executing query on experiment '{exp_info.experiment_name}' (database: {exp_info.database_name})...")
-                print(f"Query: {args.query}")
-                print()
-                
-                cur.execute(args.query)
-                
-                if cur.description:
-                    # Query returned results
-                    results = cur.fetchall()
-                    
-                    if results:
-                        # Print column headers
-                        columns = [desc[0] for desc in cur.description]
-                        print(" | ".join(columns))
-                        print("-" * (len(" | ".join(columns))))
-                        
-                        # Print rows
-                        for row in results:
-                            values = [str(row[col]) for col in columns]
-                            print(" | ".join(values))
-                        
-                        print(f"\n{len(results)} rows returned.")
-                    else:
-                        print("No rows returned.")
-                else:
-                    # Query didn't return results
-                    print("Query executed successfully.")
-        
-    except ValueError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to execute query: {e}")
-        sys.exit(1)
-
-
-def cmd_db_reload(args):
-    """Reload database snapshots for an experiment."""
-    manager = ExperimentManager(
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None
-    )
-    
-    try:
-        exp_info = manager.get_experiment_info(args.experiment_id)
-        manager._reload_database_snapshots(exp_info.factorio_instance_id)
-        print(f"✅ Database snapshots reloaded for experiment '{exp_info.experiment_name}'.")
-        
-    except ValueError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to reload database: {e}")
-        sys.exit(1)
+    if args.action == "start":
+        compose_mgr.start_service(service_name)
+    elif args.action == "stop":
+        compose_mgr.stop_service(service_name)
+    elif args.action == "restart":
+        compose_mgr.restart_service(service_name)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="FactoryVerse: LLM-powered Factorio agent platform",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Start platform services
-  factoryverse platform start
-
-  # Create an experiment with default agent
-  factoryverse experiment create my-experiment
-
-  # Create an experiment with multiple agents
-  factoryverse experiment create my-experiment --agents agent1,agent2,agent3
-
-  # List experiments
-  factoryverse experiment list
-
-  # Stop an experiment
-  factoryverse experiment stop <experiment-id>
-
-  # Query experiment database
-  factoryverse db query <experiment-id> "SELECT * FROM map_entities LIMIT 5"
-
-  # Reload database snapshots
-  factoryverse db reload <experiment-id>
-        """
+        description="FactoryVerse: Run multiple Factorio servers with Jupyter",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-
-    # Global options
-    parser.add_argument(
-        "--state-dir",
-        help="Directory for Docker state files (default: platform-specific)"
-    )
-    parser.add_argument(
-        "--work-dir",
-        help="Working directory for notebooks and data (default: current directory)"
-    )
-
+    
     subparsers = parser.add_subparsers(dest="command", help="Command")
-
-    # ========================================================================
-    # Platform commands
-    # ========================================================================
-    platform_parser = subparsers.add_parser("platform", help="Manage platform services")
-    platform_subparsers = platform_parser.add_subparsers(dest="platform_command")
-
-    # platform start
-    platform_start_parser = platform_subparsers.add_parser("start", help="Start platform services (PostgreSQL + Jupyter)")
-    platform_start_parser.set_defaults(func=cmd_platform_start)
-
-    # platform stop
-    platform_stop_parser = platform_subparsers.add_parser("stop", help="Stop platform services")
-    platform_stop_parser.set_defaults(func=cmd_platform_stop)
-
-    # platform status
-    platform_status_parser = platform_subparsers.add_parser("status", help="Show platform status")
-    platform_status_parser.set_defaults(func=cmd_platform_status)
-
-    # ========================================================================
-    # Experiment commands
-    # ========================================================================
-    exp_parser = subparsers.add_parser("experiment", help="Manage experiments")
-    exp_subparsers = exp_parser.add_subparsers(dest="experiment_command")
-
-    # experiment create
-    exp_create_parser = exp_subparsers.add_parser("create", help="Create new experiment")
-    exp_create_parser.add_argument("name", help="Experiment name")
-    exp_create_parser.add_argument("--scenario", default="factorio_verse", help="Factorio scenario")
-    exp_create_parser.add_argument("--agents", help="Comma-separated list of agent names (default: agent_0)")
-    exp_create_parser.set_defaults(func=cmd_experiment_create)
-
-    # experiment list
-    exp_list_parser = exp_subparsers.add_parser("list", help="List experiments")
-    exp_list_parser.add_argument("--status", choices=["running", "paused", "completed", "failed"], help="Filter by status")
-    exp_list_parser.set_defaults(func=cmd_experiment_list)
-
-    # experiment stop
-    exp_stop_parser = exp_subparsers.add_parser("stop", help="Stop experiment")
-    exp_stop_parser.add_argument("experiment_id", help="Experiment ID")
-    exp_stop_parser.set_defaults(func=cmd_experiment_stop)
-
-    # experiment restart
-    exp_restart_parser = exp_subparsers.add_parser("restart", help="Restart experiment")
-    exp_restart_parser.add_argument("experiment_id", help="Experiment ID")
-    exp_restart_parser.add_argument("--clean-db", action="store_true", help="Reload database snapshots")
-    exp_restart_parser.set_defaults(func=cmd_experiment_restart)
-
-    # experiment info
-    exp_info_parser = exp_subparsers.add_parser("info", help="Show experiment details")
-    exp_info_parser.add_argument("experiment_id", help="Experiment ID")
-    exp_info_parser.set_defaults(func=cmd_experiment_info)
-
-    # ========================================================================
-    # Checkpoint commands (stubs)
-    # ========================================================================
-    checkpoint_parser = subparsers.add_parser("checkpoint", help="Manage checkpoints (stub implementation)")
-    checkpoint_subparsers = checkpoint_parser.add_subparsers(dest="checkpoint_command")
-
-    # checkpoint save
-    checkpoint_save_parser = checkpoint_subparsers.add_parser("save", help="Save checkpoint")
-    checkpoint_save_parser.add_argument("experiment_id", help="Experiment ID")
-    checkpoint_save_parser.add_argument("--name", help="Checkpoint name")
-    checkpoint_save_parser.set_defaults(func=cmd_checkpoint_save)
-
-    # checkpoint list
-    checkpoint_list_parser = checkpoint_subparsers.add_parser("list", help="List checkpoints")
-    checkpoint_list_parser.add_argument("experiment_id", help="Experiment ID")
-    checkpoint_list_parser.set_defaults(func=cmd_checkpoint_list)
-
-    # checkpoint load
-    checkpoint_load_parser = checkpoint_subparsers.add_parser("load", help="Load checkpoint")
-    checkpoint_load_parser.add_argument("checkpoint_id", help="Checkpoint ID")
-    checkpoint_load_parser.set_defaults(func=cmd_checkpoint_load)
-
-    # ========================================================================
-    # Database commands
-    # ========================================================================
-    db_parser = subparsers.add_parser("db", help="Database operations")
-    db_subparsers = db_parser.add_subparsers(dest="db_command")
-
-    # db query
-    db_query_parser = db_subparsers.add_parser("query", help="Execute SQL query")
-    db_query_parser.add_argument("experiment_id", help="Experiment ID")
-    db_query_parser.add_argument("query", help="SQL query to execute")
-    db_query_parser.set_defaults(func=cmd_db_query)
-
-    # db reload
-    db_reload_parser = db_subparsers.add_parser("reload", help="Reload database snapshots")
-    db_reload_parser.add_argument("experiment_id", help="Experiment ID")
-    db_reload_parser.set_defaults(func=cmd_db_reload)
-
-    # ========================================================================
-    # Parse and execute
-    # ========================================================================
+    
+    # ========== CLIENT COMMAND ==========
+    client_parser = subparsers.add_parser("client", help="Factorio client operations")
+    client_subparsers = client_parser.add_subparsers(dest="client_action", help="Client action")
+    
+    # Client launch subcommand
+    client_launch_parser = client_subparsers.add_parser("launch", help="Setup and launch Factorio client")
+    client_launch_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
+    client_launch_parser.add_argument("-w", "--watch", action="store_true", help="Enable hot-reload watcher (scenario mode only)")
+    client_launch_parser.add_argument("--as-mod", action="store_true", help="Use factorio_verse as mod (default: scenario)")
+    client_launch_parser.set_defaults(func=cmd_client_launch)
+    
+    # Client log subcommand
+    client_log_parser = client_subparsers.add_parser("log", help="Display Factorio client log file")
+    client_log_parser.add_argument("-f", "--follow", action="store_true", help="Follow log file (like tail -f)")
+    client_log_parser.set_defaults(func=cmd_client_log)
+    
+    # ========== SERVER COMMAND ==========
+    server_parser = subparsers.add_parser("server", help="Factorio server operations")
+    server_subparsers = server_parser.add_subparsers(dest="server_action", help="Server action")
+    
+    # Server start subcommand
+    server_start_parser = server_subparsers.add_parser("start", help="Setup client and start servers")
+    server_start_parser.add_argument("-n", "--num", type=int, default=1, help="Number of servers (default: 1)")
+    server_start_parser.add_argument("-s", "--scenario", default="test_scenario", help="Scenario to load (default: test_scenario)")
+    server_start_parser.add_argument("--name", help="Experiment name (optional)")
+    server_start_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
+    server_start_parser.add_argument("-w", "--watch", action="store_true", help="Enable hot-reload watcher")
+    server_start_parser.set_defaults(func=cmd_start)
+    
+    # Server stop subcommand
+    server_stop_parser = server_subparsers.add_parser("stop", help="Stop all services")
+    server_stop_parser.set_defaults(func=cmd_stop)
+    
+    # Server restart subcommand
+    server_restart_parser = server_subparsers.add_parser("restart", help="Restart all services")
+    server_restart_parser.set_defaults(func=cmd_restart)
+    
+    # Server list subcommand
+    server_list_parser = server_subparsers.add_parser("list", help="List experiments")
+    server_list_parser.set_defaults(func=cmd_list)
+    
+    # Server logs subcommand
+    server_logs_parser = server_subparsers.add_parser("logs", help="View logs")
+    server_logs_parser.add_argument("service", help="Service name (e.g., factorio_0, jupyter)")
+    server_logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow logs")
+    server_logs_parser.set_defaults(func=cmd_logs)
+    
+    # Server instance control subcommand
+    server_instance_parser = server_subparsers.add_parser("instance", help="Control individual server instances")
+    server_instance_parser.add_argument("action", choices=["start", "stop", "restart"], help="Action")
+    server_instance_parser.add_argument("server_id", type=int, help="Server ID")
+    server_instance_parser.set_defaults(func=cmd_server)
+    
     args = parser.parse_args()
-
+    
     if not hasattr(args, 'func'):
         parser.print_help()
         sys.exit(1)
-
+    
     try:
         args.func(args)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(130)
     except Exception as e:
-        import traceback
         print(f"Error: {e}", file=sys.stderr)
-        print("\nFull traceback:", file=sys.stderr)
+        import traceback
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
