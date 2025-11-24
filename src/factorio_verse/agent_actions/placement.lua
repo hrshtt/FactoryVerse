@@ -6,6 +6,7 @@
 local PlacementActions = {}
 
 --- Place an entity (sync)
+--- @param self Agent
 --- @param entity_name string Entity prototype name
 --- @param position table Position {x, y}
 --- @param options table|nil Placement options {direction, orient_towards}
@@ -25,15 +26,27 @@ function PlacementActions.place_entity(self, entity_name, position, options)
     
     options = options or {}
     
-    local surface = self.entity.surface or game.surfaces[1]
-    if not surface then
-        error("Agent: No surface available")
-    end
-    
     -- Validate entity prototype exists
     local proto = prototypes and prototypes.entity and prototypes.entity[entity_name]
     if not proto then
         error("Agent: Unknown entity prototype: " .. entity_name)
+    end
+
+    if not self.entity.get_main_inventory().get_item_count(entity_name) > 0 then
+        error("Agent: Insufficient items in agent inventory (have " .. self.entity.get_main_inventory().get_item_count(entity_name) .. ", need 1)")
+    end
+    
+    local can_place_params = {
+        name = entity_name,
+        position = position,
+        direction = options.direction,
+        force = self.entity.force,
+        build_check_type = defines.build_check_type.manual,
+    }
+
+    if not game.surfaces[1].can_place_entity(can_place_params) then
+        -- TODO: Need to implement proper diagnostics for why it can't be placed
+        error("Agent: Cannot place entity at position " .. position.x .. ", " .. position.y)
     end
     
     -- Build placement parameters
@@ -56,7 +69,7 @@ function PlacementActions.place_entity(self, entity_name, position, options)
         
         if options.orient_towards.entity_name and options.orient_towards.position then
             local ok, ent = pcall(function()
-                return surface.find_entity(options.orient_towards.entity_name, options.orient_towards.position)
+                return game.surfaces[1].find_entity(options.orient_towards.entity_name, options.orient_towards.position)
             end)
             if ok and ent and ent.valid then
                 target_pos = ent.position
@@ -78,12 +91,14 @@ function PlacementActions.place_entity(self, entity_name, position, options)
     end
     
     -- Place entity
-    local created_entity = surface.create_entity(placement)
+    local created_entity = game.surfaces[1].create_entity(placement)
     if not created_entity or not created_entity.valid then
         error("Agent: Failed to place entity")
     end
+    self.entity.get_main_inventory().remove({ name = entity_name, count = 1 })
     
     local entity_pos = { x = created_entity.position.x, y = created_entity.position.y }
+
     
     -- Enqueue completion message
     self:enqueue_message({
@@ -101,52 +116,6 @@ function PlacementActions.place_entity(self, entity_name, position, options)
         position = entity_pos,
         entity_name = entity_name,
         entity_type = created_entity.type,
-    }
-end
-
---- Cancel a placement job
---- @param job_id number|nil If nil, cancels all placement jobs
---- @return table Result
-function PlacementActions.cancel_placement(self, job_id)
-    if not (self.entity and self.entity.valid) then
-        error("Agent: Agent entity is invalid")
-    end
-    
-    local cancelled_jobs = {}
-    
-    if job_id then
-        -- Cancel specific job
-        local job = self.placing.jobs[job_id]
-        if job then
-            job.cancelled = true
-            job.cancelled_tick = game.tick
-            table.insert(cancelled_jobs, job_id)
-            self.placing.jobs[job_id] = nil
-        end
-    else
-        -- Cancel all jobs
-        for id, job in pairs(self.placing.jobs) do
-            job.cancelled = true
-            job.cancelled_tick = game.tick
-            table.insert(cancelled_jobs, id)
-        end
-        self.placing.jobs = {}
-    end
-    
-    -- Enqueue cancel message
-    self:enqueue_message({
-        action = "cancel_placement",
-        agent_id = self.agent_id,
-        success = true,
-        cancelled = #cancelled_jobs > 0,
-        cancelled_jobs = cancelled_jobs,
-        tick = game.tick or 0,
-    }, "placement")
-    
-    return {
-        success = true,
-        cancelled = #cancelled_jobs > 0,
-        cancelled_jobs = cancelled_jobs,
     }
 end
 
@@ -218,13 +187,7 @@ function PlacementActions.get_placement_cues(self, entity_name)
         game.print(string.format("[get_placement_cues] Unknown entity type: %s", entity_name))
         return {}  -- Unknown entity type, return empty
     end
-    
-    local surface = self.entity.surface or game.surfaces[1]
-    if not surface then
-        game.print("[get_placement_cues] No surface available")
-        return {}
-    end
-    
+
     -- Get chunks in view (5x5 chunks around agent)
     -- Note: get_chunks_in_view is mixed into Agent from ChartingActions
     local chunks_in_view = self:get_chunks_in_view()
@@ -297,7 +260,7 @@ function PlacementActions.get_placement_cues(self, entity_name)
                         force = self.entity.force,
                         build_check_type = defines.build_check_type.manual,
                     }
-                    local can_place = surface.can_place_entity(params)
+                    local can_place = game.surfaces[1].can_place_entity(params)
                     if can_place then
                         if not found_valid then
                             -- Only add position once (first valid direction found)
@@ -321,7 +284,7 @@ function PlacementActions.get_placement_cues(self, entity_name)
         local total_positions_valid = 0
         for _, chunk in pairs(chunks_to_scan) do
             -- Find resource entities in chunk
-            local resource_entities = surface.find_entities_filtered({
+            local resource_entities = game.surfaces[1].find_entities_filtered({
                 area = chunk.area,
                 type = "resource"
             })
@@ -352,7 +315,7 @@ function PlacementActions.get_placement_cues(self, entity_name)
                             force = self.entity.force,
                             build_check_type = defines.build_check_type.manual,
                         }
-                        local can_place = surface.can_place_entity(params)
+                        local can_place = game.surfaces[1].can_place_entity(params)
                         if can_place then
                             total_positions_valid = total_positions_valid + 1
                             -- Reuse resource_entity.name from find_entities_filtered response

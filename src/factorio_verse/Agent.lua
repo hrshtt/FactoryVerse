@@ -54,7 +54,6 @@
 --- @field craft_dequeue fun(self: Agent, recipe_name: string, count?: number): table
 --- @field process_crafting fun(self: Agent)
 --- @field place_entity fun(self: Agent, entity_name: string, position: {x: number, y: number}, options?: table): table
---- @field cancel_placement fun(self: Agent, job_id: number): table
 --- @field get_placement_cues fun(self: Agent, entity_name: string): table
 --- @field set_entity_recipe fun(self: Agent, entity_name: string, position?: {x: number, y: number}, recipe_name?: string): table
 --- @field set_entity_filter fun(self: Agent, entity_name: string, position?: {x: number, y: number}, inventory_type: number|string, filter_index?: number, filter_item?: string): table
@@ -277,10 +276,6 @@ end
 -- ============================================================================
 -- REMOTE INTERFACE REGISTRATION
 -- ============================================================================
-local valid_recipe_categories = {
-    ["crafting"] = true,
-    ["smelting"] = true,
-}
 
 --- Register per-agent remote interface
 --- Interface name: "agent_{agent_id}"
@@ -340,9 +335,6 @@ function Agent:register_remote_interface()
         -- Placement
         place_entity = function(entity_name, position, options)
             return self:place_entity(entity_name, position, options)
-        end,
-        cancel_placement = function(job_id)
-            return self:cancel_placement(job_id)
         end,
 
         -- Teleport
@@ -623,6 +615,7 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
                         type = entity.type
                     })
                 end
+                -- TODO: Add inventory to reachable entities using get_contents()
             end
         end
 
@@ -633,11 +626,20 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
     return result
 end
 
+local valid_recipe_categories = {
+    ["crafting"] = true,
+    ["smelting"] = true,
+}
+
 function Agent:get_recipes(category)
     if category and not valid_recipe_categories[category] then
+        local categories = {}
+        for k, _ in pairs(valid_recipe_categories) do
+            table.insert(categories, k)
+        end
         return {
             error = "Invalid recipe category",
-            valid_categories = valid_recipe_categories,
+            valid_categories = categories,
         }
     end
     local recipes = self.entity.force.recipes

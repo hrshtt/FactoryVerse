@@ -487,9 +487,6 @@ end
 function M.clear_map_area(bounding_box)
 end
 
-function M.track_chunk_charting()
-end
-
 function M.get_player_force()
     return game.forces["player"]
 end
@@ -507,13 +504,7 @@ M.admin_api = {
     get_chunk_lookup = M.get_chunk_lookup,
 }
 
-M.event_based_snapshot = {
-    nth_tick = {
-        [60] = function(event)
-            M.track_chunk_charting()
-        end,
-    }
-}
+M.event_based_snapshot = {}
 
 --- Build disk_write_snapshot event handlers table
 --- @return table - {events = {event_id -> handler, ...}}

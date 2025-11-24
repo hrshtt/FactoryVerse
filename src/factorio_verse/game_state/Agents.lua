@@ -161,7 +161,8 @@ function M.create_agents(num_agents, destroy_existing, set_unique_forces, defaul
         
         table.insert(created_agents, {
             agent_id = agent.agent_id,
-            force_name = agent.force_name
+            force_name = agent.force_name,
+            iterface_name = "agent_" .. agent.agent_id,
         })
     end
     
