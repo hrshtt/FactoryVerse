@@ -5,6 +5,42 @@
 
 local CraftingActions = {}
 
+local valid_recipe_categories = {
+    ["crafting"] = true,
+    ["smelting"] = true,
+}
+
+function CraftingActions.get_recipes(self, category)
+    if category and not valid_recipe_categories[category] then
+        local categories = {}
+        for k, _ in pairs(valid_recipe_categories) do
+            table.insert(categories, k)
+        end
+        return {
+            error = "Invalid recipe category",
+            valid_categories = categories,
+        }
+    end
+    local recipes = self.character.force.recipes
+    local valid_recipes = {}
+    for recipe_name, recipe in pairs(recipes) do
+        if recipe.category == "parameters" or (category and category ~= recipe.category) then
+            goto skip
+        end
+        local details = {
+            name = recipe_name,
+            category = recipe.category,
+            energy = recipe.energy,
+            ingredients = recipe.ingredients,
+        }
+        if recipe.enabled then
+            table.insert(valid_recipes, details)
+        end
+        ::skip::
+    end
+    return valid_recipes
+end
+
 --- Calculate estimated crafting time in ticks
 --- @param entity LuaEntity Character entity
 --- @param recipe_proto table Recipe prototype (from prototypes.recipe)
@@ -51,6 +87,12 @@ end
 function CraftingActions.craft_enqueue(self, recipe_name, count)
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
+    end
+    
+    -- Block crafting if mining stochastic entity (huge-rock)
+    -- This ensures inventory diff is accurate for tracking mined products
+    if self:is_mining_blocking_crafting() then
+        error("Agent: Cannot craft while mining huge-rock (stochastic products)")
     end
     
     if not recipe_name or type(recipe_name) ~= "string" then

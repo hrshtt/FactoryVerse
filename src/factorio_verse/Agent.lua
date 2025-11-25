@@ -13,11 +13,19 @@
 --- @field goal table|nil Goal position {x, y} for completion tracking
 
 --- @class AgentMiningState : table
---- @field count_progress number Current count of mined items
---- @field target_count number|nil Target count of mined items (nil for trees and rocks)
---- @field mine_entity LuaEntity|nil Entity being mined
---- @field item_name string|nil Item name being mined (for completion tracking)
---- @field start_tick number|nil Tick when mining started (for time calculation)
+--- @field mode string|nil Mining mode: "incremental" or "deplete"
+--- @field action_id string|nil Action ID for tracking
+--- @field start_tick number|nil Tick when mining started
+--- @field entity_name string|nil Name of entity being mined
+--- @field entity_type string|nil Type of entity being mined  
+--- @field entity_position table|nil Position of entity being mined
+--- @field target_count number|nil Target count (incremental mode only)
+--- @field count_progress number|nil Current count (incremental mode only)
+--- @field completion_threshold number|nil Progress threshold (incremental mode only)
+--- @field last_progress number|nil Previous progress (incremental mode only)
+--- @field is_stochastic boolean|nil Whether entity has random products (huge-rock)
+--- @field start_inventory table|nil Inventory snapshot (stochastic deplete only)
+--- @field expected_products table|nil Expected products for completion message
 
 --- @class AgentCraftingState : table
 --- @field in_progress table|nil Active crafting tracking {recipe, count, action_id, ...}
@@ -48,8 +56,9 @@
 --- @field process_walking fun(self: Agent)
 --- @field mine_resource fun(self: Agent, resource_name: string, max_count?: number): table
 --- @field stop_mining fun(self: Agent): table
+--- @field finalize_mining fun(self: Agent, reason?: string): table
 --- @field process_mining fun(self: Agent)
---- @field complete_mining fun(self: Agent): table
+--- @field is_mining_blocking_crafting fun(self: Agent): boolean
 --- @field craft_enqueue fun(self: Agent, recipe_name: string, count?: number): table
 --- @field craft_dequeue fun(self: Agent, recipe_name: string, count?: number): table
 --- @field process_crafting fun(self: Agent)
@@ -67,6 +76,8 @@
 --- @field chart_spawn_area fun(self: Agent): boolean
 --- @field get_chunks_in_view fun(self: Agent): table[]
 --- @field chart_view fun(self: Agent, rechart?: boolean): boolean
+--- @field register_remote_interface fun(self: Agent): nil
+--- @field unregister_remote_interface fun(self: Agent): nil
 local Agent = {}
 
 -- ============================================================================
@@ -128,7 +139,9 @@ function Agent:new(agent_id, color, force_name, spawn_position)
         -- Consolidated activity state
         walking = {},
         mining = {
-            job = nil,
+            count_progress = 0,
+            target_count = nil,
+            start_tick = nil,
         },
         crafting = {
             in_progress = nil,
@@ -293,14 +306,10 @@ function Agent:destroy(remove_force)
     end
 
     -- Destroy rendering labels
-    if self.labels.main_tag then
-        self.labels.main_tag.destroy()
-    end
-    if self.labels.map_marker then
-        self.labels.map_marker.destroy()
-    end
-    if self.labels.map_tag then
-        self.labels.map_tag.destroy()
+    for _, label in pairs(self.labels) do
+        if label and label.destroy then
+            label.destroy()
+        end
     end
 
     -- Handle force cleanup
@@ -366,7 +375,7 @@ function Agent:get_inventory_contents()
         return nil
     end
 
-    local main_inventory = self.character.get_inventory(defines.inventory.character_main)
+    local main_inventory = self.character.get_main_inventory()
     if main_inventory then
         return main_inventory.get_contents()
     end
@@ -510,43 +519,6 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
 
     return result
 end
-
-local valid_recipe_categories = {
-    ["crafting"] = true,
-    ["smelting"] = true,
-}
-
-function Agent:get_recipes(category)
-    if category and not valid_recipe_categories[category] then
-        local categories = {}
-        for k, _ in pairs(valid_recipe_categories) do
-            table.insert(categories, k)
-        end
-        return {
-            error = "Invalid recipe category",
-            valid_categories = categories,
-        }
-    end
-    local recipes = self.character.force.recipes
-    local valid_recipes = {}
-    for recipe_name, recipe in pairs(recipes) do
-        if recipe.category == "parameters" or (category and category ~= recipe.category) then
-            goto skip
-        end
-        local details = {
-            name = recipe_name,
-            category = recipe.category,
-            energy = recipe.energy,
-            ingredients = recipe.ingredients,
-        }
-        if recipe.enabled then
-            table.insert(valid_recipes, details)
-        end
-        ::skip::
-    end
-    return valid_recipes
-end
-
 
 function Agent:get_production_statistics()
     local stats = self.character.force.get_item_production_statistics(game.surfaces[1]);

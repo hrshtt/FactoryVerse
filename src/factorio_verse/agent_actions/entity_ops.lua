@@ -18,11 +18,11 @@ local function _resolve_entity_position(self, position, default_radius)
     end
     
     -- Use agent position with default radius
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Cannot resolve entity position - agent entity is invalid")
     end
     
-    local agent_pos = self.entity.position
+    local agent_pos = self.character.position
     return { x = agent_pos.x, y = agent_pos.y }, (default_radius or 5.0)
 end
 
@@ -34,28 +34,30 @@ local function _can_reach_entity(self, entity)
     if not (self.character and self.character.valid) then
         return false
     end
+
+    return self.character.can_reach_entity(entity)
     
-    local agent_pos = self.character.position
-    local entity_pos = entity.position
+    -- local agent_pos = self.character.position
+    -- local entity_pos = entity.position
     
-    -- Check reach distance (default character reach: 2.5 tiles)
-    local dx = entity_pos.x - agent_pos.x
-    local dy = entity_pos.y - agent_pos.y
-    local distance = math.sqrt(dx * dx + dy * dy)
+    -- -- Check reach distance (default character reach: 2.5 tiles)
+    -- local dx = entity_pos.x - agent_pos.x
+    -- local dy = entity_pos.y - agent_pos.y
+    -- local distance = math.sqrt(dx * dx + dy * dy)
     
-    -- Character reach is typically 2.5, but we'll use 3.0 for safety
-    return distance <= self.character.reach_distance
+    -- -- Character reach is typically 2.5, but we'll use 3.0 for safety
+    -- return distance <= self.character.reach_distance
 end
 
 --- Helper to validate recipe is accessible to agent's force
 --- @param recipe_name string Recipe name
 --- @return boolean
 local function _can_use_recipe(self, recipe_name)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         return false
     end
     
-    local force = self.entity.force
+    local force = self.character.force
     if not force then
         return false
     end
@@ -71,7 +73,7 @@ end
 --- @param recipe_name string|nil Recipe name (nil to clear recipe)
 --- @return table Result
 function EntityOpsActions.set_entity_recipe(self, entity_name, position, recipe_name)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -121,7 +123,7 @@ end
 --- @param filter_item string|nil Item name to filter (nil to clear filter)
 --- @return table Result
 function EntityOpsActions.set_entity_filter(self, entity_name, position, inventory_type, filter_index, filter_item)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -169,7 +171,7 @@ end
 --- @param limit number|nil Limit to set (nil to clear limit)
 --- @return table Result
 function EntityOpsActions.set_inventory_limit(self, entity_name, position, inventory_type, limit)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -216,7 +218,7 @@ end
 --- @param count number|nil Count to get (default: all available)
 --- @return table Result
 function EntityOpsActions.get_inventory_item(self, entity_name, position, inventory_type, item_name, count)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -233,7 +235,7 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
     end
     
     -- Get agent's main inventory
-    local agent_inventory = self.entity.get_inventory(defines.inventory.character_main)
+    local agent_inventory = self.character.get_main_inventory()
     if not agent_inventory then
         error("Agent: Agent inventory is invalid")
     end
@@ -318,7 +320,7 @@ end
 --- @param count number Count to set
 --- @return table Result
 function EntityOpsActions.set_inventory_item(self, entity_name, position, inventory_type, item_name, count)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -339,7 +341,7 @@ function EntityOpsActions.set_inventory_item(self, entity_name, position, invent
     end
     
     -- Get agent's main inventory
-    local agent_inventory = self.entity.get_inventory(defines.inventory.character_main)
+    local agent_inventory = self.character.get_main_inventory()
     if not agent_inventory then
         error("Agent: Agent inventory is invalid")
     end
@@ -411,11 +413,12 @@ function EntityOpsActions.set_inventory_item(self, entity_name, position, invent
 end
 
 --- Pick up an entity (transfers to agent inventory)
+--- @param self Agent
 --- @param entity_name string Entity prototype name
 --- @param position table|nil Position {x, y} (nil to use agent position with radius search)
 --- @return table Result
 function EntityOpsActions.pickup_entity(self, entity_name, position)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -432,29 +435,30 @@ function EntityOpsActions.pickup_entity(self, entity_name, position)
     end
     
     -- Check if entity can be picked up
-    if not entity_interface:can_pickup() then
-        error("Agent: Entity cannot be picked up")
+    if not entity.minable then
+        error("Agent: Entity is not minable")
     end
     
     -- Get agent's main inventory
-    local agent_inventory = self.entity.get_inventory(defines.inventory.character_main)
+    local agent_inventory = self.character.get_main_inventory()
     if not agent_inventory then
         error("Agent: Agent inventory is invalid")
     end
-    
-    -- Extract items from entity (if it has inventory)
-    local extracted_items = entity_interface:extract_inventory_items()
-    
-    -- Transfer extracted items to agent inventory
+
+    local before_contents = agent_inventory.get_contents()
+
+    -- Mine entity
+    self.character.mine_entity(entity)
+
+    local after_contents = agent_inventory.get_contents()
+
     local transferred = {}
-    for item_name, count in pairs(extracted_items) do
-        if count > 0 then
-            local inserted = agent_inventory.insert({ name = item_name, count = count })
-            if inserted > 0 then
-                transferred[item_name] = inserted
-            end
+    for item_name, count in pairs(before_contents) do
+        if after_contents[item_name] and after_contents[item_name] > 0 then
+            transferred[item_name] = after_contents[item_name] - count
         end
     end
+
     
     -- Destroy entity
     local entity_pos = { x = entity.position.x, y = entity.position.y }

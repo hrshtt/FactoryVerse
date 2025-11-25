@@ -1,319 +1,471 @@
 --- Agent mining action methods
 --- Methods operate directly on Agent instances (self)
---- State is stored in self.mining (count_progress, target_count, mine_entity)
+--- State is stored in self.mining
 --- These methods are mixed into the Agent class at module level
+---
+--- Mining Modes:
+---   INCREMENTAL: Resource ores - mine N items using cycle detection, then stop
+---   DEPLETE: Trees, rocks, huge-rock - mine until entity invalid, report products at end
+---
+--- Only huge-rock (stochastic products) blocks crafting due to inventory diff requirement.
+
+local debug_render = require("utils.debug_render")
 
 local MiningActions = {}
 
---- Resource type mappings for trees/rocks
-local RESOURCE_TYPE_MAP = {
+-- ============================================================================
+-- CONSTANTS
+-- ============================================================================
+
+local MINING_MODE = {
+    INCREMENTAL = "incremental",  -- ores: count cycles to target
+    DEPLETE = "deplete",          -- trees/rocks: wait for entity.valid == false
+}
+
+--- Entities with stochastic (random/probability-based) products
+local STOCHASTIC_ENTITIES = {
+    ["huge-rock"] = true,
+}
+
+--- Resource type mappings for search (user says "tree" or "rock", we search by type)
+local RESOURCE_TYPE_MAPPING = {
     ["tree"] = "tree",
     ["rock"] = "simple-entity",
 }
 
---- Resource item mappings for trees/rocks
-local RESOURCE_ITEM_MAP = {
-    ["tree"] = "wood",
-    ["rock"] = "stone",
-}
+-- ============================================================================
+-- HELPER FUNCTIONS
+-- ============================================================================
+
+--- Determine mining mode based on entity type
+--- @param entity LuaEntity The entity being mined
+--- @return string Mining mode constant
+local function get_mining_mode(entity)
+    if entity.type == "resource" then
+        return MINING_MODE.INCREMENTAL
+    else
+        return MINING_MODE.DEPLETE
+    end
+end
+
+--- Check if entity has stochastic products
+--- @param entity LuaEntity
+--- @return boolean
+local function is_stochastic(entity)
+    return STOCHASTIC_ENTITIES[entity.name] == true
+end
+
+--- Calculate effective mining speed for character
+--- @param character LuaEntity Character entity
+--- @return number Effective mining speed
+local function get_effective_mining_speed(character)
+    local base_speed = character.prototype.mining_speed
+    local modifier = character.character_mining_speed_modifier or 0
+    return base_speed * (1 + modifier)
+end
+
+--- Calculate the completion threshold for mining progress (incremental mode only)
+--- The last progress value before 1.0 is (1.0 - progress_per_tick)
+--- @param character LuaEntity Character entity
+--- @param entity LuaEntity Entity being mined
+--- @return number Threshold value (progress > threshold means cycle about to complete)
+local function get_completion_threshold(character, entity)
+    local mining_time = entity.prototype.mineable_properties.mining_time
+    local mining_speed = get_effective_mining_speed(character)
+    local progress_per_tick = mining_speed / (mining_time * 60)
+    return 1.0 - progress_per_tick - 0.0001
+end
+
+--- Get expected products for a mineable entity (deterministic only)
+--- @param entity LuaEntity Entity being mined
+--- @return table {item_name = amount, ...}
+local function get_expected_products(entity)
+    local proto = entity.prototype
+    local mineable_props = proto.mineable_properties
+    
+    if not mineable_props or not mineable_props.products then
+        return {}
+    end
+    
+    local products = {}
+    for _, product in pairs(mineable_props.products) do
+        -- Products can have probability < 1.0 (skip those) or amount/amount_min/amount_max
+        if not product.probability or product.probability >= 1.0 then
+            local amount = product.amount or product.amount_min or 1
+            products[product.name] = (products[product.name] or 0) + amount
+        end
+    end
+    
+    return products
+end
+
+--- Snapshot current inventory counts for common mining products
+--- @param character LuaEntity Character entity
+--- @return table {item_name = count, ...}
+local function snapshot_inventory(character)
+    local snapshot = {}
+    local inventory = character.get_main_inventory()
+    if not inventory then return snapshot end
+    
+    local common_products = {"stone", "coal", "iron-ore", "copper-ore", "wood"}
+    for _, name in ipairs(common_products) do
+        snapshot[name] = inventory.get_item_count(name)
+    end
+    return snapshot
+end
+
+--- Calculate inventory diff between current and snapshot
+--- @param character LuaEntity Character entity
+--- @param start_snapshot table {item_name = count, ...}
+--- @return table {item_name = delta, ...} Only positive deltas
+local function get_inventory_diff(character, start_snapshot)
+    local diff = {}
+    local inventory = character.get_main_inventory()
+    if not inventory then return diff end
+    
+    for item_name, start_count in pairs(start_snapshot) do
+        local current_count = inventory.get_item_count(item_name)
+        local delta = current_count - start_count
+        if delta > 0 then
+            diff[item_name] = delta
+        end
+    end
+    return diff
+end
 
 --- Calculate estimated mining time in ticks
---- @param mining_speed number Mining speed
---- @param resource_entity LuaEntity Resource entity to mine
---- @param count number|nil Number of entities to mine (only used for ores, ignored for trees/rocks)
---- @return number|nil Estimated ticks (nil if cannot calculate)
-local function calculate_mining_time_ticks(mining_speed, resource_entity, count)
-    
-    local proto = resource_entity.prototype
+--- @param character LuaEntity Character entity
+--- @param entity LuaEntity Entity to mine
+--- @param count number|nil Number of mining cycles (for incremental mode)
+--- @return number|nil Estimated ticks
+local function calculate_mining_time_ticks(character, entity, count)
+    local proto = entity.prototype
     if not proto or not proto.mineable_properties then
         return nil
     end
     
-    local mineable_props = proto.mineable_properties
-    local mining_time_seconds = mineable_props.mining_time  -- Base time in seconds at speed 1.0
-    
-    -- Validate mining_time exists and is positive
-    if not mining_time_seconds or mining_time_seconds <= 0 then
+    local mining_time = proto.mineable_properties.mining_time
+    if not mining_time or mining_time <= 0 then
         return nil
     end
     
-    -- Calculate ticks to mine one entity: (mining_time_seconds / mining_speed) * 60
-    local ticks_per_entity = (mining_time_seconds / mining_speed) * 60
+    local mining_speed = get_effective_mining_speed(character)
+    local ticks_per_cycle = (mining_time / mining_speed) * 60
     
-    -- For ores: multiply by count if specified
     if count and count > 1 then
-        return math.ceil(ticks_per_entity * count)
+        return math.ceil(ticks_per_cycle * count)
     end
-    
-    -- For trees/rocks or single ore: just return time for one entity
-    return math.ceil(ticks_per_entity)
+    return math.ceil(ticks_per_cycle)
+end
+
+-- ============================================================================
+-- PUBLIC API
+-- ============================================================================
+
+--- Check if mining state should block crafting
+--- Only stochastic mining (huge-rock) blocks crafting because we need inventory diff
+--- @param self Agent
+--- @return boolean
+function MiningActions.is_mining_blocking_crafting(self)
+    if not self.character.mining_state.mining then
+        return false
+    end
+    return self.mining.is_stochastic == true
 end
 
 --- Start mining a resource (async)
+--- @param self Agent
 --- @param resource_name string Resource name (e.g., "iron-ore", "tree", "rock")
---- @param max_count number|nil Maximum count to mine (only for ores/coal/stone, ignored for trees/rocks)
---- @return table Result with {success, queued, action_id, tick}
+--- @param max_count number|nil Maximum count to mine (only for ores, ignored for trees/rocks)
+--- @return table Result with {success, queued, action_id, tick, estimated_ticks, expected_products}
 function MiningActions.mine_resource(self, resource_name, max_count)
+    -- Validate input
     if not resource_name or type(resource_name) ~= "string" then
         error("Agent: resource_name (string) is required")
     end
     
-    -- Validate: cannot mine oil
     if string.find(resource_name:lower(), "oil") then
-        error("Agent: Cannot mine oil resources")
+        error("Agent: Cannot mine oil resources (use pumpjack)")
     end
     
-    -- Use agent position and resource reach distance for search
+    if self.character.mining_state.mining then
+        error("Agent: Already mining, call stop_mining first")
+    end
+    
+    -- Find entity to mine
     local agent_pos = self.character.position
     local radius = self.character.resource_reach_distance or 2.5
-    local surface = self.character.surface or game.surfaces[1]
-    
-    -- Determine if this is a tree/rock (point entity) or ore/coal/stone
-    local is_point_entity = (resource_name == "tree" or resource_name == "rock")
-    
-    -- For trees/rocks, ignore max_count parameter
-    if is_point_entity then
-        max_count = nil
-    end
+    local surface = self.character.surface
     
     local search_args = {
         position = { x = agent_pos.x, y = agent_pos.y },
         radius = radius,
     }
     
-    if is_point_entity then
-        search_args.type = RESOURCE_TYPE_MAP[resource_name]
+    if RESOURCE_TYPE_MAPPING[resource_name] then
+        search_args.type = RESOURCE_TYPE_MAPPING[resource_name]
     else
         search_args.name = resource_name
     end
     
-    -- Find resource entity (not strict - take first result)
     local entities = surface.find_entities_filtered(search_args)
     if not entities or #entities == 0 then
         error("Agent: Resource not found within reach")
     end
     
-    local resource_entity = entities[1]
-    if not resource_entity or not resource_entity.valid then
-        error("Agent: Resource entity is invalid")
+    local entity = entities[1]
+    if not entity or not entity.valid then
+        error("Game: Resource entity is invalid")
     end
     
-    -- Determine item name
-    local item_name = is_point_entity and RESOURCE_ITEM_MAP[resource_name] or resource_name
+    -- Determine mining mode and properties
+    local mode = get_mining_mode(entity)
+    local stochastic = is_stochastic(entity)
     
-    -- Initialize mining state
-    local current_count = self.character.get_item_count(item_name)
-    self.mining.count_progress = current_count
-    self.mining.mine_entity = resource_entity
-    self.mining.item_name = item_name  -- Store for completion message
-    self.mining.start_tick = game.tick  -- Store start tick for actual time calculation
+    -- Store entity info (survives entity destruction)
+    local entity_name = entity.name
+    local entity_type = entity.type
+    local entity_position = { x = entity.position.x, y = entity.position.y }
     
-    -- Set target_count only for ores/coal/stone (not trees/rocks)
-    if is_point_entity then
-        self.mining.target_count = nil  -- Mine until depleted
+    -- Mode-specific setup
+    local target_count = nil
+    local completion_threshold = nil
+    local start_inventory = nil
+    local expected_products = nil
+    
+    if mode == MINING_MODE.INCREMENTAL then
+        target_count = max_count or 10
+        completion_threshold = get_completion_threshold(self.character, entity)
+        expected_products = { [entity_name] = target_count }
     else
-        max_count = max_count or 10
-        self.mining.target_count = current_count + max_count
+        -- DEPLETE mode
+        if stochastic then
+            -- Need inventory snapshot for huge-rock
+            start_inventory = snapshot_inventory(self.character)
+        else
+            -- Deterministic - we know what we'll get
+            expected_products = get_expected_products(entity)
+        end
     end
     
-    -- Start mining on entity (stop walking, set mining state)
-    if self.character.walking_state and self.character.walking_state.walking then
-        self.character.walking_state = { walking = false }
-    end
+    -- Generate action ID
+    local action_id = string.format("mine_%d_%d", game.tick, self.agent_id)
     
-    self.character.mining_state = {
-        mining = true,
-        position = { x = resource_entity.position.x, y = resource_entity.position.y }
+    -- Initialize mining state (minimal)
+    self.mining = {
+        mode = mode,
+        action_id = action_id,
+        start_tick = game.tick,
+        entity_name = entity_name,
+        entity_type = entity_type,
+        entity_position = entity_position,
+        -- Incremental mode only
+        target_count = target_count,
+        count_progress = 0,
+        completion_threshold = completion_threshold,
+        last_progress = 0,
+        -- Stochastic deplete only
+        is_stochastic = stochastic,
+        start_inventory = start_inventory,
+        -- For completion message
+        expected_products = expected_products,
     }
-    self.character.selected = resource_entity
     
-    -- Generate action ID and enqueue message
-    local action_id = string.format("mine_resource_%d_%d", game.tick, self.agent_id)
-    local rcon_tick = game.tick
+    -- Start mining
+    self.character.update_selected_entity(entity.position)
+    self.character.selected = entity
+    self.character.mining_state = { mining = true, position = entity.position }
     
-    -- Calculate estimated mining time
-    -- For trees/rocks, ignore max_count and only calculate time for one entity
-    -- For ores, use max_count if provided
-    local count_for_calculation = is_point_entity and nil or max_count
-    local estimated_ticks = calculate_mining_time_ticks(
-        self.character.prototype.mining_speed,
-        resource_entity,
-        count_for_calculation
-    )
+    -- Calculate estimated time
+    local estimated_ticks = calculate_mining_time_ticks(self.character, entity, target_count)
     
-    -- Get products from mineable_properties
-    local products = nil
-    local proto = resource_entity.prototype
-    if proto and proto.mineable_properties and proto.mineable_properties.products then
-        products = proto.mineable_properties.products
-    end
-    
+    -- Enqueue queued message
     self:enqueue_message({
         action = "mine_resource",
         agent_id = self.agent_id,
         success = true,
         queued = true,
         action_id = action_id,
-        tick = rcon_tick,
+        tick = game.tick,
         resource_name = resource_name,
-        position = { x = resource_entity.position.x, y = resource_entity.position.y },
+        entity_name = entity_name,
+        position = entity_position,
+        mode = mode,
+        target_count = target_count,
         estimated_ticks = estimated_ticks,
-        products = products,
+        expected_products = expected_products,
     }, "mining")
     
     return {
         success = true,
         queued = true,
         action_id = action_id,
-        tick = rcon_tick,
+        tick = game.tick,
+        mode = mode,
         estimated_ticks = estimated_ticks,
-        products = products,
+        expected_products = expected_products,
     }
 end
 
---- Cancel active mining
+--- Finalize mining and report results
+--- @param self Agent
+--- @param reason string Reason: "cancelled", "completed", "depleted"
 --- @return table Result
-function MiningActions.stop_mining(self)
-    local was_mining = (self.mining.mine_entity ~= nil)
+function MiningActions.finalize_mining(self, reason)
+    reason = reason or "cancelled"
+    local mining_state = self.mining
+    
+    -- Calculate actual products based on mode and reason
+    local actual_products = nil
+    local count = mining_state.count_progress or 0
+    
+    if reason ~= "cancelled" then
+        if mining_state.mode == MINING_MODE.INCREMENTAL then
+            -- We know exactly what we got
+            actual_products = { [mining_state.entity_name] = count }
+        elseif mining_state.is_stochastic and mining_state.start_inventory then
+            -- Stochastic deplete: use inventory diff
+            actual_products = get_inventory_diff(self.character, mining_state.start_inventory)
+        else
+            -- Deterministic deplete: use expected products
+            actual_products = mining_state.expected_products
+        end
+    end
+    
+    -- Render completion text for deplete modes using localized string format
+    -- Format: +<amount> <icon> <localised name> (<total>)
+    -- Multiple products (e.g. huge-rock) are separated by newlines
+    if reason == "depleted" and actual_products and next(actual_products) then
+        local inventory = self.character.get_main_inventory()
+        local text_parts = {""}
+        local first = true
+        for item_name, amount in pairs(actual_products) do
+            if not first then
+                table.insert(text_parts, "\n")
+            end
+            local total_count = inventory and inventory.get_item_count(item_name) or 0
+            table.insert(text_parts, "+")
+            table.insert(text_parts, amount)
+            table.insert(text_parts, " ")
+            table.insert(text_parts, "[item=" .. item_name .. "]")
+            table.insert(text_parts, {"item-name." .. item_name})
+            table.insert(text_parts, " (")
+            table.insert(text_parts, total_count)
+            table.insert(text_parts, ")")
+            first = false
+        end
+        debug_render.render_player_floating_text(text_parts, mining_state.entity_position, 1)
+    end
+    
+    -- Calculate actual time
+    local actual_ticks = nil
+    if mining_state.start_tick then
+        actual_ticks = game.tick - mining_state.start_tick
+    end
+    
+    -- Build completion message
+    local message = {
+        action = "mine_resource",
+        agent_id = self.agent_id,
+        success = reason ~= "cancelled",
+        action_id = mining_state.action_id,
+        tick = game.tick,
+        reason = reason,
+        entity_name = mining_state.entity_name,
+        position = mining_state.entity_position,
+        mode = mining_state.mode,
+        count = count,
+        actual_products = actual_products,
+        actual_ticks = actual_ticks,
+    }
+    
+    if reason == "cancelled" then
+        message.cancelled = true
+    end
+    
+    self:enqueue_message(message, "mining")
     
     -- Clear mining state
-    self.mining.count_progress = 0
-    self.mining.target_count = nil
-    self.mining.mine_entity = nil
-    self.mining.item_name = nil
-    self.mining.start_tick = nil
-    
-    -- Stop mining on entity
-    if self.character.mining_state then
-        self.character.mining_state = { mining = false }
-    end
-    if self.character.clear_selected_entity then
-        self.character.clear_selected_entity()
-    end
-    
-    -- Enqueue cancel message
-    self:enqueue_message({
-        action = "cancel_mining",
-        agent_id = self.agent_id,
-        success = true,
-        cancelled = was_mining,
-        tick = game.tick or 0,
-    }, "mining")
+    self.mining = {}
+    self.character.clear_selected_entity()
+    self.character.mining_state = { mining = false }
     
     return {
-        success = true,
-        cancelled = was_mining,
+        success = reason ~= "cancelled",
+        reason = reason,
+        count = count,
+        actual_products = actual_products,
+        actual_ticks = actual_ticks,
     }
+end
+
+--- Cancel active mining (convenience wrapper)
+--- @param self Agent
+--- @return table Result
+function MiningActions.stop_mining(self)
+    return self:finalize_mining("cancelled")
 end
 
 --- Process mining state (called from Agent:process())
+--- @param self Agent
 function MiningActions.process_mining(self)
-    if not self.mining.mine_entity then
+    local mining_state = self.mining
+    
+    -- Check if we WERE mining (have mining state) but Factorio stopped it
+    -- This happens when entity is depleted - Factorio auto-clears mining_state
+    if mining_state.mode and not self.character.mining_state.mining then
+        -- Factorio stopped mining for us - entity was depleted
+        local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
+        self:finalize_mining(reason)
         return
     end
     
-    local entity = self.mining.mine_entity
-    
-    -- Check if entity is still valid (for trees/rocks, invalid means depleted)
-    if not entity.valid then
-        -- Entity depleted - complete mining
-        self:complete_mining()
+    -- Not mining at all
+    if not self.character.mining_state.mining then
         return
     end
     
-    -- For ores/coal/stone: check if target count reached
-    if self.mining.target_count then
-        -- Determine item name from entity type
-        local item_name = nil
-        if entity.type == "resource" then
-            item_name = entity.name  -- e.g., "iron-ore", "copper-ore"
-        elseif entity.type == "tree" then
-            item_name = "wood"
-        elseif entity.type == "simple-entity" then
-            item_name = "stone"
-        end
+    local entity = self.character.selected
+    
+    -- Check entity validity (depleted) - backup check
+    if not entity or not entity.valid then
+        local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
+        self:finalize_mining(reason)
+        return
+    end
+    
+    -- Only incremental mode needs per-tick processing
+    if mining_state.mode == MINING_MODE.INCREMENTAL then
+        local current_progress = self.character.character_mining_progress or 0
+        local last_progress = mining_state.last_progress or 0
+        local threshold = mining_state.completion_threshold or 0.99
         
-        if item_name then
-            local current_count = self.character.get_item_count(item_name)
-            self.mining.count_progress = current_count
+        -- Detect cycle completion: was at threshold, now dropped (reset)
+        if last_progress > threshold and current_progress < last_progress then
+            mining_state.count_progress = mining_state.count_progress + 1
             
-            if current_count >= self.mining.target_count then
-                -- Target count reached - complete mining
-                self:complete_mining()
+            -- Render floating text using localized string format
+            -- Format: +<amount> <icon> <localised name> (<total>)
+            local total_count = self.character.get_main_inventory().get_item_count(entity.name)
+            local text = {
+                "",
+                "+1 ",
+                "[item=" .. entity.name .. "]",
+                {"item-name." .. entity.name},
+                " (", total_count, ")"
+            }
+            debug_render.render_player_floating_text(text, entity.position, 1)
+            
+            -- Check if target reached
+            if mining_state.target_count and mining_state.count_progress >= mining_state.target_count then
+                self:finalize_mining("completed")
                 return
             end
         end
+        
+        mining_state.last_progress = current_progress
     end
-    -- For trees/rocks: continue mining until entity becomes invalid (depleted)
-end
-
---- Complete mining and send completion message
-function MiningActions.complete_mining(self)
-    if not self.mining.mine_entity then
-        return
-    end
-    
-    local entity = self.mining.mine_entity
-    local item_name = self.mining.item_name
-    local was_valid = entity.valid
-    
-    -- Determine resource name from entity if still valid, otherwise infer from item_name
-    local resource_name = nil
-    if was_valid then
-        if entity.type == "resource" then
-            resource_name = entity.name
-        elseif entity.type == "tree" then
-            resource_name = "tree"
-        elseif entity.type == "simple-entity" then
-            resource_name = "rock"
-        end
-    else
-        -- Infer from item_name
-        if item_name == "wood" then
-            resource_name = "tree"
-        elseif item_name == "stone" then
-            resource_name = "rock"
-        else
-            resource_name = item_name  -- For ores, item_name == resource_name
-        end
-    end
-    
-    local current_count = item_name and self.character.get_item_count(item_name) or 0
-    local initial_count = self.mining.count_progress or 0
-    local mined_count = current_count - initial_count
-    
-    -- Calculate actual time taken
-    local actual_ticks = nil
-    if self.mining.start_tick then
-        actual_ticks = (game.tick or 0) - self.mining.start_tick
-    end
-    
-    -- Send completion message
-    self:enqueue_message({
-        action = "mine_resource",
-        agent_id = self.agent_id,
-        success = true,
-        tick = game.tick or 0,
-        resource_name = resource_name,
-        position = was_valid and { x = entity.position.x, y = entity.position.y } or nil,
-        item_name = item_name,
-        count = mined_count,
-        actual_ticks = actual_ticks,
-    }, "mining")
-    
-    -- Clear mining state
-    self.mining.count_progress = 0
-    self.mining.target_count = nil
-    self.mining.mine_entity = nil
-    self.mining.item_name = nil
-    
-    -- Stop mining on entity
-    if self.character.mining_state then
-        self.character.mining_state = { mining = false }
-    end
-    if self.character.clear_selected_entity then
-        self.character.clear_selected_entity()
-    end
+    -- DEPLETE mode: nothing to do, just wait for entity.valid == false
 end
 
 return MiningActions
