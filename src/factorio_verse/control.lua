@@ -176,6 +176,50 @@ local function register_all_remote_interfaces()
             end
         end
     end
+
+    -- Register global documentation API
+    local Agent = require("Agent")
+    local docs_interface = {
+        get_all_methods = function()
+            local interface_methods = Agent.get_interface_methods()
+            if not interface_methods then
+                return { error = "Interface methods not available" }
+            end
+            local methods = {}
+            for method_name, meta in pairs(interface_methods) do
+                methods[method_name] = {
+                    description = meta.description,
+                    paramspec = meta.paramspec,
+                }
+            end
+            return methods
+        end,
+        get_method_schema = function(method_name)
+            if not method_name or type(method_name) ~= "string" then
+                return { error = "method_name (string) is required" }
+            end
+            local interface_methods = Agent.get_interface_methods()
+            if not interface_methods then
+                return { error = "Interface methods not available" }
+            end
+            local meta = interface_methods[method_name]
+            if not meta then
+                return { error = "Method '" .. method_name .. "' not found" }
+            end
+            return {
+                method_name = method_name,
+                paramspec = meta.paramspec,
+                output_schema = meta.output_schema,
+                description = meta.description,
+            }
+        end,
+    }
+    if remote.interfaces["factorio_verse_docs"] then
+        log("Removing existing 'factorio_verse_docs' interface")
+        remote.remove_interface("factorio_verse_docs")
+    end
+    log("Registering 'factorio_verse_docs' interface")
+    remote.add_interface("factorio_verse_docs", docs_interface)
 end
 
 register_all_remote_interfaces()

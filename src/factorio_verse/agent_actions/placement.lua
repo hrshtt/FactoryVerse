@@ -12,7 +12,7 @@ local PlacementActions = {}
 --- @param options table|nil Placement options {direction, orient_towards}
 --- @return table Result with {success, position, entity_name, entity_type}
 function PlacementActions.place_entity(self, entity_name, position, options)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -32,15 +32,15 @@ function PlacementActions.place_entity(self, entity_name, position, options)
         error("Agent: Unknown entity prototype: " .. entity_name)
     end
 
-    if not self.entity.get_main_inventory().get_item_count(entity_name) > 0 then
-        error("Agent: Insufficient items in agent inventory (have " .. self.entity.get_main_inventory().get_item_count(entity_name) .. ", need 1)")
+    if not self.character.get_main_inventory().get_item_count(entity_name) > 0 then
+        error("Agent: Insufficient items in agent inventory (have " .. self.character.get_main_inventory().get_item_count(entity_name) .. ", need 1)")
     end
     
     local can_place_params = {
         name = entity_name,
         position = position,
         direction = options.direction,
-        force = self.entity.force,
+        force = self.character.force,
         build_check_type = defines.build_check_type.manual,
     }
 
@@ -53,8 +53,8 @@ function PlacementActions.place_entity(self, entity_name, position, options)
     local placement = {
         name = entity_name,
         position = { x = position.x, y = position.y },
-        force = self.entity.force,
-        source = self.entity,
+        force = self.character.force,
+        source = self.character,
         fast_replace = true,
         raise_built = true,
         move_stuck_players = true,
@@ -95,7 +95,7 @@ function PlacementActions.place_entity(self, entity_name, position, options)
     if not created_entity or not created_entity.valid then
         error("Agent: Failed to place entity")
     end
-    self.entity.get_main_inventory().remove({ name = entity_name, count = 1 })
+    self.character.get_main_inventory().remove({ name = entity_name, count = 1 })
     
     local entity_pos = { x = created_entity.position.x, y = created_entity.position.y }
 
@@ -178,7 +178,7 @@ end
 --- @param entity_name string Entity prototype name
 --- @return table Array of {position = {x, y}, can_place = true}
 function PlacementActions.get_placement_cues(self, entity_name)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -257,7 +257,7 @@ function PlacementActions.get_placement_cues(self, entity_name)
                         name = entity_name,
                         position = position,
                         direction = dir_info.enum,
-                        force = self.entity.force,
+                        force = self.character.force,
                         build_check_type = defines.build_check_type.manual,
                     }
                     local can_place = game.surfaces[1].can_place_entity(params)
@@ -312,7 +312,7 @@ function PlacementActions.get_placement_cues(self, entity_name)
                         local params = {
                             name = entity_name,
                             position = position,
-                            force = self.entity.force,
+                            force = self.character.force,
                             build_check_type = defines.build_check_type.manual,
                         }
                         local can_place = game.surfaces[1].can_place_entity(params)

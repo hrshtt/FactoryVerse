@@ -64,9 +64,9 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     end
     
     -- Use agent position and resource reach distance for search
-    local agent_pos = self.entity.position
-    local radius = self.entity.resource_reach_distance or 2.5
-    local surface = self.entity.surface or game.surfaces[1]
+    local agent_pos = self.character.position
+    local radius = self.character.resource_reach_distance or 2.5
+    local surface = self.character.surface or game.surfaces[1]
     
     -- Determine if this is a tree/rock (point entity) or ore/coal/stone
     local is_point_entity = (resource_name == "tree" or resource_name == "rock")
@@ -102,7 +102,7 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     local item_name = is_point_entity and RESOURCE_ITEM_MAP[resource_name] or resource_name
     
     -- Initialize mining state
-    local current_count = self.entity.get_item_count(item_name)
+    local current_count = self.character.get_item_count(item_name)
     self.mining.count_progress = current_count
     self.mining.mine_entity = resource_entity
     self.mining.item_name = item_name  -- Store for completion message
@@ -117,15 +117,15 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     end
     
     -- Start mining on entity (stop walking, set mining state)
-    if self.entity.walking_state and self.entity.walking_state.walking then
-        self.entity.walking_state = { walking = false }
+    if self.character.walking_state and self.character.walking_state.walking then
+        self.character.walking_state = { walking = false }
     end
     
-    self.entity.mining_state = {
+    self.character.mining_state = {
         mining = true,
         position = { x = resource_entity.position.x, y = resource_entity.position.y }
     }
-    self.entity.selected = resource_entity
+    self.character.selected = resource_entity
     
     -- Generate action ID and enqueue message
     local action_id = string.format("mine_resource_%d_%d", game.tick, self.agent_id)
@@ -136,7 +136,7 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     -- For ores, use max_count if provided
     local count_for_calculation = is_point_entity and nil or max_count
     local estimated_ticks = calculate_mining_time_ticks(
-        self.entity.prototype.mining_speed,
+        self.character.prototype.mining_speed,
         resource_entity,
         count_for_calculation
     )
@@ -184,11 +184,11 @@ function MiningActions.stop_mining(self)
     self.mining.start_tick = nil
     
     -- Stop mining on entity
-    if self.entity.mining_state then
-        self.entity.mining_state = { mining = false }
+    if self.character.mining_state then
+        self.character.mining_state = { mining = false }
     end
-    if self.entity.clear_selected_entity then
-        self.entity.clear_selected_entity()
+    if self.character.clear_selected_entity then
+        self.character.clear_selected_entity()
     end
     
     -- Enqueue cancel message
@@ -234,7 +234,7 @@ function MiningActions.process_mining(self)
         end
         
         if item_name then
-            local current_count = self.entity.get_item_count(item_name)
+            local current_count = self.character.get_item_count(item_name)
             self.mining.count_progress = current_count
             
             if current_count >= self.mining.target_count then
@@ -278,7 +278,7 @@ function MiningActions.complete_mining(self)
         end
     end
     
-    local current_count = item_name and self.entity.get_item_count(item_name) or 0
+    local current_count = item_name and self.character.get_item_count(item_name) or 0
     local initial_count = self.mining.count_progress or 0
     local mined_count = current_count - initial_count
     
@@ -308,11 +308,11 @@ function MiningActions.complete_mining(self)
     self.mining.item_name = nil
     
     -- Stop mining on entity
-    if self.entity.mining_state then
-        self.entity.mining_state = { mining = false }
+    if self.character.mining_state then
+        self.character.mining_state = { mining = false }
     end
-    if self.entity.clear_selected_entity then
-        self.entity.clear_selected_entity()
+    if self.character.clear_selected_entity then
+        self.character.clear_selected_entity()
     end
 end
 

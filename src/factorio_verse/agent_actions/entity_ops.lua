@@ -31,11 +31,11 @@ end
 --- @param entity LuaEntity
 --- @return boolean
 local function _can_reach_entity(self, entity)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         return false
     end
     
-    local agent_pos = self.entity.position
+    local agent_pos = self.character.position
     local entity_pos = entity.position
     
     -- Check reach distance (default character reach: 2.5 tiles)
@@ -44,7 +44,7 @@ local function _can_reach_entity(self, entity)
     local distance = math.sqrt(dx * dx + dy * dy)
     
     -- Character reach is typically 2.5, but we'll use 3.0 for safety
-    return distance <= self.entity.reach_distance
+    return distance <= self.character.reach_distance
 end
 
 --- Helper to validate recipe is accessible to agent's force

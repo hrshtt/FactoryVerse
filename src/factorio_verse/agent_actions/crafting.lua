@@ -49,7 +49,7 @@ end
 --- @param count number|nil Count to craft (default: 1)
 --- @return table Result with {success, queued, action_id, tick, recipe, count_queued}
 function CraftingActions.craft_enqueue(self, recipe_name, count)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -60,7 +60,7 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
     count = math.max(1, math.floor(count or 1))
     
     -- Validate recipe is available to agent's force
-    local force = self.entity.force
+    local force = self.character.force
     if not force then
         error("Agent: Agent force is invalid")
     end
@@ -77,7 +77,7 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
     end
     
     -- Validate craftable
-    local craftable_count = self.entity.get_craftable_count(recipe_proto)
+    local craftable_count = self.character.get_craftable_count(recipe_proto)
     if craftable_count <= 0 then
         error("Agent: Cannot craft recipe: insufficient ingredients or recipe not available")
     end
@@ -101,12 +101,12 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
     -- Snapshot current product counts in inventory BEFORE starting craft
     local start_products = {}
     for item_name, _ in pairs(products) do
-        start_products[item_name] = self.entity.get_item_count(item_name)
+        start_products[item_name] = self.character.get_item_count(item_name)
     end
     
     -- Start crafting
     local count_to_queue = math.min(count, craftable_count)
-    local count_started = self.entity.begin_crafting{
+    local count_started = self.character.begin_crafting{
         recipe = recipe_proto,
         count = count_to_queue,
         silent = true
@@ -118,7 +118,7 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
     
     -- Calculate estimated crafting time
     local estimated_ticks = calculate_crafting_time_ticks(
-        self.entity,
+        self.character,
         recipe_proto,
         count_started
     )
@@ -129,7 +129,7 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
         recipe = recipe_name,
         count_requested = count,
         count_queued = count_started,
-        start_queue_size = self.entity.crafting_queue_size,
+        start_queue_size = self.character.crafting_queue_size,
         start_products = start_products,
         products = products,
         cancelled = false,
@@ -166,7 +166,7 @@ end
 --- @param count number|nil Count to dequeue (nil to dequeue all)
 --- @return table Result
 function CraftingActions.craft_dequeue(self, recipe_name, count)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -185,13 +185,13 @@ function CraftingActions.craft_dequeue(self, recipe_name, count)
     end
     
     -- Check if queue is empty
-    local queue_size = self.entity.crafting_queue_size or 0
+    local queue_size = self.character.crafting_queue_size or 0
     if queue_size == 0 then
         error("Agent: Crafting queue is empty")
     end
     
     -- Find the recipe in the queue
-    local queue = self.entity.crafting_queue
+    local queue = self.character.crafting_queue
     if not queue then
         error("Agent: Crafting queue is empty")
     end
@@ -210,7 +210,7 @@ function CraftingActions.craft_dequeue(self, recipe_name, count)
     
     -- Cancel the recipe
     local count_to_cancel = count or tracking.count_queued
-    self.entity.cancel_crafting{index = target_index, count = count_to_cancel}
+    self.character.cancel_crafting{index = target_index, count = count_to_cancel}
     
     -- Mark as cancelled in tracking
     tracking.cancelled = true
@@ -218,7 +218,7 @@ function CraftingActions.craft_dequeue(self, recipe_name, count)
     tracking.count_cancelled = count_to_cancel
     
     -- Check remaining queue size
-    local remaining_queue_size = self.entity.crafting_queue_size or 0
+    local remaining_queue_size = self.character.crafting_queue_size or 0
     local fully_cancelled = (remaining_queue_size < tracking.start_queue_size)
     
     -- Clear tracking if fully cancelled
@@ -257,7 +257,7 @@ CraftingActions.process_crafting = function(self)
         local tracking = self.crafting.in_progress
 
         -- Check if crafting queue is empty (crafting completed)
-        local queue_size = self.entity.crafting_queue_size or 0
+        local queue_size = self.character.crafting_queue_size or 0
 
         if queue_size == 0 and tracking.start_queue_size > 0 then
             -- Crafting completed
@@ -266,7 +266,7 @@ CraftingActions.process_crafting = function(self)
 
             -- Calculate actual products crafted
             for item_name, amount_per_craft in pairs(products) do
-                local current_count = self.entity.get_item_count(item_name)
+                local current_count = self.character.get_item_count(item_name)
                 local start_count = tracking.start_products[item_name] or 0
                 local delta = current_count - start_count
                 if delta > 0 then

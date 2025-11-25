@@ -27,7 +27,7 @@ end
 --- @return boolean True if chunk was charted, false if already charted
 function ChartingHelpers._chart_chunk(self, chunk_x, chunk_y, rechart)
     local surface = game.surfaces[1]
-    local force = self.entity.force
+    local force = self.character.force
     rechart = rechart or false
 
     local was_already_charted = force.is_chunk_charted(surface, {x = chunk_x, y = chunk_y})
@@ -75,7 +75,7 @@ end
 --- @return boolean
 function ChartingHelpers.chart_spawn_area(self)
     local surface = game.surfaces[1]
-    local force = self.entity.force
+    local force = self.character.force
     local spawn_position = force.get_spawn_position(surface)
     local r = 7
     

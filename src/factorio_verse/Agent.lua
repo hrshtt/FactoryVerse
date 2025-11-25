@@ -32,7 +32,7 @@
 --- Agent class definition, wraps all agent actions and state
 --- @class Agent
 --- @field agent_id number Agent ID
---- @field entity LuaEntity Character entity for the agent
+--- @field character LuaEntity Character entity for the agent
 --- @field force_name string Force name (access force via entity.force)
 --- @field labels AgentLabels Rendering labels for the agent
 --- @field get_production_statistics function Production statistics
@@ -89,6 +89,7 @@ local modules = {
     "entity_ops",
     "charting",
     "researching",
+    "RemoteInterface",
 }
 
 for _, module in ipairs(modules) do
@@ -264,129 +265,13 @@ function Agent:_create_entity(color, force_name, spawn_position)
     }
 
     -- Set agent properties
-    self.entity = char_entity
+    self.character = char_entity
     self.force_name = final_force_name
     self.labels = {
         main_tag = main_tag,
         map_marker = map_marker,
         map_tag = map_tag
     }
-end
-
--- ============================================================================
--- REMOTE INTERFACE REGISTRATION
--- ============================================================================
-
---- Register per-agent remote interface
---- Interface name: "agent_{agent_id}"
-function Agent:register_remote_interface()
-    local interface_name = "agent_" .. self.agent_id
-
-    -- Remove existing interface if present
-    if remote.interfaces[interface_name] then
-        remote.remove_interface(interface_name)
-    end
-
-    -- Create interface with direct method proxies
-    local interface = {
-        -- actions
-
-        -- Walking, Async
-        walk_to = function(goal, adjust_to_non_colliding, options)
-            return self:walk_to(goal, adjust_to_non_colliding, options)
-        end,
-        stop_walking = function()
-            return self:stop_walking()
-        end,
-
-        -- Mining, Async
-        mine_resource = function(resource_name, max_count)
-            return self:mine_resource(resource_name, max_count)
-        end,
-        stop_mining = function()
-            return self:stop_mining()
-        end,
-
-        -- Crafting, Async
-        craft_enqueue = function(recipe_name, count)
-            return self:craft_enqueue(recipe_name, count)
-        end,
-        craft_dequeue = function(recipe_name, count)
-            return self:craft_dequeue(recipe_name, count)
-        end,
-
-        -- Entity operations
-        set_entity_recipe = function(entity_name, position, recipe_name)
-            return self:set_entity_recipe(entity_name, position, recipe_name)
-        end,
-        set_entity_filter = function(entity_name, position, inventory_type, filter_index, filter_item)
-            return self:set_entity_filter(entity_name, position, inventory_type, filter_index, filter_item)
-        end,
-        set_inventory_limit = function(entity_name, position, inventory_type, limit)
-            return self:set_inventory_limit(entity_name, position, inventory_type, limit)
-        end,
-        take_inventory_item = function(entity_name, position, inventory_type, item_name, count)
-            return self:get_inventory_item(entity_name, position, inventory_type, item_name, count)
-        end,
-        put_inventory_item = function(entity_name, position, inventory_type, item_name, count)
-            return self:set_inventory_item(entity_name, position, inventory_type, item_name, count)
-        end,
-
-        -- Placement
-        place_entity = function(entity_name, position, options)
-            return self:place_entity(entity_name, position, options)
-        end,
-
-        -- Teleport
-        teleport = function(position)
-            return self:teleport(position)
-        end,
-
-        -- queries
-
-        -- State queries
-        inspect = function(attach_inventory, attach_entities)
-            return self:inspect(attach_inventory, attach_entities)
-        end,
-
-        -- Placement cues
-        get_placement_cues = function(entity_name)
-            return self:get_placement_cues(entity_name)
-        end,
-
-        -- Chunk queries
-        get_chunks_in_view = function()
-            return self:get_chunks_in_view()
-        end,
-
-        -- Recipe queries
-        get_recipes = function(category)
-            return self:get_recipes(category)
-        end,
-
-        -- Technology queries
-        get_technologies = function(only_available)
-            return self:get_technologies(only_available)
-        end,
-
-        -- Research actions
-        enqueue_research = function(technology_name)
-            return self:enqueue_research(technology_name)
-        end,
-        cancel_current_research = function()
-            return self:cancel_current_research()
-        end,
-    }
-
-    remote.add_interface(interface_name, interface)
-end
-
---- Unregister per-agent remote interface
-function Agent:unregister_remote_interface()
-    local interface_name = "agent_" .. self.agent_id
-    if remote.interfaces[interface_name] then
-        remote.remove_interface(interface_name)
-    end
 end
 
 -- ============================================================================
@@ -403,8 +288,8 @@ function Agent:destroy(remove_force)
     self:unregister_remote_interface()
 
     -- Destroy entity
-    if self.entity and self.entity.valid then
-        self.entity.destroy()
+    if self.character and self.character.valid then
+        self.character.destroy()
     end
 
     -- Destroy rendering labels
@@ -466,22 +351,22 @@ end
 --- @param position table Position {x, y}
 --- @return boolean
 function Agent:teleport(position)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         return false
     end
 
-    self.entity.teleport(position)
+    self.character.teleport(position)
     return true
 end
 
 --- Get agent inventory contents
 --- @return table|nil Inventory contents {item_name = count, ...}
 function Agent:get_inventory_contents()
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         return nil
     end
 
-    local main_inventory = self.entity.get_inventory(defines.inventory.character_main)
+    local main_inventory = self.character.get_inventory(defines.inventory.character_main)
     if main_inventory then
         return main_inventory.get_contents()
     end
@@ -497,7 +382,7 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
     attach_inventory = attach_inventory or false
     attach_reachable_entities = attach_reachable_entities or false
 
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         return {
             error = "Agent not found or invalid",
             agent_id = self.agent_id,
@@ -505,7 +390,7 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
         }
     end
 
-    local position = self.entity.position
+    local position = self.character.position
     if not position then
         return {
             error = "Agent has no position",
@@ -534,10 +419,10 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
     if attach_reachable_entities then
         local reachable_resources = {}
         local reachable_entities = {}
-        local surface = self.entity.surface or game.surfaces[1]
+        local surface = self.character.surface or game.surfaces[1]
 
         -- Find resources within resource_reach_distance (includes resources, trees, and rocks)
-        local resource_reach = self.entity.resource_reach_distance
+        local resource_reach = self.character.resource_reach_distance
         -- Search for resources, trees, and simple-entities (rocks) separately
         local resources = surface.find_entities_filtered({
             position = position,
@@ -592,7 +477,7 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
         end
 
         -- Find other entities (non-resources, non-trees, non-rocks) within reach_distance
-        local build_reach = self.entity.reach_distance
+        local build_reach = self.character.reach_distance
         local other_entities = surface.find_entities_filtered({
             position = position,
             radius = build_reach
@@ -603,7 +488,7 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
                 and entity.type ~= "resource"
                 and entity.type ~= "tree"
                 and entity.type ~= "simple-entity"
-                and entity ~= self.entity then
+                and entity ~= self.character then
                 -- Exclude tree stumps and other tree-related corpses
                 local is_tree_corpse = (entity.type == "corpse" and
                     (string.find(entity.name, "stump") or
@@ -642,7 +527,7 @@ function Agent:get_recipes(category)
             valid_categories = categories,
         }
     end
-    local recipes = self.entity.force.recipes
+    local recipes = self.character.force.recipes
     local valid_recipes = {}
     for recipe_name, recipe in pairs(recipes) do
         if recipe.category == "parameters" or (category and category ~= recipe.category) then
@@ -664,7 +549,7 @@ end
 
 
 function Agent:get_production_statistics()
-    local stats = self.entity.force.get_item_production_statistics(game.surfaces[1]);
+    local stats = self.character.force.get_item_production_statistics(game.surfaces[1]);
     return {
         input = stats.input_counts,
         output = stats.output_counts,
@@ -713,7 +598,7 @@ end
 --- @param event table Event data (typically on_tick event)
 function Agent:process(event)
     -- Skip if agent entity is invalid
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         return
     end
     -- Process walking jobs

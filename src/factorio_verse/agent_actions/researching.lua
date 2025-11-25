@@ -35,7 +35,7 @@ end
 function ResearchActions.get_technologies(self, only_available)
     only_available = only_available or false
 
-    local technologies = self.entity.force.technologies
+    local technologies = self.character.force.technologies
     local valid_technologies = {}
     for technology_name, technology in pairs(technologies) do
         -- Skip if not enabled
@@ -81,7 +81,7 @@ end
 --- @param technology_name string Technology name to research
 --- @return table Result with {success, technology_name, tick, queue_position}
 function ResearchActions.enqueue_research(self, technology_name)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
@@ -89,7 +89,7 @@ function ResearchActions.enqueue_research(self, technology_name)
         error("Agent: technology_name (string) is required")
     end
     
-    local force = self.entity.force
+    local force = self.character.force
     if not force then
         error("Agent: Agent force is invalid")
     end
@@ -151,11 +151,11 @@ end
 --- Cancels the currently active research (first in queue)
 --- @return table Result with {success, cancelled_technology, tick}
 function ResearchActions.cancel_current_research(self)
-    if not (self.entity and self.entity.valid) then
+    if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
-    local force = self.entity.force
+    local force = self.character.force
     if not force then
         error("Agent: Agent force is invalid")
     end

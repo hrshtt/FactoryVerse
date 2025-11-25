@@ -41,7 +41,7 @@ end
 ---@param options table|nil
 WalkingActions.walk_to = function(self, goal, strict_goal, options)
 
-    if self.entity.walking_state["walking"] then
+    if self.character.walking_state["walking"] then
         error("Agent is already walking")
     end
 
@@ -52,12 +52,12 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options)
     strict_goal = strict_goal or false
     options = options or {}
     options.goal = goal
-    options.start = self.entity.position
-    options.bounding_box = self.entity.prototype.collision_box
-    options.collision_mask = self.entity.prototype.collision_mask
-    options.force = self.entity.force.name
-    options.radius = get_goal_radius(self.entity.surface, goal)
-    options.entity_to_ignore = self.entity -- entity pathfinding has to ignore itself 
+    options.start = self.character.position
+    options.bounding_box = self.character.prototype.collision_box
+    options.collision_mask = self.character.prototype.collision_mask
+    options.force = self.character.force.name
+    options.radius = get_goal_radius(self.character.surface, goal)
+    options.entity_to_ignore = self.character -- entity pathfinding has to ignore itself 
 
     if options.radius > 0 and strict_goal then
         error(
@@ -65,7 +65,7 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options)
             ..
             "Provide strict_goal=false to approximate to non-colliding position.")
     end
-    local job_id = self.entity.surface.request_path(options)
+    local job_id = self.character.surface.request_path(options)
     self.walking.path_id = job_id
     
     -- Generate action ID and store for completion tracking
@@ -112,7 +112,7 @@ WalkingActions.process_walking = function(self)
                 action_id = walking.action_id,
                 success = true,
                 tick = game.tick or 0,
-                position = { x = self.entity.position.x, y = self.entity.position.y },
+                position = { x = self.character.position.x, y = self.character.position.y },
                 goal = walking.goal,
                 actual_ticks = actual_ticks,
             }, "walking")
@@ -125,12 +125,12 @@ WalkingActions.process_walking = function(self)
         
         walking.progress = 0
         walking.path = {}
-        self.entity.walking_state = { walking = false }
+        self.character.walking_state = { walking = false }
         return
     end
 
     local waypoint = path[walking.progress]
-    local pos = self.entity.position
+    local pos = self.character.position
     local dx, dy = waypoint.position.x - pos.x, waypoint.position.y - pos.y
 
     if dx * dx + dy * dy < 0.0625 then -- 0.25^2
@@ -149,7 +149,7 @@ WalkingActions.process_walking = function(self)
                     action_id = walking.action_id,
                     success = true,
                     tick = game.tick or 0,
-                    position = { x = self.entity.position.x, y = self.entity.position.y },
+                    position = { x = self.character.position.x, y = self.character.position.y },
                     goal = walking.goal,
                     actual_ticks = actual_ticks,
                 }, "walking")
@@ -162,7 +162,7 @@ WalkingActions.process_walking = function(self)
             
             walking.progress = 0
             walking.path = {}
-            self.entity.walking_state = { walking = false }
+            self.character.walking_state = { walking = false }
             return
         end
         waypoint = path[walking.progress]
@@ -177,11 +177,11 @@ WalkingActions.process_walking = function(self)
         defines.direction.south, defines.direction.southeast, }
 
     self:chart_view()
-    self.entity.walking_state = { walking = true, direction = dirs[math.floor(octant) % 8 + 1] }
+    self.character.walking_state = { walking = true, direction = dirs[math.floor(octant) % 8 + 1] }
 end
 
 WalkingActions.stop_walking = function(self)
-    local is_walking = self.entity.walking_state["walking"]
+    local is_walking = self.character.walking_state["walking"]
     if not is_walking then
         return {
             success = false,
@@ -194,13 +194,13 @@ WalkingActions.stop_walking = function(self)
     self.walking.start_tick = nil
     self.walking.goal = nil
     
-    self.entity.walking_state = { walking = false }
+    self.character.walking_state = { walking = false }
     self.walking.path = nil
     self.walking.path_id = nil
     self.walking.progress = 0
     return {
         success = true,
-        position = self.entity.position
+        position = self.character.position
     }
 end
 

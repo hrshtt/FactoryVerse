@@ -15,7 +15,7 @@ function M.reset_research(agent_id)
 
     local agent = storage.agents[agent_id] ---@type Agent
 
-    local force = agent.entity.force
+    local force = agent.character.force
     force.cancel_current_research()
     force.reset_technology_effects()
     force.reset_technologies()

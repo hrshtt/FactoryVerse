@@ -374,7 +374,7 @@ function M._on_nth_tick_agent_production_snapshot()
     local agents = M.list_agent_forces()
     for agent_id, force_name in pairs(agents) do
         local agent = M.get_agent(agent_id)
-        if agent and agent.entity.valid then
+        if agent and agent.character.valid then
             stats = agent:get_production_statistics()
             if not stats then goto continue end
             -- Append a snapshot entry in JSONL format
