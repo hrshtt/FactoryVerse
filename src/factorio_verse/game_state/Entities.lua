@@ -265,12 +265,31 @@ function M._delete_entity_snapshot(entity)
     return success
 end
 
+-- ============================================================================
+-- AGENT REACHABILITY INTEGRATION
+-- ============================================================================
+
+--- Mark all agents' reachability cache as dirty
+--- Called when entities are built or destroyed anywhere on the map
+local function _mark_all_agents_reachable_dirty()
+    if storage.agents then
+        for _, agent in pairs(storage.agents) do
+            if agent and agent.reachable then
+                agent.reachable.dirty = true
+            end
+        end
+    end
+end
+
 --- Handle entity built event (on_built_entity, script_raised_built)
 --- @param event table Event data with entity field
 local function _on_entity_built(event)
     local entity = event.entity
     if entity and entity.valid then
         M.write_entity_snapshot(entity, false)
+        
+        -- Mark all agents' reachability as dirty
+        _mark_all_agents_reachable_dirty()
     end
 end
 
@@ -280,7 +299,26 @@ local function _on_entity_destroyed(event)
     local entity = event.entity
     if entity then
         M._delete_entity_snapshot(entity)
+        
+        -- Mark all agents' reachability as dirty
+        _mark_all_agents_reachable_dirty()
     end
+end
+
+local debug_render = require("utils.debug_render")
+
+local function _on_player_mined_item(event)
+
+    game.print("i am in event on_player_mined_item !")
+    -- local entity = event.entity
+    local item_stack = event.item_stack
+    local player = game.players[event.player_index]
+    if player then
+        debug_render.render_player_floating_text(event.item_stack.name, { x = player.position.x, y = player.position.y })    
+    end
+    -- if entity then
+    --     M.write_entity_snapshot(entity, true)
+    -- end
 end
 
 --- Handle entity settings pasted event
@@ -314,7 +352,8 @@ function M._build_disk_write_snapshot()
         events = {
             [defines.events.on_built_entity] = _on_entity_built,
             [defines.events.script_raised_built] = _on_entity_built,
-            [defines.events.on_player_mined_entity] = _on_entity_destroyed,
+            -- [defines.events.on_player_mined_entity] = _on_entity_destroyed,sa
+            -- [defines.events.on_player_mined_item] = _on_player_mined_item,
             [defines.events.script_raised_destroy] = _on_entity_destroyed,
             [defines.events.on_entity_settings_pasted] = _on_entity_settings_pasted,
             [EntityInterface.on_entity_configuration_changed] = _on_entity_configuration_changed,
@@ -392,9 +431,9 @@ function M.register_remote_interface()
             return true
         end,
         
-        extract_inventory_items = function(entity_name, position, inventory_type, radius)
+        extract_inventory_items = function(entity_name, position, radius)
             local entity_interface = EntityInterface:new(entity_name, position, radius, false)
-            return entity_interface:extract_inventory_items(inventory_type)
+            return entity_interface:extract_inventory_items()
         end,
         
         -- Entity manipulation

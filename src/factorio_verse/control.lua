@@ -178,6 +178,7 @@ local function register_all_remote_interfaces()
     end
 
     -- Register global documentation API
+    -- Returns paramspec for each method (the only runtime-relevant metadata)
     local Agent = require("Agent")
     local docs_interface = {
         get_all_methods = function()
@@ -188,7 +189,6 @@ local function register_all_remote_interfaces()
             local methods = {}
             for method_name, meta in pairs(interface_methods) do
                 methods[method_name] = {
-                    description = meta.description,
                     paramspec = meta.paramspec,
                 }
             end
@@ -209,8 +209,6 @@ local function register_all_remote_interfaces()
             return {
                 method_name = method_name,
                 paramspec = meta.paramspec,
-                output_schema = meta.output_schema,
-                description = meta.description,
             }
         end,
     }

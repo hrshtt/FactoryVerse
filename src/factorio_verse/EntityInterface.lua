@@ -1,8 +1,36 @@
+--- @class EntityConfigurationChangedEvent : table
+--- @field entity LuaEntity The entity that was configured
+--- @field change_type string Type of change ("recipe", "filter", "inventory_limit")
+--- @field inventory_type number|nil Inventory type (for filter/inventory_limit changes)
+--- @field filter_index number|nil Filter slot index (for filter changes)
+--- @field old_value any Previous value before change
+--- @field new_value any New value after change
+
+--- @alias InventoryTypeString "chest"|"fuel"|"input"|"output"|"modules"|"burnt_result"|"ammo"|"trunk"|"cargo"
+--- @alias InventoryType number|InventoryTypeString
+
+--- @class Position : table
+--- @field x number X coordinate
+--- @field y number Y coordinate
+
 --- EntityInterface: High-level wrapper around LuaEntity for entity manipulation
 --- Provides low-level interface operations with basic validation only
 --- Agent-agnostic - no agent-specific validation (that's done by Agent class)
 --- @class EntityInterface
 --- @field entity LuaEntity The wrapped LuaEntity instance
+--- @field on_entity_configuration_changed number Custom event ID for configuration changes
+--- @field set_recipe fun(self: EntityInterface, recipe_name: string|nil, overwrite?: boolean): boolean
+--- @field set_filter fun(self: EntityInterface, inventory_type: InventoryType, filter_index?: number, filter_item?: string): boolean
+--- @field set_inventory_limit fun(self: EntityInterface, inventory_type: InventoryType, limit?: number): boolean
+--- @field get_inventory_item fun(self: EntityInterface, inventory_type: InventoryType, item_name: string, count?: number): number
+--- @field set_inventory_item fun(self: EntityInterface, inventory_type: InventoryType, item_name: string, count: number): number
+--- @field extract_inventory_items fun(self: EntityInterface): table<string, number>
+--- @field can_pickup fun(self: EntityInterface): boolean
+--- @field rotate fun(self: EntityInterface, direction?: defines.direction): boolean
+--- @field get_position fun(self: EntityInterface): Position
+--- @field get_name fun(self: EntityInterface): string
+--- @field get_type fun(self: EntityInterface): string
+--- @field is_valid fun(self: EntityInterface): boolean
 
 -- ============================================================================
 -- METATABLE REGISTRATION (must be at module load time)
@@ -31,10 +59,10 @@ log("EntityInterface: Generated custom event 'entity_configuration_changed': " .
 --- Resolve entity from resolution parameters
 --- Agent-agnostic: only supports exact lookup or radius search
 --- @param entity_name string Entity prototype name
---- @param position table Position {x, y} for lookup
+--- @param position Position Position {x, y} for lookup
 --- @param radius number|nil Search radius (if provided, uses radius search; if nil, uses exact lookup)
 --- @param strict boolean|nil If true, error on multiple matches in radius search (default: true)
---- @return LuaEntity|nil Resolved entity or nil if not found
+--- @return LuaEntity Resolved entity (errors if not found)
 local function _resolve_entity(entity_name, position, radius, strict)
     if not entity_name or type(entity_name) ~= "string" then
         error("EntityInterface: entity_name (string) is required")
@@ -94,13 +122,59 @@ local function _resolve_entity(entity_name, position, radius, strict)
 end
 
 -- ============================================================================
+-- INVENTORY TYPE MAPPINGS
+-- ============================================================================
+
+--- Inventory type string to defines.inventory constant mapping
+--- Used by multiple methods for consistent inventory type resolution
+--- @type table<string, any>
+local INVENTORY_TYPE_MAP = {
+    chest = defines.inventory.chest,
+    fuel = defines.inventory.fuel,
+    input = defines.inventory.assembling_machine_input,
+    output = defines.inventory.assembling_machine_output,
+    modules = defines.inventory.assembling_machine_modules,
+    burnt_result = defines.inventory.burnt_result,
+    ammo = defines.inventory.turret_ammo,
+    trunk = defines.inventory.car_trunk,
+    cargo = defines.inventory.cargo_wagon,
+}
+
+--- Entity types that support recipe configuration
+--- @type string[]
+local RECIPE_SUPPORTED_TYPES = {"assembling-machine", "furnace", "rocket-silo"}
+
+--- Resolve inventory type from string or number to defines.inventory constant
+--- @param inventory_type InventoryType Inventory type (string name or defines.inventory constant)
+--- @return any Resolved defines.inventory constant
+--- @return string[] Valid type names (for error messages)
+local function _resolve_inventory_type(inventory_type)
+    if type(inventory_type) == "number" then
+        return inventory_type, {}
+    end
+    
+    local inv_index = INVENTORY_TYPE_MAP[inventory_type]
+    local valid_types = {}
+    for type_name, _ in pairs(INVENTORY_TYPE_MAP) do
+        table.insert(valid_types, type_name)
+    end
+    
+    if not inv_index then
+        error("EntityInterface: Unknown inventory type name: " .. tostring(inventory_type) .. 
+              ". Valid types: " .. table.concat(valid_types, ", "))
+    end
+    
+    return inv_index, valid_types
+end
+
+-- ============================================================================
 -- ENTITY INTERFACE CREATION
 -- ============================================================================
 
 --- Create EntityInterface wrapper around a LuaEntity
 --- Agent-agnostic: only accepts position-based resolution or direct LuaEntity wrapping
 --- @param entity_name string|nil Entity prototype name (required if lua_entity is nil)
---- @param position table|nil Position {x, y} for lookup (required if lua_entity is nil)
+--- @param position Position|nil Position {x, y} for lookup (required if lua_entity is nil)
 --- @param radius number|nil Search radius (optional, if provided uses radius search)
 --- @param strict boolean|nil If true, error on multiple matches in radius search (default: true)
 --- @param lua_entity LuaEntity|nil Direct LuaEntity to wrap (if provided, other params ignored)
@@ -148,9 +222,8 @@ function EntityInterface:set_recipe(recipe_name, overwrite)
     end
     
     -- Check if entity type supports recipes
-    local supported_types = {"assembling-machine", "furnace", "rocket-silo"}
     local is_supported = false
-    for _, entity_type in ipairs(supported_types) do
+    for _, entity_type in ipairs(RECIPE_SUPPORTED_TYPES) do
         if self.entity.type == entity_type then
             is_supported = true
             break
@@ -243,7 +316,7 @@ end
 
 --- Set filter on entity inventory
 --- Validates: inventory exists, filter can be set
---- @param inventory_type number|string Inventory type (defines.inventory constant or name)
+--- @param inventory_type InventoryType Inventory type (defines.inventory constant or name)
 --- @param filter_index number|nil Filter slot index (nil for all slots)
 --- @param filter_item string|nil Item name to filter (nil to clear filter)
 --- @return boolean Success
@@ -253,20 +326,7 @@ function EntityInterface:set_filter(inventory_type, filter_index, filter_item)
     end
     
     -- Resolve inventory type
-    local inv_index = inventory_type
-    if type(inventory_type) == "string" then
-        -- Map string names to defines.inventory constants
-        local inv_map = {
-            chest = defines.inventory.chest,
-            fuel = defines.inventory.fuel,
-            input = defines.inventory.assembling_machine_input,
-            output = defines.inventory.assembling_machine_output,
-        }
-        inv_index = inv_map[inventory_type]
-        if not inv_index then
-            error("EntityInterface: Unknown inventory type name: " .. inventory_type)
-        end
-    end
+    local inv_index = _resolve_inventory_type(inventory_type)
     
     -- Get inventory
     local inventory = self.entity.get_inventory(inv_index)
@@ -310,7 +370,7 @@ end
 
 --- Set inventory limit on entity
 --- Validates: inventory exists
---- @param inventory_type number|string Inventory type (defines.inventory constant or name)
+--- @param inventory_type InventoryType Inventory type (defines.inventory constant or name)
 --- @param limit number|nil Limit to set (nil to clear limit)
 --- @return boolean Success
 function EntityInterface:set_inventory_limit(inventory_type, limit)
@@ -319,19 +379,7 @@ function EntityInterface:set_inventory_limit(inventory_type, limit)
     end
     
     -- Resolve inventory type
-    local inv_index = inventory_type
-    if type(inventory_type) == "string" then
-        local inv_map = {
-            chest = defines.inventory.chest,
-            fuel = defines.inventory.fuel,
-            input = defines.inventory.assembling_machine_input,
-            output = defines.inventory.assembling_machine_output,
-        }
-        inv_index = inv_map[inventory_type]
-        if not inv_index then
-            error("EntityInterface: Unknown inventory type name: " .. inventory_type)
-        end
-    end
+    local inv_index = _resolve_inventory_type(inventory_type)
     
     -- Get inventory
     local inventory = self.entity.get_inventory(inv_index)
@@ -364,7 +412,7 @@ end
 --- Get item from entity inventory
 --- Validates: inventory exists
 --- Does NOT validate: agent has space, etc. (that's Agent class responsibility)
---- @param inventory_type number|string Inventory type
+--- @param inventory_type InventoryType Inventory type
 --- @param item_name string Item name to get
 --- @param count number|nil Count to get (default: all available)
 --- @return number Count actually retrieved
@@ -374,19 +422,7 @@ function EntityInterface:get_inventory_item(inventory_type, item_name, count)
     end
     
     -- Resolve inventory type
-    local inv_index = inventory_type
-    if type(inventory_type) == "string" then
-        local inv_map = {
-            chest = defines.inventory.chest,
-            fuel = defines.inventory.fuel,
-            input = defines.inventory.assembling_machine_input,
-            output = defines.inventory.assembling_machine_output,
-        }
-        inv_index = inv_map[inventory_type]
-        if not inv_index then
-            error("EntityInterface: Unknown inventory type name: " .. inventory_type)
-        end
-    end
+    local inv_index = _resolve_inventory_type(inventory_type)
     
     -- Get inventory
     local inventory = self.entity.get_inventory(inv_index)
@@ -414,7 +450,7 @@ end
 --- Set item in entity inventory
 --- Validates: inventory exists, can accept items
 --- Does NOT validate: source has items (that's Agent class responsibility)
---- @param inventory_type number|string Inventory type
+--- @param inventory_type InventoryType Inventory type
 --- @param item_name string Item name to insert
 --- @param count number Count to insert
 --- @return number Count actually inserted
@@ -428,19 +464,7 @@ function EntityInterface:set_inventory_item(inventory_type, item_name, count)
     end
     
     -- Resolve inventory type
-    local inv_index = inventory_type
-    if type(inventory_type) == "string" then
-        local inv_map = {
-            chest = defines.inventory.chest,
-            fuel = defines.inventory.fuel,
-            input = defines.inventory.assembling_machine_input,
-            output = defines.inventory.assembling_machine_output,
-        }
-        inv_index = inv_map[inventory_type]
-        if not inv_index then
-            error("EntityInterface: Unknown inventory type name: " .. inventory_type)
-        end
-    end
+    local inv_index = _resolve_inventory_type(inventory_type)
     
     -- Get inventory
     local inventory = self.entity.get_inventory(inv_index)
@@ -460,7 +484,7 @@ end
 --- Extract all items from entity inventories (before pickup/mining)
 --- Validates: entity is mineable
 --- Note: Actual mining requires an agent (use Agent:pickup_entity() which calls agent.mine_entity())
---- @return table Items from all inventories {item_name = count, ...}
+--- @return table<string, number> Items from all inventories {item_name = count, ...}
 function EntityInterface:extract_inventory_items()
     if not (self.entity and self.entity.valid) then
         error("EntityInterface: Entity is invalid")
@@ -473,18 +497,8 @@ function EntityInterface:extract_inventory_items()
     
     local all_items = {}
     
-    -- Inventory types to check
-    local inventory_types = {
-        chest = defines.inventory.chest,
-        fuel = defines.inventory.fuel,
-        burnt_result = defines.inventory.burnt_result,
-        input = defines.inventory.assembling_machine_input,
-        output = defines.inventory.assembling_machine_output,
-        modules = defines.inventory.assembling_machine_modules,
-        ammo = defines.inventory.turret_ammo,
-        trunk = defines.inventory.car_trunk,
-        cargo = defines.inventory.cargo_wagon,
-    }
+    -- Use all available inventory types from the mapping
+    local inventory_types = INVENTORY_TYPE_MAP
     
     for inventory_name, inventory_type in pairs(inventory_types) do
         local success, inventory = pcall(function()
@@ -552,7 +566,7 @@ end
 -- ============================================================================
 
 --- Get entity position
---- @return table Position {x, y}
+--- @return Position Position {x, y}
 function EntityInterface:get_position()
     if not (self.entity and self.entity.valid) then
         error("EntityInterface: Entity is invalid")

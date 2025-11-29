@@ -32,8 +32,9 @@ function PlacementActions.place_entity(self, entity_name, position, options)
         error("Agent: Unknown entity prototype: " .. entity_name)
     end
 
-    if not self.character.get_main_inventory().get_item_count(entity_name) > 0 then
-        error("Agent: Insufficient items in agent inventory (have " .. self.character.get_main_inventory().get_item_count(entity_name) .. ", need 1)")
+    local item_count = self.character.get_main_inventory().get_item_count(entity_name)
+    if item_count < 1 then
+        error("Agent: Insufficient items in agent inventory (have " .. item_count .. ", need 1)")
     end
     
     local can_place_params = {

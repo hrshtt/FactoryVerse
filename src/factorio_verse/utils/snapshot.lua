@@ -174,6 +174,7 @@ function M.send_udp_notification(payload)
     if M.DEBUG and game and game.print then
         local event_type = payload.event_type or "unknown"
         game.print(string.format("[snapshot] Sent UDP notification: %s (port %d)", event_type, M.UDP_PORT))
+        game.print(string.format("[snapshot] Payload: %s", json_str))
     end
 
     return true

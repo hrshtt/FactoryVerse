@@ -315,21 +315,25 @@ function MiningActions.finalize_mining(self, reason)
     reason = reason or "cancelled"
     local mining_state = self.mining
     
-    -- Calculate actual products based on mode and reason
+    -- Calculate actual products based on mode
+    -- For cancelled: still report what was mined so far (incremental) or use inventory diff (stochastic)
     local actual_products = nil
     local count = mining_state.count_progress or 0
     
-    if reason ~= "cancelled" then
-        if mining_state.mode == MINING_MODE.INCREMENTAL then
-            -- We know exactly what we got
+    if mining_state.mode == MINING_MODE.INCREMENTAL then
+        -- We know exactly what we got (even if cancelled partway through)
+        if count > 0 then
             actual_products = { [mining_state.entity_name] = count }
-        elseif mining_state.is_stochastic and mining_state.start_inventory then
-            -- Stochastic deplete: use inventory diff
-            actual_products = get_inventory_diff(self.character, mining_state.start_inventory)
-        else
-            -- Deterministic deplete: use expected products
-            actual_products = mining_state.expected_products
         end
+    elseif mining_state.is_stochastic and mining_state.start_inventory then
+        -- Stochastic deplete: use inventory diff (works for cancelled too)
+        actual_products = get_inventory_diff(self.character, mining_state.start_inventory)
+        if not next(actual_products) then
+            actual_products = nil  -- Empty table -> nil
+        end
+    elseif reason ~= "cancelled" then
+        -- Deterministic deplete completed: use expected products
+        actual_products = mining_state.expected_products
     end
     
     -- Render completion text for deplete modes using localized string format

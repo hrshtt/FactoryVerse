@@ -126,6 +126,9 @@ WalkingActions.process_walking = function(self)
         walking.progress = 0
         walking.path = {}
         self.character.walking_state = { walking = false }
+        
+        -- Mark reachability cache as dirty after walking completes
+        self:mark_reachable_dirty()
         return
     end
 
@@ -163,6 +166,9 @@ WalkingActions.process_walking = function(self)
             walking.progress = 0
             walking.path = {}
             self.character.walking_state = { walking = false }
+            
+            -- Mark reachability cache as dirty after walking completes
+            self:mark_reachable_dirty()
             return
         end
         waypoint = path[walking.progress]
@@ -198,6 +204,10 @@ WalkingActions.stop_walking = function(self)
     self.walking.path = nil
     self.walking.path_id = nil
     self.walking.progress = 0
+    
+    -- Mark reachability cache as dirty after walking stops
+    self:mark_reachable_dirty()
+    
     return {
         success = true,
         position = self.character.position

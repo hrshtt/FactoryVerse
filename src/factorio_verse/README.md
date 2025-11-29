@@ -173,7 +173,7 @@ remote.call("agent_1", "mine_resource", "iron-ore", 50)
 
 ## UDP Notifications
 
-Async actions send completion notifications via UDP (port 34197):
+Async actions send completion notifications via UDP (port 34202):
 
 ```json
 {

@@ -1,461 +1,782 @@
+--- Agent Remote Interface
+--- Registers per-agent remote interfaces for RCON control
+--- Interface name: "agent_{agent_id}"
+---
+--- Methods are organized by category:
+---   - Async actions (walk_to, mine_resource, craft_enqueue) return immediately with action_id
+---     and send completion notifications via UDP
+---   - Sync actions (place_entity, set_entity_recipe, etc.) complete immediately
+---   - Queries (inspect, get_recipes, etc.) return data without side effects
+---
+--- Schema Export:
+---   Use M.export_interface_schema() to get JSON-serializable schema for Python bindings
+---   and LLM documentation generation.
+
 local M = {}
 
 -- ============================================================================
--- REMOTE INTERFACE REGISTRATION
+-- INTERFACE METHOD REGISTRY
 -- ============================================================================
 
---- Interface method metadata: paramspec, output_schema, description, and func
---- Each entry defines a method available on the agent remote interface
+--- Method definitions with full metadata for Python bindings and LLM docs
+--- Fields:
+---   - category: Method category for grouping in docs
+---   - is_async: If true, returns action_id and sends UDP completion
+---   - doc: Human-readable description for LLM agents
+---   - paramspec: Parameter validation schema
+---   - returns: Return type schema for Python type hints
+---   - func: Dispatch function
+
 local INTERFACE_METHODS = {
-    -- Walking, Async
+    -- ========================================================================
+    -- ASYNC: Walking
+    -- ========================================================================
     walk_to = {
+        category = "movement",
+        is_async = true,
+        doc = [[Walk the agent to a target position using pathfinding.
+The agent will navigate around obstacles. Returns immediately with an action_id;
+completion is signaled via UDP when the agent arrives or fails to reach the goal.]],
         paramspec = {
-            _param_order = {"goal", "strict_goal", "options"},
-            goal = { type = "position", required = true },
-            strict_goal = { type = "boolean", default = false },
-            options = { type = "table", default = {} },
+            _param_order = { "goal", "strict_goal", "options" },
+            goal = { type = "position", required = true, doc = "Target position {x, y}" },
+            strict_goal = { type = "boolean", default = false, doc = "If true, fail if exact position unreachable" },
+            options = { type = "table", default = {}, doc = "Additional pathfinding options" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                queued = { type = "boolean" },
-                action_id = { type = "string" },
-                tick = { type = "number" },
-                result = { type = "object" },
+        returns = {
+            type = "async_action",
+            schema = {
+                queued = { type = "boolean", doc = "True if action was queued" },
+                action_id = { type = "string", doc = "Unique ID for tracking completion" },
+            },
+            completion = {
+                success = { type = "boolean", doc = "True if agent reached goal" },
+                position = { type = "position", doc = "Final position of agent" },
+                elapsed_ticks = { type = "number", doc = "Game ticks elapsed" },
             },
         },
-        description = "Navigate agent to target position using pathfinding. Returns immediately with action_id; completion is notified via UDP. If strict_goal is false, agent will adjust to nearest non-colliding position if goal is blocked.",
         func = function(self, goal, strict_goal, options)
             return self:walk_to(goal, strict_goal, options)
         end,
     },
     stop_walking = {
-        paramspec = {
-            _param_order = {},
-        },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                error = { type = "string" },
+        category = "movement",
+        is_async = false,
+        doc = "Immediately stop the agent's current walking action.",
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if walking was stopped" },
             },
         },
-        description = "Stop the agent's current walking action. Returns success status and current position, or error if agent is not walking.",
         func = function(self)
             return self:stop_walking()
         end,
     },
 
-    -- Mining, Async
+    -- ========================================================================
+    -- ASYNC: Mining
+    -- ========================================================================
     mine_resource = {
+        category = "mining",
+        is_async = true,
+        doc = [[Mine a resource within reach of the agent.
+The agent will mine the nearest resource of the given type. Mining is incremental
+if max_count is specified, or depletes the resource if max_count is nil.
+Returns immediately; completion signaled via UDP with items gained.]],
         paramspec = {
-            _param_order = {"resource_name", "max_count"},
-            resource_name = { type = "string", required = true },
-            max_count = { type = "number", default = nil },
+            _param_order = { "resource_name", "max_count" },
+            resource_name = { type = "string", required = true, doc = "Resource prototype name (e.g., 'iron-ore', 'coal', 'stone')" },
+            max_count = { type = "number", default = nil, doc = "Max items to mine (nil = deplete resource)" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                queued = { type = "boolean" },
-                action_id = { type = "string" },
-                tick = { type = "number" },
-                resource_name = { type = "string" },
-                max_count = { type = "number" },
-                estimated_ticks = { type = "number" },
+        returns = {
+            type = "async_action",
+            schema = {
+                queued = { type = "boolean", doc = "True if mining was started" },
+                action_id = { type = "string", doc = "Unique ID for tracking completion" },
+                entity_name = { type = "string", doc = "Name of resource being mined" },
+                entity_position = { type = "position", doc = "Position of resource" },
+            },
+            completion = {
+                success = { type = "boolean", doc = "True if mining completed" },
+                items = { type = "table", doc = "Items gained: {item_name: count, ...}" },
+                reason = { type = "string", doc = "Completion reason (completed, interrupted, etc.)" },
             },
         },
-        description = "Start mining a resource (ore, tree, or rock) within reach. Returns immediately with action_id; completion is notified via UDP. For ores, max_count limits how many to mine. For trees/rocks, max_count is ignored.",
         func = function(self, resource_name, max_count)
             return self:mine_resource(resource_name, max_count)
         end,
     },
     stop_mining = {
-        paramspec = {
-            _param_order = {},
-        },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                error = { type = "string" },
+        category = "mining",
+        is_async = false,
+        doc = "Immediately stop the agent's current mining action.",
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if mining was stopped" },
+                items = { type = "table", doc = "Items gained before stopping" },
             },
         },
-        description = "Stop the agent's current mining action. Returns success status and current position, or error if agent is not mining.",
         func = function(self)
             return self:stop_mining()
         end,
     },
 
-    -- Crafting, Async
+    -- ========================================================================
+    -- ASYNC: Crafting
+    -- ========================================================================
     craft_enqueue = {
+        category = "crafting",
+        is_async = true,
+        doc = [[Queue a recipe for hand-crafting.
+The agent will craft the specified recipe if ingredients are available.
+Returns immediately; completion signaled via UDP when crafting finishes.]],
         paramspec = {
-            _param_order = {"recipe_name", "count"},
-            recipe_name = { type = "recipe", required = true },
-            count = { type = "number", default = 1 },
+            _param_order = { "recipe_name", "count" },
+            recipe_name = { type = "recipe", required = true, doc = "Recipe name to craft" },
+            count = { type = "number", default = 1, doc = "Number of times to craft the recipe" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                queued = { type = "boolean" },
-                action_id = { type = "string" },
-                tick = { type = "number" },
-                recipe = { type = "string" },
-                count_queued = { type = "number" },
-                estimated_ticks = { type = "number" },
+        returns = {
+            type = "async_action",
+            schema = {
+                queued = { type = "boolean", doc = "True if crafting was queued" },
+                action_id = { type = "string", doc = "Unique ID for tracking completion" },
+                recipe = { type = "string", doc = "Recipe being crafted" },
+                count = { type = "number", doc = "Number queued" },
+            },
+            completion = {
+                success = { type = "boolean", doc = "True if crafting completed" },
+                items = { type = "table", doc = "Items crafted: {item_name: count, ...}" },
             },
         },
-        description = "Enqueue a crafting recipe for the agent to craft. Returns immediately with action_id; completion is notified via UDP. Count specifies how many times to craft the recipe.",
         func = function(self, recipe_name, count)
             return self:craft_enqueue(recipe_name, count)
         end,
     },
     craft_dequeue = {
+        category = "crafting",
+        is_async = false,
+        doc = "Cancel queued crafting for a recipe.",
         paramspec = {
-            _param_order = {"recipe_name", "count"},
-            recipe_name = { type = "recipe", required = true },
-            count = { type = "number", default = nil },
+            _param_order = { "recipe_name", "count" },
+            recipe_name = { type = "recipe", required = true, doc = "Recipe name to cancel" },
+            count = { type = "number", default = nil, doc = "Number to cancel (nil = all)" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                cancelled = { type = "boolean" },
-                action_id = { type = "string" },
-                recipe = { type = "string" },
-                count_cancelled = { type = "number" },
-                remaining_queue_size = { type = "number" },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if crafting was cancelled" },
+                cancelled_count = { type = "number", doc = "Number of crafts cancelled" },
             },
         },
-        description = "Dequeue/cancel a crafting recipe from the agent's crafting queue. If count is nil, cancels all instances of the recipe. Returns cancellation status and remaining queue size.",
         func = function(self, recipe_name, count)
             return self:craft_dequeue(recipe_name, count)
         end,
     },
 
-    -- Entity operations
+    -- ========================================================================
+    -- SYNC: Entity Operations
+    -- ========================================================================
     set_entity_recipe = {
+        category = "entity",
+        is_async = false,
+        doc = [[Set the recipe for a machine (assembler, furnace, chemical plant).
+The entity is identified by name and position. If position is nil, finds the
+nearest entity of that type within reach.]],
         paramspec = {
-            _param_order = {"entity_name", "position", "recipe_name"},
-            entity_name = { type = "entity_name", required = true },
-            position = { type = "position", default = nil },
-            recipe_name = { type = "recipe", default = nil },
+            _param_order = { "entity_name", "position", "recipe_name" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
+            recipe_name = { type = "recipe", default = nil, doc = "Recipe to set (nil = clear)" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                entity_name = { type = "string" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                recipe_name = { type = "string" },
+        returns = {
+            type = "entity_ref",
+            schema = {
+                success = { type = "boolean", doc = "True if recipe was set" },
+                entity_name = { type = "string", doc = "Entity name" },
+                position = { type = "position", doc = "Entity position" },
+                recipe = { type = "string", doc = "Recipe that was set" },
             },
         },
-        description = "Set the recipe on a crafting entity (e.g., assembling machine). If position is nil, searches for entity near agent. If recipe_name is nil, clears the recipe. Entity must be within reach.",
         func = function(self, entity_name, position, recipe_name)
             return self:set_entity_recipe(entity_name, position, recipe_name)
         end,
     },
     set_entity_filter = {
+        category = "entity",
+        is_async = false,
+        doc = [[Set an inventory filter on an entity (inserter, container with filters).
+Filters restrict which items can be placed in specific inventory slots.]],
         paramspec = {
-            _param_order = {"entity_name", "position", "inventory_type", "filter_index", "filter_item"},
-            entity_name = { type = "entity_name", required = true },
-            position = { type = "position", default = nil },
-            inventory_type = { type = "any", required = true },
-            filter_index = { type = "number", default = nil },
-            filter_item = { type = "string", default = nil },
+            _param_order = { "entity_name", "position", "inventory_type", "filter_index", "filter_item" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
+            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to filter" },
+            filter_index = { type = "number", default = nil, doc = "Slot index (nil = first slot)" },
+            filter_item = { type = "string", default = nil, doc = "Item to filter (nil = clear)" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                entity_name = { type = "string" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                inventory_type = { type = "any" },
-                filter_index = { type = "number" },
-                filter_item = { type = "string" },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if filter was set" },
             },
         },
-        description = "Set a filter on an entity's inventory slot. If position is nil, searches for entity near agent. If filter_index is nil, sets filter on all slots. If filter_item is nil, clears the filter. Entity must be within reach.",
         func = function(self, entity_name, position, inventory_type, filter_index, filter_item)
             return self:set_entity_filter(entity_name, position, inventory_type, filter_index, filter_item)
         end,
     },
     set_inventory_limit = {
+        category = "entity",
+        is_async = false,
+        doc = [[Set the inventory bar limit on a container.
+This limits how many slots are usable in the container's inventory.]],
         paramspec = {
-            _param_order = {"entity_name", "position", "inventory_type", "limit"},
-            entity_name = { type = "entity_name", required = true },
-            position = { type = "position", default = nil },
-            inventory_type = { type = "any", required = true },
-            limit = { type = "number", default = nil },
+            _param_order = { "entity_name", "position", "inventory_type", "limit" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
+            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to limit" },
+            limit = { type = "number", default = nil, doc = "Slot limit (nil = no limit)" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                entity_name = { type = "string" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                inventory_type = { type = "any" },
-                limit = { type = "number" },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if limit was set" },
             },
         },
-        description = "Set an inventory limit on an entity's inventory. If position is nil, searches for entity near agent. If limit is nil, clears the limit. Entity must be within reach.",
         func = function(self, entity_name, position, inventory_type, limit)
             return self:set_inventory_limit(entity_name, position, inventory_type, limit)
         end,
     },
     take_inventory_item = {
+        category = "inventory",
+        is_async = false,
+        doc = [[Take items from an entity's inventory into the agent's inventory.
+Returns an item reference that can be used for further operations.]],
         paramspec = {
-            _param_order = {"entity_name", "position", "inventory_type", "item_name", "count"},
-            entity_name = { type = "entity_name", required = true },
-            position = { type = "position", default = nil },
-            inventory_type = { type = "any", required = true },
-            item_name = { type = "string", required = true },
-            count = { type = "number", default = nil },
+            _param_order = { "entity_name", "position", "inventory_type", "item_name", "count" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
+            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to take from" },
+            item_name = { type = "string", required = true, doc = "Item name to take" },
+            count = { type = "number", default = nil, doc = "Count to take (nil = all available)" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                entity_name = { type = "string" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                inventory_type = { type = "any" },
-                item_name = { type = "string" },
-                count = { type = "number" },
+        returns = {
+            type = "item_ref",
+            schema = {
+                success = { type = "boolean", doc = "True if items were taken" },
+                item_name = { type = "string", doc = "Item that was taken" },
+                count = { type = "number", doc = "Actual count taken" },
             },
         },
-        description = "Transfer items from an entity's inventory to the agent's inventory. If position is nil, searches for entity near agent. If count is nil, transfers all available. Entity must be within reach.",
         func = function(self, entity_name, position, inventory_type, item_name, count)
             return self:get_inventory_item(entity_name, position, inventory_type, item_name, count)
         end,
     },
     put_inventory_item = {
+        category = "inventory",
+        is_async = false,
+        doc = [[Put items from the agent's inventory into an entity's inventory.
+The agent must have the items in their inventory.]],
         paramspec = {
-            _param_order = {"entity_name", "position", "inventory_type", "item_name", "count"},
-            entity_name = { type = "entity_name", required = true },
-            position = { type = "position", default = nil },
-            inventory_type = { type = "any", required = true },
-            item_name = { type = "string", required = true },
-            count = { type = "number", required = true },
+            _param_order = { "entity_name", "position", "inventory_type", "item_name", "count" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
+            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to put into" },
+            item_name = { type = "string", required = true, doc = "Item name to put" },
+            count = { type = "number", required = true, doc = "Count to put" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                entity_name = { type = "string" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                inventory_type = { type = "any" },
-                item_name = { type = "string" },
-                count = { type = "number" },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if items were placed" },
+                count = { type = "number", doc = "Actual count placed" },
             },
         },
-        description = "Transfer items from the agent's inventory to an entity's inventory. If position is nil, searches for entity near agent. Count is required. Entity must be within reach.",
         func = function(self, entity_name, position, inventory_type, item_name, count)
             return self:set_inventory_item(entity_name, position, inventory_type, item_name, count)
         end,
     },
 
-    -- Placement
+    -- ========================================================================
+    -- SYNC: Placement
+    -- ========================================================================
     place_entity = {
+        category = "placement",
+        is_async = false,
+        doc = [[Place an entity from the agent's inventory onto the map.
+The agent must have the item in their inventory and be within build reach.
+Returns an entity reference for further operations on the placed entity.]],
         paramspec = {
-            _param_order = {"entity_name", "position", "options"},
-            entity_name = { type = "entity_name", required = true },
-            position = { type = "position", required = true },
-            options = { type = "table", default = {} },
-        },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                entity_name = { type = "string" },
-                entity_type = { type = "string" },
+            _param_order = { "entity_name", "position", "options" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to place" },
+            position = { type = "position", required = true, doc = "Position to place entity" },
+            options = {
+                type = "table",
+                default = {},
+                doc = "Placement options",
+                schema = {
+                    direction = { type = "number", doc = "Direction (0=north, 2=east, 4=south, 6=west)" },
+                    force_build = { type = "boolean", doc = "Force placement even if blocked" },
+                },
             },
         },
-        description = "Place an entity at the specified position. Requires the entity item in agent's inventory. Options can include 'direction' (number 0-7) or 'orient_towards' (table with position or entity_name+position). Returns immediately with placement result.",
+        returns = {
+            type = "entity_ref",
+            schema = {
+                success = { type = "boolean", doc = "True if entity was placed" },
+                entity_name = { type = "string", doc = "Placed entity name" },
+                position = { type = "position", doc = "Actual position placed" },
+                unit_number = { type = "number", doc = "Unique entity ID (if applicable)" },
+                entity_type = { type = "string", doc = "Entity type string" },
+            },
+        },
         func = function(self, entity_name, position, options)
             return self:place_entity(entity_name, position, options)
         end,
     },
-
-    -- Teleport
-    teleport = {
+    pickup_entity = {
+        category = "placement",
+        is_async = false,
+        doc = [[Pick up an entity from the map into the agent's inventory.
+The entity must be within reach and mineable/deconstructable.]],
         paramspec = {
-            _param_order = {"position"},
-            position = { type = "position", required = true },
+            _param_order = { "entity_name", "position" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to pick up" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
         },
-        output_schema = {
-            type = "boolean",
+        returns = {
+            type = "item_ref",
+            schema = {
+                success = { type = "boolean", doc = "True if entity was picked up" },
+                item_name = { type = "string", doc = "Item returned to inventory" },
+                count = { type = "number", doc = "Count returned (usually 1)" },
+            },
         },
-        description = "Instantly teleport the agent to the specified position. Returns true on success, false if agent entity is invalid.",
+        func = function(self, entity_name, position)
+            return self:pickup_entity(entity_name, position)
+        end,
+    },
+
+    -- ========================================================================
+    -- SYNC: Movement
+    -- ========================================================================
+    teleport = {
+        category = "movement",
+        is_async = false,
+        doc = [[Instantly teleport the agent to a position.
+Use for testing/debugging. For normal gameplay, use walk_to instead.]],
+        paramspec = {
+            _param_order = { "position" },
+            position = { type = "position", required = true, doc = "Target position" },
+        },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if teleport succeeded" },
+                position = { type = "position", doc = "Final position" },
+            },
+        },
         func = function(self, position)
             return self:teleport(position)
         end,
     },
 
-    -- Queries
+    -- ========================================================================
+    -- QUERIES
+    -- ========================================================================
     inspect = {
+        category = "query",
+        is_async = false,
+        doc = [[Get current agent state including position, inventory, and nearby entities.
+This is the primary way to observe the agent's current situation.]],
         paramspec = {
-            _param_order = {"attach_inventory", "attach_entities"},
-            attach_inventory = { type = "boolean", default = false },
-            attach_entities = { type = "boolean", default = false },
+            _param_order = { "attach_inventory", "attach_entities" },
+            attach_inventory = { type = "boolean", default = false, doc = "Include inventory contents" },
+            attach_entities = { type = "boolean", default = false, doc = "Include nearby entities" },
         },
-        output_schema = {
-            type = "object",
-            properties = {
-                agent_id = { type = "number" },
-                tick = { type = "number" },
-                position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                inventory = { type = "object" },
-                reachable_resources = { type = "array", items = { type = "object" } },
-                reachable_entities = { type = "array", items = { type = "object" } },
-                error = { type = "string" },
+        returns = {
+            type = "agent_state",
+            schema = {
+                agent_id = { type = "number", doc = "Agent ID" },
+                tick = { type = "number", doc = "Current game tick" },
+                position = { type = "position", doc = "Agent position" },
+                inventory = { type = "table", doc = "Inventory: {item_name: count, ...} (if requested)" },
+                reachable_resources = { type = "table", doc = "Resources in mining range (if requested)" },
+                reachable_entities = { type = "table", doc = "Entities in build range (if requested)" },
             },
         },
-        description = "Inspect the agent's current state. Returns position, optionally includes inventory contents and reachable entities/resources. attach_inventory includes agent inventory, attach_entities includes entities within reach.",
         func = function(self, attach_inventory, attach_entities)
             return self:inspect(attach_inventory, attach_entities)
         end,
     },
     get_placement_cues = {
+        category = "query",
+        is_async = false,
+        doc = [[Get placement information for an entity type.
+Returns valid positions and orientation hints for placing the entity.]],
         paramspec = {
-            _param_order = {"entity_name"},
-            entity_name = { type = "entity_name", required = true },
+            _param_order = { "entity_name" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
         },
-        output_schema = {
-            type = "array",
-            items = {
-                type = "object",
-                properties = {
-                    position = { type = "object", properties = { x = { type = "number" }, y = { type = "number" } } },
-                    can_place = { type = "boolean" },
-                    direction = { type = "string" },
-                    resource_name = { type = "string" },
-                },
+        returns = {
+            type = "placement_info",
+            schema = {
+                entity_name = { type = "string", doc = "Entity name" },
+                collision_box = { type = "table", doc = "Entity collision bounds" },
+                tile_width = { type = "number", doc = "Width in tiles" },
+                tile_height = { type = "number", doc = "Height in tiles" },
             },
         },
-        description = "Get valid placement positions for an entity type based on chunk resource tracking. Returns array of positions where the entity can be placed. Currently supports electric-mining-drill, pumpjack, and offshore-pump.",
         func = function(self, entity_name)
             return self:get_placement_cues(entity_name)
         end,
     },
     get_chunks_in_view = {
-        paramspec = {
-            _param_order = {},
-        },
-        output_schema = {
-            type = "array",
-            items = {
-                type = "object",
-                properties = {
-                    x = { type = "number" },
-                    y = { type = "number" },
-                },
+        category = "query",
+        is_async = false,
+        doc = "Get list of map chunks currently visible/charted by the agent.",
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "table",
+            schema = {
+                chunks = { type = "table", doc = "Array of chunk coordinates [{x, y}, ...]" },
             },
         },
-        description = "Get all chunk coordinates in a 5x5 area centered on the agent's current chunk. Returns array of {x, y} chunk coordinates.",
         func = function(self)
             return self:get_chunks_in_view()
         end,
     },
     get_recipes = {
+        category = "query",
+        is_async = false,
+        doc = [[Get available recipes for the agent's force.
+Optionally filter by crafting category.]],
         paramspec = {
-            _param_order = {"category"},
-            category = { type = "string", default = nil },
+            _param_order = { "category" },
+            category = { type = "string", default = nil, doc = "Filter by category (nil = all)" },
         },
-        output_schema = {
-            type = "array",
-            items = {
-                type = "object",
-                properties = {
-                    name = { type = "string" },
-                    category = { type = "string" },
-                    energy = { type = "number" },
-                    ingredients = { type = "array" },
-                },
+        returns = {
+            type = "table",
+            schema = {
+                recipes = { type = "table", doc = "Array of recipe names" },
             },
         },
-        description = "Get all available recipes for the agent's force. If category is provided (e.g., 'crafting', 'smelting'), filters to that category. Returns array of recipe details including name, category, energy cost, and ingredients.",
         func = function(self, category)
             return self:get_recipes(category)
         end,
     },
     get_technologies = {
+        category = "query",
+        is_async = false,
+        doc = [[Get technologies for the agent's force.
+Can filter to only show currently researchable technologies.]],
         paramspec = {
-            _param_order = {"only_available"},
-            only_available = { type = "boolean", default = false },
+            _param_order = { "only_available" },
+            only_available = { type = "boolean", default = false, doc = "Only show researchable techs" },
         },
-        output_schema = {
-            type = "array",
-            items = {
-                type = "object",
-                properties = {
-                    name = { type = "string" },
-                    researched = { type = "boolean" },
-                    enabled = { type = "boolean" },
-                    prerequisites = { type = "object" },
-                    successors = { type = "array" },
-                    research_unit_ingredients = { type = "array" },
-                    research_unit_count = { type = "number" },
-                    research_unit_energy = { type = "number" },
-                    saved_progress = { type = "number" },
-                    effects = { type = "array" },
-                    research_trigger = { type = "object" },
-                },
+        returns = {
+            type = "table",
+            schema = {
+                technologies = { type = "table", doc = "Array of technology info objects" },
             },
         },
-        description = "Get all technologies available to the agent's force. If only_available is true, returns only technologies that can be researched right now (all prerequisites met). Returns array of technology details including prerequisites, research costs, and effects.",
         func = function(self, only_available)
             return self:get_technologies(only_available)
         end,
     },
-
-    -- Research actions
-    enqueue_research = {
-        paramspec = {
-            _param_order = {"technology_name"},
-            technology_name = { type = "technology_name", required = true },
-        },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                technology_name = { type = "string" },
-                tick = { type = "number" },
-                queue_position = { type = "number" },
-                queue_length = { type = "number" },
+    get_activity_state = {
+        category = "query",
+        is_async = false,
+        doc = [[Get current state of all async activities (walking, mining, crafting).
+Useful for checking if agent is busy or idle.]],
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "activity_state",
+            schema = {
+                walking = {
+                    type = "table",
+                    doc = "Walking state",
+                    schema = {
+                        active = { type = "boolean", doc = "True if walking" },
+                        goal = { type = "position", doc = "Target position" },
+                        action_id = { type = "string", doc = "Current action ID" },
+                    },
+                },
+                mining = {
+                    type = "table",
+                    doc = "Mining state",
+                    schema = {
+                        active = { type = "boolean", doc = "True if mining" },
+                        entity_name = { type = "string", doc = "Resource being mined" },
+                        action_id = { type = "string", doc = "Current action ID" },
+                    },
+                },
+                crafting = {
+                    type = "table",
+                    doc = "Crafting state",
+                    schema = {
+                        active = { type = "boolean", doc = "True if crafting" },
+                        recipe = { type = "string", doc = "Recipe being crafted" },
+                        action_id = { type = "string", doc = "Current action ID" },
+                    },
+                },
             },
         },
-        description = "Enqueue a technology for research. Adds the technology to the research queue. Returns success status, queue position, and queue length. Technology must be enabled and not already researched.",
+        func = function(self)
+            return self:get_activity_state()
+        end,
+    },
+
+    -- ========================================================================
+    -- RESEARCH
+    -- ========================================================================
+    enqueue_research = {
+        category = "research",
+        is_async = false,
+        doc = [[Start researching a technology.
+The agent's force must have labs with science packs available.]],
+        paramspec = {
+            _param_order = { "technology_name" },
+            technology_name = { type = "technology_name", required = true, doc = "Technology to research" },
+        },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if research started" },
+                technology = { type = "string", doc = "Technology being researched" },
+            },
+        },
         func = function(self, technology_name)
             return self:enqueue_research(technology_name)
         end,
     },
     cancel_current_research = {
-        paramspec = {
-            _param_order = {},
-        },
-        output_schema = {
-            type = "object",
-            properties = {
-                success = { type = "boolean" },
-                cancelled_technology = { type = "string" },
-                tick = { type = "number" },
-                error = { type = "string" },
+        category = "research",
+        is_async = false,
+        doc = "Cancel the currently active research.",
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if research was cancelled" },
             },
         },
-        description = "Cancel the currently active research (first in queue). Returns success status and the name of the cancelled technology, or error if no research is active.",
         func = function(self)
             return self:cancel_current_research()
         end,
     },
+
+    -- ========================================================================
+    -- REACHABILITY
+    -- ========================================================================
+    get_reachable = {
+        category = "query",
+        is_async = false,
+        doc = [[Get cached reachable entities and resources (position keys only).
+Returns position keys for entities within build reach and resources within mining reach.
+The cache is updated when agent stops walking, teleports, or entities are built/destroyed.
+Python should cache last_updated_tick and only re-fetch when tick changes.
+Use get_reachable_full for complete entity data with volatile state.]],
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "reachable_cache",
+            schema = {
+                entities = { type = "table", doc = "Position keys for reachable entities: {'x,y': true, ...}" },
+                resources = { type = "table", doc = "Position keys for reachable resources: {'x,y': true, ...}" },
+                last_updated_tick = { type = "number", doc = "Game tick when cache was last updated" },
+            },
+        },
+        func = function(self)
+            return self:get_reachable()
+        end,
+    },
+    get_reachable_full = {
+        category = "query",
+        is_async = false,
+        doc = [[Get full reachable snapshot with complete entity data.
+Returns arrays of entity/resource data including volatile state (inventory, fuel, recipe, status).
+Use this for the reachable_snapshot() context manager in Python.
+More expensive than get_reachable - use only when you need entity properties.]],
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "reachable_snapshot",
+            schema = {
+                entities = {
+                    type = "array",
+                    doc = "Array of entity data objects",
+                    item_schema = {
+                        name = { type = "string", doc = "Entity prototype name" },
+                        type = { type = "string", doc = "Entity type" },
+                        position = { type = "position", doc = "Entity position" },
+                        position_key = { type = "string", doc = "Position key for lookups" },
+                        unit_number = { type = "number", doc = "Unique entity ID" },
+                        status = { type = "string", doc = "Entity status (working, no-power, etc.)" },
+                        recipe = { type = "string", doc = "Current recipe (machines only)" },
+                        fuel_count = { type = "number", doc = "Fuel item count" },
+                        input_contents = { type = "table", doc = "Input inventory: {item: count}" },
+                        output_contents = { type = "table", doc = "Output inventory: {item: count}" },
+                        contents = { type = "table", doc = "Chest contents: {item: count}" },
+                    },
+                },
+                resources = {
+                    type = "array",
+                    doc = "Array of resource data objects",
+                    item_schema = {
+                        name = { type = "string", doc = "Resource prototype name" },
+                        type = { type = "string", doc = "Resource type" },
+                        position = { type = "position", doc = "Resource position" },
+                        position_key = { type = "string", doc = "Position key for lookups" },
+                        amount = { type = "number", doc = "Resource amount remaining" },
+                        products = { type = "table", doc = "Mineable products" },
+                    },
+                },
+                agent_position = { type = "position", doc = "Agent position at snapshot time" },
+                tick = { type = "number", doc = "Game tick when snapshot was taken" },
+            },
+        },
+        func = function(self)
+            return self:get_reachable_full()
+        end,
+    },
+
+    -- ========================================================================
+    -- DEBUG
+    -- ========================================================================
+    inspect_state = {
+        category = "debug",
+        is_async = false,
+        doc = "Get raw agent state object (for debugging).",
+        paramspec = { _param_order = {} },
+        returns = {
+            type = "raw",
+            schema = {},
+        },
+        func = function(self)
+            return self
+        end,
+    },
 }
 
---- Get interface methods metadata (for documentation API)
---- @return table Interface methods metadata
+-- ============================================================================
+-- SCHEMA EXPORT
+-- ============================================================================
+
+--- Export interface schema as JSON-serializable table
+--- Used for:
+---   1. Python binding generation
+---   2. LLM documentation generation
+---   3. Runtime validation
+--- @return table Schema with methods, params, returns, and docs
+function M.export_interface_schema()
+    local schema = {
+        version = "1.0.0",
+        description = "FactoryVerse Agent Remote Interface",
+        methods = {},
+        types = {
+            position = {
+                description = "2D position on the map",
+                schema = { x = "number", y = "number" },
+            },
+            inventory_type = {
+                description = "Inventory slot type identifier",
+                enum = { "input", "output", "fuel", "chest", "character" },
+            },
+            entity_ref = {
+                description = "Reference to a placed entity (use for further operations)",
+                schema = {
+                    entity_name = "string",
+                    position = "position",
+                    unit_number = "number|nil",
+                    entity_type = "string",
+                },
+            },
+            item_ref = {
+                description = "Reference to items in inventory",
+                schema = {
+                    item_name = "string",
+                    count = "number",
+                },
+            },
+        },
+        categories = {
+            movement = "Agent movement and pathfinding",
+            mining = "Resource extraction",
+            crafting = "Hand crafting recipes",
+            entity = "Entity configuration (recipes, filters)",
+            inventory = "Item transfer between agent and entities",
+            placement = "Building and deconstructing entities",
+            query = "Information retrieval (no side effects)",
+            research = "Technology research",
+            debug = "Debugging utilities",
+        },
+    }
+
+    for method_name, meta in pairs(INTERFACE_METHODS) do
+        -- Build param list (excluding internal fields)
+        local params = {}
+        for _, param_name in ipairs(meta.paramspec._param_order or {}) do
+            local param_spec = meta.paramspec[param_name]
+            if param_spec then
+                params[param_name] = {
+                    type = param_spec.type,
+                    required = param_spec.required or false,
+                    default = param_spec.default,
+                    doc = param_spec.doc,
+                }
+                -- Include nested schema if present
+                if param_spec.schema then
+                    params[param_name].schema = param_spec.schema
+                end
+            end
+        end
+
+        schema.methods[method_name] = {
+            category = meta.category,
+            is_async = meta.is_async or false,
+            doc = meta.doc,
+            params = params,
+            param_order = meta.paramspec._param_order,
+            returns = meta.returns,
+        }
+    end
+
+    return schema
+end
+
+--- Get list of async method names (for Python ASYNC_ACTIONS set)
+--- @return table Array of async method names
+function M.get_async_methods()
+    local async_methods = {}
+    for method_name, meta in pairs(INTERFACE_METHODS) do
+        if meta.is_async then
+            table.insert(async_methods, method_name)
+        end
+    end
+    return async_methods
+end
+
+--- Get methods by category
+--- @param category string Category name
+--- @return table Methods in that category
+function M.get_methods_by_category(category)
+    local methods = {}
+    for method_name, meta in pairs(INTERFACE_METHODS) do
+        if meta.category == category then
+            methods[method_name] = meta
+        end
+    end
+    return methods
+end
+
+-- ============================================================================
+-- PUBLIC API
+-- ============================================================================
+
+--- Get interface methods metadata (for introspection)
+--- @return table Interface methods with paramspec
 function M.get_interface_methods()
     return INTERFACE_METHODS
 end
@@ -465,12 +786,10 @@ end
 function M:register_remote_interface()
     local interface_name = "agent_" .. self.agent_id
 
-    -- Remove existing interface if present
     if remote.interfaces[interface_name] then
         remote.remove_interface(interface_name)
     end
 
-    -- Create interface dynamically from metadata
     local interface = {}
     for method_name, meta in pairs(INTERFACE_METHODS) do
         interface[method_name] = function(...)

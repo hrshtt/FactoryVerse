@@ -37,6 +37,12 @@
 --- @field jobs table[] Active placement jobs
 --- @field next_job_id number Next job ID to assign
 
+--- @class AgentReachableState : table
+--- @field entities table Position keys for entities within build reach {"x,y" = true, ...}
+--- @field resources table Position keys for resources within mining reach {"x,y" = true, ...}
+--- @field last_updated_tick number Game tick when cache was last computed
+--- @field dirty boolean True if cache needs recomputation
+
 --- Agent class definition, wraps all agent actions and state
 --- @class Agent
 --- @field agent_id number Agent ID
@@ -78,6 +84,10 @@
 --- @field chart_view fun(self: Agent, rechart?: boolean): boolean
 --- @field register_remote_interface fun(self: Agent): nil
 --- @field unregister_remote_interface fun(self: Agent): nil
+--- @field reachable AgentReachableState Reachability cache for DSL reference validation
+--- @field mark_reachable_dirty fun(self: Agent): nil
+--- @field process_reachable fun(self: Agent): nil
+--- @field get_reachable fun(self: Agent): table
 local Agent = {}
 
 -- ============================================================================
@@ -100,6 +110,7 @@ local modules = {
     "entity_ops",
     "charting",
     "researching",
+    "reachability",
     "RemoteInterface",
 }
 
@@ -151,6 +162,15 @@ function Agent:new(agent_id, color, force_name, spawn_position)
             next_job_id = 1,
         },
         charted_chunks = {},
+
+        -- Reachability cache for DSL reference validation
+        -- Updated on walking stop, teleport, and entity build/destroy events
+        reachable = {
+            entities = {},           -- { ["x,y"] = true, ... } position keys for build-reach entities
+            resources = {},          -- { ["x,y"] = true, ... } position keys for mining-reach resources
+            last_updated_tick = 0,   -- Tick when reachability was last computed
+            dirty = true,            -- True if needs recomputation
+        },
 
         -- Message queue for UDP notifications (processed by game state)
         -- Structure: message_queue[category_string] = {message1, message2, ...}
@@ -365,6 +385,10 @@ function Agent:teleport(position)
     end
 
     self.character.teleport(position)
+    
+    -- Mark reachability cache as dirty after teleport
+    self:mark_reachable_dirty()
+    
     return true
 end
 
@@ -560,6 +584,78 @@ function Agent:get_queued_messages()
 end
 
 -- ============================================================================
+-- ACTIVITY STATE QUERY (for testing)
+-- ============================================================================
+
+--- Get current activity state for all async actions
+--- Used by test scenarios to verify state machine progress
+--- @return table Activity state {walking, mining, crafting}
+function Agent:get_activity_state()
+    local state = {
+        walking = {
+            active = false,
+            path_id = nil,
+            progress = 0,
+            goal = nil,
+            action_id = nil,
+        },
+        mining = {
+            active = false,
+            entity_name = nil,
+            entity_type = nil,
+            count_progress = 0,
+            target_count = nil,
+            action_id = nil,
+        },
+        crafting = {
+            active = false,
+            recipe = nil,
+            count = 0,
+            queue_length = 0,
+            action_id = nil,
+        },
+    }
+    
+    -- Walking state
+    if self.walking then
+        local has_path = self.walking.path and #self.walking.path > 0
+        local has_path_request = self.walking.path_id ~= nil
+        state.walking.active = has_path or has_path_request
+        state.walking.path_id = self.walking.path_id
+        state.walking.progress = self.walking.progress or 0
+        state.walking.goal = self.walking.goal
+        state.walking.action_id = self.walking.action_id
+    end
+    
+    -- Mining state
+    if self.mining then
+        local is_mining = self.character and self.character.valid and self.character.mining_state.mining
+        state.mining.active = is_mining or (self.mining.action_id ~= nil)
+        state.mining.entity_name = self.mining.entity_name
+        state.mining.entity_type = self.mining.entity_type
+        state.mining.count_progress = self.mining.count_progress or 0
+        state.mining.target_count = self.mining.target_count
+        state.mining.action_id = self.mining.action_id
+    end
+    
+    -- Crafting state
+    if self.crafting and self.crafting.in_progress then
+        state.crafting.active = true
+        state.crafting.recipe = self.crafting.in_progress.recipe
+        state.crafting.count = self.crafting.in_progress.count or 0
+        state.crafting.action_id = self.crafting.in_progress.action_id
+    end
+    
+    -- Get crafting queue length from character
+    if self.character and self.character.valid then
+        local queue = self.character.crafting_queue
+        state.crafting.queue_length = queue and #queue or 0
+    end
+    
+    return state
+end
+
+-- ============================================================================
 -- STATE MACHINE PROCESSING
 -- ============================================================================
 
@@ -585,6 +681,9 @@ function Agent:process(event)
     -- Process placement jobs
     -- TODO: Implement placement job processing
     -- For now, jobs are queued but not processed
+    
+    -- Process reachability cache (only if dirty)
+    self:process_reachable()
 end
 
 return Agent

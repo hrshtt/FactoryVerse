@@ -96,7 +96,7 @@ function ChartingHelpers.chart_spawn_area(self)
 end
 
 function ChartingHelpers.get_chunks_in_view(self)
-    local center_chunk = map_to_chunk_coords(self.entity.position)
+    local center_chunk = map_to_chunk_coords(self.character.position)
     local chunks_in_view = {}
 
     -- Chart 5x5 chunks centered on the agent's current chunk

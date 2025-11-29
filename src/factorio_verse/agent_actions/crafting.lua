@@ -254,19 +254,9 @@ function CraftingActions.craft_dequeue(self, recipe_name, count)
     local count_to_cancel = count or tracking.count_queued
     self.character.cancel_crafting{index = target_index, count = count_to_cancel}
     
-    -- Mark as cancelled in tracking
-    tracking.cancelled = true
-    tracking.cancel_tick = game.tick
-    tracking.count_cancelled = count_to_cancel
-    
     -- Check remaining queue size
     local remaining_queue_size = self.character.crafting_queue_size or 0
     local fully_cancelled = (remaining_queue_size < tracking.start_queue_size)
-    
-    -- Clear tracking if fully cancelled
-    if fully_cancelled then
-        self.crafting.in_progress = nil
-    end
     
     -- Enqueue cancel message
     self:enqueue_message({
@@ -281,6 +271,9 @@ function CraftingActions.craft_dequeue(self, recipe_name, count)
         tick = game.tick or 0,
     }, "crafting")
     
+    -- Always clear tracking after dequeue - we've sent the message
+    self.crafting.in_progress = nil
+    
     return {
         success = true,
         cancelled = fully_cancelled,
@@ -292,80 +285,67 @@ function CraftingActions.craft_dequeue(self, recipe_name, count)
 end
 
 CraftingActions.process_crafting = function(self)
-
     local current_tick = game.tick or 0
-    -- Process crafting
-    if self.crafting.in_progress then
-        local tracking = self.crafting.in_progress
-
-        -- Check if crafting queue is empty (crafting completed)
-        local queue_size = self.character.crafting_queue_size or 0
-
-        if queue_size == 0 and tracking.start_queue_size > 0 then
-            -- Crafting completed
-            local products = tracking.products or {}
-            local actual_products = {}
-
-            -- Calculate actual products crafted
-            for item_name, amount_per_craft in pairs(products) do
-                local current_count = self.character.get_item_count(item_name)
-                local start_count = tracking.start_products[item_name] or 0
-                local delta = current_count - start_count
-                if delta > 0 then
-                    actual_products[item_name] = delta
-                end
-            end
-
-            -- Estimate count_crafted from product deltas
-            local count_crafted = 0
-            for item_name, amount_per_craft in pairs(products) do
-                local delta = actual_products[item_name] or 0
-                if amount_per_craft > 0 then
-                    local estimated = math.floor(delta / amount_per_craft)
-                    if estimated > count_crafted then
-                        count_crafted = estimated
-                    end
-                end
-            end
-
-            -- Calculate actual time taken
-            local actual_ticks = nil
-            if tracking.start_tick then
-                actual_ticks = current_tick - tracking.start_tick
-            end
-
-            self:enqueue_message({
-                action = "craft_enqueue",
-                agent_id = self.agent_id,
-                success = true,
-                action_id = tracking.action_id,
-                tick = current_tick,
-                recipe = tracking.recipe,
-                count_requested = tracking.count_requested,
-                count_queued = tracking.count_queued,
-                count_crafted = count_crafted,
-                products = actual_products,
-                actual_ticks = actual_ticks,
-            }, "crafting")
-
-            self.crafting.in_progress = nil
-        elseif tracking.cancelled then
-            -- Crafting was cancelled
-            self:enqueue_message({
-                action = "craft_dequeue",
-                agent_id = self.agent_id,
-                success = true,
-                cancelled = true,
-                action_id = tracking.action_id,
-                tick = current_tick,
-                recipe = tracking.recipe,
-                count_cancelled = tracking.count_cancelled or 0,
-            }, "crafting")
-
-            self.crafting.in_progress = nil
-        end
+    
+    if not self.crafting.in_progress then
+        return
     end
+    
+    local tracking = self.crafting.in_progress
 
+    -- Check if crafting queue is empty (crafting completed)
+    local queue_size = self.character.crafting_queue_size or 0
+
+    if queue_size == 0 and tracking.start_queue_size > 0 then
+        -- Crafting completed
+        local products = tracking.products or {}
+        local actual_products = {}
+
+        -- Calculate actual products crafted
+        for item_name, amount_per_craft in pairs(products) do
+            local current_count = self.character.get_item_count(item_name)
+            local start_count = tracking.start_products[item_name] or 0
+            local delta = current_count - start_count
+            if delta > 0 then
+                actual_products[item_name] = delta
+            end
+        end
+
+        -- Estimate count_crafted from product deltas
+        local count_crafted = 0
+        for item_name, amount_per_craft in pairs(products) do
+            local delta = actual_products[item_name] or 0
+            if amount_per_craft > 0 then
+                local estimated = math.floor(delta / amount_per_craft)
+                if estimated > count_crafted then
+                    count_crafted = estimated
+                end
+            end
+        end
+
+        -- Calculate actual time taken
+        local actual_ticks = nil
+        if tracking.start_tick then
+            actual_ticks = current_tick - tracking.start_tick
+        end
+
+        self:enqueue_message({
+            action = "craft_enqueue",
+            agent_id = self.agent_id,
+            success = true,
+            action_id = tracking.action_id,
+            tick = current_tick,
+            recipe = tracking.recipe,
+            count_requested = tracking.count_requested,
+            count_queued = tracking.count_queued,
+            count_crafted = count_crafted,
+            products = actual_products,
+            actual_ticks = actual_ticks,
+        }, "crafting")
+
+        self.crafting.in_progress = nil
+    end
+    -- Note: Cancellation is handled entirely in craft_dequeue() which clears tracking
 end
 
 return CraftingActions
