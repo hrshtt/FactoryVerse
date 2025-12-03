@@ -1,6 +1,6 @@
 import pydantic
-from typing import List, Optional, Any, Dict, Literal, Union
-from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, AnchorVector, Direction
+from typing import List, Optional, Union
+from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction
 from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack
 from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
 from src.FactoryVerse.dsl.prototypes import (
@@ -40,11 +40,26 @@ class BaseEntity(pydantic.BaseModel):
         """Pick up the entity."""
         return self._factory.pickup_entity(self.name, self.position)
 
+class GhostEntity(BaseEntity):
+    """A ghost entity."""
+    ...
+
+    def remove(self) -> bool:
+        """Remove the ghost entity."""
+        return self._factory.remove_ghost(self.name, self.position)
 
 class Container(BaseEntity):
     """A container entity."""
 
     inventory_size: int
+
+    def store_items(self, items: List[ItemStack]):
+        """Store items in the container."""
+        return self._factory.put_inventory_items(self.name, self.position, items)
+
+class WoodenChest(Container): ...
+
+class IronChest(Container): ...
 
 
 class Furnace(BaseEntity):

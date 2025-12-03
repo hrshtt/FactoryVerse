@@ -66,7 +66,7 @@ class PlayingFactory:
         goal: Union[Dict[str, float], "MapPosition"],
         strict_goal: bool = False,
         options: Optional[Dict] = None,
-    ) -> str:
+    ) -> bool:
         """Walk the agent to a target position using pathfinding.
 
         Args:

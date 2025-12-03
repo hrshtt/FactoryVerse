@@ -2,7 +2,7 @@ import pydantic
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal
 from src.FactoryVerse.dsl.types import MapPosition, Direction
 from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
-from src.FactoryVerse.dsl.entity.base import BaseEntity
+from src.FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
 from src.FactoryVerse.dsl.prototypes import get_item_prototypes
 
 
@@ -145,7 +145,6 @@ class Item(pydantic.BaseModel):
     """Base class for all items."""
 
     name: Union[ItemName, PlaceableItemName]
-    subgroup: Union[ItemSubgroup, PlaceableItemSubgroup]
 
     @property
     def stack_size(self) -> int:
@@ -221,6 +220,17 @@ class PlaceableItem(Item):
             "Entity creation from placement result not yet implemented"
         )
 
+    def place_ghost(self, position: MapPosition, direction: Optional[Direction] = None) -> GhostEntity:
+        """Place this item as a ghost entity on the map.
+
+        Returns the created GhostEntity instance.
+        """
+        options = {}
+        if direction is not None:
+            options["direction"] = direction.value
+        return self._factory.place_ghost(self.name, position, options)
+
+
 class PlacementCueMixin:
     """Mixin for items that require placement cues (mining drills, pumpjack, offshore-pump)."""
 
@@ -269,7 +279,7 @@ class PlaceAsEntityItem(Item):
     """Legacy class - use PlaceableItem instead."""
 
     place_result: PlaceableItemName
-    
+
 
 class ItemStack(pydantic.BaseModel):
     """Item stack with count information from inventory."""
@@ -296,3 +306,40 @@ class ItemStack(pydantic.BaseModel):
     def full(self) -> int:
         """Get full stack count."""
         return self.count
+
+class BeltLine(ItemStack):
+    """A belt line item stack."""
+    def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> GhostEntity:
+        """Get a ghost line of the belt."""
+        return self._factory.get_ghost_line(self.name, position, length, direction)
+
+    def get_ghost(self, position: MapPosition) -> GhostEntity:
+        """Get a ghost entity at the position."""
+        return self._factory.get_ghost(self.name, position)
+
+    def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> GhostEntity:
+        """Get a ghost line of the belt."""
+        return self._factory.get_ghost_line(self.name, position, length, direction)
+
+
+def get_item(name: Union[ItemName, PlaceableItemName]) -> Item:
+
+    if name not in PlaceableItemName:
+        raise ValueError(f"Invalid item name: {name}")
+    if name == "pumpjack":
+        return PumpjackItem(name=name)
+    elif name == "offshore-pump":
+        return OffshorePumpItem(name=name)
+    elif name == "electric-mining-drill":
+        return MiningDrillItem(name=name)
+    elif name == "burner-mining-drill":
+        return MiningDrillItem(name=name)
+    else:
+        return PlaceableItem(name=name)
+
+
+def create_item_stack(items: List[Dict[Literal["name", "count"], Any]]) -> List[ItemStack]:
+    """Create a list of item stacks from a list of dictionaries."""
+    return [
+        ItemStack(name=get_item(item["name"]), count=item["count"]) for item in items
+    ]
