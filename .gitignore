@@ -12,3 +12,6 @@ uv.lock
 
 # Data directory
 .fv
+
+# Factorio scenarios (not part of mod)
+src/factorio/scenarios/

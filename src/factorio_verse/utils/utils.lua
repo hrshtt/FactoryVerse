@@ -76,28 +76,6 @@ function M.min_position(a, b)
     }
 end
 
-function M.chart_native_start_area(surface, force, position, game_state)
-    local radius_tiles = 150 -- Hacky but accepted vanilla feel
-    local area = {
-        { x = position.x - radius_tiles, y = position.y - radius_tiles },
-        { x = position.x + radius_tiles, y = position.y + radius_tiles }
-    }
-    force.chart(surface, area)
-
-    -- Register charted area for headless server fallback (if game_state provided)
-    if game_state and game_state.map then
-        game_state.map.register_charted_area({
-            left_top = { x = area[1].x, y = area[1].y },
-            right_bottom = { x = area[2].x, y = area[2].y }
-        })
-    end
-
-    -- Don't force generate chunks synchronously - this causes crashes when called from RCON
-    -- Chunks will be generated naturally by the engine over time
-    -- surface.request_to_generate_chunks(position, math.ceil(radius_tiles / 32))
-    -- surface.force_generate_chunk_requests()
-end
-
 function M.players_to_spectators()
     for _, player in pairs(game.connected_players) do
         player.set_controller({ type = defines.controllers.spectator })

@@ -140,6 +140,169 @@ FactoryVerse’s mod treats Factorio as an explicit, serializable game state wit
 
 Together, these pieces form a compact environment interface: snapshots make context explicit and cheap to move; actions apply validated, sensible changes; mutation logs capture what happened for downstream analytics and learning.
 
+## Python DSL: Type-Safe Entity Operations
+
+
+
+<p align="center">
+  <img src="docs/FactoryVerse.svg" width="100%" alt="FactoryVerse Overview"/>
+</p>
+
+FactoryVerse provides a Python Domain-Specific Language (DSL) that enables type-safe, context-aware operations on Factorio entities. The DSL bridges the gap between the Lua mod's remote interface and Python agent code, providing a clean, Pythonic API that reflects Factorio's gameplay semantics.
+
+### Design Philosophy
+
+The DSL is built around three core principles:
+
+1. **Type Safety**: Entity types are represented as Python classes with type-specific methods, preventing invalid operations (e.g., you can't set a recipe on a mining drill)
+2. **Context Awareness**: Operations automatically access the active gameplay session through context variables, eliminating the need for explicit factory passing
+3. **Prototype-Driven Behavior**: Static entity properties (output positions, search areas, connection points) are derived from Factorio's prototype data, ensuring accuracy and consistency
+
+### Context Management
+
+All entity operations require an active gameplay context, provided by the `playing_factory` context manager:
+
+```python
+from src.FactoryVerse.dsl.agent import playing_factory
+from src.FactoryVerse.dsl.types import MapPosition
+
+with playing_factory(rcon_client, agent_id):
+    # All entity operations here
+    drill = ElectricMiningDrill(...)
+    output_pos = drill.output_position()
+```
+
+The context manager sets up a thread-local context variable that entities and top-level functions automatically access, ensuring operations only execute within a valid gameplay session.
+
+### Entity Types and Operations
+
+Entities are represented as typed Python classes, each with domain-specific methods:
+
+```python
+# Mining drills - extract resources
+drill = ElectricMiningDrill(name="electric-mining-drill", position=MapPosition(10, 20), ...)
+output_pos = drill.output_position()  # Get output tile position
+search_area = drill.get_search_area()  # Get resource search bounding box
+
+# Inserters - move items between entities
+inserter = Inserter(...)
+pickup_pos = inserter.get_pickup_position()  # Where inserter picks up items
+drop_pos = inserter.get_drop_position()  # Where inserter drops items
+
+# Furnaces - smelt ores into plates
+furnace = Furnace(...)
+furnace.add_fuel(coal_stack)  # Add fuel (accepts Item or ItemStack)
+furnace.put_input_items(iron_ore_stack, count=50)  # Add ore to smelt
+plates = furnace.take_output_items(iron_plate_stack)  # Extract smelted plates
+
+# Assembling machines - craft items
+assembler = AssemblingMachine(...)
+assembler.set_recipe("iron-gear-wheel")  # Set what to craft
+input_type = assembler.get_input_type()  # Query recipe requirements
+output_type = assembler.get_output_type()  # Query recipe outputs
+```
+
+### Prototype System
+
+Static entity properties are accessed through a singleton prototype system that loads data from Factorio's prototype definitions:
+
+```python
+# Prototypes provide spatial calculations based on entity definitions
+drill.prototype.output_position(centroid, direction)  # Calculate output tile
+drill.prototype.get_resource_search_area(centroid)  # Calculate mining area
+inserter.prototype.pickup_position(centroid, direction)  # Calculate pickup tile
+```
+
+Prototypes are instantiated once and shared globally, ensuring efficient memory usage and consistent behavior across all entity instances.
+
+### Items and Placement
+
+Items in inventory are represented as `Item` and `ItemStack` objects. Placeable items can be placed as entities:
+
+```python
+# Regular placeable items
+chest_item = PlaceableItem(name="wooden-chest", ...)
+chest_entity = chest_item.place(MapPosition(10, 20))
+
+# Special items requiring placement cues (mining drills, pumpjacks, offshore pumps)
+drill_item = MiningDrillItem(name="electric-mining-drill", ...)
+cues = drill_item.get_placement_cues()  # Get valid placement positions
+if cues:
+    entity = drill_item.place(
+        MapPosition(cues[0]["position"]["x"], cues[0]["position"]["y"]),
+        Direction(cues[0].get("direction", 0))
+    )
+```
+
+### Top-Level Functions
+
+The DSL provides convenient top-level functions for common operations, automatically accessing the gameplay context:
+
+```python
+from src.FactoryVerse.dsl.dsl import walk_to, craft_enqueue, get_reachable_entities
+
+with playing_factory(rcon, agent_id):
+    # Movement
+    walk_to(MapPosition(10, 20))
+    cancel_walking()
+    
+    # Crafting
+    craft_enqueue("iron-plate", count=5)
+    craft_dequeue("iron-plate", count=2)
+    
+    # Research
+    research_enqueue("automation")
+    research_dequeue()
+    
+    # Observation
+    entities = get_reachable_entities()
+    inventory = get_inventory_items()
+```
+
+### Type System Benefits
+
+The typed DSL provides several advantages over string-based APIs:
+
+1. **IDE Support**: Autocomplete and type checking catch errors before runtime
+2. **Semantic Clarity**: Method names reflect gameplay actions (`add_fuel` vs `put_inventory_item`)
+3. **Invalid Operation Prevention**: Type system prevents impossible operations (e.g., setting recipes on non-crafting entities)
+4. **Refactoring Safety**: Type information enables safe code changes and better tooling support
+
+### Integration with Spatial Queries
+
+The DSL integrates seamlessly with FactoryVerse's spatial database approach. Entities can be created from query results:
+
+```python
+# Query entities from DuckDB
+entities_data = map_view.query("""
+    SELECT name, pos_x, pos_y, direction, bounding_box
+    FROM raw_entities
+    WHERE name = 'electric-mining-drill'
+""")
+
+# Convert to typed entities
+from src.FactoryVerse.dsl.entity.base import ElectricMiningDrill
+from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction
+
+drills = [
+    ElectricMiningDrill(
+        name=row["name"],
+        position=MapPosition(row["pos_x"], row["pos_y"]),
+        bounding_box=BoundingBox.from_tuple(row["bounding_box"]),
+        direction=Direction(row["direction"])
+    )
+    for row in entities_data
+]
+
+# Now use typed methods
+with playing_factory(rcon, agent_id):
+    for drill in drills:
+        output_pos = drill.output_position()
+        search_area = drill.get_search_area()
+```
+
+This combination of spatial queries for observation and typed DSL for action provides a powerful interface for AI agents to reason about and interact with the Factorio world.
+
 ## Getting Started
 
 [Installation and usage instructions would follow here, for sure]

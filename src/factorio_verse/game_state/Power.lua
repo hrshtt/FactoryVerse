@@ -5,36 +5,63 @@
 -- Module-level local references for global lookups (performance optimization)
 -- (This module currently doesn't use many globals, but kept for consistency)
 
-local GameStateError = require("types.Error")
+local GameStateError = require("utils.Error")
+
+local snapshot = require("utils.snapshot")
 
 local M = {}
 
-function M.get_power_production()
+function M.get_global_power_statistics()
+    local surface = game.surfaces[1]
+    if not surface.global_electric_network_statistics then
+        surface.create_global_electric_network()
+    end
+
+    stats = surface.global_electric_network_statistics
+
     -- Placeholder for power production logic
-    return 0
+    return {input = stats.input_counts, output = stats.output_counts, storage = stats.storage_counts}
 end
 
-function M.get_power_consumption()
-    -- Placeholder for power consumption logic
-    return 0
+function M._on_nth_tick_global_power_snapshot()
+    local stats = M.get_global_power_statistics()
+    if not stats then return end
+
+    -- Append a snapshot entry in JSONL format
+    local entry = {
+        tick = game.tick,
+        statistics = stats
+    }
+    local json_line = helpers.table_to_json(entry) .. "\n"
+    helpers.write_file(
+        snapshot.SNAPSHOT_BASE_DIR .. "/global_power_statistics.jsonl",
+        json_line,
+        true -- append
+        -- for_player omitted (server/global)
+    )
 end
 
-function M.get_power_networks()
-    -- Placeholder for power network analysis
+M.power_api = {}
+
+--- Get on_tick handlers
+--- @return table Array of handler functions
+function M.get_on_tick_handlers()
     return {}
 end
 
-function M.inspect_power()
-    rcon.print(helpers.table_to_json({
-        production = M.get_power_production(),
-        consumption = M.get_power_consumption(),
-        networks = M.get_power_networks()
-    }))
+--- Get events (defined events and nth_tick)
+--- @return table {defined_events = {}, nth_tick = {}}
+function M.get_events()
+    return {
+        defined_events = {},
+        nth_tick = {[300] = M._on_nth_tick_global_power_snapshot}
+    }
 end
 
-M.on_demand_snapshots = { inspect_power = M.inspect_power }
-M.admin_api = {
-    inspect_power = M.inspect_power,
-}
+--- Register remote interface for power admin methods
+--- @return table Remote interface table
+function M.register_remote_interface()
+    return M.power_api
+end
 
 return M
