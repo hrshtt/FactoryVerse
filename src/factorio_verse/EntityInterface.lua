@@ -25,7 +25,6 @@
 --- @field get_inventory_item fun(self: EntityInterface, inventory_type: InventoryType, item_name: string, count?: number): number
 --- @field set_inventory_item fun(self: EntityInterface, inventory_type: InventoryType, item_name: string, count: number): number
 --- @field extract_inventory_items fun(self: EntityInterface): table<string, number>
---- @field can_pickup fun(self: EntityInterface): boolean
 --- @field rotate fun(self: EntityInterface, direction?: defines.direction): boolean
 --- @field get_position fun(self: EntityInterface): Position
 --- @field get_name fun(self: EntityInterface): string
@@ -521,15 +520,6 @@ function EntityInterface:extract_inventory_items()
     end
     
     return all_items
-end
-
---- Check if entity can be picked up
---- @return boolean
-function EntityInterface:can_pickup()
-    if not (self.entity and self.entity.valid) then
-        return false
-    end
-    return self.entity.mineable == true
 end
 
 --- Rotate entity
