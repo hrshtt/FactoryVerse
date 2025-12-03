@@ -145,7 +145,15 @@ class AsyncActionListener:
 class RconHelper:
     """Enhanced RCON helper with async/sync action support."""
     
-    def __init__(self, rcon_client, udp_listener: Optional[AsyncActionListener] = None):
+    # Hardcoded list of async actions (agent interface actions only)
+    ASYNC_ACTIONS = {
+        "walk_to",
+        "mine_resource",
+        "craft_enqueue",
+    }
+    
+    def __init__(self, rcon_client, udp_listener: Optional[AsyncActionListener] = None,
+                 auto_create_agent: bool = True, num_agents: int = 1, destroy_existing: bool = True):
         """
         Initialize the RCON helper.
         
@@ -153,29 +161,58 @@ class RconHelper:
             rcon_client: factorio_rcon.RCONClient instance
             udp_listener: Optional AsyncActionListener for handling async action completions
                          (default: AsyncActionListener on port 34202)
+            auto_create_agent: If True, automatically create agent(s) before loading interfaces
+                             (default: True, since agent interfaces only appear after creation)
+            num_agents: Number of agents to create if auto_create_agent is True (default: 1)
+            destroy_existing: If True, destroy existing agents before creating new ones (default: True)
         """
         self.rcon_client = rcon_client
         self.udp_listener = udp_listener
+        
+        # Create agent(s) if requested (before fetching interfaces, since agent interfaces
+        # like "agent_1" only appear after agents are created)
+        if auto_create_agent:
+            self._create_agents(num_agents, destroy_existing)
+        
         self.interfaces = None
-        self.action_metadata = None
-        self._fetch_metadata()
+        self._fetch_interfaces()
     
-    def _fetch_metadata(self):
-        """Fetch interfaces and action metadata from Lua."""
+    def _create_agents(self, num_agents: int, destroy_existing: bool):
+        """Create agent(s) via admin API."""
+        try:
+            # Use admin interface to create agents
+            # Format: remote.call('agent', 'create_agents', num_agents, destroy_existing)
+            create_cmd = f"/c local res = remote.call('agent', 'create_agents', {num_agents}, {str(destroy_existing).lower()})"
+            result = self.rcon_client.send_command(create_cmd)
+            if result:
+                print(f"✅ Created {num_agents} agent(s)")
+            else:
+                print(f"⚠️  Agent creation command returned no output")
+        except Exception as e:
+            print(f"⚠️  Error creating agents: {e}")
+            # Don't raise - allow initialization to continue even if agent creation fails
+    
+    def _fetch_interfaces(self):
+        """Fetch remote interfaces from Lua."""
         try:
             # Fetch remote interfaces to validate connection
             interfaces_cmd = "/c rcon.print(helpers.table_to_json(remote.interfaces))"
             interfaces_json = self.rcon_client.send_command(interfaces_cmd)
+            
+            if interfaces_json is None:
+                raise ValueError("RCON command returned None - check RCON connection and server status")
+            
+            if not interfaces_json.strip():
+                raise ValueError("RCON command returned empty string - check if helpers.table_to_json is available")
+            
             self.interfaces = json.loads(interfaces_json)
             print(f"✅ Loaded remote interfaces: {list(self.interfaces.keys())}")
-            
-            # Fetch action metadata (sync vs async classification)
-            metadata_cmd = "/c rcon.print(helpers.table_to_json(remote.call('metadata', 'get_action_metadata')))"
-            metadata_json = self.rcon_client.send_command(metadata_cmd)
-            self.action_metadata = json.loads(metadata_json)
-            print(f"✅ Loaded action metadata: {len(self.action_metadata)} actions classified")
+        except json.JSONDecodeError as e:
+            print(f"❌ Error parsing interfaces JSON: {e}")
+            print(f"   Raw response: {interfaces_json}")
+            raise
         except Exception as e:
-            print(f"❌ Error fetching metadata: {e}")
+            print(f"❌ Error fetching interfaces: {e}")
             raise
     
     def get_cmd(self, category: str, method: str, args: Dict[str, Any]) -> str:
@@ -258,7 +295,7 @@ class RconHelper:
         """
         Execute an action and await completion for async actions.
         
-        This method checks action_metadata to determine if the action is async.
+        This method checks hardcoded ASYNC_ACTIONS to determine if the action is async.
         - If sync: completes in same RCON call, returns result immediately
         - If async: queues in Lua, registers with UDP listener, waits for UDP completion
         
@@ -274,23 +311,15 @@ class RconHelper:
             Final action result/payload
             
         Raises:
-            ValueError: If action metadata not found
             TimeoutError: If async action times out
         """
-        # Get metadata for this action
-        # action_key = f"{category}_{method}"
-        action_key = method
-        metadata = self.action_metadata.get(action_key)
-        
-        if not metadata:
-            raise ValueError(f"Action metadata not found: {action_key}")
-        
-        is_async = metadata.get('is_async', False)
+        # Check if action is async (hardcoded list)
+        is_async = method in self.ASYNC_ACTIONS
         
         if not is_async:
             # Sync action: execute and return immediately
             if verbose:
-                print(f"→ [SYNC] {action_key}")
+                print(f"→ [SYNC] {method}")
             return self.run(category, method, args, safe=safe, verbose=verbose)
         
         # Async action: execute and wait for UDP completion
@@ -298,7 +327,7 @@ class RconHelper:
             raise RuntimeError("UDP listener not configured for async actions")
         
         if verbose:
-            print(f"→ [ASYNC] {action_key}")
+            print(f"→ [ASYNC] {method}")
         
         # Execute action (returns queued response)
         response = self.run(category, method, args, safe=safe, verbose=verbose)
@@ -311,7 +340,7 @@ class RconHelper:
         # Check if it was actually queued
         if not response.get('queued'):
             if verbose:
-                print(f"⚠️  Action was not queued: {action_key}")
+                print(f"⚠️  Action was not queued: {method}")
             return response
         
         # Register and wait for completion

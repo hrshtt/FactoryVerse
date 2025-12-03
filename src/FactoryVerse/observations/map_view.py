@@ -146,6 +146,8 @@ class MapView:
         
         # Create in-memory DuckDB database
         self.db = duckdb.connect(':memory:')
+        # Install and load spatial extension before creating schema
+        self._install_spatial_extension()
         self._create_schema()
         
         # ID counters for resources, water, and trees (DuckDB doesn't support auto-increment)
@@ -155,7 +157,15 @@ class MapView:
         
         self.initial_load_complete = False
         self._update_task = None
-        
+    
+    def _install_spatial_extension(self):
+        """Install and load DuckDB spatial extension."""
+        try:
+            self.db.execute("INSTALL spatial;")
+            self.db.execute("LOAD spatial;")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load DuckDB spatial extension: {e}") from e
+    
     def _create_schema(self):
         """Create DuckDB tables for entities, resources, water, and trees."""
         # Entities table
@@ -182,6 +192,7 @@ class MapView:
         
         # Resources table
         # Note: DuckDB doesn't support auto-increment, so we'll generate IDs manually
+        # position is a GEOMETRY column for spatial queries
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS resources (
                 id BIGINT PRIMARY KEY,
@@ -190,6 +201,7 @@ class MapView:
                 kind TEXT NOT NULL,
                 x INTEGER NOT NULL,
                 y INTEGER NOT NULL,
+                position GEOMETRY NOT NULL,
                 amount REAL NOT NULL,
                 tick BIGINT
             )
@@ -420,16 +432,20 @@ class MapView:
                     resource = json.loads(line)
                     resource_id = self._resource_id_counter
                     self._resource_id_counter += 1
+                    x = resource.get('x')
+                    y = resource.get('y')
                     self.db.execute("""
-                        INSERT INTO resources (id, chunk_x, chunk_y, kind, x, y, amount, tick)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO resources (id, chunk_x, chunk_y, kind, x, y, position, amount, tick)
+                        VALUES (?, ?, ?, ?, ?, ?, ST_MakePoint(?, ?), ?, ?)
                     """, [
                         resource_id,
                         chunk_x,
                         chunk_y,
                         resource.get('kind'),
-                        resource.get('x'),
-                        resource.get('y'),
+                        x,
+                        y,
+                        x,  # For ST_MakePoint
+                        y,  # For ST_MakePoint
                         resource.get('amount', 0),
                         event.get('tick')
                     ])

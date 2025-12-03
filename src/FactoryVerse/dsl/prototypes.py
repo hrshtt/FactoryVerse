@@ -1,0 +1,253 @@
+from typing import Tuple, List, Dict, Any, Optional
+from src.FactoryVerse.dsl.types import MapPosition, Direction, BoundingBox
+from dataclasses import dataclass
+import json
+
+
+def apply_cardinal_vector(
+    map_position: MapPosition,
+    vector: Tuple[float, float],
+    direction: Direction,
+) -> MapPosition:
+    """Apply a vector transformation based on direction.
+
+    Rotates a vector relative to NORTH based on the given direction.
+    """
+    vx, vy = vector
+    if not direction.is_cardinal():
+        raise ValueError("Direction must be cardinal")
+    if direction == Direction.EAST:
+        vx, vy = vy, -vx
+    elif direction == Direction.SOUTH:
+        vx, vy = -vx, -vy
+    elif direction == Direction.WEST:
+        vx, vy = -vy, vx
+    return MapPosition(x=map_position.x + vx, y=map_position.y + vy)
+
+
+@dataclass(frozen=True, slots=True)
+class BasePrototype:
+    """Base class for prototype property accessors."""
+
+    _data: Dict[str, Any]
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def get_raw(self) -> Dict[str, Any]:
+        return self._data
+
+
+@dataclass
+class TransportBeltPrototype(BasePrototype):
+    """Prototype accessor for transport-belt."""
+
+    pass
+
+
+@dataclass
+class ElectricMiningDrillPrototype(BasePrototype):
+    """Prototype accessor for electric-mining-drill."""
+
+    _output_vector: Tuple[float, float]
+    _search_radius: float
+
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "ElectricMiningDrillPrototype":
+        """Create instance from raw prototype data."""
+        return cls(
+            _data=data,
+            _output_vector=tuple(data["vector_to_place_result"]),
+            _search_radius=data["resource_searching_radius"],
+        )
+
+    def get_resource_search_area(self, centroid: MapPosition) -> BoundingBox:
+        """
+        Return a BoundingBox for the resource search area,
+        centering the box at the centroid and with a half-width of resource_searching_radius.
+        """
+        r = self._search_radius
+        if r is None:
+            raise ValueError(
+                "resource_searching_radius not found in electric-mining-drill prototype"
+            )
+        x = centroid.x
+        y = centroid.y
+        left_top = (x - r, y - r)
+        right_bottom = (x + r, y + r)
+        return BoundingBox.from_tuple((left_top, right_bottom))
+
+    def output_position(
+        self, centroid: MapPosition, direction: Direction
+    ) -> MapPosition:
+        """
+        Given a centroid (MapPosition) and a direction (Direction.{NORTH, EAST, SOUTH, WEST}),
+        return the actual MapPosition of the drill's output.
+        The vector_to_place_result is always for NORTH; just map 0/4/8/12 to rotation.
+        """
+        return apply_cardinal_vector(centroid, self._output_vector, direction)
+
+
+@dataclass
+class BurnerMiningDrillPrototype(BasePrototype):
+    """Prototype accessor for burner-mining-drill."""
+
+    def get_fuel_type(self) -> str:
+        return self._data.get("energy_source", {}).get("fuel_category")
+
+
+@dataclass
+class PumpjackPrototype(BasePrototype):
+    """Prototype accessor for pumpjack."""
+
+    _pipe_vectors: List[Tuple[float, float]]
+
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "PumpjackPrototype":
+        """Create instance from raw prototype data."""
+        pipe_vectors = [
+            tuple(v)
+            for v in data["output_fluid_box"]["pipe_connections"][0]["positions"]
+        ]
+        return cls(
+            _data=data,
+            _pipe_vectors=pipe_vectors,
+        )
+
+    def get_output_fluid_box(self) -> dict:
+        return self._data.get("output_fluid_box")
+
+    def output_pipe_connections(self, centroid: MapPosition) -> List[MapPosition]:
+        return [
+            apply_cardinal_vector(centroid, vector, Direction.NORTH)
+            for vector in self._pipe_vectors
+        ]
+
+
+@dataclass
+class InserterPrototype(BasePrototype):
+    """Prototype accessor for inserter."""
+
+    _pickup_vector: Tuple[float, float]
+    _insert_vector: Tuple[float, float]
+
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "InserterPrototype":
+        """Create instance from raw prototype data."""
+        return cls(
+            _data=data,
+            _pickup_vector=tuple(data["pickup_vector"]),
+            _insert_vector=tuple(data["insert_vector"]),
+        )
+
+    def pickup_position(
+        self, centroid: MapPosition, direction: Direction
+    ) -> MapPosition:
+        return apply_cardinal_vector(centroid, self._pickup_vector, direction)
+
+    def drop_position(self, centroid: MapPosition, direction: Direction) -> MapPosition:
+        return apply_cardinal_vector(centroid, self._insert_vector, direction)
+
+
+@dataclass
+class LongHandedInserterPrototype(InserterPrototype):
+    """Prototype accessor for long-handed-inserter."""
+
+    # Inherits pickup/drop methods from InserterPrototype
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "LongHandedInserterPrototype":
+        """Create instance from raw prototype data."""
+        return cls(
+            _data=data,
+            _pickup_vector=tuple(data["pickup_vector"]),
+            _insert_vector=tuple(data["insert_vector"]),
+        )
+
+
+class EntityPrototypes:
+    """Aggregator for all prototype property accessors."""
+
+    def __init__(self, dump_file: str):
+        with open(dump_file, "r") as f:
+            self.data = json.load(f)
+
+        # Instantiate all prototypes once
+        self.transport_belt = TransportBeltPrototype(
+            _data=self.data["transport-belt"]["transport-belt"]
+        )
+        self.electric_mining_drill = ElectricMiningDrillPrototype.from_data(
+            self.data["mining-drill"]["electric-mining-drill"]
+        )
+        self.burner_mining_drill = BurnerMiningDrillPrototype(
+            _data=self.data["mining-drill"]["burner-mining-drill"]
+        )
+        self.pumpjack = PumpjackPrototype.from_data(
+            self.data["mining-drill"]["pumpjack"]
+        )
+        self.inserter = InserterPrototype.from_data(self.data["inserter"]["inserter"])
+        self.long_handed_inserter = LongHandedInserterPrototype.from_data(
+            self.data["inserter"]["long-handed-inserter"]
+        )
+
+class ItemPrototypes:
+    """Prototype accessor for items."""
+
+    def __init__(self, dump_file: str):
+        with open(dump_file, "r") as f:
+            self.data = json.load(f)
+
+
+        # Instantiate all item prototypes once
+        # self.item = ItemPrototype.from_data(self.data["item"]["item"])
+
+
+# Singleton instance - owned by this module
+_prototypes: Optional[EntityPrototypes] = None
+
+# Default dump file path (can be overridden in get_prototypes)
+DEFAULT_DUMP_FILE = "factorio-data-dump.json"
+
+
+def get_entity_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> EntityPrototypes:
+    """Get the global prototypes singleton instance.
+    
+    The singleton is instantiated on first call and reused for subsequent calls.
+    This ensures all entities share the same prototype instances.
+    
+    Args:
+        dump_file: Path to the Factorio prototype data dump JSON file.
+                  Only used on first call; subsequent calls ignore this parameter.
+        
+    Returns:
+        EntityPrototypes instance (singleton, instantiated on first call)
+        
+    Example:
+        >>> prototypes = get_prototypes()
+        >>> drill_proto = prototypes.electric_mining_drill
+        >>> output_pos = drill_proto.output_position(centroid, Direction.EAST)
+    """
+    global _prototypes
+    if _prototypes is None:
+        _prototypes = EntityPrototypes(dump_file)
+    return _prototypes
+
+
+def reset_prototypes():
+    """Reset the singleton instance (useful for testing or reloading).
+    
+    After calling this, the next call to get_prototypes() will create a new
+    instance from the dump file.
+    
+    Example:
+        >>> reset_prototypes()
+        >>> prototypes = get_prototypes("new-dump-file.json")
+    """
+    global _prototypes
+    _prototypes = None
+
+def get_item_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> ItemPrototypes:
+    """Get the global item prototypes singleton instance."""
+    global _item_prototypes
+    if _item_prototypes is None:
+        _item_prototypes = ItemPrototypes(dump_file)
+    return _item_prototypes

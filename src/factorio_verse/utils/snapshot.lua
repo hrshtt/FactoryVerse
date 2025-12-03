@@ -15,47 +15,6 @@ M.UDP_PORT = 34202
 -- Debug flag for verbose logging
 M.DEBUG = true
 
--- Storage key for tracking charted chunks
-M.CHARTED_CHUNKS_STORAGE_KEY = "factoryverse_charted_chunks"
-
--- ============================================================================
--- CHARTED CHUNK TRACKING
--- ============================================================================
-
---- Initialize charted chunks storage table if it doesn't exist
---- @return table - The charted chunks storage table
-function M._init_charted_chunks_storage()
-    if not storage[M.CHARTED_CHUNKS_STORAGE_KEY] then
-        storage[M.CHARTED_CHUNKS_STORAGE_KEY] = {}
-    end
-    return storage[M.CHARTED_CHUNKS_STORAGE_KEY]
-end
-
---- Check if a chunk has already been charted and had resources/water/trees dumped
---- @param chunk_x number
---- @param chunk_y number
---- @return boolean - True if chunk has been processed
-function M.is_chunk_charted(chunk_x, chunk_y)
-    local charted_chunks = M._init_charted_chunks_storage()
-    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
-    return charted_chunks[chunk_key] ~= nil
-end
-
---- Mark a chunk as charted (resources/water/trees have been dumped)
---- @param chunk_x number
---- @param chunk_y number
---- @return boolean - Success status
-function M.mark_chunk_charted(chunk_x, chunk_y)
-    local charted_chunks = M._init_charted_chunks_storage()
-    local chunk_key = utils.chunk_key(chunk_x, chunk_y)
-    charted_chunks[chunk_key] = {
-        x = chunk_x,
-        y = chunk_y,
-        tick = game and game.tick or 0
-    }
-    return true
-end
-
 --- Generate chunk directory path
 --- @param chunk_x number
 --- @param chunk_y number
@@ -83,7 +42,7 @@ end
 --- Format: {chunk_x}/{chunk_y}/resources/{filename}.jsonl
 --- @param chunk_x number
 --- @param chunk_y number
---- @param filename string - "resources", "water", or "trees"
+--- @param filename string - "tiles", "water-tiles", "entities", or legacy names
 --- @return string - Full file path
 function M.resource_file_path(chunk_x, chunk_y, filename)
     return M.chunk_dir_path(chunk_x, chunk_y) .. "/resources/" .. filename .. ".jsonl"
@@ -215,6 +174,7 @@ function M.send_udp_notification(payload)
     if M.DEBUG and game and game.print then
         local event_type = payload.event_type or "unknown"
         game.print(string.format("[snapshot] Sent UDP notification: %s (port %d)", event_type, M.UDP_PORT))
+        game.print(string.format("[snapshot] Payload: %s", json_str))
     end
 
     return true

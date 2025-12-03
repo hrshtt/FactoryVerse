@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Dict, List, Any
 
 from .infra.docker import DockerComposeManager, FactorioServerManager, JupyterManager, HotreloadWatcher
-from .infra.factorio_client_setup import setup_client, launch_factorio_client, sync_hotreload_to_client, read_factorio_log
+from .infra.factorio_client_setup import setup_client, launch_factorio_client, sync_hotreload_to_client, read_factorio_log, dump_data_raw
 
 
 class SimpleExperimentTracker:
@@ -71,28 +71,29 @@ def cmd_client_launch(args):
     work_dir = Path.cwd()
     server_mgr = FactorioServerManager(work_dir)
     
+    # Determine scenario
+    scenario = args.scenario
+    
     # Setup client
-    if args.as_mod:
-        # Setup as mod
-        print(f"📱 Setting up Factorio client (factorio_verse as MOD)")
-        setup_client(server_mgr.verse_mod_dir, scenario="test_scenario", force=args.force, 
-                    project_scenarios_dir=server_mgr.scenarios_dir)
-        
-        if args.watch:
-            print("⚠️  --watch not supported when using factorio_verse as MOD")
-            print("   Hotreload only works with scenario mode")
-    else:
-        # Setup as scenario
+    if scenario == "factorio_verse":
+        # Setup factorio_verse as scenario (no mod needed)
         print(f"📱 Setting up Factorio client (factorio_verse as SCENARIO)")
         setup_client(server_mgr.verse_mod_dir, scenario="factorio_verse", force=args.force,
+                    project_scenarios_dir=server_mgr.scenarios_dir)
+    else:
+        # Setup factorio_verse as mod + specified scenario
+        print(f"📱 Setting up Factorio client (factorio_verse as MOD, scenario: {scenario})")
+        setup_client(server_mgr.verse_mod_dir, scenario=scenario, force=args.force, 
                     project_scenarios_dir=server_mgr.scenarios_dir)
     
     # Launch client
     print("\n🚀 Launching Factorio client...")
     launch_factorio_client()
     
-    # Start hotreload watcher if requested (only for scenario mode)
-    if args.watch and not args.as_mod:
+    # Start hotreload watcher if requested (only for factorio_verse scenario mode)
+    if args.watch and scenario != "factorio_verse":
+        print("⚠️  --watch ignored: hotreload only works with scenario=factorio_verse")
+    elif args.watch:
         print("\n🔥 Starting hot-reload watcher...")
         watcher = HotreloadWatcher(server_mgr.verse_mod_dir, debounce_ms=2000)  # 2 second debounce for IDE flush
         
@@ -114,6 +115,15 @@ def cmd_client_launch(args):
 def cmd_client_log(args):
     """Display Factorio client log file."""
     read_factorio_log(follow=args.follow)
+
+
+def cmd_client_dump_data(args):
+    """Dump Factorio data.raw to JSON."""
+    from pathlib import Path
+    work_dir = Path.cwd()
+    server_mgr = FactorioServerManager(work_dir)
+    dump_data_raw(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, 
+                  project_scenarios_dir=server_mgr.scenarios_dir)
 
 
 def cmd_start(args):
@@ -248,15 +258,22 @@ def main():
     
     # Client launch subcommand
     client_launch_parser = client_subparsers.add_parser("launch", help="Setup and launch Factorio client")
+    client_launch_parser.add_argument("-s", "--scenario", default="factorio_verse", 
+                                      help="Scenario to load (default: factorio_verse). Use 'test_scenario' for testing.")
     client_launch_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
     client_launch_parser.add_argument("-w", "--watch", action="store_true", help="Enable hot-reload watcher (scenario mode only)")
-    client_launch_parser.add_argument("--as-mod", action="store_true", help="Use factorio_verse as mod (default: scenario)")
     client_launch_parser.set_defaults(func=cmd_client_launch)
     
     # Client log subcommand
     client_log_parser = client_subparsers.add_parser("log", help="Display Factorio client log file")
     client_log_parser.add_argument("-f", "--follow", action="store_true", help="Follow log file (like tail -f)")
     client_log_parser.set_defaults(func=cmd_client_log)
+    
+    # Client dump-data subcommand
+    client_dump_parser = client_subparsers.add_parser("dump-data", help="Dump Factorio data.raw to JSON")
+    client_dump_parser.add_argument("-s", "--scenario", default="factorio_verse", help="Scenario to use (default: factorio_verse)")
+    client_dump_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
+    client_dump_parser.set_defaults(func=cmd_client_dump_data)
     
     # ========== SERVER COMMAND ==========
     server_parser = subparsers.add_parser("server", help="Factorio server operations")

@@ -1,19 +1,19 @@
 -- control.lua: Central event dispatcher using aggregation pattern
--- Coordinates ActionRegistry and GameState to aggregate events and register remote interfaces
+-- Coordinates game state modules to aggregate events and register remote interfaces
 -- Events can only be registered once, so we aggregate all handlers and register via chains
+--
+-- Note: Per-agent remote interfaces (agent_1, agent_2, etc.) are registered automatically
+-- when agents are created via Agent:register_remote_interface()
 
-local ActionRegistry = require("ActionRegistry")
-local GameState = require("GameState")
 local utils = require("utils.utils")
 
 -- Require game state modules at module level (required by Factorio)
+local Agents = require("game_state.Agents")
 local Entities = require("game_state.Entities")
 local Resource = require("game_state.Resource")
 local Map = require("game_state.Map")
-
--- Initialize core instances
-local game_state = GameState:new()
-local action_registry = ActionRegistry
+local Power = require("game_state.Power")
+local Research = require("game_state.Research")
 
 -- ============================================================================
 -- EVENT DISPATCHER PATTERN
@@ -27,110 +27,80 @@ local function count_keys(tbl)
     return count
 end
 
---- Aggregate all events from all sources
+--- Aggregate all events from all modules
 --- Events can only be registered once, so we aggregate all handlers into chains
 --- @return table - {defined_events = {event_id -> [handler, ...]}, nth_tick = {tick_interval -> [handler, ...]}}
 local function aggregate_all_events()
-    local defined_events = {} -- {event_id -> [handler1, handler2, ...]}
+    local defined_events = {}    -- {event_id -> [handler1, handler2, ...]}
     local nth_tick_handlers = {} -- {tick_interval -> [handler1, handler2, ...]}
-    
+
     local function add_defined_event(event_id, handler)
         if event_id and handler then
             defined_events[event_id] = defined_events[event_id] or {}
             table.insert(defined_events[event_id], handler)
         end
     end
-    
+
     local function add_nth_tick_handler(tick_interval, handler)
         if tick_interval and handler then
             nth_tick_handlers[tick_interval] = nth_tick_handlers[tick_interval] or {}
             table.insert(nth_tick_handlers[tick_interval], handler)
         end
     end
-    
-    -- Initialize actions with game_state before getting events/interface
-    action_registry:init_actions(game_state)
-    
-    -- 1. Action Registry Events
-    -- Actions export events as {event_id -> handler} or {event_id -> factory(game_state)}
-    local action_events = action_registry:get_events()
-    for event_id, handlers in pairs(action_events or {}) do
-        for _, handler in ipairs(handlers) do
-            add_defined_event(event_id, handler)
+
+    -- Collect all modules
+    local modules = { Agents, Entities, Resource, Map, Power, Research }
+
+    -- 1. Aggregate on_tick handlers from all modules
+    for _, module in ipairs(modules) do
+        if module and module.get_on_tick_handlers then
+            local handlers = module.get_on_tick_handlers()
+            if handlers then
+                for _, handler in ipairs(handlers) do
+                    add_defined_event(defines.events.on_tick, handler)
+                end
+            end
         end
     end
-    
-    -- 2. GameState Event-Based Snapshot Events
-    local event_based_snapshot = game_state:get_event_based_snapshot_events()
-    for event_id, handlers in pairs(event_based_snapshot.defined_events or {}) do
-        for _, handler in ipairs(handlers) do
-            add_defined_event(event_id, handler)
+
+    -- 2. Aggregate events (defined_events and nth_tick) from all modules
+    for _, module in ipairs(modules) do
+        if module and module.get_events then
+            local events = module.get_events()
+            if events then
+                -- Aggregate defined events
+                if events.defined_events then
+                    for event_id, handler in pairs(events.defined_events) do
+                        add_defined_event(event_id, handler)
+                    end
+                end
+
+                -- Aggregate nth_tick events
+                if events.nth_tick then
+                    for tick_interval, handler in pairs(events.nth_tick) do
+                        -- Handle both single handler and array of handlers
+                        if type(handler) == "table" and handler[1] then
+                            -- Array of handlers
+                            for _, h in ipairs(handler) do
+                                add_nth_tick_handler(tick_interval, h)
+                            end
+                        else
+                            -- Single handler
+                            add_nth_tick_handler(tick_interval, handler)
+                        end
+                    end
+                end
+            end
         end
     end
-    for tick_interval, handlers in pairs(event_based_snapshot.nth_tick or {}) do
-        for _, handler in ipairs(handlers) do
-            add_nth_tick_handler(tick_interval, handler)
-        end
-    end
-    
-    -- 3. GameState Disk Write Snapshot Events
-    local disk_write_snapshot = game_state:get_disk_write_snapshot_events()
-    for event_id, handlers in pairs(disk_write_snapshot.defined_events or {}) do
-        for _, handler in ipairs(handlers) do
-            add_defined_event(event_id, handler)
-        end
-    end
-    for tick_interval, handlers in pairs(disk_write_snapshot.nth_tick or {}) do
-        for _, handler in ipairs(handlers) do
-            add_nth_tick_handler(tick_interval, handler)
-        end
-    end
-    
-    -- 4. GameState Regular Events (internal game state events)
-    local game_state_events = game_state:get_game_state_events()
-    for event_id, handlers in pairs(game_state_events.defined_events or {}) do
-        for _, handler in ipairs(handlers) do
-            add_defined_event(event_id, handler)
-        end
-    end
-    for tick_interval, handlers in pairs(game_state_events.nth_tick or {}) do
-        for _, handler in ipairs(handlers) do
-            add_nth_tick_handler(tick_interval, handler)
-        end
-    end
-    
-    -- 5. Entity status tracking (every 10 ticks)
+
+    -- 3. Entity status tracking (every 60 ticks)
     -- Map orchestrates getting chunks, Entities provides the tracking logic
-    add_nth_tick_handler(10, function()
+    add_nth_tick_handler(60, function()
         local charted_chunks = Map.get_charted_chunks()
         Entities.track_all_charted_chunk_entity_status(charted_chunks)
     end)
-    
-    -- 6. GameState nth_tick Handlers (legacy map discovery, etc.)
-    local gs_nth_tick = game_state:get_nth_tick_handlers()
-    for tick_interval, handlers in pairs(gs_nth_tick or {}) do
-        if type(handlers) == "table" then
-            for _, handler in ipairs(handlers) do
-                add_nth_tick_handler(tick_interval, handler)
-            end
-        else
-            -- Support legacy single handler format
-            add_nth_tick_handler(tick_interval, handlers)
-        end
-    end
-    
-    -- 7. Player Events (custom handlers)
-    -- add_defined_event(defines.events.on_player_created, function(e)
-    --     local player = game.get_player(e.player_index)
-    --     if player then
-    --         local character = player.character
-    --         player.character = nil
-    --         if character then
-    --             character.destroy()
-    --         end
-    --     end
-    -- end)
-    
+
     return {
         defined_events = defined_events,
         nth_tick = nth_tick_handlers
@@ -141,7 +111,7 @@ end
 --- Events are registered once per event_id/tick_interval with aggregated handler chains
 local function register_all_events()
     local aggregated = aggregate_all_events()
-    
+
     -- Register defined events (defines.events.*) - each event_id registered once with aggregated handlers
     for event_id, handlers_list in pairs(aggregated.defined_events) do
         script.on_event(event_id, function(event)
@@ -150,7 +120,7 @@ local function register_all_events()
             end
         end)
     end
-    
+
     -- Register nth_tick events - each tick_interval registered once with aggregated handlers
     for tick_interval, handlers_list in pairs(aggregated.nth_tick) do
         script.on_nth_tick(tick_interval, function(event)
@@ -159,9 +129,9 @@ local function register_all_events()
             end
         end)
     end
-    
-    log("Event dispatcher initialized: registered " .. 
-        count_keys(aggregated.defined_events) .. " defined events and " .. 
+
+    log("Event dispatcher initialized: registered " ..
+        count_keys(aggregated.defined_events) .. " defined events and " ..
         count_keys(aggregated.nth_tick) .. " nth_tick event groups")
 end
 
@@ -173,63 +143,118 @@ local function register_all_remote_interfaces()
     if not remote or not remote.add_interface then
         return
     end
-    
-    -- Register action interface (sync actions)
-    -- Actions already initialized with game_state above
-    local action_iface = action_registry:get_action_interface()
-    if remote.interfaces["action"] then
-        log("Removing existing 'action' interface")
-        remote.remove_interface("action")
-    end
-    local action_count = 0
-    for _ in pairs(action_iface) do action_count = action_count + 1 end
-    log("Registering 'action' interface with " .. action_count .. " actions")
-    remote.add_interface("action", action_iface)
-    
-    -- Register metadata interface (action sync/async classification)
-    local metadata_iface = { get_action_metadata = function() return action_registry:get_action_metadata() end }
-    if remote.interfaces["metadata"] then
-        log("Removing existing 'metadata' interface")
-        remote.remove_interface("metadata")
-    end
-    log("Registering 'metadata' interface")
-    remote.add_interface("metadata", metadata_iface)
 
-    -- Register admin interface (from GameState)
-    local admin_iface = game_state:get_admin_api()
-    if remote.interfaces["admin"] then
-        log("Removing existing 'admin' interface")
-        remote.remove_interface("admin")
+    -- Note: Per-agent remote interfaces (agent_1, agent_2, etc.) are registered
+    -- automatically when agents are created via Agent:register_remote_interface()
+    -- These interfaces expose agent methods directly (walk_to, mine_resource, etc.)
+
+    -- Collect all modules
+    local modules = {
+        { name = "agent",    module = Agents },
+        { name = "entities", module = Entities },
+        { name = "map",      module = Map },
+        { name = "power",    module = Power },
+        { name = "research", module = Research },
+        { name = "resource", module = Resource },
+    }
+
+    -- Register each module's remote interface
+    for _, mod_info in ipairs(modules) do
+        local module = mod_info.module
+        if module and module.register_remote_interface then
+            local interface = module.register_remote_interface()
+            if interface and next(interface) ~= nil then
+                local interface_name = mod_info.name
+                if remote.interfaces[interface_name] then
+                    log("Removing existing '" .. interface_name .. "' interface")
+                    remote.remove_interface(interface_name)
+                end
+                local method_count = 0
+                for _ in pairs(interface) do method_count = method_count + 1 end
+                log("Registering '" .. interface_name .. "' interface with " .. method_count .. " methods")
+                remote.add_interface(interface_name, interface)
+            end
+        end
     end
-    local admin_count = 0
-    for _ in pairs(admin_iface) do admin_count = admin_count + 1 end
-    log("Registering 'admin' interface with " .. admin_count .. " methods")
-    remote.add_interface("admin", admin_iface)
-    
-    -- Register on-demand snapshot interface (from GameState)
-    local snapshot_iface = game_state:get_on_demand_snapshot_api()
-    if remote.interfaces["snapshot"] then
-        log("Removing existing 'snapshot' interface")
-        remote.remove_interface("snapshot")
+
+    -- Register global documentation API
+    -- Returns paramspec for each method (the only runtime-relevant metadata)
+    local Agent = require("Agent")
+    local docs_interface = {
+        get_all_methods = function()
+            local interface_methods = Agent.get_interface_methods()
+            if not interface_methods then
+                return { error = "Interface methods not available" }
+            end
+            local methods = {}
+            for method_name, meta in pairs(interface_methods) do
+                methods[method_name] = {
+                    paramspec = meta.paramspec,
+                }
+            end
+            return methods
+        end,
+        get_method_schema = function(method_name)
+            if not method_name or type(method_name) ~= "string" then
+                return { error = "method_name (string) is required" }
+            end
+            local interface_methods = Agent.get_interface_methods()
+            if not interface_methods then
+                return { error = "Interface methods not available" }
+            end
+            local meta = interface_methods[method_name]
+            if not meta then
+                return { error = "Method '" .. method_name .. "' not found" }
+            end
+            return {
+                method_name = method_name,
+                paramspec = meta.paramspec,
+            }
+        end,
+    }
+    if remote.interfaces["factorio_verse_docs"] then
+        log("Removing existing 'factorio_verse_docs' interface")
+        remote.remove_interface("factorio_verse_docs")
     end
-    local snapshot_count = 0
-    for _ in pairs(snapshot_iface) do snapshot_count = snapshot_count + 1 end
-    log("Registering 'snapshot' interface with " .. snapshot_count .. " methods")
-    remote.add_interface("snapshot", snapshot_iface)
-    
+    log("Registering 'factorio_verse_docs' interface")
+    remote.add_interface("factorio_verse_docs", docs_interface)
 end
 
 register_all_remote_interfaces()
 
 -- ============================================================================
--- REGISTER ALL EVENTS USING DISPATCHER
--- Events must be registered in on_init/on_load, not at module load time
+-- REGISTER EXISTING AGENT INTERFACES (for hot reload)
 -- ============================================================================
 
--- ============================================================================
--- ACTION QUEUE HANDLER
--- ============================================================================
+--- Re-register remote interfaces for all existing agents
+--- Called after on_init/on_load to restore interfaces lost during hot reload
+--- Agent instances persist in storage with metatables, but remote interfaces are cleared
+local function register_existing_agent_interfaces()
+    if not remote or not remote.add_interface then
+        return
+    end
 
+    if not storage.agents then
+        return
+    end
+
+    local registered_count = 0
+    for agent_id, agent in pairs(storage.agents) do
+        -- Verify agent is valid (has metatable methods)
+        if agent and type(agent.register_remote_interface) == "function" then
+            -- Check if interface already exists (shouldn't happen, but be safe)
+            local interface_name = "agent_" .. agent_id
+            if not remote.interfaces[interface_name] then
+                agent:register_remote_interface()
+                registered_count = registered_count + 1
+            end
+        end
+    end
+
+    if registered_count > 0 then
+        log("Re-registered " .. registered_count .. " agent remote interface(s) after reload")
+    end
+end
 
 -- ============================================================================
 -- LIFECYCLE CALLBACKS
@@ -237,49 +262,48 @@ register_all_remote_interfaces()
 
 script.on_init(function()
     log("hello from on_init")
-    
-    
+
     -- Initialize agents storage
     if not storage.agents then
         storage.agents = {}
         log("Initialized empty agents storage for new game")
     end
-    
+
     -- Initialize game state modules (must happen before event registration)
     -- This generates custom event IDs that will be used in event handlers
-    -- Modules already required at module level above
     Entities.init()
     Resource.init()
     Map.init()
-    
-    -- Initialize initial 7x7 chunk area from spawn position
-    Map.initialize_initial_chunk_area()
-    
+
     log("Initialized game state modules and custom events")
-    
+
     -- Register events (game is available during on_init)
     register_all_events()
+
+    -- Re-register agent interfaces for any existing agents (shouldn't be any on init, but be safe)
+    register_existing_agent_interfaces()
 end)
 
 script.on_load(function()
     log("hello from on_load")
-    
+
     -- Initialize game state modules (must happen before event registration)
     -- Custom events are preserved across reload, but we need to rebuild disk_write_snapshot tables
-    -- Modules already required at module level above
-    -- Re-initialize (custom events are preserved, but we rebuild tables)
     Entities.init()
     Resource.init()
-    Map.init()  -- Will check and queue chunks if needed
-    
+    Map.init() -- Will check and queue chunks if needed
+
     log("Re-initialized game state modules after mod reload")
-    
+
     -- Re-register events (game is available during on_load)
     -- This is needed because event handlers may be lost after mod reload
     register_all_events()
+
+    -- Re-register agent interfaces for existing agents (critical for hot reload)
+    -- Remote interfaces are cleared on reload, but agent instances persist in storage
+    register_existing_agent_interfaces()
 end)
 
 script.on_configuration_changed(function()
     log("hello from on_configuration_changed")
 end)
--- test comment
