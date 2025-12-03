@@ -3,6 +3,13 @@ from typing import List, Optional, Any, Dict, Literal, Union
 from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, AnchorVector, Direction
 from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName
 from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
+from src.FactoryVerse.dsl.prototypes import (
+    get_prototypes,
+    ElectricMiningDrillPrototype,
+    PumpjackPrototype,
+    InserterPrototype,
+    LongHandedInserterPrototype,
+)
 
 
 class BaseEntity(pydantic.BaseModel):
@@ -70,14 +77,24 @@ class ElectricPole(BaseEntity):
 
 
 class Inserter(BaseEntity):
+    """Base inserter entity."""
+
+    @property
+    def prototype(self) -> InserterPrototype:
+        """Get the prototype for this inserter type."""
+        return get_prototypes().inserter
 
     def get_drop_position(self) -> MapPosition:
         """Get the output position of the inserter."""
-        return self._factory.get_inserter_output_position(self.name, self.position)
+        if self.direction is None:
+            raise ValueError("Inserter direction must be set to calculate drop position")
+        return self.prototype.drop_position(self.position, self.direction)
 
     def get_pickup_position(self) -> MapPosition:
         """Get the input position of the inserter."""
-        return self._factory.get_inserter_input_position(self.name, self.position)
+        if self.direction is None:
+            raise ValueError("Inserter direction must be set to calculate pickup position")
+        return self.prototype.pickup_position(self.position, self.direction)
 
     def extend_to(self, direction: Direction, distance: Optional[float] = None):
         """Extend the inserter to the given direction and distance."""
@@ -96,6 +113,12 @@ class FastInserter(Inserter): ...
 
 
 class LongHandInserter(Inserter):
+    """Long-handed inserter entity."""
+
+    @property
+    def prototype(self) -> LongHandedInserterPrototype:
+        """Get the prototype for this long-handed inserter type."""
+        return get_prototypes().long_handed_inserter
 
     def extend_to(self, direction: Direction, distance: Optional[float] = None):
         """Extend the long hand inserter to the given direction and distance."""
@@ -141,20 +164,23 @@ class Splitter(BaseEntity):
 class ElectricMiningDrill(BaseEntity):
     """An electric mining drill entity."""
 
-    def __init__(self, name: str, position: MapPosition, direction: Direction):
-        super().__init__(name, position, direction)
-        # self.properties = PrototypeProperties(name)
-        self.prototype = self._factory.prototypes.electric_mining_drill
-    
+    @property
+    def prototype(self) -> ElectricMiningDrillPrototype:
+        """Get the prototype for this electric mining drill type."""
+        return get_prototypes().electric_mining_drill
+
     def place_adjacent(self, placeable_item: PlaceableItemName) -> bool:
+        """Place an adjacent mining drill."""
         if placeable_item != "electric-mining-drill":
             raise ValueError(f"Invalid placeable item: {placeable_item}")
         return self._factory.place_entity(placeable_item, self.position, self.direction)
 
     def output_position(self) -> MapPosition:
         """Get the output position of the mining drill."""
+        if self.direction is None:
+            raise ValueError("Mining drill direction must be set to calculate output position")
         return self.prototype.output_position(self.position, self.direction)
-    
+
     def get_search_area(self) -> BoundingBox:
         """Get the search area of the mining drill."""
         return self.prototype.get_resource_search_area(self.position)
@@ -168,10 +194,11 @@ class BurnerMiningDrill(BaseEntity):
 class Pumpjack(BaseEntity):
     """A pumpjack entity."""
 
-    def __init__(self, name: str, position: MapPosition, direction: Direction):
-        super().__init__(name, position, direction)
-        self.prototype = self._factory.prototypes.pumpjack
-    
+    @property
+    def prototype(self) -> PumpjackPrototype:
+        """Get the prototype for this pumpjack type."""
+        return get_prototypes().pumpjack
+
     def get_output_pipe_connections(self) -> List[MapPosition]:
         """Get the output pipe connections of the pumpjack."""
         return self.prototype.output_pipe_connections(self.position)
