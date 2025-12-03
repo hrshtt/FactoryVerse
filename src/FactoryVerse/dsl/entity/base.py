@@ -1,10 +1,10 @@
 import pydantic
 from typing import List, Optional, Any, Dict, Literal, Union
 from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, AnchorVector, Direction
-from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName
+from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack
 from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
 from src.FactoryVerse.dsl.prototypes import (
-    get_prototypes,
+    get_entity_prototypes,
     ElectricMiningDrillPrototype,
     PumpjackPrototype,
     InserterPrototype,
@@ -50,22 +50,68 @@ class Container(BaseEntity):
 class Furnace(BaseEntity):
     """A furnace entity."""
 
-    def add_fuel(self, item_name: str, count: int):
-        """Add fuel to the furnace."""
+    def add_fuel(self, item: Union[Item, ItemStack], count: Optional[int] = None):
+        """Add fuel to the furnace.
+        
+        Args:
+            item: Item or ItemStack to add as fuel
+            count: Count to add (required if Item, optional if ItemStack - uses stack count)
+        """
+        if isinstance(item, ItemStack):
+            item_name = item.name
+            fuel_count = count if count is not None else item.count
+        else:
+            item_name = item.name
+            if count is None:
+                raise ValueError("count is required when using Item (not ItemStack)")
+            fuel_count = count
 
         return self._factory.put_inventory_item(
-            self.name, self.position, "fuel", item_name, count
+            self.name, self.position, "fuel", item_name, fuel_count
         )
 
-    def put_input_items(self, item_name: str, count: int):
-        """Add an item to the furnace's input inventory."""
+    def put_input_items(self, item: Union[Item, ItemStack], count: Optional[int] = None):
+        """Add an item to the furnace's input inventory.
+        
+        Args:
+            item: Item or ItemStack to add
+            count: Count to add (required if Item, optional if ItemStack - uses stack count)
+        """
+        if isinstance(item, ItemStack):
+            item_name = item.name
+            input_count = count if count is not None else item.count
+        else:
+            item_name = item.name
+            if count is None:
+                raise ValueError("count is required when using Item (not ItemStack)")
+            input_count = count
+
         return self._factory.set_entity_inventory_item(
-            self.name, self.position, "input", item_name, count
+            self.name, self.position, "input", item_name, input_count
         )
 
-    def take_output_items(self, item_name: Optional[str] = None, count: Optional[int] = None):
-        """Get the item from the furnace's output inventory."""
-        return self._factory.take_inventory_item(self.name, self.position, "output", item_name, count)
+    def take_output_items(
+        self, item: Optional[Union[Item, ItemStack]] = None, count: Optional[int] = None
+    ):
+        """Get the item from the furnace's output inventory.
+        
+        Args:
+            item: Optional Item or ItemStack to take (if None, takes any item)
+            count: Count to take (required if Item, optional if ItemStack - uses stack count)
+        """
+        if item is None:
+            item_name = ""
+            take_count = count
+        elif isinstance(item, ItemStack):
+            item_name = item.name
+            take_count = count if count is not None else item.count
+        else:
+            item_name = item.name
+            take_count = count
+
+        return self._factory.take_inventory_item(
+            self.name, self.position, "output", item_name, take_count
+        )
 
 
 class ElectricPole(BaseEntity):
@@ -82,7 +128,7 @@ class Inserter(BaseEntity):
     @property
     def prototype(self) -> InserterPrototype:
         """Get the prototype for this inserter type."""
-        return get_prototypes().inserter
+        return get_entity_prototypes().inserter
 
     def get_drop_position(self) -> MapPosition:
         """Get the output position of the inserter."""
@@ -118,7 +164,7 @@ class LongHandInserter(Inserter):
     @property
     def prototype(self) -> LongHandedInserterPrototype:
         """Get the prototype for this long-handed inserter type."""
-        return get_prototypes().long_handed_inserter
+        return get_entity_prototypes().long_handed_inserter
 
     def extend_to(self, direction: Direction, distance: Optional[float] = None):
         """Extend the long hand inserter to the given direction and distance."""
@@ -167,7 +213,7 @@ class ElectricMiningDrill(BaseEntity):
     @property
     def prototype(self) -> ElectricMiningDrillPrototype:
         """Get the prototype for this electric mining drill type."""
-        return get_prototypes().electric_mining_drill
+        return get_entity_prototypes().electric_mining_drill
 
     def place_adjacent(self, placeable_item: PlaceableItemName) -> bool:
         """Place an adjacent mining drill."""
@@ -197,7 +243,7 @@ class Pumpjack(BaseEntity):
     @property
     def prototype(self) -> PumpjackPrototype:
         """Get the prototype for this pumpjack type."""
-        return get_prototypes().pumpjack
+        return get_entity_prototypes().pumpjack
 
     def get_output_pipe_connections(self) -> List[MapPosition]:
         """Get the output pipe connections of the pumpjack."""

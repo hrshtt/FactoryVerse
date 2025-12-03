@@ -1,5 +1,9 @@
 import pydantic
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal
+from src.FactoryVerse.dsl.types import MapPosition, Direction
+from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
+from src.FactoryVerse.dsl.entity.base import BaseEntity
+from src.FactoryVerse.dsl.prototypes import get_item_prototypes
 
 
 ItemSubgroup = Literal[
@@ -60,6 +64,14 @@ ItemName = Literal[
     "light-oil-barrel",
     "petroleum-gas-barrel",
     "lubricant-barrel",
+]
+
+FuelItemName = Literal[
+    "coal",
+    "solid-fuel",
+    "rocket-fuel",
+    "nuclear-fuel",
+    "wood",
 ]
 
 PlaceableItemSubgroup = Literal[
@@ -134,7 +146,17 @@ class Item(pydantic.BaseModel):
 
     name: Union[ItemName, PlaceableItemName]
     subgroup: Union[ItemSubgroup, PlaceableItemSubgroup]
-    stack_size: Optional[int] = None
+
+    @property
+    def stack_size(self) -> int:
+        """Get stack size from prototype data."""
+        # TODO: Implement item prototype lookup
+        # For now, return default stack sizes
+
+        prototypes = get_item_prototypes()
+        # Items are in prototypes.data["item"][self.name]["stack_size"]
+        item_data = prototypes.data.get("item", {}).get(self.name, {})
+        return item_data.get("stack_size", 50)  # Default to 50 if not found
 
 
 class RawMaterial(Item):
@@ -158,13 +180,119 @@ class SciencePack(Item):
 
 
 class Fuel(Item):
-    fuel_value: Optional[float] = None  
+    fuel_value: Optional[float] = None
     fuel_category: Optional[Literal["chemical", "nuclear"]] = None
     burnt_result: Optional[ItemName] = None
     fuel_acceleration_multiplier: Optional[float] = None
     fuel_top_speed_multiplier: Optional[float] = None
 
 
-class PlaceAsEntityItem(Item):
-    place_result: PlaceableItemName
+class PlaceableItem(Item):
+    """Base class for items that can be placed as entities."""
 
+    name: PlaceableItemName  # Constrained to placeable items only
+
+    @property
+    def _factory(self) -> "PlayingFactory":
+        """Get the current playing factory context."""
+        factory = _playing_factory.get()
+        if factory is None:
+            raise RuntimeError(
+                "No active gameplay session. "
+                "Use 'with playing_factory(rcon, agent_id):' to enable item operations."
+            )
+        return factory
+
+    def place(
+        self, position: MapPosition, direction: Optional[Direction] = None
+    ) -> BaseEntity:
+        """Place this item as an entity on the map.
+
+        Returns the created BaseEntity instance.
+        """
+        options = {}
+        if direction is not None:
+            options["direction"] = direction.value
+
+        result = self._factory.place_entity(self.name, position, options)
+        # TODO: Convert result to BaseEntity based on entity type
+        # For now, return a placeholder
+        raise NotImplementedError(
+            "Entity creation from placement result not yet implemented"
+        )
+
+class PlacementCueMixin:
+    """Mixin for items that require placement cues (mining drills, pumpjack, offshore-pump)."""
+
+    @property
+    def _factory(self) -> "PlayingFactory":
+        """Get the current playing factory context."""
+        factory = _playing_factory.get()
+        if factory is None:
+            raise RuntimeError(
+                "No active gameplay session. "
+                "Use 'with playing_factory(rcon, agent_id):' to enable item operations."
+            )
+        return factory
+
+    def get_placement_cues(self) -> List[Dict[str, Any]]:
+        """Get valid placement positions for this item type.
+
+        Returns list of {position: MapPosition, can_place: bool, direction?: Direction}
+        Scans 5x5 chunks (160x160 tiles) around agent.
+        """
+        return self._factory.get_placement_cues(self.name)
+
+
+class MiningDrillItem(PlaceableItem, PlacementCueMixin):
+    """Mining drill item (burner or electric) - requires placement cues.
+
+    Handles both "electric-mining-drill" and "burner-mining-drill" based on name.
+    """
+
+    name: Literal["electric-mining-drill", "burner-mining-drill"]
+
+
+class PumpjackItem(PlaceableItem, PlacementCueMixin):
+    """Pumpjack item - requires placement cues."""
+
+    name: Literal["pumpjack"]
+
+
+class OffshorePumpItem(PlaceableItem, PlacementCueMixin):
+    """Offshore pump item - requires placement cues."""
+
+    name: Literal["offshore-pump"]
+
+
+class PlaceAsEntityItem(Item):
+    """Legacy class - use PlaceableItem instead."""
+
+    place_result: PlaceableItemName
+    
+
+class ItemStack(pydantic.BaseModel):
+    """Item stack with count information from inventory."""
+
+    name: Union[ItemName, PlaceableItemName]
+    subgroup: Union[ItemSubgroup, PlaceableItemSubgroup]
+    count: int
+
+    @property
+    def stack_size(self) -> int:
+        """Get stack size from prototype data."""
+        from src.FactoryVerse.dsl.prototypes import get_entity_prototypes
+
+        prototypes = get_entity_prototypes()
+        item_data = prototypes.data.get("item", {}).get(self.name, {})
+        return item_data.get("stack_size", 50)
+
+    @property
+    def half(self) -> int:
+        """Get half of the stack count."""
+        return self.count // 2
+
+    @property
+    def full(self) -> int:
+        """Get full stack count."""
+        return self.count

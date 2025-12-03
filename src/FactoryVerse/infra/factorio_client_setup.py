@@ -183,6 +183,9 @@ def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bo
     """
     Setup client with factorio_verse mod and scenarios.
     
+    NOTE: After running setup, you must restart Factorio for mod/scenario changes to take effect.
+    Factorio only loads mods and scenarios at startup, not during runtime.
+    
     Args:
         verse_mod_dir: Path to factorio_verse mod directory
         scenario: Scenario name to setup
@@ -219,19 +222,30 @@ def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bo
         print("🚫 factorio_verse: disabled (used as scenario)")
     else:
         # Copy factorio_verse as a mod
+        # Factorio requires mod folders to be named modname_version (e.g., factorio_verse_1.0.0)
         print("📦 Copying factorio_verse mod...")
-        client_mod_dir = mod_path / "factorio_verse"
         
-        # Remove old mod if exists
-        if client_mod_dir.exists():
-            shutil.rmtree(client_mod_dir)
+        # Read version from info.json
+        info_json_path = verse_mod_dir / "info.json"
+        if info_json_path.exists():
+            info = json.loads(info_json_path.read_text())
+            mod_version = info.get("version", "1.0.0")
+        else:
+            mod_version = "1.0.0"
         
-        # Copy to mod directory
+        client_mod_dir = mod_path / f"factorio_verse_{mod_version}"
+        
+        # Remove old mod versions if they exist
+        for old_mod in mod_path.glob("factorio_verse*"):
+            if old_mod.is_dir():
+                shutil.rmtree(old_mod)
+        
+        # Copy to mod directory with versioned name
         shutil.copytree(verse_mod_dir, client_mod_dir)
         
         # Enable factorio_verse in mod-list
         _update_mod_list(mod_path, "factorio_verse", True)
-        print("✓ factorio_verse mod copied")
+        print(f"✓ factorio_verse mod copied as {client_mod_dir.name}")
         
         # Handle other scenarios if project_scenarios_dir is provided
         if project_scenarios_dir:
@@ -260,6 +274,7 @@ def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bo
         print(f"🚫 {dlc_mod}: disabled")
     
     print("✅ Client setup complete!")
+    print("ℹ️  Note: Restart Factorio if it's already running for changes to take effect.")
 
 
 def _find_factorio_executable() -> Path:
@@ -305,6 +320,25 @@ def launch_factorio_client() -> None:
     except Exception as e:
         print(f"❌ Error launching Factorio: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def dump_data_raw(verse_mod_dir: Path, scenario: str = "factorio_verse", force: bool = False, project_scenarios_dir: Optional[Path] = None) -> Path:
+    """Dump Factorio's data.raw to JSON using --dump-data flag."""
+    setup_client(verse_mod_dir, scenario=scenario, force=force, project_scenarios_dir=project_scenarios_dir)
+    
+    factorio_exe = _find_factorio_executable()
+    script_output_dir = get_client_script_output_dir()
+    script_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"📦 Dumping data.raw to JSON...")
+    subprocess.run([str(factorio_exe), "--dump-data"], check=True, timeout=300)
+    
+    dump_file = script_output_dir / "data-raw-dump.json"
+    if not dump_file.exists():
+        raise RuntimeError(f"Dump file not found: {dump_file}")
+    
+    print(f"✅ Data dump complete: {dump_file}")
+    return dump_file
 
 
 def sync_hotreload_to_client(verse_mod_dir: Path) -> None:

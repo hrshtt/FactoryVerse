@@ -189,6 +189,17 @@ class EntityPrototypes:
             self.data["inserter"]["long-handed-inserter"]
         )
 
+class ItemPrototypes:
+    """Prototype accessor for items."""
+
+    def __init__(self, dump_file: str):
+        with open(dump_file, "r") as f:
+            self.data = json.load(f)
+
+
+        # Instantiate all item prototypes once
+        # self.item = ItemPrototype.from_data(self.data["item"]["item"])
+
 
 # Singleton instance - owned by this module
 _prototypes: Optional[EntityPrototypes] = None
@@ -197,7 +208,7 @@ _prototypes: Optional[EntityPrototypes] = None
 DEFAULT_DUMP_FILE = "factorio-data-dump.json"
 
 
-def get_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> EntityPrototypes:
+def get_entity_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> EntityPrototypes:
     """Get the global prototypes singleton instance.
     
     The singleton is instantiated on first call and reused for subsequent calls.
@@ -233,3 +244,10 @@ def reset_prototypes():
     """
     global _prototypes
     _prototypes = None
+
+def get_item_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> ItemPrototypes:
+    """Get the global item prototypes singleton instance."""
+    global _item_prototypes
+    if _item_prototypes is None:
+        _item_prototypes = ItemPrototypes(dump_file)
+    return _item_prototypes
