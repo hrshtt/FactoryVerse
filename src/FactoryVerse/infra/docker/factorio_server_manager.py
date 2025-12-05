@@ -17,7 +17,7 @@ from factorio_rcon import RCONClient
 START_RCON_PORT = 27000
 START_GAME_PORT = 34197
 RCON_PASSWORD = "factorio"
-FACTORIO_IMAGE = "factoriotools/factorio:2.0.72"
+FACTORIO_IMAGE = "factoriotools/factorio:2.0.69"
 MAP_GEN_SEED = 44340
 INTERNAL_RCON_PORT = 27015
 INTERNAL_GAME_PORT = 34197
