@@ -1,9 +1,12 @@
 import json
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, List
 from src.FactoryVerse.dsl.types import MapPosition
+from src.FactoryVerse.dsl.item.base import ItemStack
+from src.FactoryVerse.dsl.recipe.base import Recipes, BaseRecipe, BasicRecipeName
 from factorio_rcon import RconClient
 from contextvars import ContextVar
 from contextlib import contextmanager
+from src.FactoryVerse.dsl.types import Direction
 
 
 # Game context: agent is "playing" the factory game
@@ -26,21 +29,106 @@ class AgentCommands:
         self.agent_id = agent_id
 
 
+class AgentInventory:
+    """Represents the agent's inventory."""
+
+    inventory: List[ItemStack]
+
+    def __init__(self, inventory: List[ItemStack]):
+        self.inventory = inventory
+
+    def __getitem__(self, item_name: str) -> int:
+        for item in self.inventory:
+            if item.name == item_name:
+                return item.count
+        return 0
+
+    def coal_stacks(self) -> int:
+        return [item for item in self.inventory if item.name == "coal"]
+
+    def total(self, item_name: str) -> int:
+        return sum(item.count for item in self.inventory if item.name == item_name)
+
+    def get_recipe_stacks(
+        self, recipe_name: BasicRecipeName, stack_count: int = 1, strict: bool = False
+    ) -> List[ItemStack]:
+        recipe = Recipes[recipe_name]
+
+        # Calculate how many stacks can be made for each ingredient
+        max_stacks_per_ingredient = []
+        for ingredient in recipe.ingredients:
+            available_count = self.total(ingredient.name)
+            if ingredient.count == 0:
+                max_stacks_per_ingredient.append(float("inf"))
+            else:
+                max_stacks = available_count // ingredient.count
+                max_stacks_per_ingredient.append(max_stacks)
+
+        # Find the minimum stack count across all ingredients
+        actual_stack_count = (
+            min(max_stacks_per_ingredient) if max_stacks_per_ingredient else 0
+        )
+
+        if strict:
+            if actual_stack_count < stack_count:
+                # Find which ingredients are insufficient
+                insufficient = []
+                for ingredient, max_stacks in zip(
+                    recipe.ingredients, max_stacks_per_ingredient
+                ):
+                    if max_stacks < stack_count:
+                        required = ingredient.count * stack_count
+                        available = self.total(ingredient.name)
+                        insufficient.append(
+                            f"{ingredient.name}: required {required}, available {available}"
+                        )
+                raise ValueError(
+                    f"Insufficient ingredients for {stack_count} stacks. "
+                    f"Maximum possible: {actual_stack_count} stacks. "
+                    f"Insufficient: {', '.join(insufficient)}"
+                )
+            actual_stack_count = stack_count
+
+        # Use the same stack_count for all ingredients
+        required_inputs = []
+        for ingredient in recipe.ingredients:
+            count = ingredient.count * actual_stack_count
+            if count > 0:
+                required_inputs.append(ItemStack(name=ingredient.name, count=count))
+
+        return required_inputs
+
+
 class PlayingFactory:
     """Represents the agent's active gameplay session with RCON access."""
 
     rcon: RconClient
     agent_id: str
     agent_commands: AgentCommands
+    inventory: List[ItemStack]
+    recipes: Recipes
 
-    def __init__(self, rcon_client: "RconClient", agent_id: str):
+    def __init__(self, rcon_client: "RconClient", agent_id: str, recipes: Recipes):
         self.rcon = rcon_client
         self._agent_id = agent_id
         self.agent_commands = AgentCommands(agent_id)
+        self.recipes = recipes
 
     @property
     def agent_id(self) -> str:
         return self._agent_id
+
+    @property
+    def inventory(self) -> List[ItemStack]:
+        cmd = self._build_command("get_inventory")
+        result = self.execute(cmd)
+        return [ItemStack.from_json(item) for item in result]
+    
+    def update_recipes(self) -> None:
+        cmd = self._build_command("get_recipes")
+        result = self.execute(cmd)
+        Recipes = Recipes(json.loads(result))
+        self.recipes = Recipes
 
     def execute(self, command: str, silent: bool = True) -> str:
         if silent:
@@ -117,6 +205,10 @@ class PlayingFactory:
             recipe_name: Recipe name to craft
             count: Number of times to craft the recipe
         """
+        if not self.recipes[recipe_name].is_hand_craftable():
+            raise ValueError(f"Recipe {recipe_name} is not hand-craftable")
+        if not self.recipes[recipe_name].enabled:
+            raise ValueError(f"Recipe {recipe_name} is not enabled, try researching technology first")
         cmd = self._build_command("craft_enqueue", recipe_name, count)
         return self.execute(cmd)
 
@@ -264,7 +356,8 @@ class PlayingFactory:
         self,
         entity_name: str,
         position: Union[Dict[str, float], "MapPosition"],
-        options: Optional[Dict] = None,
+        direction: Optional[Direction] = None,
+        ghost=False,
     ) -> str:
         """Place an entity from the agent's inventory onto the map.
 
@@ -273,9 +366,9 @@ class PlayingFactory:
             position: MapPosition to place entity
             options: Placement options (direction, force_build, etc.)
         """
-        if options is None:
-            options = {}
-        return self._build_command("place_entity", entity_name, position, options)
+        return self._build_command(
+            "place_entity", entity_name, position, direction, ghost
+        )
 
     def pickup_entity(
         self,
@@ -289,6 +382,16 @@ class PlayingFactory:
             position: Entity position (None = nearest)
         """
         cmd = self._build_command("pickup_entity", entity_name, position)
+        return self.execute(cmd)
+
+    def remove_ghost(self, entity_name: str, position: MapPosition) -> str:
+        """Remove a ghost entity from the map.
+
+        Args:
+            entity_name: Entity prototype name to remove
+            position: Entity position (None = nearest)
+        """
+        cmd = self._build_command("remove_ghost", entity_name, position)
         return self.execute(cmd)
 
     # ========================================================================

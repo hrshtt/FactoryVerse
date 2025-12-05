@@ -225,10 +225,10 @@ class PlaceableItem(Item):
 
         Returns the created GhostEntity instance.
         """
-        options = {}
-        if direction is not None:
-            options["direction"] = direction.value
-        return self._factory.place_ghost(self.name, position, options)
+        result = self._factory.place_entity(self.name, position, direction, ghost=True)
+        if not result.success:
+            raise RuntimeError(f"Failed to place ghost entity: {result.error}")
+        return GhostEntity(name=self.name, position=position, direction=direction)
 
 
 class PlacementCueMixin:
