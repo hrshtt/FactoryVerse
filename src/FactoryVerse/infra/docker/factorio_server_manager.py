@@ -213,10 +213,10 @@ class FactorioServerManager:
                     f"{rcon_port}:{INTERNAL_RCON_PORT}/tcp",
                 ],
                 "volumes": [
-                    {"source": str(self.scenarios_dir.resolve()), "target": "/opt/factorio/scenarios"},
-                    {"source": str(self.mod_path.resolve()), "target": "/opt/factorio/mods"},
-                    {"source": str(self.config_dir.resolve()), "target": "/factorio/config"},
-                    {"source": str(output_dir.resolve()), "target": "/opt/factorio/script-output"},
+                    f"{self.scenarios_dir.resolve()}:/opt/factorio/scenarios",
+                    f"{self.mod_path.resolve()}:/opt/factorio/mods",
+                    f"{self.config_dir.resolve()}:/factorio/config",
+                    f"{output_dir.resolve()}:/opt/factorio/script-output",
                 ],
                 "restart": "unless-stopped",
             }
