@@ -1,8 +1,7 @@
 from src.FactoryVerse.dsl.entity.base import BaseEntity
-from src.FactoryVerse.dsl.item.base import Item, PlaceableItem, ItemStack
-from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction
+from src.FactoryVerse.dsl.item.base import ItemStack, GhostEntity
+from src.FactoryVerse.dsl.types import MapPosition
 from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
-from src.FactoryVerse.dsl.prototypes import EntityPrototypes, ItemPrototypes
 
 from typing import List, Optional
 
@@ -122,6 +121,7 @@ def research_dequeue() -> str:
     factory = _get_factory()
     return factory.cancel_current_research()
 
-def build_ghosts(ghosts: List[Ghost]) -> bool:
+def build_ghosts(ghosts: List[GhostEntity]) -> bool:
     """Build the ghosts."""
-    return _factory.build_ghosts(ghosts)
+    factory = _get_factory()
+    return factory.build_ghosts(ghosts)
