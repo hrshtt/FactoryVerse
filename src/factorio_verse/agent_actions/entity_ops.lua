@@ -26,28 +26,6 @@ local function _resolve_entity_position(self, position, default_radius)
     return { x = agent_pos.x, y = agent_pos.y }, (default_radius or 5.0)
 end
 
---- Helper to validate agent can reach entity
---- @param self Agent
---- @param entity LuaEntity
---- @return boolean
-local function _can_reach_entity(self, entity)
-    if not (self.character and self.character.valid) then
-        return false
-    end
-
-    return self.character.can_reach_entity(entity)
-    
-    -- local agent_pos = self.character.position
-    -- local entity_pos = entity.position
-    
-    -- -- Check reach distance (default character reach: 2.5 tiles)
-    -- local dx = entity_pos.x - agent_pos.x
-    -- local dy = entity_pos.y - agent_pos.y
-    -- local distance = math.sqrt(dx * dx + dy * dy)
-    
-    -- -- Character reach is typically 2.5, but we'll use 3.0 for safety
-    -- return distance <= self.character.reach_distance
-end
 
 --- Helper to validate recipe is accessible to agent's force
 --- @param recipe_name string Recipe name
@@ -85,7 +63,7 @@ function EntityOpsActions.set_entity_recipe(self, entity_name, position, recipe_
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
-    if not _can_reach_entity(self, entity) then
+    if not self:can_reach_entity(entity) then
         error("Agent: Entity is out of reach")
     end
     
@@ -135,7 +113,7 @@ function EntityOpsActions.set_entity_filter(self, entity_name, position, invento
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
-    if not _can_reach_entity(self, entity) then
+    if not self:can_reach_entity(entity) then
         error("Agent: Entity is out of reach")
     end
     
@@ -183,7 +161,7 @@ function EntityOpsActions.set_inventory_limit(self, entity_name, position, inven
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
-    if not _can_reach_entity(self, entity) then
+    if not self:can_reach_entity(entity) then
         error("Agent: Entity is out of reach")
     end
     
@@ -230,7 +208,7 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
-    if not _can_reach_entity(self, entity) then
+    if not self:can_reach_entity(entity) then
         error("Agent: Entity is out of reach")
     end
     
@@ -336,7 +314,7 @@ function EntityOpsActions.set_inventory_item(self, entity_name, position, invent
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
-    if not _can_reach_entity(self, entity) then
+    if not self:can_reach_entity(entity) then
         error("Agent: Entity is out of reach")
     end
     
@@ -430,7 +408,7 @@ function EntityOpsActions.pickup_entity(self, entity_name, position)
     local entity = entity_interface.entity
     
     -- Validate agent can reach entity
-    if not _can_reach_entity(self, entity) then
+    if not self:can_reach_entity(entity) then
         error("Agent: Entity is out of reach")
     end
     
@@ -445,31 +423,54 @@ function EntityOpsActions.pickup_entity(self, entity_name, position)
         error("Agent: Agent inventory is invalid")
     end
 
-    local before_contents = agent_inventory.get_contents()
+    -- get_contents() returns an array of {name, count, quality} objects
+    -- Convert to {item_name = count} format
+    local before_contents_raw = agent_inventory.get_contents()
+    local before_contents = {}
+    if before_contents_raw then
+        for _, item in pairs(before_contents_raw) do
+            local item_name = item.name or item[1]
+            local count = item.count or item[2]
+            if item_name and count then
+                before_contents[item_name] = (before_contents[item_name] or 0) + count
+            end
+        end
+    end
 
     -- Mine entity
     self.character.mine_entity(entity)
 
-    local after_contents = agent_inventory.get_contents()
-
-    local transferred = {}
-    for item_name, count in pairs(before_contents) do
-        if after_contents[item_name] and after_contents[item_name] > 0 then
-            transferred[item_name] = after_contents[item_name] - count
+    -- get_contents() returns an array of {name, count, quality} objects
+    -- Convert to {item_name = count} format
+    local after_contents_raw = agent_inventory.get_contents()
+    local after_contents = {}
+    if after_contents_raw then
+        for _, item in pairs(after_contents_raw) do
+            local item_name = item.name or item[1]
+            local count = item.count or item[2]
+            if item_name and count then
+                after_contents[item_name] = (after_contents[item_name] or 0) + count
+            end
         end
     end
 
-    
-    -- Destroy entity
-    local entity_pos = { x = entity.position.x, y = entity.position.y }
-    entity.destroy()
+    -- Calculate transferred items (items that were added)
+    local transferred = {}
+    -- Check all items in after_contents
+    for item_name, after_count in pairs(after_contents) do
+        local before_count = before_contents[item_name] or 0
+        local diff = after_count - before_count
+        if diff > 0 then
+            transferred[item_name] = diff
+        end
+    end
     
     -- Enqueue completion message (sync action)
     self:enqueue_message({
         action = "pickup_entity",
         agent_id = self.agent_id,
         entity_name = entity_name,
-        position = entity_pos,
+        position = position,
         extracted_items = transferred,
         tick = game.tick or 0,
     }, "entity_ops")
@@ -477,8 +478,40 @@ function EntityOpsActions.pickup_entity(self, entity_name, position)
     return {
         success = true,
         entity_name = entity_name,
-        position = entity_pos,
+        position = position,
         extracted_items = transferred,
+    }
+end
+
+function EntityOpsActions.remove_ghost(self, entity_name, position)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+
+    if entity_name and type(entity_name) ~= "string" then
+        error("Agent: entity_name (string) must be nil or a string")
+    end
+
+    local ghost = game.surfaces[1].find_entities_filtered({position=position, type="entity-ghost"})
+
+    if #(ghost) == 0 then
+        error("Agent: No ghost entity found at position " .. position.x .. ", " .. position.y)
+    end
+
+    local ghost = ghost[1]
+
+    if entity_name then
+        if ghost.ghost_name ~= entity_name then
+            error("Agent: Ghost entity name does not match expected name: " .. ghost.ghost_name)
+        end
+    end
+    
+    ghost.destroy()
+
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = position,
     }
 end
 

@@ -407,6 +407,34 @@ function Agent:get_inventory_contents()
     return {}
 end
 
+--- Check if agent can reach a position
+--- @param position table Position {x, y}
+--- @return boolean
+function Agent:can_reach_position(position)
+    if not (self.character and self.character.valid) then
+        return false
+    end
+
+    local agent_pos = self.character.position
+    local dx = position.x - agent_pos.x
+    local dy = position.y - agent_pos.y
+    local distance = math.sqrt(dx * dx + dy * dy)
+    
+    -- Character reach_distance is typically 2.5, but we'll use it directly
+    return distance <= self.character.reach_distance
+end
+
+--- Check if agent can reach an entity
+--- @param entity LuaEntity Entity to check
+--- @return boolean
+function Agent:can_reach_entity(entity)
+    if not (self.character and self.character.valid) then
+        return false
+    end
+
+    return self.character.can_reach_entity(entity)
+end
+
 --- Inspect agent details
 --- @param attach_inventory boolean|nil Include inventory
 --- @param attach_reachable_entities boolean|nil Include reachable entities

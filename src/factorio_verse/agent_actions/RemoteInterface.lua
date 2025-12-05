@@ -310,18 +310,11 @@ The agent must have the items in their inventory.]],
 The agent must have the item in their inventory and be within build reach.
 Returns an entity reference for further operations on the placed entity.]],
         paramspec = {
-            _param_order = { "entity_name", "position", "options" },
+            _param_order = { "entity_name", "position", "direction", "ghost" },
             entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to place" },
             position = { type = "position", required = true, doc = "Position to place entity" },
-            options = {
-                type = "table",
-                default = {},
-                doc = "Placement options",
-                schema = {
-                    direction = { type = "number", doc = "Direction (0=north, 2=east, 4=south, 6=west)" },
-                    force_build = { type = "boolean", doc = "Force placement even if blocked" },
-                },
-            },
+            direction = { type = "number", default = nil, doc = "Direction (4=east, 6=west, 8=south, 10=north)" },
+            ghost = { type = "boolean", default = false, doc = "Whether to place a ghost entity" },
         },
         returns = {
             type = "entity_ref",
@@ -333,8 +326,8 @@ Returns an entity reference for further operations on the placed entity.]],
                 entity_type = { type = "string", doc = "Entity type string" },
             },
         },
-        func = function(self, entity_name, position, options)
-            return self:place_entity(entity_name, position, options)
+        func = function(self, entity_name, position, direction, ghost)
+            return self:place_entity(entity_name, position, direction, ghost)
         end,
     },
     pickup_entity = {
@@ -357,6 +350,26 @@ The entity must be within reach and mineable/deconstructable.]],
         },
         func = function(self, entity_name, position)
             return self:pickup_entity(entity_name, position)
+        end,
+    },
+    remove_ghost = {
+        category = "placement",
+        is_async = false,
+        doc = [[Remove a ghost entity from the map.
+The ghost entity must be within reach.]],
+        paramspec = {
+            _param_order = { "entity_name", "position" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to remove" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
+        },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if ghost was removed" },
+            },
+        },
+        func = function(self, entity_name, position)
+            return self:remove_ghost(entity_name, position)
         end,
     },
 

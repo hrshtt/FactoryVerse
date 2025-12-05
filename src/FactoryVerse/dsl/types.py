@@ -1,5 +1,50 @@
 from dataclasses import dataclass
 import enum
+from typing import Self, Tuple
+
+
+class Direction(enum.Enum):
+    """Direction in the game world.
+
+    Usually specified by using [defines.direction](runtime:defines.direction).
+    """
+
+    NORTH = 0  # North
+    NORTH_NORTH_EAST = 1  # NorthNorthEast
+    NORTH_EAST = 2  # NorthEast
+    EAST_NORTH_EAST = 3  # EastNorthEast
+    EAST = 4  # East
+    EAST_SOUTH_EAST = 5  # EastSouthEast
+    SOUTH_EAST = 6  # SouthEast
+    SOUTH_SOUTH_EAST = 7  # SouthSouthEast
+    SOUTH = 8  # South
+    SOUTH_SOUTH_WEST = 9  # SouthSouthWest
+    SOUTH_WEST = 10  # SouthWest
+    WEST_SOUTH_WEST = 11  # WestSouthWest
+    WEST = 12  # West
+    WEST_NORTH_WEST = 13  # WestNorthWest
+    NORTH_WEST = 14  # NorthWest
+    NORTH_NORTH_WEST = 15  # NorthNorthWest
+
+    def is_cardinal(self) -> bool:
+        return self in (
+            Direction.NORTH,
+            Direction.EAST,
+            Direction.SOUTH,
+            Direction.WEST,
+        )
+
+    def turn_left(self) -> "Direction":
+        # For cardinal directions, turn left by subtracting 4 (90 degrees CCW) modulo 16.
+        if not self.is_cardinal():
+            raise ValueError(f"Cannot turn non-cardinal direction: {self.name}")
+        return Direction((self.value - 4) % 16)
+
+    def turn_right(self) -> "Direction":
+        # For cardinal directions, turn right by adding 4 (90 degrees CW) modulo 16.
+        if not self.is_cardinal():
+            raise ValueError(f"Cannot turn non-cardinal direction: {self.name}")
+        return Direction((self.value + 4) % 16)
 
 
 @dataclass
@@ -22,6 +67,43 @@ class Position:
             return cls(x=coords[0][0], y=coords[0][1])
         else:
             raise ValueError("MapPosition expects (x, y) or ((x, y))")
+
+    def offset(self, offset: Tuple[int, int], direction: Direction) -> Self:
+        """Offset the position by the offset vector, rotated according to the provided cardinal direction.
+
+        In Factorio, entity offsets (like {x, y} vectors) are specified for the 'north' orientation.
+        For other cardinal directions, rotate the offset accordingly:
+
+            - NORTH: (x_off, y_off)
+            - EAST:  (y_off, -x_off)
+            - SOUTH: (-x_off, -y_off)
+            - WEST:  (-y_off, x_off)
+
+        Args:
+            offset: A tuple (x, y) given for the north-facing entity.
+            direction: The Direction (must be cardinal).
+
+        Returns:
+            A new instance of the same type (Position, MapPosition, etc.), offset and rotated in the chosen direction.
+        """
+        if not direction.is_cardinal():
+            raise ValueError(f"Cannot offset non-cardinal direction: {direction.name}")
+
+        x_off, y_off = offset
+
+        if not isinstance(x_off, int) or not isinstance(y_off, int):
+            raise ValueError("Offset must be an integer tuple")
+
+        if direction == Direction.NORTH:
+            dx, dy = x_off, y_off
+        elif direction == Direction.EAST:
+            dx, dy = y_off, -x_off
+        elif direction == Direction.SOUTH:
+            dx, dy = -x_off, -y_off
+        elif direction == Direction.WEST:
+            dx, dy = -y_off, x_off
+
+        return type(self)(x=self.x + dx, y=self.y + dy)
 
 
 class AnchorVector(Position): ...
@@ -71,35 +153,3 @@ class BoundingBox:
             raise ValueError(
                 "BoundingBox expects (left_top, right_bottom) or (left_top, right_bottom, orientation)"
             )
-
-
-class Direction(enum.Enum):
-    """Direction in the game world.
-
-    Usually specified by using [defines.direction](runtime:defines.direction).
-    """
-
-    NORTH = 0  # North
-    NORTH_NORTH_EAST = 1  # NorthNorthEast
-    NORTH_EAST = 2  # NorthEast
-    EAST_NORTH_EAST = 3  # EastNorthEast
-    EAST = 4  # East
-    EAST_SOUTH_EAST = 5  # EastSouthEast
-    SOUTH_EAST = 6  # SouthEast
-    SOUTH_SOUTH_EAST = 7  # SouthSouthEast
-    SOUTH = 8  # South
-    SOUTH_SOUTH_WEST = 9  # SouthSouthWest
-    SOUTH_WEST = 10  # SouthWest
-    WEST_SOUTH_WEST = 11  # WestSouthWest
-    WEST = 12  # West
-    WEST_NORTH_WEST = 13  # WestNorthWest
-    NORTH_WEST = 14  # NorthWest
-    NORTH_NORTH_WEST = 15  # NorthNorthWest
-
-    def is_cardinal(self) -> bool:
-        return self in (
-            Direction.NORTH,
-            Direction.EAST,
-            Direction.SOUTH,
-            Direction.WEST,
-        )
