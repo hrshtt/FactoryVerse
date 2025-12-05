@@ -30,8 +30,8 @@ class JupyterManager:
                 },
                 "ports": ["8888:8888/tcp"],
                 "volumes": [
-                    {"source": str((self.work_dir / "notebooks").resolve()), "target": "/home/jovyan/work"},
-                    {"source": str(self.work_dir.resolve()), "target": "/home/jovyan/factoryverse", "read_only": True},
+                    f"{(self.work_dir / 'notebooks').resolve()}:/home/jovyan/work",
+                    f"{self.work_dir.resolve()}:/home/jovyan/factoryverse:ro",
                 ],
                 "restart": "unless-stopped",
             }
