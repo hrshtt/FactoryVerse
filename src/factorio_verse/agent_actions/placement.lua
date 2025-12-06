@@ -35,8 +35,6 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
 
     ghost = ghost or false
 
-    game.print("[PLACEMENT] ghost: " .. tostring(ghost))
-    
     -- Validate agent can reach placement position
     if not ghost and not self:can_reach_position(position) then
         error("Agent: Placement position is out of reach: " .. position.x .. ", " .. position.y)

@@ -59,7 +59,7 @@ end
 
 --- Serialize entity to rich data structure
 --- @param entity LuaEntity
---- @return table Entity data with volatile state
+--- @return table|nil Entity data with volatile state, or nil if invalid
 local function serialize_entity_full(entity)
     if not (entity and entity.valid) then
         return nil
@@ -118,7 +118,7 @@ end
 
 --- Serialize resource to data structure
 --- @param entity LuaEntity
---- @return table Resource data
+--- @return table|nil Resource data, or nil if invalid
 local function serialize_resource(entity)
     if not (entity and entity.valid) then
         return nil
@@ -139,6 +139,30 @@ local function serialize_resource(entity)
     -- Add mineable products
     if entity.prototype and entity.prototype.mineable_properties then
         data.products = entity.prototype.mineable_properties.products
+    end
+    
+    return data
+end
+
+--- Serialize ghost entity to data structure
+--- @param ghost LuaEntity Ghost entity (type="entity-ghost")
+--- @return table|nil Ghost data, or nil if invalid
+local function serialize_ghost(ghost)
+    if not (ghost and ghost.valid) then
+        return nil
+    end
+    
+    local data = {
+        name = ghost.name,  -- "entity-ghost"
+        type = ghost.type,  -- "entity-ghost"
+        position = { x = ghost.position.x, y = ghost.position.y },
+        position_key = position_key(ghost.position.x, ghost.position.y),
+        ghost_name = ghost.ghost_name,  -- The entity this ghost represents
+    }
+    
+    -- Add direction if available
+    if ghost.direction then
+        data.direction = ghost.direction
     end
     
     return data
@@ -245,33 +269,73 @@ end
 -- ============================================================================
 
 --- Get reachability cache (position keys only)
+--- @param attach_ghosts boolean|nil Whether to include ghosts in response (default: true)
 --- @return table Reachability data with entities, resources, and last_updated_tick
-function ReachabilityActions.get_reachable(self)
+function ReachabilityActions.get_reachable_keys(self, attach_ghosts)
+    -- Default attach_ghosts to true
+    if attach_ghosts == nil then
+        attach_ghosts = true
+    end
+    
     -- Ensure cache is fresh before returning
     if self.reachable.dirty then
         self:process_reachable()
     end
     
-    return {
+    local result = {
         entities = self.reachable.entities,
         resources = self.reachable.resources,
         last_updated_tick = self.reachable.last_updated_tick,
     }
+    
+    -- Add ghosts position keys if requested
+    if attach_ghosts and self.character and self.character.valid then
+        local position = self.character.position
+        local surface = self.character.surface or game.surfaces[1]
+        local build_reach = self.character.reach_distance
+        
+        local ghosts = surface.find_entities_filtered({
+            position = position,
+            radius = build_reach,
+            type = "entity-ghost"
+        })
+        
+        local ghosts_keys = {}
+        for _, ghost in ipairs(ghosts) do
+            if ghost and ghost.valid then
+                local key = position_key(ghost.position.x, ghost.position.y)
+                ghosts_keys[key] = true
+            end
+        end
+        result.ghosts = ghosts_keys
+    end
+    
+    return result
 end
 
 --- Get full reachability snapshot with entity data
 --- Returns complete volatile state for all reachable entities/resources
 --- Used by Python reachable_snapshot() context manager
+--- @param attach_ghosts boolean|nil Whether to include ghosts in response (default: true)
 --- @return table Full snapshot with entity data arrays
-function ReachabilityActions.get_reachable_full(self)
+function ReachabilityActions.get_reachable(self, attach_ghosts)
+    -- Default attach_ghosts to true
+    if attach_ghosts == nil then
+        attach_ghosts = true
+    end
+    
     -- Skip if agent entity is invalid
     if not (self.character and self.character.valid) then
-        return {
+        local result = {
             entities = {},
             resources = {},
             agent_position = nil,
             tick = game.tick,
         }
+        if attach_ghosts then
+            result.ghosts = {}
+        end
+        return result
     end
     
     local position = self.character.position
@@ -279,6 +343,7 @@ function ReachabilityActions.get_reachable_full(self)
     
     local entities_data = {}
     local resources_data = {}
+    local ghosts_data = {}
     
     -- Find resources within resource_reach_distance
     local resource_reach = self.character.resource_reach_distance
@@ -334,6 +399,7 @@ function ReachabilityActions.get_reachable_full(self)
             and entity.type ~= "resource"
             and entity.type ~= "tree"
             and entity.type ~= "simple-entity"
+            and entity.type ~= "entity-ghost"  -- Exclude ghosts from entities
             and entity ~= self.character then
             -- Exclude tree stumps and other tree-related corpses
             local is_tree_corpse = (entity.type == "corpse" and
@@ -348,12 +414,35 @@ function ReachabilityActions.get_reachable_full(self)
         end
     end
     
-    return {
+    -- Find ghosts within build reach_distance (if requested)
+    if attach_ghosts then
+        local ghosts = surface.find_entities_filtered({
+            position = position,
+            radius = build_reach,
+            type = "entity-ghost"
+        })
+        for _, ghost in ipairs(ghosts) do
+            if ghost and ghost.valid then
+                local data = serialize_ghost(ghost)
+                if data then
+                    table.insert(ghosts_data, data)
+                end
+            end
+        end
+    end
+    
+    local result = {
         entities = entities_data,
         resources = resources_data,
         agent_position = { x = position.x, y = position.y },
         tick = game.tick,
     }
+    
+    if attach_ghosts then
+        result.ghosts = ghosts_data
+    end
+    
+    return result
 end
 
 --- Mark reachability cache as dirty (needs recomputation)

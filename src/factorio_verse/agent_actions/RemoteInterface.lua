@@ -588,32 +588,14 @@ The agent's force must have labs with science packs available.]],
     get_reachable = {
         category = "query",
         is_async = false,
-        doc = [[Get cached reachable entities and resources (position keys only).
-Returns position keys for entities within build reach and resources within mining reach.
-The cache is updated when agent stops walking, teleports, or entities are built/destroyed.
-Python should cache last_updated_tick and only re-fetch when tick changes.
-Use get_reachable_full for complete entity data with volatile state.]],
-        paramspec = { _param_order = {} },
-        returns = {
-            type = "reachable_cache",
-            schema = {
-                entities = { type = "table", doc = "Position keys for reachable entities: {'x,y': true, ...}" },
-                resources = { type = "table", doc = "Position keys for reachable resources: {'x,y': true, ...}" },
-                last_updated_tick = { type = "number", doc = "Game tick when cache was last updated" },
-            },
-        },
-        func = function(self)
-            return self:get_reachable()
-        end,
-    },
-    get_reachable_full = {
-        category = "query",
-        is_async = false,
         doc = [[Get full reachable snapshot with complete entity data.
 Returns arrays of entity/resource data including volatile state (inventory, fuel, recipe, status).
 Use this for the reachable_snapshot() context manager in Python.
-More expensive than get_reachable - use only when you need entity properties.]],
-        paramspec = { _param_order = {} },
+Includes ghosts by default (set attach_ghosts=false to exclude).]],
+        paramspec = {
+            _param_order = { "attach_ghosts" },
+            attach_ghosts = { type = "boolean", default = true, doc = "Whether to include ghosts in response (default: true)" },
+        },
         returns = {
             type = "reachable_snapshot",
             schema = {
@@ -646,12 +628,24 @@ More expensive than get_reachable - use only when you need entity properties.]],
                         products = { type = "table", doc = "Mineable products" },
                     },
                 },
+                ghosts = {
+                    type = "array",
+                    doc = "Array of ghost entity data objects (only if attach_ghosts=true)",
+                    item_schema = {
+                        name = { type = "string", doc = "Always 'entity-ghost'" },
+                        type = { type = "string", doc = "Always 'entity-ghost'" },
+                        position = { type = "position", doc = "Ghost position" },
+                        position_key = { type = "string", doc = "Position key for lookups" },
+                        ghost_name = { type = "string", doc = "The entity this ghost represents" },
+                        direction = { type = "number", doc = "Ghost direction (if applicable)" },
+                    },
+                },
                 agent_position = { type = "position", doc = "Agent position at snapshot time" },
                 tick = { type = "number", doc = "Game tick when snapshot was taken" },
             },
         },
-        func = function(self)
-            return self:get_reachable_full()
+        func = function(self, attach_ghosts)
+            return self:get_reachable(attach_ghosts)
         end,
     },
 
