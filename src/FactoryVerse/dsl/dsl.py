@@ -1,10 +1,15 @@
-from src.FactoryVerse.dsl.entity.base import BaseEntity
-from src.FactoryVerse.dsl.item.base import ItemStack, GhostEntity
+from src.FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
+from src.FactoryVerse.dsl.item.base import ItemStack
 from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Position, Direction
-from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory, WalkingAction, MiningAction, CraftingAction, ResearchAction
+from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
+from src.FactoryVerse.dsl.recipe.base import Recipes
 
 from typing import List, Optional, Dict, Any
 import json
+import logging
+import sys
+from contextlib import contextmanager
+from factorio_rcon import RCONClient as RconClient
 
 
 def _get_factory() -> PlayingFactory:
@@ -104,8 +109,7 @@ def get_reachable_entities() -> List[BaseEntity]:
         List of BaseEntity objects within reach
     """
     factory = _get_factory()
-    result = factory.get_reachable_full()
-    data = json.loads(result)
+    data = factory.get_reachable(attach_ghosts=False)  # Don't need ghosts for this function
     
     entities = []
     entities_data = data.get("entities", [])
@@ -147,6 +151,79 @@ def get_reachable_entities() -> List[BaseEntity]:
         entities.append(entity)
     
     return entities
+
+
+# Internal storage for the configured factory instance
+_configured_factory: Optional[PlayingFactory] = None
+
+def enable_logging(level: int = logging.INFO):
+    """
+    Enable logging for the DSL to see RCON/UDP traffic.
+    Useful in notebooks where default logging might be suppressed.
+    
+    Args:
+        level: Logging level (default INFO)
+    """
+    # Get the library logger
+    logger = logging.getLogger("src.FactoryVerse")
+    logger.setLevel(level)
+    
+    # Check if handler already exists to avoid duplicates
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(
+            '%(name)s - %(levelname)s - %(message)s'
+        ))
+        logger.addHandler(handler)
+
+
+def configure(rcon_client: RconClient, agent_id: str):
+    """
+    Configure the DSL environment with RCON connection and agent ID.
+    This should be called ONCE by the system/notebook initialization.
+    """
+    global _configured_factory
+    
+    # 1. Fetch recipes
+    cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_recipes', helpers.json_to_table('[]'))))"
+    try:
+        res = rcon_client.send_command(cmd)
+        recipes_data = json.loads(res)
+        if isinstance(recipes_data, dict):
+            # If it's a dict (keyed by name), convert to list of values
+            recipes_data = list(recipes_data.values())
+        recipes = Recipes(recipes_data)
+    except Exception as e:
+        print(f"Warning: Could not pre-fetch recipes: {e}")
+        recipes = Recipes({})
+
+    # 2. Create and store factory instance
+    # Note: RCON client is stored inside the factory but marked private
+    _configured_factory = PlayingFactory(rcon_client, agent_id, recipes)
+
+
+@contextmanager
+def playing_factorio():
+    """
+    Context manager to activate the configured DSL runtime.
+    
+    Usage:
+        with playing_factorio():
+            await walking.to(...)
+    """
+    global _configured_factory
+    
+    if _configured_factory is None:
+        raise RuntimeError(
+            "DSL not configured. System must call dsl.configure(rcon, agent_id) first."
+        )
+
+    # Set context var to the pre-configured instance
+    token = _playing_factory.set(_configured_factory)
+    try:
+        yield _configured_factory
+    finally:
+        _playing_factory.reset(token)
 
 """
 with playing_factorio(rcon, 'agent_1'):

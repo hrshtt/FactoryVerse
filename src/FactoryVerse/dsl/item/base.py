@@ -1,9 +1,11 @@
 import pydantic
-from typing import List, Optional, Union, Any, Dict, Tuple, Literal
+from typing import List, Optional, Union, Any, Dict, Tuple, Literal, TYPE_CHECKING
 from src.FactoryVerse.dsl.types import MapPosition, Direction
-from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
-from src.FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
 from src.FactoryVerse.dsl.prototypes import get_item_prototypes
+
+if TYPE_CHECKING:
+    from src.FactoryVerse.dsl.agent import PlayingFactory
+    from src.FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
 
 
 ItemSubgroup = Literal[
@@ -194,6 +196,7 @@ class PlaceableItem(Item):
     @property
     def _factory(self) -> "PlayingFactory":
         """Get the current playing factory context."""
+        from src.FactoryVerse.dsl.agent import _playing_factory
         factory = _playing_factory.get()
         if factory is None:
             raise RuntimeError(
@@ -204,7 +207,7 @@ class PlaceableItem(Item):
 
     def place(
         self, position: MapPosition, direction: Optional[Direction] = None
-    ) -> BaseEntity:
+    ) -> "BaseEntity":
         """Place this item as an entity on the map.
 
         Returns the created BaseEntity instance.
@@ -220,14 +223,33 @@ class PlaceableItem(Item):
             "Entity creation from placement result not yet implemented"
         )
 
-    def place_ghost(self, position: MapPosition, direction: Optional[Direction] = None) -> GhostEntity:
+    def place_ghost(
+        self, 
+        position: MapPosition, 
+        direction: Optional[Direction] = None,
+        label: Optional[str] = None
+    ) -> "GhostEntity":
         """Place this item as a ghost entity on the map.
 
-        Returns the created GhostEntity instance.
+        Args:
+            position: Position to place the ghost
+            direction: Optional direction for the ghost
+            label: Optional label for grouping/staging (e.g., "bootstrap", "production")
+
+        Returns:
+            The created GhostEntity instance.
         """
-        result = self._factory.place_entity(self.name, position, direction, ghost=True)
-        if not result.success:
-            raise RuntimeError(f"Failed to place ghost entity: {result.error}")
+        from src.FactoryVerse.dsl.entity.base import GhostEntity
+        result = self._factory.place_entity(self.name, position, direction, ghost=True, label=label)
+        if not result.get("success"):
+            error_msg = result.get("error", "Unknown error")
+            raise RuntimeError(f"Failed to place ghost entity: {error_msg}")
+        
+        # Use actual position from result if available
+        result_pos = result.get("position", position)
+        if isinstance(result_pos, dict):
+            position = MapPosition(x=result_pos["x"], y=result_pos["y"])
+        
         return GhostEntity(name=self.name, position=position, direction=direction)
 
 
@@ -237,6 +259,7 @@ class PlacementCueMixin:
     @property
     def _factory(self) -> "PlayingFactory":
         """Get the current playing factory context."""
+        from src.FactoryVerse.dsl.agent import _playing_factory
         factory = _playing_factory.get()
         if factory is None:
             raise RuntimeError(
@@ -309,15 +332,15 @@ class ItemStack(pydantic.BaseModel):
 
 class BeltLine(ItemStack):
     """A belt line item stack."""
-    def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> GhostEntity:
+    def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> "GhostEntity":
         """Get a ghost line of the belt."""
         return self._factory.get_ghost_line(self.name, position, length, direction)
 
-    def get_ghost(self, position: MapPosition) -> GhostEntity:
+    def get_ghost(self, position: MapPosition) -> "GhostEntity":
         """Get a ghost entity at the position."""
         return self._factory.get_ghost(self.name, position)
 
-    def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> GhostEntity:
+    def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> "GhostEntity":
         """Get a ghost line of the belt."""
         return self._factory.get_ghost_line(self.name, position, length, direction)
 
