@@ -39,6 +39,8 @@ class AsyncActionListener:
         self.pending_actions: Dict[str, asyncio.Event] = {}
         self.action_results: Dict[str, Dict[str, Any]] = {}
         self.event_loops: Dict[str, asyncio.AbstractEventLoop] = {}
+        self.action_timeouts: Dict[str, float] = {}  # Track timeout deadlines for progress extension
+        self.action_progress: Dict[str, Dict[str, Any]] = {}  # Track progress for actions
         self.running = False
         
     async def start(self):
@@ -54,24 +56,61 @@ class AsyncActionListener:
     
     
     def _handle_udp_message(self, payload: Dict[str, Any]):
-        """Process received UDP message from dispatcher (called by dispatcher thread)."""
+        """Process received UDP message from dispatcher (called by dispatcher thread).
+        
+        Implements state machine contract:
+        - status: "queued" -> ignore (logging only)
+        - status: "progress" -> track progress, extend timeout for walking
+        - status: "completed" -> finish await
+        - status: "cancelled" -> finish await with cancellation
+        """
         logger.info(f"UDP RX: {payload}")
         try:
             action_id = payload.get('action_id')
             if not action_id:
                 return
             
+            # Require status field (no backwards compatibility)
+            status = payload.get('status')
+            if not status:
+                logger.warning(f"UDP message missing required 'status' field: {payload}")
+                return
+            
             if action_id not in self.pending_actions:
                 return
             
-            self.action_results[action_id] = payload
-            event = self.pending_actions[action_id]
+            # State machine routing
+            if status == "queued":
+                # Ignore - logging only, redundant with RCON response
+                return
             
-            loop = self.event_loops.get(action_id)
-            if loop and loop.is_running():
-                loop.call_soon_threadsafe(event.set)
-            else:
-                event.set()
+            if status == "progress":
+                # Track progress
+                self.action_progress[action_id] = payload.get('result', {})
+                
+                # Extend timeout for walking only
+                action_type = payload.get('action_type')
+                if action_type == 'walk_to' and action_id in self.action_timeouts:
+                    # Extend timeout by default timeout duration when progress is received
+                    self.action_timeouts[action_id] = time.time() + self.timeout
+                    logger.debug(f"Extended timeout for {action_id} due to progress")
+                
+                return
+            
+            if status in ("completed", "cancelled"):
+                # Finish await
+                self.action_results[action_id] = payload
+                event = self.pending_actions[action_id]
+                
+                loop = self.event_loops.get(action_id)
+                if loop and loop.is_running():
+                    loop.call_soon_threadsafe(event.set)
+                else:
+                    event.set()
+                return
+            
+            # Unknown status
+            logger.warning(f"Unknown status '{status}' for action {action_id}")
         except Exception as e:
             print(f"❌ Error processing UDP message: {e}")
     
@@ -81,17 +120,25 @@ class AsyncActionListener:
             self.udp_dispatcher.unsubscribe("*", self._handle_udp_message)
         self.running = False
     
-    def register_action(self, action_id: str):
-        """Register an action to wait for completion via UDP."""
+    def register_action(self, action_id: str, initial_timeout_deadline: Optional[float] = None):
+        """Register an action to wait for completion via UDP.
+        
+        Args:
+            action_id: The action ID to register
+            initial_timeout_deadline: Optional initial timeout deadline in seconds since epoch (for progress-based extension)
+        """
         event = asyncio.Event()
         self.pending_actions[action_id] = event
         self.action_results[action_id] = None
+        self.action_progress[action_id] = {}
+        if initial_timeout_deadline:
+            self.action_timeouts[action_id] = initial_timeout_deadline
         try:
             self.event_loops[action_id] = asyncio.get_running_loop()
         except RuntimeError:
             self.event_loops[action_id] = None
     
-    async def wait_for_action(self, action_id: str, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def wait_for_action(self, action_id: str, timeout: Optional[float] = None) -> Dict[str, Any]:
         """
         Wait for an action to complete via UDP.
         
@@ -112,6 +159,10 @@ class AsyncActionListener:
         event = self.pending_actions[action_id]
         timeout_secs = timeout or self.timeout
         
+        # Initialize timeout deadline for progress-based extension (walking only)
+        if action_id not in self.action_timeouts:
+            self.action_timeouts[action_id] = time.time() + timeout_secs
+        
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout_secs)
             return self.action_results[action_id]
@@ -120,6 +171,8 @@ class AsyncActionListener:
         finally:
             self.pending_actions.pop(action_id, None)
             self.action_results.pop(action_id, None)
+            self.action_timeouts.pop(action_id, None)
+            self.action_progress.pop(action_id, None)
             self.event_loops.pop(action_id, None)
 
 
@@ -395,7 +448,7 @@ class PlayingFactory:
         
         Args:
             response: Response dict from async action (should have action_id)
-            timeout: Optional timeout in seconds
+            timeout: Optional timeout in seconds (overrides calculated timeout)
             
         Returns:
             Completion payload from UDP
@@ -408,8 +461,22 @@ class PlayingFactory:
             return response
         
         await self._ensure_async_listener()
+        
+        # Calculate timeout with 0.5x buffer for mining/crafting based on estimated_ticks
+        calculated_timeout = timeout
+        if timeout is None:
+            estimated_ticks = response.get('estimated_ticks')
+            if estimated_ticks:
+                # Convert ticks to seconds: 1 tick = 1/60 seconds at game.speed = 1.0
+                # Add 0.5x buffer for safety
+                base_seconds = (estimated_ticks / 60.0)
+                calculated_timeout = base_seconds * 1.5
+                logger.debug(f"Calculated timeout for {action_id}: {calculated_timeout:.2f}s (from {estimated_ticks} ticks)")
+            else:
+                calculated_timeout = self._async_listener.timeout
+        
         self._async_listener.register_action(action_id)
-        return await self._async_listener.wait_for_action(action_id, timeout=timeout)
+        return await self._async_listener.wait_for_action(action_id, timeout=calculated_timeout)
 
     @property
     def agent_id(self) -> str:
