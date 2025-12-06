@@ -1,15 +1,20 @@
 import json
 import asyncio
 import time
+import logging
 from typing import Any, Dict, Optional, Union, List
+
+logger = logging.getLogger(__name__)
+
 from src.FactoryVerse.dsl.types import MapPosition
 from src.FactoryVerse.dsl.item.base import ItemStack
 from src.FactoryVerse.dsl.recipe.base import Recipes, BaseRecipe, BasicRecipeName
-from factorio_rcon import RconClient
+from factorio_rcon import RCONClient as RconClient
 from contextvars import ContextVar
 from contextlib import contextmanager
-from src.FactoryVerse.dsl.types import Direction
+from src.FactoryVerse.dsl.types import Direction, MapPosition, BoundingBox
 from src.FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
+from src.FactoryVerse.dsl.ghosts import GhostManager
 
 
 # Game context: agent is "playing" the factory game
@@ -47,8 +52,10 @@ class AsyncActionListener:
         self.udp_dispatcher.subscribe("*", self._handle_udp_message)
         self.running = True
     
+    
     def _handle_udp_message(self, payload: Dict[str, Any]):
         """Process received UDP message from dispatcher (called by dispatcher thread)."""
+        logger.info(f"UDP RX: {payload}")
         try:
             action_id = payload.get('action_id')
             if not action_id:
@@ -355,20 +362,22 @@ class ResearchAction:
 class PlayingFactory:
     """Represents the agent's active gameplay session with RCON access."""
 
-    rcon: RconClient
-    agent_id: str
+    _rcon: RconClient
+    _agent_id: str
     agent_commands: AgentCommands
     inventory: List[ItemStack]
     recipes: Recipes
     _async_listener: AsyncActionListener
+    _ghost_manager: GhostManager
 
     def __init__(self, rcon_client: "RconClient", agent_id: str, recipes: Recipes, 
                  udp_dispatcher: Optional[UDPDispatcher] = None):
-        self.rcon = rcon_client
+        self._rcon = rcon_client
         self._agent_id = agent_id
         self.agent_commands = AgentCommands(agent_id)
         self.recipes = recipes
         self._async_listener = AsyncActionListener(udp_dispatcher=udp_dispatcher)
+        self._ghost_manager = GhostManager(self)
         
         # Initialize action wrappers
         self._walking = WalkingAction(self)
@@ -450,10 +459,14 @@ class PlayingFactory:
 
     def execute(self, command: str, silent: bool = True) -> str:
         if silent:
-            command = f"/sc {command}"
+            full_command = f"/sc {command}"
         else:
-            command = f"/c {command}"
-        return self.rcon.send_command(command)
+            full_command = f"/c {command}"
+            
+        logger.info(f"RCON TX: {full_command}")
+        response = self._rcon.send_command(full_command)
+        logger.info(f"RCON RX: {response}")
+        return response
 
     def _build_command(self, method: str, *args) -> str:
         """Build RCON command string for a method call with positional arguments.
@@ -465,7 +478,7 @@ class PlayingFactory:
         if args:
             # Convert args to JSON and pass as table
             args_json = json.dumps(list(args))
-            remote_call += f", helpers.json_to_table('{args_json}')"
+            remote_call += f", table.unpack(helpers.json_to_table('{args_json}'))"
         
         remote_call += ")"
         return f"rcon.print(helpers.table_to_json({remote_call}))"
@@ -695,17 +708,41 @@ class PlayingFactory:
         position: Union[Dict[str, float], "MapPosition"],
         direction: Optional[Direction] = None,
         ghost=False,
-    ) -> str:
+        label: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Place an entity from the agent's inventory onto the map.
 
         Args:
             entity_name: Entity prototype name to place
             position: MapPosition to place entity
-            options: Placement options (direction, force_build, etc.)
+            direction: Optional direction for placement
+            ghost: Whether to place as ghost entity (default: False)
+            label: Optional label for ghost entities (Python-only, for grouping/staging)
+
+        Returns:
+            Result dict with success, position, entity_name, etc.
         """
-        return self._build_command(
+        # Convert MapPosition to dict if needed
+        if hasattr(position, 'x') and hasattr(position, 'y'):
+            position = {"x": position.x, "y": position.y}
+        
+        cmd = self._build_command(
             "place_entity", entity_name, position, direction, ghost
         )
+        result_str = self.execute(cmd)
+        result = json.loads(result_str)
+        
+        # Track ghost if placed
+        if ghost and result.get("success"):
+            pos = result.get("position", position)
+            self._ghost_manager.add_ghost(
+                position=pos,
+                entity_name=entity_name,
+                label=label,
+                placed_tick=result.get("tick", 0)
+            )
+        
+        return result
 
     def pickup_entity(
         self,
@@ -721,15 +758,31 @@ class PlayingFactory:
         cmd = self._build_command("pickup_entity", entity_name, position)
         return self.execute(cmd)
 
-    def remove_ghost(self, entity_name: str, position: MapPosition) -> str:
+    def remove_ghost(self, entity_name: str, position: MapPosition) -> Dict[str, Any]:
         """Remove a ghost entity from the map.
 
         Args:
             entity_name: Entity prototype name to remove
-            position: Entity position (None = nearest)
+            position: Entity position
+
+        Returns:
+            Result dict with success status
         """
-        cmd = self._build_command("remove_ghost", entity_name, position)
-        return self.execute(cmd)
+        # Convert MapPosition to dict if needed
+        if hasattr(position, 'x') and hasattr(position, 'y'):
+            pos_dict = {"x": position.x, "y": position.y}
+        else:
+            pos_dict = position
+        
+        cmd = self._build_command("remove_ghost", entity_name, pos_dict)
+        result_str = self.execute(cmd)
+        result = json.loads(result_str)
+        
+        # Remove from tracking if successful
+        if result.get("success"):
+            self._ghost_manager.remove_ghost(position=pos_dict, entity_name=entity_name)
+        
+        return result
 
     # ========================================================================
     # SYNC: Movement
@@ -819,15 +872,29 @@ class PlayingFactory:
     # REACHABILITY
     # ========================================================================
 
-    def get_reachable(self) -> str:
-        """Get cached reachable entities and resources (position keys only)."""
-        cmd = self._build_command("get_reachable")
-        return self.execute(cmd)
-
-    def get_reachable_full(self) -> str:
-        """Get full reachable snapshot with complete entity data."""
-        cmd = self._build_command("get_reachable_full")
-        return self.execute(cmd)
+    def get_reachable(self, attach_ghosts: bool = True) -> Dict[str, Any]:
+        """Get full reachable snapshot with complete entity data.
+        
+        Args:
+            attach_ghosts: Whether to include ghosts in response (default: True)
+            
+        Returns:
+            Dict with entities, resources, ghosts (if attach_ghosts=True), agent_position, tick
+        """
+        cmd = self._build_command("get_reachable", attach_ghosts)
+        result_str = self.execute(cmd)
+        result = json.loads(result_str)
+        
+        return result
+    
+    @property
+    def ghosts(self) -> GhostManager:
+        """Get the ghost manager for this factory.
+        
+        Returns:
+            GhostManager instance for managing tracked ghosts
+        """
+        return self._ghost_manager
 
     # ========================================================================
     # DEBUG

@@ -172,6 +172,9 @@ class Recipes:
                 continue
             assert recipe.category in RecipeCategory, f"Invalid recipe category: {recipe.category}"
             recipes.append(recipe)
+        
+        self.recipes = recipes
+        
         # Build registry
         if Recipes._registry is None:
             Recipes._registry = {}

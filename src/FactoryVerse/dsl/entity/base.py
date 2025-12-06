@@ -23,6 +23,8 @@ class BaseEntity(pydantic.BaseModel):
     bounding_box: BoundingBox
     direction: Optional[Direction] = None
 
+    model_config = {"arbitrary_types_allowed": True}
+
     @property
     def _factory(self) -> "PlayingFactory":
         """Get the current playing factory context."""

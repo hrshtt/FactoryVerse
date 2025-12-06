@@ -38,14 +38,14 @@ class BasePrototype:
         return self._data
 
 
-@dataclass
+@dataclass(frozen=True)
 class TransportBeltPrototype(BasePrototype):
     """Prototype accessor for transport-belt."""
 
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class ElectricMiningDrillPrototype(BasePrototype):
     """Prototype accessor for electric-mining-drill."""
 
@@ -88,7 +88,7 @@ class ElectricMiningDrillPrototype(BasePrototype):
         return apply_cardinal_vector(centroid, self._output_vector, direction)
 
 
-@dataclass
+@dataclass(frozen=True)
 class BurnerMiningDrillPrototype(BasePrototype):
     """Prototype accessor for burner-mining-drill."""
 
@@ -96,7 +96,7 @@ class BurnerMiningDrillPrototype(BasePrototype):
         return self._data.get("energy_source", {}).get("fuel_category")
 
 
-@dataclass
+@dataclass(frozen=True)
 class PumpjackPrototype(BasePrototype):
     """Prototype accessor for pumpjack."""
 
@@ -124,7 +124,7 @@ class PumpjackPrototype(BasePrototype):
         ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class InserterPrototype(BasePrototype):
     """Prototype accessor for inserter."""
 
@@ -149,7 +149,7 @@ class InserterPrototype(BasePrototype):
         return apply_cardinal_vector(centroid, self._insert_vector, direction)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LongHandedInserterPrototype(InserterPrototype):
     """Prototype accessor for long-handed-inserter."""
 
@@ -163,6 +163,19 @@ class LongHandedInserterPrototype(InserterPrototype):
             _insert_vector=tuple(data["insert_vector"]),
         )
 
+
+@dataclass(frozen=True)
+class FastInserterPrototype(InserterPrototype):
+    """Prototype accessor for fast-inserter."""
+
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "FastInserterPrototype":
+        """Create instance from raw prototype data."""
+        return cls(
+            _data=data,
+            _pickup_vector=tuple(data["pickup_vector"]),
+            _insert_vector=tuple(data["insert_vector"]),
+        )
 
 class EntityPrototypes:
     """Aggregator for all prototype property accessors."""
@@ -187,6 +200,9 @@ class EntityPrototypes:
         self.inserter = InserterPrototype.from_data(self.data["inserter"]["inserter"])
         self.long_handed_inserter = LongHandedInserterPrototype.from_data(
             self.data["inserter"]["long-handed-inserter"]
+        )
+        self.fast_inserter = FastInserterPrototype.from_data(
+            self.data["inserter"]["fast-inserter"]
         )
 
 class ItemPrototypes:
