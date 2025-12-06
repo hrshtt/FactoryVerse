@@ -231,6 +231,7 @@ local function process_agent_messages(agent)
                     action_id = message.action_id or string.format("%s_%d_%d", message.action or "unknown", game.tick, agent.agent_id),
                     agent_id = agent.agent_id,
                     action_type = message.action or "unknown",
+                    status = message.status,  -- REQUIRED: explicit state machine status
                     category = category,  -- Include category in metadata
                     rcon_tick = message.tick or game.tick,
                     completion_tick = game.tick,
@@ -250,6 +251,7 @@ local function process_agent_messages(agent)
                 payload.result.action_id = nil
                 payload.result.success = nil
                 payload.result.cancelled = nil
+                payload.result.status = nil  -- Status is top-level, not in result
                 
                 -- Send UDP notification
                 snapshot.send_action_completion_udp(payload)
