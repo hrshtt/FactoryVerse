@@ -185,7 +185,7 @@ def configure(rcon_client: RconClient, agent_id: str):
     global _configured_factory
     
     # 1. Fetch recipes
-    cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_recipes', helpers.json_to_table('[]'))))"
+    cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_recipes')))"
     try:
         res = rcon_client.send_command(cmd)
         recipes_data = json.loads(res)
@@ -195,6 +195,11 @@ def configure(rcon_client: RconClient, agent_id: str):
         recipes = Recipes(recipes_data)
     except Exception as e:
         print(f"Warning: Could not pre-fetch recipes: {e}")
+        try:
+             # Only print partial response if possible to avoid massive logs, or just type
+            print(f"Recieved data type: {type(json.loads(res))}")
+        except:
+            pass
         recipes = Recipes({})
 
     # 2. Create and store factory instance

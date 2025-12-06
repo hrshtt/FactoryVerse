@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Any, Literal, ClassVar, Optional
+from typing import List, Dict, Any, Literal, ClassVar, Optional, get_args
 
 
 BasicRecipeName = Literal[
@@ -119,6 +119,7 @@ RecipeCategory = Literal[
     "oil-processing",
     "rocket-building",
     "smelting",
+    "parameters",
 ]
 
 
@@ -159,18 +160,42 @@ class Recipes:
         # self.recipes = [BaseRecipe(**recipe) for recipe in data]
         recipes = []
         for recipe in data:
+
+            # Robust results parsing
+            results_data = recipe.get("results")
+            if results_data:
+                results_list = [
+                    Result(
+                        name=r.get("name"),
+                        count=r.get("amount", r.get("count", 1)),
+                        type=r.get("type", "item")
+                    ) for r in results_data
+                ]
+            else:
+                # Infer from 'result' field or recipe name
+                result_name = recipe.get("result", recipe["name"])
+                # result_count usually comes with result, or defaults to 1
+                result_count = recipe.get("result_count", 1) 
+                results_list = [Result(name=result_name, count=result_count, type="item")]
+
             recipe = BaseRecipe(
                 name=recipe["name"],
-                type=recipe["type"],
-                ingredients=[Ingredient(**ingredient) for ingredient in recipe["ingredients"]],
-                results=[Result(**result) for result in recipe["results"]],
+                type=recipe.get("type", "recipe"),
+                ingredients=[
+                    Ingredient(
+                        name=i["name"],
+                        type=i.get("type", "item"),
+                        count=i.get("amount", i.get("count", 1))
+                    ) for i in recipe["ingredients"]
+                ],
+                results=results_list,
                 category=recipe.get("category", "crafting"),
                 enabled=recipe.get("enabled", True),
             )
-            if recipe.name not in BasicRecipeName:
+            if recipe.name not in get_args(BasicRecipeName):
                 print(f"[WARNING] Recipe {recipe.name} is not implemented in FactoryVerse. Skipping...")
                 continue
-            assert recipe.category in RecipeCategory, f"Invalid recipe category: {recipe.category}"
+            assert recipe.category in get_args(RecipeCategory), f"Invalid recipe category: {recipe.category}"
             recipes.append(recipe)
         
         self.recipes = recipes
