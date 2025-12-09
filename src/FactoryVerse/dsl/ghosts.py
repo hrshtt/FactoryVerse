@@ -1,4 +1,6 @@
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+import json
+from pathlib import Path
 from src.FactoryVerse.dsl.types import MapPosition
 from src.FactoryVerse.dsl.item.base import ItemStack
 
@@ -13,15 +15,49 @@ class GhostManager:
     All ghost tracking is Python-only and does not affect the mod.
     """
     
-    def __init__(self, factory: "PlayingFactory"):
+    
+    def __init__(self, factory: "PlayingFactory", agent_id: Optional[str] = None):
         """Initialize GhostManager with reference to factory.
         
         Args:
             factory: PlayingFactory instance for accessing inventory and other methods
+            agent_id: Agent ID (e.g., "agent_1"). If provided, persistence is enabled.
         """
         self._factory = factory
         self.__tracked_ghosts: Dict[str, Dict[str, Any]] = {}  # Key: f"{position.x},{position.y}:{entity_name}"
+        
+        # Persistence setup
+        if agent_id:
+            self.filepath = Path(".fv-output") / agent_id / "ghosts.json"
+            self._load()
+        else:
+            self.filepath = None
     
+    def _load(self):
+        """Load tracked ghosts from disk."""
+        if self.filepath and self.filepath.exists():
+            try:
+                with open(self.filepath, "r") as f:
+                    self.__tracked_ghosts = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                # Log error but don't crash, start with empty
+                print(f"Warning: Failed to load ghost file {self.filepath}: {e}")
+                self.__tracked_ghosts = {}
+    
+    def _save(self):
+        """Save tracked ghosts to disk."""
+        if self.filepath:
+            try:
+                # Ensure directory exists
+                self.filepath.parent.mkdir(parents=True, exist_ok=True)
+                # Atomic write pattern
+                temp_path = self.filepath.with_suffix(".tmp")
+                with open(temp_path, "w") as f:
+                    json.dump(self.__tracked_ghosts, f, indent=2)
+                temp_path.replace(self.filepath)
+            except IOError as e:
+                print(f"Warning: Failed to save ghost file {self.filepath}: {e}")
+
     @property
     def _tracked_ghosts(self) -> Dict[str, Dict[str, Any]]:
         """Get tracked ghosts dictionary.
@@ -194,6 +230,7 @@ class GhostManager:
             "placed_tick": placed_tick,
             "label": label,
         }
+        self._save()
         return ghost_key
     
     def remove_ghost(
@@ -219,6 +256,7 @@ class GhostManager:
         ghost_key = f"{pos_dict['x']},{pos_dict['y']}:{entity_name}"
         if ghost_key in self.__tracked_ghosts:
             del self.__tracked_ghosts[ghost_key]
+            self._save()
             return True
         return False
     

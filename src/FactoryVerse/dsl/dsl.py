@@ -4,7 +4,7 @@ from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Position, Direc
 from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
 from src.FactoryVerse.dsl.recipe.base import Recipes
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union, Literal
 import json
 import logging
 import sys
@@ -84,22 +84,48 @@ class _ResearchAccessor:
         return _get_factory().research.status()
 
 
+class _InventoryAccessor:
+    """Top-level inventory helper accessor.
+    
+    Provides access to AgentInventory methods for querying and shaping items.
+    """
+    
+    @property
+    def item_stacks(self):
+        """Get agent inventory as list of ItemStack objects."""
+        return _get_factory().inventory.item_stacks
+    
+    def get_total(self, item_name: str) -> int:
+        """Get total count of an item across all stacks."""
+        return _get_factory().inventory.get_total(item_name)
+    
+    def get_item(self, item_name: str):
+        """Get a single Item or PlaceableItem instance."""
+        return _get_factory().inventory.get_item(item_name)
+    
+    def get_item_stacks(
+        self,
+        item_name: str,
+        count: Union[int, Literal["half", "full"]],
+        number_of_stacks: Union[int, Literal["max"]] = "max",
+        strict: bool = False
+    ) -> List[ItemStack]:
+        """Get item stacks for a specific item."""
+        return _get_factory().inventory.get_item_stacks(item_name, count, number_of_stacks, strict)
+    
+    def check_recipe_count(self, recipe_name: str) -> int:
+        """Check how many times a recipe can be crafted."""
+        return _get_factory().inventory.check_recipe_count(recipe_name)
+
+
 # Top-level action instances - use these in DSL context
 walking = _WalkingAccessor()
 mining = _MiningAccessor()
 crafting = _CraftingAccessor()
 research = _ResearchAccessor()
+inventory = _InventoryAccessor()
 
 
-def get_inventory_items() -> List[ItemStack]:
-    """Get the inventory items of the agent.
-    
-    Returns:
-        List of ItemStack objects from the agent's inventory
-    """
-    factory = _get_factory()
-    # Use the inventory property which already handles parsing
-    return factory.inventory
 
 
 def get_reachable_entities() -> List[BaseEntity]:
@@ -249,6 +275,10 @@ with playing_factorio(rcon, 'agent_1'):
     research.status()
     
     # Top-level utilities
-    get_inventory_items()
+    inventory.item_stacks  # Get inventory
+    inventory.get_total("iron-plate")
+    inventory.get_item_stacks("iron-plate", "full", 3)  # 3 full stacks
+    inventory.get_item_stacks("iron-plate", "full")  # max full stacks (default)
+    inventory.check_recipe_count("iron-plate")
     get_reachable_entities()
 """

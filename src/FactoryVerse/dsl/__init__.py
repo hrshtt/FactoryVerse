@@ -3,9 +3,9 @@ from .dsl import (
     mining,
     crafting,
     research,
+    inventory,
     playing_factorio,
     configure,
-    get_inventory_items,
     get_reachable_entities,
     MapPosition,
 )
@@ -15,9 +15,9 @@ __all__ = [
     "mining",
     "crafting",
     "research",
+    "inventory",
     "playing_factorio",
     "configure",
-    "get_inventory_items",
     "get_reachable_entities",
     "MapPosition",
 ]

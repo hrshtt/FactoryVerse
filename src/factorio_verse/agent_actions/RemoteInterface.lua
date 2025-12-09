@@ -403,12 +403,12 @@ Use for testing/debugging. For normal gameplay, use walk_to instead.]],
     inspect = {
         category = "query",
         is_async = false,
-        doc = [[Get current agent state including position, inventory, and nearby entities.
-This is the primary way to observe the agent's current situation.]],
+        doc = [[Get current agent position.
+Optionally attaches processed agent activity state (walking, mining, crafting).
+This is the primary way to observe the agent's current position and activity status.]],
         paramspec = {
-            _param_order = { "attach_inventory", "attach_entities" },
-            attach_inventory = { type = "boolean", default = false, doc = "Include inventory contents" },
-            attach_entities = { type = "boolean", default = false, doc = "Include nearby entities" },
+            _param_order = { "attach_state" },
+            attach_state = { type = "boolean", default = false, doc = "Include processed activity state" },
         },
         returns = {
             type = "agent_state",
@@ -416,13 +416,29 @@ This is the primary way to observe the agent's current situation.]],
                 agent_id = { type = "number", doc = "Agent ID" },
                 tick = { type = "number", doc = "Current game tick" },
                 position = { type = "position", doc = "Agent position" },
-                inventory = { type = "table", doc = "Inventory: {item_name: count, ...} (if requested)" },
-                reachable_resources = { type = "table", doc = "Resources in mining range (if requested)" },
-                reachable_entities = { type = "table", doc = "Entities in build range (if requested)" },
+                state = { type = "table", doc = "Processed activity state: {walking, mining, crafting} with active flags (if requested)" },
             },
         },
-        func = function(self, attach_inventory, attach_entities)
-            return self:inspect(attach_inventory, attach_entities)
+        func = function(self, attach_state)
+            return self:inspect(attach_state)
+        end,
+    },
+    get_inventory_items = {
+        category = "query",
+        is_async = false,
+        doc = [[Get agent's main inventory contents.
+Returns a table mapping item names to counts.]],
+        paramspec = {
+            _param_order = {},
+        },
+        returns = {
+            type = "table",
+            schema = {
+                item_name = { type = "number", doc = "Item count for each item name" },
+            },
+        },
+        func = function(self)
+            return self:get_inventory_items()
         end,
     },
     get_placement_cues = {
@@ -498,48 +514,6 @@ Can filter to only show currently researchable technologies.]],
         },
         func = function(self, only_available)
             return self:get_technologies(only_available)
-        end,
-    },
-    get_activity_state = {
-        category = "query",
-        is_async = false,
-        doc = [[Get current state of all async activities (walking, mining, crafting).
-Useful for checking if agent is busy or idle.]],
-        paramspec = { _param_order = {} },
-        returns = {
-            type = "activity_state",
-            schema = {
-                walking = {
-                    type = "table",
-                    doc = "Walking state",
-                    schema = {
-                        active = { type = "boolean", doc = "True if walking" },
-                        goal = { type = "position", doc = "Target position" },
-                        action_id = { type = "string", doc = "Current action ID" },
-                    },
-                },
-                mining = {
-                    type = "table",
-                    doc = "Mining state",
-                    schema = {
-                        active = { type = "boolean", doc = "True if mining" },
-                        entity_name = { type = "string", doc = "Resource being mined" },
-                        action_id = { type = "string", doc = "Current action ID" },
-                    },
-                },
-                crafting = {
-                    type = "table",
-                    doc = "Crafting state",
-                    schema = {
-                        active = { type = "boolean", doc = "True if crafting" },
-                        recipe = { type = "string", doc = "Recipe being crafted" },
-                        action_id = { type = "string", doc = "Current action ID" },
-                    },
-                },
-            },
-        },
-        func = function(self)
-            return self:get_activity_state()
         end,
     },
 
@@ -653,7 +627,7 @@ Includes ghosts by default (set attach_ghosts=false to exclude).]],
     -- DEBUG
     -- ========================================================================
     inspect_state = {
-        category = "debug",
+        category = "development",
         is_async = false,
         doc = "Get raw agent state object (for debugging).",
         paramspec = { _param_order = {} },

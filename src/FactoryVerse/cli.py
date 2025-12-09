@@ -69,6 +69,20 @@ def cmd_client_launch(args):
     from pathlib import Path
     
     work_dir = Path.cwd()
+    
+    # Handle ghost reset
+    if args.reset_ghosts:
+        print("🧹 Clearing ghost state...")
+        fv_output = work_dir / ".fv-output"
+        if fv_output.exists():
+            for ghost_file in fv_output.glob("*/ghosts.json"):
+                try:
+                    ghost_file.unlink()
+                    print(f"   Deleted {ghost_file}")
+                except Exception as e:
+                    print(f"   Failed to delete {ghost_file}: {e}")
+            print("✓ Ghost state cleared")
+    
     server_mgr = FactorioServerManager(work_dir)
     
     # Determine scenario
@@ -131,6 +145,19 @@ def cmd_start(args):
     from pathlib import Path
     
     work_dir = Path.cwd()
+    
+    # Handle ghost reset
+    if args.reset_ghosts:
+        print("🧹 Clearing ghost state...")
+        fv_output = work_dir / ".fv-output"
+        if fv_output.exists():
+            for ghost_file in fv_output.glob("*/ghosts.json"):
+                try:
+                    ghost_file.unlink()
+                    print(f"   Deleted {ghost_file}")
+                except Exception as e:
+                    print(f"   Failed to delete {ghost_file}: {e}")
+            print("✓ Ghost state cleared")
     
     # Setup client first
     server_mgr = FactorioServerManager(work_dir)
@@ -262,6 +289,7 @@ def main():
                                       help="Scenario to load (default: factorio_verse). Use 'test_scenario' for testing.")
     client_launch_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
     client_launch_parser.add_argument("-w", "--watch", action="store_true", help="Enable hot-reload watcher (scenario mode only)")
+    client_launch_parser.add_argument("--reset-ghosts", action="store_true", help="Reset all ghost entities state")
     client_launch_parser.set_defaults(func=cmd_client_launch)
     
     # Client log subcommand
@@ -286,6 +314,7 @@ def main():
     server_start_parser.add_argument("--name", help="Experiment name (optional)")
     server_start_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
     server_start_parser.add_argument("-w", "--watch", action="store_true", help="Enable hot-reload watcher")
+    server_start_parser.add_argument("--reset-ghosts", action="store_true", help="Reset all ghost entities state")
     server_start_parser.set_defaults(func=cmd_start)
     
     # Server stop subcommand
