@@ -303,7 +303,7 @@ class MiningAction:
         resource_name: str,
         max_count: Optional[int] = None,
         timeout: Optional[int] = None
-    ) -> Dict[str, Any]:
+    ) -> List[ItemStack]:
         """Mine a resource (async/await).
         
         Args:
@@ -312,10 +312,19 @@ class MiningAction:
             timeout: Optional timeout in seconds
             
         Returns:
-            Completion payload
+            List of ItemStack objects obtained from mining
         """
         response = self._factory.mine_resource(resource_name, max_count)
-        return await self._factory._await_action(response, timeout=timeout)
+        result_payload = await self._factory._await_action(response, timeout=timeout)
+        
+        # Parse result for items
+        items = []
+        result_data = result_payload.get("result", {})
+        if "actual_products" in result_data:
+            for name, count in result_data["actual_products"].items():
+                items.append(ItemStack(name=name, count=count, subgroup="raw-resource")) # Default to raw-resource or infer
+                
+        return items
     
     def cancel(self) -> str:
         """Cancel current mining action."""
@@ -333,7 +342,7 @@ class CraftingAction:
         recipe: str,
         count: int = 1,
         timeout: Optional[int] = None
-    ) -> Dict[str, Any]:
+    ) -> List[ItemStack]:
         """Craft a recipe (async/await).
         
         Args:
@@ -342,10 +351,19 @@ class CraftingAction:
             timeout: Optional timeout in seconds
             
         Returns:
-            Completion payload
+            List of ItemStack objects crafted
         """
         response = self._factory.craft_enqueue(recipe, count)
-        return await self._factory._await_action(response, timeout=timeout)
+        result_payload = await self._factory._await_action(response, timeout=timeout)
+        
+        # Parse result for items
+        items = []
+        result_data = result_payload.get("result", {})
+        if "products" in result_data:
+            for name, count in result_data["products"].items():
+                items.append(ItemStack(name=name, count=count, subgroup="intermediate-product")) # Default or infer
+                
+        return items
     
     def enqueue(self, recipe: str, count: int = 1) -> Dict[str, Any]:
         """Enqueue a recipe for crafting.
@@ -430,7 +448,7 @@ class PlayingFactory:
         self.agent_commands = AgentCommands(agent_id)
         self.recipes = recipes
         self._async_listener = AsyncActionListener(udp_dispatcher=udp_dispatcher)
-        self._ghost_manager = GhostManager(self)
+        self._ghost_manager = GhostManager(self, agent_id=agent_id)
         
         # Initialize action wrappers
         self._walking = WalkingAction(self)
@@ -550,6 +568,21 @@ class PlayingFactory:
         remote_call += ")"
         return f"rcon.print(helpers.table_to_json({remote_call}))"
 
+    def _execute_and_parse_json(self, command: str) -> Dict[str, Any]:
+        """Execute RCON command and parse resultant JSON with error handling."""
+        result = self.execute(command)
+        if not result or not result.strip():
+            # Sometimes RCON returns empty string on silent failure or no output
+            # Raise descriptive error
+            raise RuntimeError(f"RCON command returned empty response. Command: {command}")
+        
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError as e:
+            # Log the raw result for debugging
+            logger.error(f"JSON decode failed. Result: '{result}'")
+            raise RuntimeError(f"Failed to decode JSON from RCON. Response: '{result}'. Error: {e}") from e
+
     # ========================================================================
     # ASYNC: Walking
     # ========================================================================
@@ -576,8 +609,7 @@ class PlayingFactory:
         if hasattr(goal, 'x') and hasattr(goal, 'y'):
             goal = {"x": goal.x, "y": goal.y}
         cmd = self._build_command("walk_to", goal, strict_goal, options)
-        result = self.execute(cmd)
-        return json.loads(result)
+        return self._execute_and_parse_json(cmd)
 
     def stop_walking(self) -> str:
         """Immediately stop the agent's current walking action."""
@@ -599,8 +631,7 @@ class PlayingFactory:
             Response dict with queued status and action_id
         """
         cmd = self._build_command("mine_resource", resource_name, max_count)
-        result = self.execute(cmd)
-        return json.loads(result)
+        return self._execute_and_parse_json(cmd)
 
     def stop_mining(self) -> str:
         """Immediately stop the agent's current mining action."""
@@ -626,8 +657,7 @@ class PlayingFactory:
         if not self.recipes[recipe_name].enabled:
             raise ValueError(f"Recipe {recipe_name} is not enabled, try researching technology first")
         cmd = self._build_command("craft_enqueue", recipe_name, count)
-        result = self.execute(cmd)
-        return json.loads(result)
+        return self._execute_and_parse_json(cmd)
 
     def craft_dequeue(self, recipe_name: str, count: Optional[int] = None) -> str:
         """Cancel queued crafting for a recipe.
@@ -808,6 +838,11 @@ class PlayingFactory:
                 label=label,
                 placed_tick=result.get("tick", 0)
             )
+        elif not ghost and result.get("success"):
+            # If placing a real entity, check if we're replacing a tracked ghost
+            # Note: position here might be dict or MapPosition, GhostManager handles both
+            if self._ghost_manager.remove_ghost(position=position, entity_name=entity_name):
+                logger.warning(f"Ghost at {position} for {entity_name} replaced by real entity.")
         
         return result
 

@@ -307,9 +307,14 @@ class PlaceAsEntityItem(Item):
 class ItemStack(pydantic.BaseModel):
     """Item stack with count information from inventory."""
 
-    name: Union[ItemName, PlaceableItemName]
-    subgroup: Union[ItemSubgroup, PlaceableItemSubgroup]
+    name: str # Relaxed to str to support dynamic names
+    subgroup: Union[ItemSubgroup, PlaceableItemSubgroup, str] # Relaxed to str
     count: int
+
+    @property
+    def item(self) -> "Item":
+        """Get the Item object for this stack."""
+        return get_item(self.name)
 
     @property
     def stack_size(self) -> int:
@@ -317,6 +322,8 @@ class ItemStack(pydantic.BaseModel):
         from src.FactoryVerse.dsl.prototypes import get_entity_prototypes
 
         prototypes = get_entity_prototypes()
+        # Fallback to item lookup if not in entity prototypes (which is likely)
+        # Actually prototypes.data has "item" key.
         item_data = prototypes.data.get("item", {}).get(self.name, {})
         return item_data.get("stack_size", 50)
 
@@ -329,6 +336,35 @@ class ItemStack(pydantic.BaseModel):
     def full(self) -> int:
         """Get full stack count."""
         return self.count
+    
+    def place(
+        self, position: MapPosition, direction: Optional[Direction] = None
+    ) -> "BaseEntity":
+        """Place one item from this stack as an entity."""
+        item = self.item
+        if isinstance(item, PlaceableItem):
+            return item.place(position, direction)
+        raise ValueError(f"Item {self.name} is not placeable")
+
+    def place_ghost(
+        self, 
+        position: MapPosition, 
+        direction: Optional[Direction] = None,
+        label: Optional[str] = None
+    ) -> "GhostEntity":
+        """Place one item from this stack as a ghost entity."""
+        item = self.item
+        if isinstance(item, PlaceableItem):
+            return item.place_ghost(position, direction, label)
+        raise ValueError(f"Item {self.name} is not placeable")
+        
+    def get_placement_cues(self) -> List[Dict[str, Any]]:
+        """Get placement cues for this item if applicable."""
+        # Check if item has the mixin or method
+        item = self.item
+        if hasattr(item, "get_placement_cues"):
+            return item.get_placement_cues()
+        return []
 
 class BeltLine(ItemStack):
     """A belt line item stack."""
@@ -340,29 +376,48 @@ class BeltLine(ItemStack):
         """Get a ghost entity at the position."""
         return self._factory.get_ghost(self.name, position)
 
-    def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> "GhostEntity":
+    def get_ghost_line_v2(self, position: MapPosition, length: int, direction: Direction) -> "GhostEntity":
         """Get a ghost line of the belt."""
         return self._factory.get_ghost_line(self.name, position, length, direction)
 
 
-def get_item(name: Union[ItemName, PlaceableItemName]) -> Item:
+def get_item(name: str) -> Item:
+    """Factory function to create the appropriate Item subclass based on prototype data."""
+    # Note: We relax the strict input type hint to str to allow dynamic lookup, 
+    # but we should ideally validate against known names if possible.
+    
+    from src.FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes
 
-    if name not in PlaceableItemName:
-        raise ValueError(f"Invalid item name: {name}")
-    if name == "pumpjack":
-        return PumpjackItem(name=name)
-    elif name == "offshore-pump":
+    item_protos = get_item_prototypes()
+    place_result = item_protos.get_place_result(name)
+
+    if not place_result:
+        # Not placeable - return generic Item (or specialized if we had logic for that)
+        return Item(name=name)
+
+    # It is placeable
+    entity_protos = get_entity_prototypes()
+    entity_type = entity_protos.get_entity_type(place_result)
+
+    if entity_type == "mining-drill":
+        if name == "pumpjack":
+            return PumpjackItem(name=name)
+        return MiningDrillItem(name=name)
+    
+    elif entity_type == "offshore-pump":
         return OffshorePumpItem(name=name)
-    elif name == "electric-mining-drill":
-        return MiningDrillItem(name=name)
-    elif name == "burner-mining-drill":
-        return MiningDrillItem(name=name)
-    else:
-        return PlaceableItem(name=name)
+            
+    # Default placeable
+    return PlaceableItem(name=name)
 
 
-def create_item_stack(items: List[Dict[Literal["name", "count"], Any]]) -> List[ItemStack]:
+def create_item_stack(items: List[Dict[str, Any]]) -> List[ItemStack]:
     """Create a list of item stacks from a list of dictionaries."""
+    # subgroup defaults to something if missing
     return [
-        ItemStack(name=get_item(item["name"]), count=item["count"]) for item in items
+        ItemStack(
+            name=item["name"], 
+            count=item["count"], 
+            subgroup=item.get("subgroup", "raw-material")
+        ) for item in items
     ]
