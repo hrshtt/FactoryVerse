@@ -20,7 +20,6 @@ class BaseEntity(pydantic.BaseModel):
 
     name: str
     position: MapPosition
-    bounding_box: BoundingBox
     direction: Optional[Direction] = None
 
     model_config = {"arbitrary_types_allowed": True}
@@ -64,6 +63,10 @@ class Container(BaseEntity):
     def store_items(self, items: List[ItemStack]):
         """Store items in the container."""
         return self._factory.put_inventory_items(self.name, self.position, items)
+
+    def take_items(self, items: List[ItemStack]):
+        """Take items from the container."""
+        return self._factory.take_inventory_items(self.name, self.position, items)
 
 class WoodenChest(Container): ...
 
@@ -141,7 +144,8 @@ class ElectricPole(BaseEntity):
     """An electric pole entity."""
 
     def extend(self, direction: Direction, distance: Optional[float] = None):
-        """Extend the electric pole to the given direction and distance."""
+        """Extend the electric pole to the given direction and distance.
+        No distance = MAX possible for the entity"""
         return self._factory.extend_electric_pole(self.name, self.position, direction, distance)
 
 
@@ -164,11 +168,6 @@ class Inserter(BaseEntity):
         if self.direction is None:
             raise ValueError("Inserter direction must be set to calculate pickup position")
         return self.prototype.pickup_position(self.position, self.direction)
-
-    def extend(self, direction: Direction, distance: Optional[float] = None):
-        """Extend the inserter to the given direction and distance."""
-        
-        return self._factory.extend_inserter(self.name, self.position, direction, distance)
 
 
 
