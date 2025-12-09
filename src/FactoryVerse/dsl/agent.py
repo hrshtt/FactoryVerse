@@ -2,7 +2,7 @@ import json
 import asyncio
 import time
 import logging
-from typing import Any, Dict, Optional, Union, List
+from typing import Any, Dict, Optional, Union, List, Literal, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,9 @@ from contextlib import contextmanager
 from src.FactoryVerse.dsl.types import Direction, MapPosition, BoundingBox
 from src.FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
 from src.FactoryVerse.dsl.ghosts import GhostManager
+
+if TYPE_CHECKING:
+    from src.FactoryVerse.dsl.item.base import Item, PlaceableItem
 
 
 # Game context: agent is "playing" the factory game
@@ -191,73 +194,184 @@ class AgentCommands:
 
 
 class AgentInventory:
-    """Represents the agent's inventory."""
+    """Represents the agent's inventory with helper methods for querying and shaping items.
+    
+    This is not an action class (doesn't mutate state), but provides helper methods
+    to shape inventory items and stacks for downstream actions.
+    """
 
-    inventory: List[ItemStack]
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
 
-    def __init__(self, inventory: List[ItemStack]):
-        self.inventory = inventory
+    @property
+    def item_stacks(self) -> List[ItemStack]:
+        """Get agent inventory as list of ItemStack objects.
+        
+        Equivalent to the old get_inventory_items() top-level function.
+        """
+        result = self._factory.get_inventory_items()
+        inventory_data = json.loads(result)
+        
+        items = []
+        for stack_obj in inventory_data:
+            # Default subgroup - could be enhanced to lookup from prototypes
+            item_name = stack_obj.get("name")
+            count = stack_obj.get("count")
+            subgroup = stack_obj.get("subgroup", "raw-material")
+            items.append(ItemStack(name=item_name, count=count, subgroup=subgroup))
+        
+        return items
 
-    def __getitem__(self, item_name: str) -> int:
-        for item in self.inventory:
-            if item.name == item_name:
-                return item.count
-        return 0
+    def get_total(self, item_name: str) -> int:
+        """Get total count of an item across all stacks.
+        
+        Args:
+            item_name: Name of the item to count
+            
+        Returns:
+            Total count of the item in inventory
+        """
+        return sum(stack.count for stack in self.item_stacks if stack.name == item_name)
 
-    def coal_stacks(self) -> int:
-        return [item for item in self.inventory if item.name == "coal"]
+    def get_item(self, item_name: str) -> Optional[Union["Item", "PlaceableItem"]]:
+        """Get a single Item or PlaceableItem instance for the given item name.
+        
+        Args:
+            item_name: Name of the item
+            
+        Returns:
+            Item or PlaceableItem instance, or None if item is not in inventory
+        """
+        if self.get_total(item_name) == 0:
+            return None
+        
+        from src.FactoryVerse.dsl.item.base import get_item
+        return get_item(item_name)
 
-    def total(self, item_name: str) -> int:
-        return sum(item.count for item in self.inventory if item.name == item_name)
-
-    def get_recipe_stacks(
-        self, recipe_name: BasicRecipeName, stack_count: int = 1, strict: bool = False
+    def get_item_stacks(
+        self,
+        item_name: str,
+        count: Union[int, Literal["half", "full"]],
+        number_of_stacks: Union[int, Literal["max"]] = "max",
+        strict: bool = False
     ) -> List[ItemStack]:
-        recipe = Recipes[recipe_name]
-
-        # Calculate how many stacks can be made for each ingredient
-        max_stacks_per_ingredient = []
-        for ingredient in recipe.ingredients:
-            available_count = self.total(ingredient.name)
-            if ingredient.count == 0:
-                max_stacks_per_ingredient.append(float("inf"))
+        """Get item stacks for a specific item.
+        
+        Args:
+            item_name: Name of the item
+            count: Count per stack (int), "half" for half stack, or "full" for full stack
+            number_of_stacks: Number of stacks to return, or "max" for all possible stacks (default: "max")
+            strict: If True, raises exception when insufficient items. If False, returns all possible.
+            
+        Returns:
+            List of ItemStack instances
+            
+        Raises:
+            ValueError: If strict=True and insufficient items available
+        """
+        total_available = self.get_total(item_name)
+        
+        # Determine count per stack first (needed for validation)
+        if count == "half":
+            # Get stack size from item prototype
+            item = self.get_item(item_name)
+            if item:
+                stack_size = item.stack_size
+                count_per_stack = stack_size // 2
             else:
-                max_stacks = available_count // ingredient.count
-                max_stacks_per_ingredient.append(max_stacks)
-
-        # Find the minimum stack count across all ingredients
-        actual_stack_count = (
-            min(max_stacks_per_ingredient) if max_stacks_per_ingredient else 0
-        )
-
-        if strict:
-            if actual_stack_count < stack_count:
-                # Find which ingredients are insufficient
-                insufficient = []
-                for ingredient, max_stacks in zip(
-                    recipe.ingredients, max_stacks_per_ingredient
-                ):
-                    if max_stacks < stack_count:
-                        required = ingredient.count * stack_count
-                        available = self.total(ingredient.name)
-                        insufficient.append(
-                            f"{ingredient.name}: required {required}, available {available}"
-                        )
+                # Fallback to default
+                count_per_stack = 25
+        elif count == "full":
+            # Get stack size from item prototype
+            item = self.get_item(item_name)
+            if item:
+                count_per_stack = item.stack_size
+            else:
+                # Fallback to default
+                count_per_stack = 50
+        else:
+            count_per_stack = count
+        
+        # Early return if no items available
+        if total_available == 0:
+            if strict and isinstance(number_of_stacks, int) and number_of_stacks > 0:
+                raise ValueError(f"No {item_name} available in inventory")
+            return []
+        
+        # Validate if requested count exceeds available (strict mode)
+        if strict and count_per_stack > total_available:
+            raise ValueError(
+                f"Insufficient {item_name}: requested count {count_per_stack} exceeds available {total_available}"
+            )
+        
+        # Determine number of stacks
+        if number_of_stacks == "max":
+            # Calculate how many stacks we can make
+            max_stacks = total_available // count_per_stack
+            number_of_stacks = max_stacks
+            # If strict and we can't make at least one stack, raise exception
+            if strict and max_stacks == 0:
                 raise ValueError(
-                    f"Insufficient ingredients for {stack_count} stacks. "
-                    f"Maximum possible: {actual_stack_count} stacks. "
-                    f"Insufficient: {', '.join(insufficient)}"
+                    f"Insufficient {item_name}: cannot make even one stack of {count_per_stack}, available {total_available}"
                 )
-            actual_stack_count = stack_count
+        else:
+            # Validate if we have enough
+            required = count_per_stack * number_of_stacks
+            if strict and required > total_available:
+                raise ValueError(
+                    f"Insufficient {item_name}: required {required}, available {total_available}"
+                )
+            # Cap at available (if not strict, give all possible)
+            if not strict:
+                max_possible = total_available // count_per_stack
+                number_of_stacks = min(number_of_stacks, max_possible)
+        
+        # Ensure number_of_stacks is non-negative
+        number_of_stacks = max(0, number_of_stacks)
+        
+        # Create stacks
+        stacks = []
+        remaining = total_available
+        
+        for _ in range(number_of_stacks):
+            if remaining <= 0:
+                break
+            stack_count = min(count_per_stack, remaining)
+            stacks.append(ItemStack(name=item_name, count=stack_count, subgroup="raw-material"))
+            remaining -= stack_count
+        
+        return stacks
 
-        # Use the same stack_count for all ingredients
-        required_inputs = []
+    def check_recipe_count(self, recipe_name: str) -> int:
+        """Check how many times a recipe can be crafted based on available ingredients.
+        
+        Args:
+            recipe_name: Name of the recipe
+            
+        Returns:
+            Maximum number of times the recipe can be crafted
+        """
+        recipe = self._factory.recipes[recipe_name]
+        
+        if not recipe or not recipe.ingredients:
+            return 0
+        
+        # Calculate how many times we can craft for each ingredient
+        max_crafts_per_ingredient = []
         for ingredient in recipe.ingredients:
-            count = ingredient.count * actual_stack_count
-            if count > 0:
-                required_inputs.append(ItemStack(name=ingredient.name, count=count))
-
-        return required_inputs
+            available_count = self.get_total(ingredient.name)
+            if ingredient.count == 0:
+                max_crafts_per_ingredient.append(float("inf"))
+            else:
+                max_crafts = available_count // ingredient.count
+                max_crafts_per_ingredient.append(max_crafts)
+        
+        # Find the minimum (bottleneck ingredient)
+        if not max_crafts_per_ingredient:
+            return 0
+        
+        actual_crafts = min(max_crafts_per_ingredient)
+        return int(actual_crafts) if actual_crafts != float("inf") else 0
 
 
 class WalkingAction:
@@ -392,9 +506,9 @@ class CraftingAction:
         Returns:
             Crafting state dict with active, recipe, action_id
         """
-        result = self._factory.get_activity_state()
+        result = self._factory.inspect(attach_state=True)
         state = json.loads(result)
-        return state.get("crafting", {})
+        return state.get("state", {}).get("crafting", {})
 
 
 class ResearchAction:
@@ -436,7 +550,6 @@ class PlayingFactory:
     _rcon: RconClient
     _agent_id: str
     agent_commands: AgentCommands
-    inventory: List[ItemStack]
     recipes: Recipes
     _async_listener: AsyncActionListener
     _ghost_manager: GhostManager
@@ -455,6 +568,7 @@ class PlayingFactory:
         self._crafting = CraftingAction(self)
         self._mining = MiningAction(self)
         self._research = ResearchAction(self)
+        self._inventory = AgentInventory(self)
     
     async def _ensure_async_listener(self):
         """Ensure async listener is started."""
@@ -521,20 +635,9 @@ class PlayingFactory:
         return self._research
 
     @property
-    def inventory(self) -> List[ItemStack]:
-        """Get agent inventory as list of ItemStack objects."""
-        cmd = self._build_command("inspect", True, False)  # attach_inventory=True, attach_entities=False
-        result = self.execute(cmd)
-        state = json.loads(result)
-        inventory_data = state.get("inventory", {})
-        
-        items = []
-        for item_name, count in inventory_data.items():
-            # Default subgroup - could be enhanced to lookup from prototypes
-            subgroup = "raw-material"
-            items.append(ItemStack(name=item_name, count=count, subgroup=subgroup))
-        
-        return items
+    def inventory(self) -> "AgentInventory":
+        """Agent inventory helper with methods for querying and shaping items."""
+        return self._inventory
     
     def update_recipes(self) -> None:
         cmd = self._build_command("get_recipes")
@@ -903,16 +1006,22 @@ class PlayingFactory:
     # QUERIES
     # ========================================================================
 
-    def inspect(
-        self, attach_inventory: bool = False, attach_entities: bool = False
-    ) -> str:
-        """Get current agent state including position, inventory, and nearby entities.
+    def inspect(self, attach_state: bool = False) -> str:
+        """Get current agent position.
 
         Args:
-            attach_inventory: Include inventory contents
-            attach_entities: Include nearby entities
+            attach_state: Include processed agent activity state (walking, mining, crafting)
         """
-        cmd = self._build_command("inspect", attach_inventory, attach_entities)
+        cmd = self._build_command("inspect", attach_state)
+        return self.execute(cmd)
+
+    def get_inventory_items(self) -> str:
+        """Get agent's main inventory contents.
+
+        Returns:
+            JSON string with inventory contents {item_name: count, ...}
+        """
+        cmd = self._build_command("get_inventory_items")
         return self.execute(cmd)
 
     def get_placement_cues(self, entity_name: str) -> str:
@@ -947,10 +1056,6 @@ class PlayingFactory:
         cmd = self._build_command("get_technologies", only_available)
         return self.execute(cmd)
 
-    def get_activity_state(self) -> str:
-        """Get current state of all async activities (walking, mining, crafting)."""
-        cmd = self._build_command("get_activity_state")
-        return self.execute(cmd)
 
     # ========================================================================
     # RESEARCH
