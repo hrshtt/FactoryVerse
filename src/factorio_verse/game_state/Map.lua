@@ -650,6 +650,64 @@ end
 -- EVENT-DRIVEN RESOURCE SNAPSHOTTING
 -- ============================================================================
 
+--- Snapshot all placed entities in a chunk
+--- Writes individual JSON files for each placed entity (assemblers, inserters, belts, etc.)
+--- @param chunk_x number
+--- @param chunk_y number
+--- @return number Number of entities successfully snapshotted
+local function snapshot_chunk_entities(chunk_x, chunk_y)
+    local surface = game.surfaces[1]
+    if not surface then
+        return 0
+    end
+
+    local chunk_area = {
+        left_top = {
+            x = chunk_x * 32,
+            y = chunk_y * 32
+        },
+        right_bottom = {
+            x = (chunk_x + 1) * 32,
+            y = (chunk_y + 1) * 32
+        }
+    }
+
+    -- Check count first for early exit
+    local entity_count = surface.count_entities_filtered {
+        area = chunk_area,
+        force = "player",
+    }
+    if entity_count == 0 then
+        return 0
+    end
+
+    -- Find all player-placed entities in the chunk
+    local entities = surface.find_entities_filtered {
+        area = chunk_area,
+        force = "player",
+    }
+
+    local snapshotted_count = 0
+    for _, entity in ipairs(entities) do
+        if entity and entity.valid then
+            -- Write entity snapshot (is_update = false since this is initial snapshot)
+            local success = Entities.write_entity_snapshot(entity, false)
+            if success then
+                snapshotted_count = snapshotted_count + 1
+            elseif snapshot.DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to snapshot entity %s at (%f, %f) in chunk (%d, %d)",
+                    entity.name or "unknown", entity.position.x, entity.position.y, chunk_x, chunk_y))
+            end
+        end
+    end
+
+    if snapshot.DEBUG and game and game.print and snapshotted_count > 0 then
+        game.print(string.format("[snapshot] Snapshotted %d placed entities in chunk (%d, %d)", snapshotted_count, chunk_x, chunk_y))
+    end
+
+    return snapshotted_count
+end
+
 --- Snapshot resources for a chunk
 --- Called by on_tick handler to serialize snapshotting (one chunk per tick)
 --- Also updates ChunkTracker with resource/entity/water tracking
@@ -749,6 +807,10 @@ function M.snapshot_chunk_resources(chunk_x, chunk_y)
             end
         end
     end
+
+    -- Snapshot all placed entities in the chunk (assemblers, inserters, belts, etc.)
+    -- This writes individual JSON files for each entity
+    snapshot_chunk_entities(chunk_x, chunk_y)
 
     -- Mark chunk as snapshotted after successfully processing (even if no resources/water/entities found)
     -- This prevents re-processing the same chunk when discovered again by agents or players

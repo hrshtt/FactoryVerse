@@ -55,7 +55,7 @@ async def main():
             res_mining = await dsl.mining.mine("coal", max_count=5)
             print("Mining result:", res_mining)
             
-            inv = dsl.get_inventory_items()
+            inv = factory.inventory.item_stacks
             print("Inventory:", inv)
             
             print("✅ DSL context usage OK")

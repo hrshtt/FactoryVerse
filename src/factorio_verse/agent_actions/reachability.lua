@@ -70,7 +70,6 @@ local function serialize_entity_full(entity)
         type = entity.type,
         position = { x = entity.position.x, y = entity.position.y },
         position_key = position_key(entity.position.x, entity.position.y),
-        unit_number = entity.unit_number,
     }
     
     -- Add status if available
