@@ -152,7 +152,8 @@ function M.init()
     M.disk_write_snapshot = M._build_disk_write_snapshot()
 end
 
---- Write entity to disk snapshot
+--- Append entity upsert operation to the updates log
+--- This is the new approach: append to JSONL log instead of individual files
 --- @param entity LuaEntity
 --- @param is_update boolean|nil True if this is an update to existing entity (default: false)
 --- @return boolean Success status
@@ -173,40 +174,27 @@ function M.write_entity_snapshot(entity, is_update)
         return false
     end
 
-    -- Determine component type
-    local component_type = serialize.get_component_type(entity.type, entity.name)
-
-    -- Generate file path
-    local file_path = snapshot.entity_file_path(
-        chunk_coords.x,
-        chunk_coords.y,
-        component_type,
-        entity.position,
-        entity.name
-    )
-
-    -- Write file
-    local success = snapshot.write_entity_file(file_path, entity_data)
+    -- Create upsert operation and append to log
+    local operation = snapshot.make_upsert_operation(entity_data)
+    local success = snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
     
-    -- Send UDP notification
+    -- Send UDP notification (best-effort, log is the source of truth)
     if success then
-        local event_type = (is_update == true) and "file_updated" or "file_created"
-        snapshot.send_file_event_udp(
-            event_type,
-            "entity",
+        snapshot.send_entity_operation_udp(
+            "upsert",
             chunk_coords.x,
             chunk_coords.y,
-            entity.position,
+            entity_data.key,
             entity.name,
-            component_type,
-            file_path
+            entity.position,
+            entity_data
         )
     end
     
     return success
 end
 
---- Delete entity from disk snapshot
+--- Append entity remove operation to the updates log
 --- @param entity LuaEntity
 --- @return boolean Success status
 function M._delete_entity_snapshot(entity)
@@ -225,35 +213,23 @@ function M._delete_entity_snapshot(entity)
         return false
     end
 
-    -- Determine component type (use entity.type and entity.name if available)
-    local component_type = "entities"
-    if entity.type and entity.name then
-        component_type = serialize.get_component_type(entity.type, entity.name)
-    end
-
-    -- Generate file path
-    local file_path = snapshot.entity_file_path(
-        chunk_coords.x,
-        chunk_coords.y,
-        component_type,
-        position,
-        entity.name or "unknown"
-    )
-
-    -- Delete file
-    local success = snapshot.delete_entity_file(file_path)
+    -- Build entity key
+    local ent_key = entity_key(entity.name or "unknown", position.x, position.y)
     
-    -- Send UDP notification
+    -- Create remove operation and append to log
+    local operation = snapshot.make_remove_operation(ent_key, position, entity.name or "unknown")
+    local success = snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+    
+    -- Send UDP notification (best-effort, log is the source of truth)
     if success then
-        snapshot.send_file_event_udp(
-            "file_deleted",
-            "entity",
+        snapshot.send_entity_operation_udp(
+            "remove",
             chunk_coords.x,
             chunk_coords.y,
-            position,
+            ent_key,
             entity.name or "unknown",
-            component_type,
-            file_path
+            position,
+            nil
         )
     end
     

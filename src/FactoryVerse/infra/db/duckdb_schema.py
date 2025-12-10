@@ -111,6 +111,35 @@ DDL_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS idx_entity_force
         ON entity_layer(force_name);
     """,
+    # --- Ghost layer -----------------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS ghost_layer (
+        ghost_key         VARCHAR PRIMARY KEY,
+        ghost_name        VARCHAR NOT NULL,
+        force_name        VARCHAR,
+        map_position      GEOMETRY NOT NULL,
+        direction         SMALLINT,
+        direction_name    VARCHAR,
+        chunk_x           INTEGER,
+        chunk_y           INTEGER
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ghost_position
+        ON ghost_layer USING RTREE (map_position);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ghost_name
+        ON ghost_layer(ghost_name);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ghost_force
+        ON ghost_layer(force_name);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ghost_chunk
+        ON ghost_layer(chunk_x, chunk_y);
+    """,
     # Transport belts (component mixin)
     """
     CREATE TABLE IF NOT EXISTS component_transport_belt (

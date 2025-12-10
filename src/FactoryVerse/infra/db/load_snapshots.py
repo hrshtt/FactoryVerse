@@ -1,21 +1,43 @@
 """
 Helpers to load Factorio snapshot files into the DuckDB map/analytics schema.
 
-This mirrors the logic prototyped in `duckdb-trials.ipynb`, but writes into the
-normalized spatial tables defined in `duckdb_schema.py`.
+File Structure (JSONL-based):
+  chunks/{x}/{y}/
+  ├── resources_init.jsonl      # Ore tiles (written once per chunk)
+  ├── water_init.jsonl          # Water tiles (written once per chunk)
+  ├── trees_rocks_init.jsonl    # Trees and rocks (written once per chunk)
+  ├── entities_init.jsonl       # ALL player-placed entities (snapshot)
+  └── entities_updates.jsonl    # Append-only operations log
+  
+  Top-level:
+  ├── ghosts-init.jsonl         # ALL ghosts (top-level, not chunk-wise)
+  └── ghosts-updates.jsonl     # Append-only operations log
+
+Operations Log Format (entities_updates.jsonl):
+  {"op": "upsert", "tick": 12345, "entity": {...full entity data...}}
+  {"op": "remove", "tick": 12346, "key": "inserter@5,10", "position": {...}, "name": "inserter"}
+
+Operations Log Format (ghosts-updates.jsonl):
+  {"op": "upsert", "tick": 12345, "ghost": {...full ghost data...}}
+  {"op": "remove", "tick": 12346, "key": "inserter@5,10", "position": {...}, "ghost_name": "inserter"}
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 import duckdb
 
 
+# ---------------------------------------------------------------------------
+# File I/O Helpers
+# ---------------------------------------------------------------------------
+
+
 def _load_jsonl_file(file_path: Path) -> List[Dict[str, Any]]:
+    """Load a JSONL file, returning list of parsed JSON objects."""
     if not file_path.exists():
         return []
     out: List[Dict[str, Any]] = []
@@ -32,24 +54,31 @@ def _load_jsonl_file(file_path: Path) -> List[Dict[str, Any]]:
     return out
 
 
-def _load_json_file(file_path: Path) -> Optional[Dict[str, Any]]:
-    if not file_path.exists():
-        return None
-    with file_path.open("r") as f:
-        return json.load(f)
-
-
-def _iter_chunk_files(base: Path, pattern: str) -> Iterable[Tuple[int, int, Path]]:
+def _iter_chunk_dirs(snapshots_root: Path) -> Iterable[Tuple[int, int, Path]]:
     """
-    Yield (chunk_x, chunk_y, path) for files under
-    factoryverse/snapshots/{chunk_x}/{chunk_y}/... matching pattern.
+    Yield (chunk_x, chunk_y, chunk_dir) for all chunk directories.
+    Directory structure: snapshots_root/{chunk_x}/{chunk_y}/
     """
-    for path in base.rglob(pattern):
-        m = re.search(r"/([+-]?\d+)/([+-]?\d+)/", str(path))
-        if not m:
+    if not snapshots_root.exists():
+        return
+
+    for chunk_x_dir in snapshots_root.iterdir():
+        if not chunk_x_dir.is_dir():
             continue
-        chunk_x, chunk_y = int(m.group(1)), int(m.group(2))
-        yield chunk_x, chunk_y, path
+        try:
+            chunk_x = int(chunk_x_dir.name)
+        except ValueError:
+            continue
+
+        for chunk_y_dir in chunk_x_dir.iterdir():
+            if not chunk_y_dir.is_dir():
+                continue
+            try:
+                chunk_y = int(chunk_y_dir.name)
+            except ValueError:
+                continue
+
+            yield chunk_x, chunk_y, chunk_y_dir
 
 
 # ---------------------------------------------------------------------------
@@ -57,50 +86,58 @@ def _iter_chunk_files(base: Path, pattern: str) -> Iterable[Tuple[int, int, Path
 # ---------------------------------------------------------------------------
 
 
-def load_resource_and_water_layers(con: duckdb.DuckDBPyConnection, script_output_dir: Path) -> None:
+def load_resource_and_water_layers(
+    con: duckdb.DuckDBPyConnection, script_output_dir: Path
+) -> None:
     """
     Load all resource tiles and water tiles into `resource_layer` and `water_layer`.
 
-    Args:
-        con: DuckDB connection with schema initialized.
-        script_output_dir: Factorio `script-output` directory containing
-            `factoryverse/snapshots`.
+    Files:
+      - resources_init.jsonl: Ore tiles
+      - water_init.jsonl: Water tiles
     """
     snapshots_root = script_output_dir / "factoryverse" / "snapshots"
 
-    # Clear existing data for full reload semantics
     con.execute("DELETE FROM resource_layer;")
     con.execute("DELETE FROM water_layer;")
 
-    # --- Resource tiles (ores/stone/coal/crude-oil) -------------------------
-    tiles_files = list(_iter_chunk_files(snapshots_root, "tiles.jsonl"))
-    # Deduplicate by resource_key to handle tiles that appear in multiple chunks.
     resource_rows_by_key: Dict[str, Tuple[str, str, str, float, float, int]] = {}
+    water_rows_by_key: Dict[str, Tuple[str, str, float, float]] = {}
 
-    for chunk_x, chunk_y, file_path in tiles_files:
-        entries = _load_jsonl_file(file_path)
-        for entry in entries:
-            kind = entry.get("kind")
-            if not kind:
-                continue
-            x = float(entry.get("x", 0))
-            y = float(entry.get("y", 0))
-            amount = int(entry.get("amount", 0))
+    for chunk_x, chunk_y, chunk_dir in _iter_chunk_dirs(snapshots_root):
+        # Resources (ores)
+        resources_file = chunk_dir / "resources_init.jsonl"
+        if resources_file.exists():
+            for entry in _load_jsonl_file(resources_file):
+                kind = entry.get("kind")
+                if not kind:
+                    continue
+                x = float(entry.get("x", 0))
+                y = float(entry.get("y", 0))
+                amount = int(entry.get("amount", 0))
+                cx = x + 0.5
+                cy = y + 0.5
+                resource_key = f"{kind}:{int(x)}:{int(y)}"
+                resource_rows_by_key[resource_key] = (
+                    resource_key,
+                    kind,
+                    kind,
+                    cx,
+                    cy,
+                    amount,
+                )
 
-            # Tile centers are at (i + 0.5, j + 0.5)
-            cx = x + 0.5
-            cy = y + 0.5
-            resource_key = f"{kind}:{int(x)}:{int(y)}"
-
-            # For now, treat resource_type == resource_name; can be grouped later.
-            resource_rows_by_key[resource_key] = (
-                resource_key,
-                kind,
-                kind,
-                cx,
-                cy,
-                amount,
-            )
+        # Water tiles
+        water_file = chunk_dir / "water_init.jsonl"
+        if water_file.exists():
+            for entry in _load_jsonl_file(water_file):
+                kind = entry.get("kind") or "water"
+                x = float(entry.get("x", 0))
+                y = float(entry.get("y", 0))
+                cx = x + 0.5
+                cy = y + 0.5
+                water_key = f"{kind}:{int(x)}:{int(y)}"
+                water_rows_by_key[water_key] = (water_key, kind, cx, cy)
 
     if resource_rows_by_key:
         con.executemany(
@@ -111,21 +148,6 @@ def load_resource_and_water_layers(con: duckdb.DuckDBPyConnection, script_output
             """,
             list(resource_rows_by_key.values()),
         )
-
-    # --- Water tiles --------------------------------------------------------
-    water_files = list(_iter_chunk_files(snapshots_root, "water-tiles.jsonl"))
-    water_rows_by_key: Dict[str, Tuple[str, str, float, float]] = {}
-
-    for chunk_x, chunk_y, file_path in water_files:
-        entries = _load_jsonl_file(file_path)
-        for entry in entries:
-            kind = entry.get("kind") or "water"
-            x = float(entry.get("x", 0))
-            y = float(entry.get("y", 0))
-            cx = x + 0.5
-            cy = y + 0.5
-            water_key = f"{kind}:{int(x)}:{int(y)}"
-            water_rows_by_key[water_key] = (water_key, kind, cx, cy)
 
     if water_rows_by_key:
         con.executemany(
@@ -142,28 +164,28 @@ def load_resource_and_water_layers(con: duckdb.DuckDBPyConnection, script_output
 # ---------------------------------------------------------------------------
 
 
-def load_resource_entities(con: duckdb.DuckDBPyConnection, script_output_dir: Path) -> None:
+def load_resource_entities(
+    con: duckdb.DuckDBPyConnection, script_output_dir: Path
+) -> None:
     """
-    Load trees and rocks into `resource_entities` from entities.jsonl.
+    Load trees and rocks into `resource_entities`.
 
-    Args:
-        con: DuckDB connection.
-        script_output_dir: Factorio `script-output` directory.
+    File: trees_rocks_init.jsonl
     """
     snapshots_root = script_output_dir / "factoryverse" / "snapshots"
 
     con.execute("DELETE FROM resource_entities;")
 
-    entity_files = list(_iter_chunk_files(snapshots_root, "entities.jsonl"))
-    # Deduplicate by entity_key, because rocks/trees that span chunk boundaries
-    # can appear in multiple chunk files.
     rows_by_key: Dict[
         str, Tuple[str, str, str, float, float, float, float, float, float]
     ] = {}
 
-    for chunk_x, chunk_y, file_path in entity_files:
-        entries = _load_jsonl_file(file_path)
-        for entry in entries:
+    for chunk_x, chunk_y, chunk_dir in _iter_chunk_dirs(snapshots_root):
+        trees_rocks_file = chunk_dir / "trees_rocks_init.jsonl"
+        if not trees_rocks_file.exists():
+            continue
+
+        for entry in _load_jsonl_file(trees_rocks_file):
             name = entry.get("name")
             etype = entry.get("type")
             pos = entry.get("position") or {}
@@ -214,31 +236,118 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, script_output_dir: Pa
 # ---------------------------------------------------------------------------
 
 
-def _iter_entity_snapshot_files(snapshots_root: Path) -> Iterable[Tuple[int, int, str, Path]]:
+def _process_entity_data(
+    data: Dict[str, Any],
+    entities_by_key: Dict[str, Tuple],
+    belts_by_key: Dict[str, Tuple],
+    inserters_by_key: Dict[str, Tuple],
+) -> None:
     """
-    Yield (chunk_x, chunk_y, component_type, path) for entity snapshot files:
-    .../{chunk_x}/{chunk_y}/{component_type}/{pos_x}_{pos_y}_{entity_name}.json
+    Process a single entity data dict and add to the appropriate dictionaries.
     """
-    for path in snapshots_root.rglob("*.json"):
-        # Skip resource files
-        if "/resources/" in str(path):
-            continue
-        m = re.search(
-            r"/([+-]?\d+)/([+-]?\d+)/(entities|belts|pipes|poles)/([+-]?\d+)_([+-]?\d+)_",
-            str(path),
+    name = data.get("name") or "unknown"
+    etype = data.get("type") or "unknown"
+    pos = data.get("position") or {}
+    px = float(pos.get("x", 0.0))
+    py = float(pos.get("y", 0.0))
+
+    bbox = data.get("bounding_box")
+    if bbox:
+        min_x = float(bbox.get("min_x", px))
+        min_y = float(bbox.get("min_y", py))
+        max_x = float(bbox.get("max_x", px))
+        max_y = float(bbox.get("max_y", py))
+    else:
+        # Fallback 1x1 box centered on tile
+        min_x = px - 0.5
+        min_y = py - 0.5
+        max_x = px + 0.5
+        max_y = py + 0.5
+
+    entity_key = data.get("key") or f"{name}:{px}:{py}"
+
+    entities_by_key[entity_key] = (
+        entity_key,
+        name,
+        etype,
+        data.get("force"),
+        px,
+        py,
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        data.get("direction"),
+        data.get("direction_name"),
+        data.get("orientation"),
+        data.get("electric_network_id"),
+        data.get("recipe"),
+    )
+
+    # Belts
+    if "belt_data" in data:
+        belts_by_key[entity_key] = (
+            entity_key,
+            name,
+            json.dumps(data.get("belt_data") or {}),
         )
-        if not m:
-            continue
-        chunk_x, chunk_y = int(m.group(1)), int(m.group(2))
-        component_type = m.group(3)
-        yield chunk_x, chunk_y, component_type, path
+
+    # Inserters
+    if "inserter" in data:
+        inserters_by_key[entity_key] = (
+            entity_key,
+            name,
+            data.get("electric_network_id"),
+            json.dumps(data.get("inserter") or {}),
+        )
 
 
-def load_entity_snapshots(con: duckdb.DuckDBPyConnection, script_output_dir: Path) -> None:
+def _replay_operations_log(
+    updates_file: Path,
+    entities_by_key: Dict[str, Tuple],
+    belts_by_key: Dict[str, Tuple],
+    inserters_by_key: Dict[str, Tuple],
+) -> None:
     """
-    Load all entity snapshot JSON files into `entity_layer` and component tables.
+    Replay the operations log (entities_updates.jsonl) to compute current state.
 
-    This is a full reload: it truncates the tables before inserting.
+    Operations format:
+      {"op": "upsert", "tick": 12345, "entity": {...}}
+      {"op": "remove", "tick": 12346, "key": "inserter@5,10", ...}
+    """
+    if not updates_file.exists():
+        return
+
+    for op in _load_jsonl_file(updates_file):
+        op_type = op.get("op")
+
+        if op_type == "upsert":
+            entity_data = op.get("entity")
+            if entity_data:
+                _process_entity_data(
+                    entity_data, entities_by_key, belts_by_key, inserters_by_key
+                )
+
+        elif op_type == "remove":
+            entity_key = op.get("key")
+            if entity_key:
+                entities_by_key.pop(entity_key, None)
+                belts_by_key.pop(entity_key, None)
+                inserters_by_key.pop(entity_key, None)
+
+
+def load_entity_snapshots(
+    con: duckdb.DuckDBPyConnection, script_output_dir: Path
+) -> None:
+    """
+    Load all entity snapshots into `entity_layer` and component tables.
+
+    Files per chunk:
+      - entities_init.jsonl: Initial snapshot of all entities
+      - entities_updates.jsonl: Append-only operations log (upsert/remove)
+
+    The init file is loaded first, then the updates log is replayed to compute
+    the current state.
     """
     snapshots_root = script_output_dir / "factoryverse" / "snapshots"
 
@@ -251,78 +360,28 @@ def load_entity_snapshots(con: duckdb.DuckDBPyConnection, script_output_dir: Pat
     con.execute("DELETE FROM component_mining_drill;")
     con.execute("DELETE FROM entity_layer;")
 
-    entity_rows = []
-    belt_rows = []
-    inserter_rows = []
+    entities_by_key: Dict[str, Tuple] = {}
+    belts_by_key: Dict[str, Tuple] = {}
+    inserters_by_key: Dict[str, Tuple] = {}
 
-    for chunk_x, chunk_y, component_type, path in _iter_entity_snapshot_files(snapshots_root):
-        data = _load_json_file(path)
-        if not data:
-            continue
+    for chunk_x, chunk_y, chunk_dir in _iter_chunk_dirs(snapshots_root):
+        init_file = chunk_dir / "entities_init.jsonl"
+        updates_file = chunk_dir / "entities_updates.jsonl"
 
-        name = data.get("name") or "unknown"
-        etype = data.get("type") or "unknown"
-        pos = data.get("position") or {}
-        px = float(pos.get("x", 0.0))
-        py = float(pos.get("y", 0.0))
+        # Load initial state
+        if init_file.exists():
+            for entry in _load_jsonl_file(init_file):
+                _process_entity_data(
+                    entry, entities_by_key, belts_by_key, inserters_by_key
+                )
 
-        bbox = data.get("bounding_box")
-        if bbox:
-            min_x = float(bbox.get("min_x", px))
-            min_y = float(bbox.get("min_y", py))
-            max_x = float(bbox.get("max_x", px))
-            max_y = float(bbox.get("max_y", py))
-        else:
-            # Fallback 1x1 box centered on tile
-            min_x = px - 0.5
-            min_y = py - 0.5
-            max_x = px + 0.5
-            max_y = py + 0.5
-
-        entity_key = data.get("key") or f"{name}:{px}:{py}"
-
-        entity_rows.append(
-            (
-                entity_key,
-                name,
-                etype,
-                data.get("force"),
-                px,
-                py,
-                min_x,
-                min_y,
-                max_x,
-                max_y,
-                data.get("direction"),
-                data.get("direction_name"),
-                data.get("orientation"),
-                data.get("electric_network_id"),
-                data.get("recipe"),
-            )
+        # Replay operations log
+        _replay_operations_log(
+            updates_file, entities_by_key, belts_by_key, inserters_by_key
         )
 
-        # Belts: store Lua belt_data dict as JSON
-        if "belt_data" in data:
-            belt_rows.append(
-                (
-                    entity_key,
-                    name,
-                    json.dumps(data.get("belt_data") or {}),
-                )
-            )
-
-        # Inserters: store Lua inserter dict as JSON
-        if "inserter" in data:
-            inserter_rows.append(
-                (
-                    entity_key,
-                    name,
-                    data.get("electric_network_id"),
-                    json.dumps(data.get("inserter") or {}),
-                )
-            )
-
-    if entity_rows:
+    # Insert into database
+    if entities_by_key:
         con.executemany(
             """
             INSERT INTO entity_layer (
@@ -339,19 +398,19 @@ def load_entity_snapshots(con: duckdb.DuckDBPyConnection, script_output_dir: Pat
                 ?, ?
             )
             """,
-            entity_rows,
+            list(entities_by_key.values()),
         )
 
-    if belt_rows:
+    if belts_by_key:
         con.executemany(
             """
             INSERT INTO component_transport_belt (entity_key, entity_name, belt_data)
             VALUES (?, ?, ?)
             """,
-            belt_rows,
+            list(belts_by_key.values()),
         )
 
-    if inserter_rows:
+    if inserters_by_key:
         con.executemany(
             """
             INSERT INTO component_inserter (
@@ -359,7 +418,121 @@ def load_entity_snapshots(con: duckdb.DuckDBPyConnection, script_output_dir: Pat
             )
             VALUES (?, ?, ?, ?)
             """,
-            inserter_rows,
+            list(inserters_by_key.values()),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Ghosts
+# ---------------------------------------------------------------------------
+
+
+def _process_ghost_data(
+    data: Dict[str, Any],
+    ghosts_by_key: Dict[str, Tuple],
+) -> None:
+    """
+    Process a single ghost data dict and add to the ghosts dictionary.
+    """
+    ghost_name = data.get("ghost_name") or "unknown"
+    pos = data.get("position") or {}
+    px = float(pos.get("x", 0.0))
+    py = float(pos.get("y", 0.0))
+
+    ghost_key = data.get("key") or f"{ghost_name}:{px}:{py}"
+
+    chunk = data.get("chunk") or {}
+    chunk_x = chunk.get("x") if chunk else None
+    chunk_y = chunk.get("y") if chunk else None
+
+    ghosts_by_key[ghost_key] = (
+        ghost_key,
+        ghost_name,
+        data.get("force"),
+        px,
+        py,
+        data.get("direction"),
+        data.get("direction_name"),
+        chunk_x,
+        chunk_y,
+    )
+
+
+def _replay_ghost_operations_log(
+    updates_file: Path,
+    ghosts_by_key: Dict[str, Tuple],
+) -> None:
+    """
+    Replay the ghost operations log (ghosts-updates.jsonl) to compute current state.
+
+    Operations format:
+      {"op": "upsert", "tick": 12345, "ghost": {...}}
+      {"op": "remove", "tick": 12346, "key": "inserter@5,10", ...}
+    """
+    if not updates_file.exists():
+        return
+
+    for op in _load_jsonl_file(updates_file):
+        op_type = op.get("op")
+
+        if op_type == "upsert":
+            ghost_data = op.get("ghost")
+            if ghost_data:
+                _process_ghost_data(ghost_data, ghosts_by_key)
+
+        elif op_type == "remove":
+            ghost_key = op.get("key")
+            if ghost_key:
+                ghosts_by_key.pop(ghost_key, None)
+
+
+def load_ghost_snapshots(
+    con: duckdb.DuckDBPyConnection, script_output_dir: Path
+) -> None:
+    """
+    Load all ghost snapshots into `ghost_layer`.
+
+    Files (top-level, not chunk-wise):
+      - ghosts-init.jsonl: Initial snapshot of all ghosts
+      - ghosts-updates.jsonl: Append-only operations log (upsert/remove)
+
+    The init file is loaded first, then the updates log is replayed to compute
+    the current state.
+    """
+    snapshots_root = script_output_dir / "factoryverse" / "snapshots"
+
+    con.execute("DELETE FROM ghost_layer;")
+
+    ghosts_by_key: Dict[str, Tuple] = {}
+
+    # Load initial state from top-level ghosts-init.jsonl
+    init_file = snapshots_root / "ghosts-init.jsonl"
+    if init_file.exists():
+        for entry in _load_jsonl_file(init_file):
+            _process_ghost_data(entry, ghosts_by_key)
+
+    # Replay operations log from top-level ghosts-updates.jsonl
+    updates_file = snapshots_root / "ghosts-updates.jsonl"
+    _replay_ghost_operations_log(updates_file, ghosts_by_key)
+
+    # Insert into database
+    if ghosts_by_key:
+        con.executemany(
+            """
+            INSERT INTO ghost_layer (
+                ghost_key, ghost_name, force_name,
+                map_position,
+                direction, direction_name,
+                chunk_x, chunk_y
+            )
+            VALUES (
+                ?, ?, ?,
+                ST_Point(?, ?),
+                ?, ?,
+                ?, ?
+            )
+            """,
+            list(ghosts_by_key.values()),
         )
 
 
@@ -368,7 +541,10 @@ def load_entity_snapshots(con: duckdb.DuckDBPyConnection, script_output_dir: Pat
 # ---------------------------------------------------------------------------
 
 
-def load_power_statistics(con: duckdb.DuckDBPyConnection, script_output_dir: Path) -> None:
+def load_power_statistics(
+    con: duckdb.DuckDBPyConnection, script_output_dir: Path
+) -> None:
+    """Load global power statistics."""
     power_file = (
         script_output_dir / "factoryverse" / "snapshots" / "global_power_statistics.jsonl"
     )
@@ -401,6 +577,7 @@ def load_power_statistics(con: duckdb.DuckDBPyConnection, script_output_dir: Pat
 def load_agent_production_statistics(
     con: duckdb.DuckDBPyConnection, script_output_dir: Path
 ) -> None:
+    """Load per-agent production statistics."""
     base = script_output_dir / "factoryverse" / "snapshots"
     con.execute("DELETE FROM agent_production_statistics;")
 
@@ -426,16 +603,20 @@ def load_agent_production_statistics(
         )
 
 
+# ---------------------------------------------------------------------------
+# Convenience
+# ---------------------------------------------------------------------------
+
+
 def load_all(
     con: duckdb.DuckDBPyConnection,
     script_output_dir: Path,
 ) -> None:
-    """
-    Convenience helper to load everything into the schema in one shot.
-    """
+    """Load everything into the schema in one shot."""
     load_resource_and_water_layers(con, script_output_dir)
     load_resource_entities(con, script_output_dir)
     load_entity_snapshots(con, script_output_dir)
+    load_ghost_snapshots(con, script_output_dir)
     load_power_statistics(con, script_output_dir)
     load_agent_production_statistics(con, script_output_dir)
 
@@ -444,9 +625,8 @@ __all__ = [
     "load_resource_and_water_layers",
     "load_resource_entities",
     "load_entity_snapshots",
+    "load_ghost_snapshots",
     "load_power_statistics",
     "load_agent_production_statistics",
     "load_all",
 ]
-
-
