@@ -250,7 +250,7 @@ end
 
 --- Send status snapshot UDP notification
 --- Standardized format for entity status snapshots
---- @param status_records table - Map of unit_number -> status record
+--- @param status_records table - Map of entity_key -> status record
 --- @return boolean - Success status
 function M.send_status_snapshot_udp(status_records)
     if not status_records or next(status_records) == nil then

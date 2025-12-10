@@ -14,6 +14,7 @@ local Resource = require("game_state.Resource")
 local Map = require("game_state.Map")
 local Power = require("game_state.Power")
 local Research = require("game_state.Research")
+local Agent = require("Agent")
 
 -- ============================================================================
 -- EVENT DISPATCHER PATTERN
@@ -179,7 +180,6 @@ local function register_all_remote_interfaces()
 
     -- Register global documentation API
     -- Returns paramspec for each method (the only runtime-relevant metadata)
-    local Agent = require("Agent")
     local docs_interface = {
         get_all_methods = function()
             local interface_methods = Agent.get_interface_methods()
@@ -277,6 +277,9 @@ script.on_init(function()
 
     log("Initialized game state modules and custom events")
 
+    -- Register remote interfaces (required for mods, also works for scenarios)
+    register_all_remote_interfaces()
+
     -- Register events (game is available during on_init)
     register_all_events()
 
@@ -294,6 +297,10 @@ script.on_load(function()
     Map.init() -- Will check and queue chunks if needed
 
     log("Re-initialized game state modules after mod reload")
+
+    -- Re-register remote interfaces (required for mods, also works for scenarios)
+    -- Remote interfaces are cleared on reload, so we must re-register them
+    register_all_remote_interfaces()
 
     -- Re-register events (game is available during on_load)
     -- This is needed because event handlers may be lost after mod reload

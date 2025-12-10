@@ -16,6 +16,9 @@ local serialize = require("utils.serialize")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
 
+-- Local reference to utility function for performance
+local entity_key = utils.entity_key
+
 local M = {}
 
 -- ============================================================================
@@ -24,10 +27,11 @@ local M = {}
 
 --- Track entity status change
 --- @param entity LuaEntity
---- @return table {is_new_record: boolean, status: string}
+--- @return table {is_new_record: boolean, status: string, key: string}
 function M.track_entity_status(entity)
     storage.entity_status = storage.entity_status or {}
-    local last_record = storage.entity_status[entity.unit_number] or nil
+    local key = entity_key(entity.name, entity.position.x, entity.position.y)
+    local last_record = storage.entity_status[key] or nil
     local is_new_record = false
     if last_record and (last_record.status == entity.status) then
         last_record.tick = game.tick
@@ -38,49 +42,44 @@ function M.track_entity_status(entity)
         }
         is_new_record = true
     end
-    storage.entity_status[entity.unit_number] = last_record
-    return { is_new_record = is_new_record, status = last_record.status }
+    storage.entity_status[key] = last_record
+    return { is_new_record = is_new_record, status = last_record.status, key = key }
 end
 
 --- Track entity status for all entities in a chunk
 --- @param chunk_position table {x: number, y: number} Chunk coordinates
---- @return table Status records keyed by unit_number
+--- @return table Status records keyed by entity.name .. position.x .. position.y
 function M.track_chunk_entity_status(chunk_position)
     local surface = game.surfaces[1]
-    if not surface then
-        return {}
-    end
     
     local chunk_area = {
-            left_top = {
-                x = chunk_position.x * 32,
-                y = chunk_position.y * 32
-            },
-            right_bottom = {
-                x = (chunk_position.x + 1) * 32,
-                y = (chunk_position.y + 1) * 32
-            }
+        left_top = {
+            x = chunk_position.x * 32,
+            y = chunk_position.y * 32
+        },
+        right_bottom = {
+            x = (chunk_position.x + 1) * 32,
+            y = (chunk_position.y + 1) * 32
         }
+    }
     
     -- Check count first for early exit
     local entity_count = surface.count_entities_filtered {
-        type = "entity",
-        area = chunk_area
+        area = chunk_area,
+        force = "player",
     }
-    if entity_count == 0 then
-        return {}
-    end
+    if entity_count == 0 then return {} end
     
     local entities = surface.find_entities_filtered {
-        type = "entity",
-        area = chunk_area
+        area = chunk_area,
+        force = "player",
     }
     local status_records = {}
     for _, entity in ipairs(entities) do
         if entity and entity.valid then
             local result = M.track_entity_status(entity)
             if result.is_new_record then
-                status_records[entity.unit_number] = {
+                status_records[result.key] = {
                     position = { entity.position.x, entity.position.y },
                     status = result.status,
                     tick = game.tick
@@ -94,17 +93,15 @@ end
 --- Track entity status for all charted chunks
 --- @param charted_chunks table List of chunks to process
 function M.track_all_charted_chunk_entity_status(charted_chunks)
-    if not charted_chunks then
-        return
-    end
+    if not charted_chunks then return end
     
     local all_status_records = {}
 
     for _, chunk in ipairs(charted_chunks) do
         local chunk_pos = { x = chunk.x, y = chunk.y }
         local records = M.track_chunk_entity_status(chunk_pos)
-        for unit_number, status in pairs(records) do
-            all_status_records[unit_number] = status
+        for key, status in pairs(records) do
+            all_status_records[key] = status
         end
     end
 
@@ -115,9 +112,7 @@ end
 
 --- Get on_tick handlers
 --- @return table Array of handler functions
-function M.get_on_tick_handlers()
-    return {}
-end
+function M.get_on_tick_handlers() return {} end
 
 --- Get events (defined events and nth_tick)
 --- @return table {defined_events = {event_id -> handler, ...}, nth_tick = {tick_interval -> handler, ...}}

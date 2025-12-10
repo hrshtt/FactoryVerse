@@ -161,25 +161,43 @@ def _save_mod_list(mod_path: Path, mod_list: dict) -> None:
 
 
 def _update_mod_list(mod_path: Path, mod_name: str, enabled: bool) -> None:
-    """Add or update a mod in mod-list.json."""
+    """Add or update a mod in mod-list.json.
+    
+    This function preserves all existing mod entries and only modifies the specified mod's
+    enabled status. The mod-list.json structure is:
+    {
+      "mods": [
+        {"name": "base", "enabled": true},
+        {"name": "some-mod", "enabled": false},
+        ...
+      ]
+    }
+    """
     mod_list = _load_mod_list(mod_path)
     
-    # Find or create mod entry
+    # Ensure "mods" array exists
+    if "mods" not in mod_list:
+        mod_list["mods"] = []
+    
+    # Find existing mod entry
     mod_entry = None
-    for mod in mod_list.get("mods", []):
+    for mod in mod_list["mods"]:
         if mod.get("name") == mod_name:
             mod_entry = mod
             break
     
     if mod_entry:
+        # Update existing entry - only change the "enabled" field
         mod_entry["enabled"] = enabled
     else:
-        mod_list.setdefault("mods", []).append({"name": mod_name, "enabled": enabled})
+        # Add new entry if mod doesn't exist in the list
+        mod_list["mods"].append({"name": mod_name, "enabled": enabled})
     
+    # Save the entire mod list (preserving all other mods)
     _save_mod_list(mod_path, mod_list)
 
 
-def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bool = False, project_scenarios_dir: Optional[Path] = None) -> None:
+def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bool = False, project_scenarios_dir: Optional[Path] = None, as_mod: bool = False) -> None:
     """
     Setup client with factorio_verse mod and scenarios.
     
@@ -191,6 +209,7 @@ def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bo
         scenario: Scenario name to setup
         force: Force copy scenario even if it exists
         project_scenarios_dir: Path to project scenarios directory (for copying non-factorio_verse scenarios)
+        as_mod: If True, force loading factorio_verse as a mod (removes existing copies and copies fresh files)
     """
     mod_path = _get_mod_path()
     scenario_path = _get_scenario_path()
@@ -204,7 +223,56 @@ def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bo
     
     print(f"📱 Setting up Factorio client (scenario: {scenario})")
     
-    if scenario == "factorio_verse":
+    if as_mod:
+        # Force loading as mod: remove all existing factorio_verse mod copies and copy fresh files
+        print("📦 Removing existing factorio_verse mod copies...")
+        for old_mod in mod_path.glob("factorio_verse*"):
+            if old_mod.is_dir():
+                print(f"   Removing {old_mod.name}...")
+                shutil.rmtree(old_mod)
+        
+        # Also remove any scenario copy if it exists
+        client_scenario_dir = scenario_path / "factorio_verse"
+        if client_scenario_dir.exists():
+            print(f"   Removing scenario copy at {client_scenario_dir}...")
+            shutil.rmtree(client_scenario_dir)
+        
+        # Read version from info.json
+        info_json_path = verse_mod_dir / "info.json"
+        if info_json_path.exists():
+            info = json.loads(info_json_path.read_text())
+            mod_version = info.get("version", "1.0.0")
+        else:
+            mod_version = "1.0.0"
+        
+        # Copy fresh mod files with versioned name
+        client_mod_dir = mod_path / f"factorio_verse_{mod_version}"
+        print(f"📦 Copying fresh factorio_verse mod as {client_mod_dir.name}...")
+        shutil.copytree(verse_mod_dir, client_mod_dir)
+        
+        # Enable factorio_verse in mod-list
+        _update_mod_list(mod_path, "factorio_verse", True)
+        print(f"✓ factorio_verse mod copied as {client_mod_dir.name}")
+        print("✓ factorio_verse: enabled in mod-list")
+        
+        # Handle scenario if project_scenarios_dir is provided
+        if project_scenarios_dir and scenario != "factorio_verse":
+            client_scenario_dir = scenario_path / scenario
+            project_scenario_dir = project_scenarios_dir / scenario
+            
+            should_copy = force or not client_scenario_dir.exists()
+            if should_copy:
+                if project_scenario_dir.exists():
+                    if client_scenario_dir.exists():
+                        shutil.rmtree(client_scenario_dir)
+                    print(f"📋 Copying scenario '{scenario}'...")
+                    shutil.copytree(project_scenario_dir, client_scenario_dir)
+                    print(f"✓ Scenario '{scenario}' copied")
+                else:
+                    print(f"⚠️  Scenario '{scenario}' not found in project")
+            else:
+                print(f"ℹ️  Scenario '{scenario}' already exists (use --force to overwrite)")
+    elif scenario == "factorio_verse":
         # Always copy factorio_verse as a scenario
         print("📋 Copying factorio_verse as scenario...")
         client_scenario_dir = scenario_path / "factorio_verse"
@@ -322,9 +390,9 @@ def launch_factorio_client() -> None:
         sys.exit(1)
 
 
-def dump_data_raw(verse_mod_dir: Path, scenario: str = "factorio_verse", force: bool = False, project_scenarios_dir: Optional[Path] = None) -> Path:
+def dump_data_raw(verse_mod_dir: Path, scenario: str = "factorio_verse", force: bool = False, project_scenarios_dir: Optional[Path] = None, as_mod: bool = False) -> Path:
     """Dump Factorio's data.raw to JSON using --dump-data flag."""
-    setup_client(verse_mod_dir, scenario=scenario, force=force, project_scenarios_dir=project_scenarios_dir)
+    setup_client(verse_mod_dir, scenario=scenario, force=force, project_scenarios_dir=project_scenarios_dir, as_mod=as_mod)
     
     factorio_exe = _find_factorio_executable()
     script_output_dir = get_client_script_output_dir()
