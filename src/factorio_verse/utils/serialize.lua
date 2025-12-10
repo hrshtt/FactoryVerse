@@ -289,5 +289,47 @@ function M.serialize_entity_inventories(entity)
     return inventories
 end
 
+-- ============================================================================
+-- GHOST SERIALIZATION
+-- ============================================================================
+
+--- Serialize ghost entity to data structure
+--- @param ghost LuaEntity Ghost entity (type="entity-ghost")
+--- @return table|nil Ghost data, or nil if invalid
+function M.serialize_ghost(ghost)
+    if not (ghost and ghost.valid) then
+        return nil
+    end
+    
+    -- Generate position key (format: "x,y" with 1 decimal precision)
+    local pos_key = string.format("%.1f,%.1f", ghost.position.x, ghost.position.y)
+    
+    local data = {
+        name = ghost.name,  -- "entity-ghost"
+        type = ghost.type,  -- "entity-ghost"
+        position = { x = ghost.position.x, y = ghost.position.y },
+        position_key = pos_key,
+        ghost_name = ghost.ghost_name,  -- The entity this ghost represents
+    }
+    
+    -- Add direction if available
+    if ghost.direction then
+        data.direction = ghost.direction
+        data.direction_name = utils.direction_to_name(ghost.direction and tonumber(tostring(ghost.direction)) or nil)
+    end
+    
+    -- Add force if available
+    if ghost.force and ghost.force.name then
+        data.force = ghost.force.name
+    end
+    
+    -- Generate entity key for the ghost (using ghost_name as the entity name)
+    if ghost.ghost_name then
+        data.key = entity_key(ghost.ghost_name, ghost.position.x, ghost.position.y)
+    end
+    
+    return data
+end
+
 return M
 
