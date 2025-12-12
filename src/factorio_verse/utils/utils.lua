@@ -171,6 +171,15 @@ function M.extract_position(obj)
     return nil
 end
 
+--- Generate a unique key for an entity based on its name and position
+--- @param entity_name string - Entity prototype name
+--- @param pos_x number - X coordinate
+--- @param pos_y number - Y coordinate
+--- @return string - Key in format "entity_name..position.x..position.y"
+function M.entity_key(entity_name, pos_x, pos_y)
+    return string.format("(%s:%s,%s)", entity_name, pos_x, pos_y)
+end
+
 --- Check if two ranges overlap
 --- @param a1 number - start of range A
 --- @param a2 number - end of range A

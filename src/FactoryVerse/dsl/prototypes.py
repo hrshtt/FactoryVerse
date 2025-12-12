@@ -123,6 +123,32 @@ class PumpjackPrototype(BasePrototype):
             for vector in self._pipe_vectors
         ]
 
+@dataclass(frozen=True)
+class ElectricPolePrototype(BasePrototype):
+    """Prototype accessor for electric-pole."""
+
+    _supply_area_distance: float
+    _maximum_wire_distance: float
+
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "ElectricPolePrototype":
+        return cls(
+            _data=data,
+            _supply_area_distance=data["supply_area_distance"],
+            _maximum_wire_distance=data["maximum_wire_distance"],
+        )
+
+    def get_supply_area(self, centroid: MapPosition) -> BoundingBox:
+        return BoundingBox.from_tuple((centroid.x - self._supply_area_distance, centroid.y - self._supply_area_distance), (centroid.x + self._supply_area_distance, centroid.y + self._supply_area_distance))
+    
+    @property
+    def supply_area_distance(self) -> float:
+        return self._supply_area_distance
+    
+    @property
+    def maximum_wire_distance(self) -> float:
+        return self._maximum_wire_distance
+
 
 @dataclass(frozen=True)
 class InserterPrototype(BasePrototype):
@@ -238,6 +264,12 @@ class EntityPrototypes:
                 self.fast_inserter = FastInserterPrototype.from_data(
                     self.data["inserter"]["fast-inserter"]
                 )
+        
+        if "electric-pole" in self.data:
+            for pole_name, pole_data in self.data["electric-pole"].items():
+                if not hasattr(self, 'electric_poles'):
+                    self.electric_poles = {}
+                self.electric_poles[pole_name] = ElectricPolePrototype.from_data(pole_data)
 
     def get_entity_type(self, entity_name: str) -> Optional[str]:
         """Get the prototype category (type) for an entity name."""
