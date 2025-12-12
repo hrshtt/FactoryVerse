@@ -68,6 +68,11 @@ def cmd_client_launch(args):
     """Setup and launch Factorio client."""
     from pathlib import Path
     
+    # Error if --watch is used with --as-mod (hot reloading doesn't work for mods)
+    if args.watch and args.as_mod:
+        print("❌ Error: --watch cannot be used with --as-mod. Hot reloading only works with scenarios, not mods.", file=sys.stderr)
+        sys.exit(1)
+    
     work_dir = Path.cwd()
     
     # Handle ghost reset
@@ -89,7 +94,12 @@ def cmd_client_launch(args):
     scenario = args.scenario
     
     # Setup client
-    if scenario == "factorio_verse":
+    if args.as_mod:
+        # Force loading as mod regardless of scenario
+        print(f"📱 Setting up Factorio client (factorio_verse as MOD, scenario: {scenario})")
+        setup_client(server_mgr.verse_mod_dir, scenario=scenario, force=args.force,
+                    project_scenarios_dir=server_mgr.scenarios_dir, as_mod=True)
+    elif scenario == "factorio_verse":
         # Setup factorio_verse as scenario (no mod needed)
         print(f"📱 Setting up Factorio client (factorio_verse as SCENARIO)")
         setup_client(server_mgr.verse_mod_dir, scenario="factorio_verse", force=args.force,
@@ -137,7 +147,7 @@ def cmd_client_dump_data(args):
     work_dir = Path.cwd()
     server_mgr = FactorioServerManager(work_dir)
     dump_data_raw(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, 
-                  project_scenarios_dir=server_mgr.scenarios_dir)
+                  project_scenarios_dir=server_mgr.scenarios_dir, as_mod=getattr(args, 'as_mod', False))
 
 
 def cmd_start(args):
@@ -162,7 +172,8 @@ def cmd_start(args):
     # Setup client first
     server_mgr = FactorioServerManager(work_dir)
     print(f"📱 Setting up Factorio client (scenario: {args.scenario})")
-    setup_client(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, project_scenarios_dir=server_mgr.scenarios_dir)
+    setup_client(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, 
+                 project_scenarios_dir=server_mgr.scenarios_dir, as_mod=args.as_mod)
     
     # Clear server snapshot directories before starting
     print(f"🧹 Clearing server snapshot directories...")
@@ -170,7 +181,7 @@ def cmd_start(args):
     
     # Prepare server mods
     print(f"🚀 Starting FactoryVerse ({args.num} server(s), scenario: {args.scenario})")
-    server_mgr.prepare_mods(args.scenario)
+    server_mgr.prepare_mods(args.scenario, as_mod=args.as_mod)
     
     # Build compose file with services from both managers
     compose_mgr = DockerComposeManager(work_dir)
@@ -290,6 +301,8 @@ def main():
     client_launch_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
     client_launch_parser.add_argument("-w", "--watch", action="store_true", help="Enable hot-reload watcher (scenario mode only)")
     client_launch_parser.add_argument("--reset-ghosts", action="store_true", help="Reset all ghost entities state")
+    client_launch_parser.add_argument("--as-mod", action="store_true", 
+                                      help="Force loading factorio_verse as a mod (removes existing mod copies and copies fresh files)")
     client_launch_parser.set_defaults(func=cmd_client_launch)
     
     # Client log subcommand
@@ -301,6 +314,8 @@ def main():
     client_dump_parser = client_subparsers.add_parser("dump-data", help="Dump Factorio data.raw to JSON")
     client_dump_parser.add_argument("-s", "--scenario", default="factorio_verse", help="Scenario to use (default: factorio_verse)")
     client_dump_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
+    client_dump_parser.add_argument("--as-mod", action="store_true", 
+                                    help="Force loading factorio_verse as a mod (removes existing mod copies and copies fresh files)")
     client_dump_parser.set_defaults(func=cmd_client_dump_data)
     
     # ========== SERVER COMMAND ==========
@@ -315,6 +330,8 @@ def main():
     server_start_parser.add_argument("-f", "--force", action="store_true", help="Force re-setup of client")
     server_start_parser.add_argument("-w", "--watch", action="store_true", help="Enable hot-reload watcher")
     server_start_parser.add_argument("--reset-ghosts", action="store_true", help="Reset all ghost entities state")
+    server_start_parser.add_argument("--as-mod", action="store_true", 
+                                     help="Force loading factorio_verse as a mod (removes existing mod copies and copies fresh files)")
     server_start_parser.set_defaults(func=cmd_start)
     
     # Server stop subcommand

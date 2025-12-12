@@ -4,6 +4,9 @@
 
 local utils = require("utils.utils")
 
+-- Local reference to utility function for performance
+local entity_key = utils.entity_key
+
 local M = {}
 
 -- ============================================================================
@@ -33,6 +36,10 @@ function M.get_component_type(entity_type, entity_name)
         return "poles"
     end
 
+    if entity_type == "mining-drill" then
+        return "mining-drill"
+    end
+
     -- Default to entities for all other player-placed entities
     return "entities"
 end
@@ -48,7 +55,7 @@ local function _serialize_base_properties(entity, out)
     local proto = entity.prototype
 
     -- Base identity and spatial properties
-    out.unit_number = entity.unit_number
+    out.key = entity_key(entity.name, entity.position.x, entity.position.y)
     out.name = entity.name
     out.type = entity.type
     out.force = (entity.force and entity.force.name) or nil
@@ -70,18 +77,22 @@ local function _serialize_base_properties(entity, out)
     end
 
     -- Crafting / recipe (gate to crafting machines only)
-    local is_crafter = (entity.type == "assembling-machine" or entity.type == "furnace")
-    if not is_crafter and proto and proto.crafting_categories then
-        is_crafter = true
-    end
+    -- Only call get_recipe() on entity types that actually support it
+    -- According to Factorio API: assembling-machine, furnace, rocket-silo
+    local is_crafter = (entity.type == "assembling-machine" or 
+                        entity.type == "furnace" or 
+                        entity.type == "rocket-silo")
 
     if is_crafter then
-        local r = entity.get_recipe()
-        if r then out.recipe = r.name end
+        -- Use pcall to safely call get_recipe() in case of edge cases
+        local ok, r = pcall(function() return entity.get_recipe() end)
+        if ok and r then
+            out.recipe = r.name
+        end
     end
 
     -- Bounding box
-    local bb = entity.bounding_box
+    local bb = entity.selection_box
     if bb and bb.left_top and bb.right_bottom then
         out.bounding_box = {
             min_x = bb.left_top.x,
@@ -89,6 +100,16 @@ local function _serialize_base_properties(entity, out)
             max_x = bb.right_bottom.x,
             max_y = bb.right_bottom.y
         }
+    end
+end
+
+--- Serialize mining-drill specific data
+--- @param entity LuaEntity
+--- @param out table Output table to populate
+local function _serialize_mining_drill_data(entity, out)
+    local mining_area = entity.mining_area
+    if mining_area then
+        out.mining_area = mining_area
     end
 end
 
@@ -118,12 +139,16 @@ local function _serialize_belt_data(entity, out)
     if bn then
         if bn.inputs then
             for _, n in ipairs(bn.inputs) do
-                if n and n.valid and n.unit_number then inputs_ids[#inputs_ids + 1] = n.unit_number end
+                if n and n.valid and n.name and n.position then
+                    inputs_ids[#inputs_ids + 1] = entity_key(n.name, n.position.x, n.position.y)
+                end
             end
         end
         if bn.outputs then
             for _, n in ipairs(bn.outputs) do
-                if n and n.valid and n.unit_number then outputs_ids[#outputs_ids + 1] = n.unit_number end
+                if n and n.valid and n.name and n.position then
+                    outputs_ids[#outputs_ids + 1] = entity_key(n.name, n.position.x, n.position.y)
+                end
             end
         end
     end
@@ -133,15 +158,18 @@ local function _serialize_belt_data(entity, out)
     local belt_to_ground_type = nil
     if entity.type == "underground-belt" then
         belt_to_ground_type = entity.belt_to_ground_type
+        -- For underground belts, neighbours is the other end of the connection (LuaEntity or nil)
         local un = entity.neighbours
-        if un and un.valid and un.unit_number then underground_other = un.unit_number end
+        if un and un.valid and un.name and un.position then
+            underground_other = entity_key("underground-belt", un.position.x, un.position.y)
+        end
     end
 
     out.belt_data = {
         item_lines = item_lines,
         belt_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or nil,
         belt_to_ground_type = belt_to_ground_type,
-        underground_neighbour_unit = underground_other
+        underground_neighbour_key = underground_other
     }
 end
 
@@ -155,9 +183,9 @@ local function _serialize_pipe_data(entity, out)
         for k = 1, #fb do
             local connections = fb.get_connections and fb.get_connections(k) or {}
             for _, conn in ipairs(connections) do
-                if conn.owner and conn.owner.valid and conn.owner.unit_number then
+                if conn.owner and conn.owner.valid and conn.owner.name and conn.owner.position then
                     local conn_entity = conn.owner
-                    local conn_unit = conn_entity.unit_number
+                    local conn_key = entity_key(conn_entity.name, conn_entity.position.x, conn_entity.position.y)
 
                     -- Categorize connections based on entity type and relative position
                     if conn_entity.type == "pipe" or conn_entity.type == "pipe-to-ground" then
@@ -165,15 +193,15 @@ local function _serialize_pipe_data(entity, out)
                             local dx = conn_entity.position.x - entity.position.x
                             local dy = conn_entity.position.y - entity.position.y
                             if dx > 0 or dy > 0 then
-                                inputs_ids[#inputs_ids + 1] = conn_unit
+                                inputs_ids[#inputs_ids + 1] = conn_key
                             else
-                                outputs_ids[#outputs_ids + 1] = conn_unit
+                                outputs_ids[#outputs_ids + 1] = conn_key
                             end
                         else
-                            inputs_ids[#inputs_ids + 1] = conn_unit
+                            inputs_ids[#inputs_ids + 1] = conn_key
                         end
                     else
-                        inputs_ids[#inputs_ids + 1] = conn_unit
+                        inputs_ids[#inputs_ids + 1] = conn_key
                     end
                 end
             end
@@ -194,10 +222,22 @@ local function _serialize_inserter_data(entity, out)
         drop_position = entity.drop_position,
     }
     local pt = entity.pickup_target
-    if pt and pt.valid and pt.unit_number then ins.pickup_target_unit = pt.unit_number end
+    if pt and pt.valid and pt.name and pt.position then
+        ins.pickup_target_key = entity_key(pt.name, pt.position.x, pt.position.y)
+    end
     local dt = entity.drop_target
-    if dt and dt.valid and dt.unit_number then ins.drop_target_unit = dt.unit_number end
+    if dt and dt.valid and dt.name and dt.position then
+        ins.drop_target_key = entity_key(dt.name, dt.position.x, dt.position.y)
+    end
     if next(ins) ~= nil then out.inserter = ins end
+end
+
+--- Serialize pole-specific data
+--- @param entity LuaEntity
+--- @param out table Output table to populate
+local function _serialize_pole_data(entity, out)
+    out.max_wire_distance = entity.prototype.get_max_wire_distance()
+    out.supply_area_distance = entity.prototype.get_supply_area_distance()
 end
 
 --- Serialize entity data for JSON storage
@@ -219,6 +259,10 @@ function M.serialize_entity(entity)
         _serialize_belt_data(entity, out)
     elseif component_type == "pipes" then
         _serialize_pipe_data(entity, out)
+    elseif component_type == "mining-drill" then
+        _serialize_mining_drill_data(entity, out)
+    -- elseif component_type == "poles" then
+    --     _serialize_pole_data(entity, out)
     end
 
     -- Inserter IO (pickup/drop positions and resolved targets)
@@ -269,6 +313,48 @@ function M.serialize_entity_inventories(entity)
     end
 
     return inventories
+end
+
+-- ============================================================================
+-- GHOST SERIALIZATION
+-- ============================================================================
+
+--- Serialize ghost entity to data structure
+--- @param ghost LuaEntity Ghost entity (type="entity-ghost")
+--- @return table|nil Ghost data, or nil if invalid
+function M.serialize_ghost(ghost)
+    if not (ghost and ghost.valid) then
+        return nil
+    end
+    
+    -- Generate position key (format: "x,y" with 1 decimal precision)
+    local pos_key = string.format("%.1f,%.1f", ghost.position.x, ghost.position.y)
+    
+    local data = {
+        name = ghost.name,  -- "entity-ghost"
+        type = ghost.type,  -- "entity-ghost"
+        position = { x = ghost.position.x, y = ghost.position.y },
+        position_key = pos_key,
+        ghost_name = ghost.ghost_name,  -- The entity this ghost represents
+    }
+    
+    -- Add direction if available
+    if ghost.direction then
+        data.direction = ghost.direction
+        data.direction_name = utils.direction_to_name(ghost.direction and tonumber(tostring(ghost.direction)) or nil)
+    end
+    
+    -- Add force if available
+    if ghost.force and ghost.force.name then
+        data.force = ghost.force.name
+    end
+    
+    -- Generate entity key for the ghost (using ghost_name as the entity name)
+    if ghost.ghost_name then
+        data.key = entity_key(ghost.ghost_name, ghost.position.x, ghost.position.y)
+    end
+    
+    return data
 end
 
 return M

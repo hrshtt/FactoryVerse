@@ -132,41 +132,79 @@ class FactorioServerManager:
         for i in range(num_instances):
             self.clear_server_snapshot_dir(i)
     
-    def prepare_mods(self, scenario: str) -> None:
-        """Prepare factorio_verse mod for server."""
+    def prepare_mods(self, scenario: str, as_mod: bool = False) -> None:
+        """Prepare factorio_verse mod for server.
+        
+        Args:
+            scenario: Scenario name to use
+            as_mod: If True, force loading factorio_verse as a mod (removes existing copies and copies fresh files)
+        """
         if not self.verse_mod_dir.exists():
             raise RuntimeError(f"FactoryVerse mod not found at {self.verse_mod_dir}")
         
         print(f"📦 Preparing FactoryVerse for server...")
         
-        if scenario == "factorio_verse":
-            # Copy factorio_verse mod directory to server mods
-            server_mod_dir = self.mod_path / "factorio_verse"
+        if as_mod:
+            # Force loading as mod: remove all existing factorio_verse mod copies and copy fresh files
+            print("📦 Removing existing factorio_verse mod copies...")
+            for old_mod in self.mod_path.glob("factorio_verse*"):
+                if old_mod.is_dir():
+                    print(f"   Removing {old_mod.name}...")
+                    shutil.rmtree(old_mod)
             
-            # Remove old mod if exists
-            if server_mod_dir.exists():
-                shutil.rmtree(server_mod_dir)
+            # Read version from info.json
+            info_json_path = self.verse_mod_dir / "info.json"
+            if info_json_path.exists():
+                info = json.loads(info_json_path.read_text())
+                mod_version = info.get("version", "1.0.0")
+            else:
+                mod_version = "1.0.0"
             
-            # Copy to mod directory
-            shutil.copytree(self.verse_mod_dir, server_mod_dir)
-            
-            # Disable factorio_verse in mod-list (it will be used as scenario)
-            _update_mod_list(self.mod_path, "factorio_verse", False)
-            print("✓ factorio_verse copied (disabled as mod)")
-        else:
-            # Copy factorio_verse mod directory to server mods
-            server_mod_dir = self.mod_path / "factorio_verse"
-            
-            # Remove old mod if exists
-            if server_mod_dir.exists():
-                shutil.rmtree(server_mod_dir)
-            
-            # Copy to mod directory
+            # Copy fresh mod files with versioned name (Factorio requires modname_version format)
+            server_mod_dir = self.mod_path / f"factorio_verse_{mod_version}"
+            print(f"📦 Copying fresh factorio_verse mod as {server_mod_dir.name}...")
             shutil.copytree(self.verse_mod_dir, server_mod_dir)
             
             # Enable factorio_verse in mod-list
             _update_mod_list(self.mod_path, "factorio_verse", True)
-            print("✓ factorio_verse mod copied and enabled")
+            print(f"✓ factorio_verse mod copied as {server_mod_dir.name}")
+            print("✓ factorio_verse: enabled in mod-list")
+        elif scenario == "factorio_verse":
+            # Remove all existing mod copies (both versioned and unversioned)
+            print("📦 Removing existing factorio_verse mod copies...")
+            for old_mod in self.mod_path.glob("factorio_verse*"):
+                if old_mod.is_dir():
+                    print(f"   Removing {old_mod.name}...")
+                    shutil.rmtree(old_mod)
+            
+            # Disable factorio_verse in mod-list (it will be used as scenario)
+            _update_mod_list(self.mod_path, "factorio_verse", False)
+            print("✓ factorio_verse mod copies removed (will be used as scenario)")
+        else:
+            # Remove all existing mod copies (both versioned and unversioned)
+            print("📦 Removing existing factorio_verse mod copies...")
+            for old_mod in self.mod_path.glob("factorio_verse*"):
+                if old_mod.is_dir():
+                    print(f"   Removing {old_mod.name}...")
+                    shutil.rmtree(old_mod)
+            
+            # Read version from info.json
+            info_json_path = self.verse_mod_dir / "info.json"
+            if info_json_path.exists():
+                info = json.loads(info_json_path.read_text())
+                mod_version = info.get("version", "1.0.0")
+            else:
+                mod_version = "1.0.0"
+            
+            # Copy fresh mod files with versioned name (Factorio requires modname_version format)
+            server_mod_dir = self.mod_path / f"factorio_verse_{mod_version}"
+            print(f"📦 Copying factorio_verse mod as {server_mod_dir.name}...")
+            shutil.copytree(self.verse_mod_dir, server_mod_dir)
+            
+            # Enable factorio_verse in mod-list
+            _update_mod_list(self.mod_path, "factorio_verse", True)
+            print(f"✓ factorio_verse mod copied as {server_mod_dir.name}")
+            print("✓ factorio_verse: enabled in mod-list")
         
         # Ensure DLC mods are disabled
         dlc_mods = ["space-age", "quality", "elevated-rails"]

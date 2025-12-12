@@ -215,7 +215,8 @@ function PlacementActions.get_placement_cues(self, entity_name)
                 y = chunk.y,
                 area = {
                     left_top = { x = chunk.x * 32, y = chunk.y * 32 },
-                    right_bottom = { x = chunk.x * 32 + 31, y = chunk.y * 32 + 31 }
+                    -- Full chunk bounding box (avoid dropping border tiles)
+                    right_bottom = { x = (chunk.x + 1) * 32, y = (chunk.y + 1) * 32 }
                 }
             })
         end

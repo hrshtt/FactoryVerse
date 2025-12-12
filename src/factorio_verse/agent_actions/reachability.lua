@@ -7,6 +7,8 @@
 --- 1. Position keys only (get_reachable) - for fast reachability checks
 --- 2. Full entity data (get_reachable_full) - for rich snapshots with volatile state
 
+local serialize = require("utils.serialize")
+
 local ReachabilityActions = {}
 
 -- ============================================================================
@@ -70,7 +72,6 @@ local function serialize_entity_full(entity)
         type = entity.type,
         position = { x = entity.position.x, y = entity.position.y },
         position_key = position_key(entity.position.x, entity.position.y),
-        unit_number = entity.unit_number,
     }
     
     -- Add status if available
@@ -139,30 +140,6 @@ local function serialize_resource(entity)
     -- Add mineable products
     if entity.prototype and entity.prototype.mineable_properties then
         data.products = entity.prototype.mineable_properties.products
-    end
-    
-    return data
-end
-
---- Serialize ghost entity to data structure
---- @param ghost LuaEntity Ghost entity (type="entity-ghost")
---- @return table|nil Ghost data, or nil if invalid
-local function serialize_ghost(ghost)
-    if not (ghost and ghost.valid) then
-        return nil
-    end
-    
-    local data = {
-        name = ghost.name,  -- "entity-ghost"
-        type = ghost.type,  -- "entity-ghost"
-        position = { x = ghost.position.x, y = ghost.position.y },
-        position_key = position_key(ghost.position.x, ghost.position.y),
-        ghost_name = ghost.ghost_name,  -- The entity this ghost represents
-    }
-    
-    -- Add direction if available
-    if ghost.direction then
-        data.direction = ghost.direction
     end
     
     return data
@@ -423,7 +400,7 @@ function ReachabilityActions.get_reachable(self, attach_ghosts)
         })
         for _, ghost in ipairs(ghosts) do
             if ghost and ghost.valid then
-                local data = serialize_ghost(ghost)
+                local data = serialize.serialize_ghost(ghost)
                 if data then
                     table.insert(ghosts_data, data)
                 end
