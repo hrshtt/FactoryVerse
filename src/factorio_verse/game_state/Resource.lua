@@ -45,10 +45,10 @@ function M.serialize_rock(entity, chunk)
         type = entity.type,
         position = entity.position,
         bounding_box = {
-            min_x = entity.bounding_box.left_top.x,
-            min_y = entity.bounding_box.left_top.y,
-            max_x = entity.bounding_box.right_bottom.x,
-            max_y = entity.bounding_box.right_bottom.y
+            min_x = entity.selection_box.left_top.x,
+            min_y = entity.selection_box.left_top.y,
+            max_x = entity.selection_box.right_bottom.x,
+            max_y = entity.selection_box.right_bottom.y
         },
         resources = resources,
         chunk = { x = chunk.x, y = chunk.y }
@@ -76,10 +76,10 @@ function M.serialize_tree(entity, chunk)
         type = entity.type,
         position = entity.position,
         bounding_box = {
-            min_x = entity.bounding_box.left_top.x,
-            min_y = entity.bounding_box.left_top.y,
-            max_x = entity.bounding_box.right_bottom.x,
-            max_y = entity.bounding_box.right_bottom.y
+            min_x = entity.selection_box.left_top.x,
+            min_y = entity.selection_box.left_top.y,
+            max_x = entity.selection_box.right_bottom.x,
+            max_y = entity.selection_box.right_bottom.y
         },
         resources = resources,
         chunk = { x = chunk.x, y = chunk.y }
@@ -199,7 +199,8 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
         y = chunk_y,
         area = {
             left_top = { x = chunk_x * 32, y = chunk_y * 32 },
-            right_bottom = { x = chunk_x * 32 + 31, y = chunk_y * 32 + 31 }
+            -- Full chunk bounding box (see Map.lua for rationale)
+            right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
         }
     }
 

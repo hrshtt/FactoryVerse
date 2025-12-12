@@ -21,9 +21,79 @@ local entity_key = utils.entity_key
 
 local M = {}
 
+-- Debug flag for status dumps
+M.DEBUG = false
+
 -- ============================================================================
 -- ENTITY STATUS TRACKING (for UDP snapshots)
 -- ============================================================================
+
+-- Entity name enum mapping (for status dumps only)
+local ENTITY_NAME_ENUM = {
+    ["accumulator"] = 0,
+    ["assembling-machine-1"] = 1,
+    ["assembling-machine-2"] = 2,
+    ["assembling-machine-3"] = 3,
+    ["beacon"] = 4,
+    ["big-electric-pole"] = 5,
+    ["blue-chest"] = 6,
+    ["boiler"] = 7,
+    ["bulk-inserter"] = 8,
+    ["burner-generator"] = 9,
+    ["burner-inserter"] = 10,
+    ["burner-mining-drill"] = 11,
+    ["centrifuge"] = 12,
+    ["chemical-plant"] = 13,
+    ["electric-furnace"] = 14,
+    ["electric-mining-drill"] = 15,
+    ["express-splitter"] = 16,
+    ["express-transport-belt"] = 17,
+    ["express-underground-belt"] = 18,
+    ["fast-inserter"] = 19,
+    ["fast-splitter"] = 20,
+    ["fast-transport-belt"] = 21,
+    ["fast-underground-belt"] = 22,
+    ["gate"] = 23,
+    ["heat-exchanger"] = 24,
+    ["heat-interface"] = 25,
+    ["heat-pipe"] = 26,
+    ["inserter"] = 27,
+    ["iron-chest"] = 28,
+    ["lab"] = 29,
+    ["lane-splitter"] = 30,
+    ["long-handed-inserter"] = 31,
+    ["medium-electric-pole"] = 32,
+    ["nuclear-reactor"] = 33,
+    ["offshore-pump"] = 34,
+    ["oil-refinery"] = 35,
+    ["pipe"] = 36,
+    ["pipe-to-ground"] = 37,
+    ["pump"] = 38,
+    ["pumpjack"] = 39,
+    ["radar"] = 40,
+    ["red-chest"] = 41,
+    ["rocket-silo"] = 42,
+    ["small-electric-pole"] = 43,
+    ["solar-panel"] = 44,
+    ["splitter"] = 45,
+    ["steam-engine"] = 46,
+    ["steam-turbine"] = 47,
+    ["steel-chest"] = 48,
+    ["steel-furnace"] = 49,
+    ["stone-furnace"] = 50,
+    ["stone-wall"] = 51,
+    ["substation"] = 52,
+    ["transport-belt"] = 53,
+    ["underground-belt"] = 54,
+    ["wooden-chest"] = 55,
+}
+
+--- Check if entity name is in the status tracking enum
+--- @param entity_name string
+--- @return boolean
+local function is_trackable_entity(entity_name)
+    return ENTITY_NAME_ENUM[entity_name] ~= nil
+end
 
 --- Track entity status change
 --- @param entity LuaEntity
@@ -107,6 +177,119 @@ function M.track_all_charted_chunk_entity_status(charted_chunks)
 
     if next(all_status_records) ~= nil then
         snapshot.send_status_snapshot_udp(all_status_records)
+    end
+end
+
+-- ============================================================================
+-- STATUS DUMP TO DISK (compressed format)
+-- ============================================================================
+
+--- Collect all entity statuses from charted chunks
+--- Returns array of [status_enum, entity_enum, pos_x_int, pos_y_int] tuples
+--- @param charted_chunks table List of chunks to process
+--- @return table Array of status records
+function M.collect_all_statuses_for_dump(charted_chunks)
+    if not charted_chunks then return {} end
+    
+    local surface = game.surfaces[1]
+    local status_records = {}
+    
+    for _, chunk in ipairs(charted_chunks) do
+        local chunk_area = {
+            left_top = {
+                x = chunk.x * 32,
+                y = chunk.y * 32
+            },
+            right_bottom = {
+                x = (chunk.x + 1) * 32,
+                y = (chunk.y + 1) * 32
+            }
+        }
+        
+        -- Check count first for early exit
+        local entity_count = surface.count_entities_filtered {
+            area = chunk_area,
+            force = "player",
+        }
+        if entity_count == 0 then goto continue end
+        
+        local entities = surface.find_entities_filtered {
+            area = chunk_area,
+            force = "player",
+        }
+        
+        for _, entity in ipairs(entities) do
+            if entity and entity.valid and entity.status then
+                -- Only track entities in our enum
+                if not is_trackable_entity(entity.name) then
+                    goto next_entity
+                end
+                
+                local entity_enum = ENTITY_NAME_ENUM[entity.name]
+                local status_enum = entity.status  -- Already a number from defines.entity_status
+                local pos_x = entity.position.x
+                local pos_y = entity.position.y
+                
+                -- Convert position to integer (multiply by 2 since x%0.5 == 0 and y%0.5 == 0)
+                local pos_x_int = math.floor(pos_x * 2)
+                local pos_y_int = math.floor(pos_y * 2)
+                
+                -- Format: [entity_enum, status_enum, x, y]
+                table.insert(status_records, {
+                    entity_enum,
+                    status_enum,
+                    pos_x_int,
+                    pos_y_int
+                })
+            end
+            ::next_entity::
+        end
+        ::continue::
+    end
+    
+    return status_records
+end
+
+--- Dump status data to disk as JSONL
+--- @param charted_chunks table List of chunks to process
+function M.dump_status_to_disk(charted_chunks)
+    local status_records = M.collect_all_statuses_for_dump(charted_chunks)
+    
+    if #status_records == 0 then
+        return
+    end
+    
+    -- Build JSONL content: one JSON array per line [entity_enum, status_enum, x, y]
+    local jsonl_lines = {}
+    for _, record in ipairs(status_records) do
+        local ok, json_str = pcall(helpers.table_to_json, record)
+        if ok and json_str then
+            table.insert(jsonl_lines, json_str)
+        end
+    end
+    
+    if #jsonl_lines == 0 then
+        return
+    end
+    
+    -- Write JSONL to disk
+    local file_path = snapshot.status_dump_path(game.tick)
+    local content = table.concat(jsonl_lines, "\n") .. "\n"
+    local ok_write = pcall(helpers.write_file, file_path, content, false)
+    if not ok_write then
+        log("Failed to write status dump file: " .. tostring(file_path))
+        return
+    end
+    
+    -- Track file and cleanup old ones
+    snapshot.track_status_dump_file(game.tick)
+    snapshot.cleanup_old_status_dumps()
+    
+    -- Send UDP notification that status file was written
+    snapshot.send_file_event_udp("status_dump", "status", 0, 0, nil, nil, nil, file_path)
+    
+    if M.DEBUG and game and game.print then
+        game.print(string.format("[status_dump] Wrote status dump: %s (%d entities)", file_path, #status_records))
     end
 end
 

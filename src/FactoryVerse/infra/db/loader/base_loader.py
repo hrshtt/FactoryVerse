@@ -12,13 +12,21 @@ import duckdb
 
 
 def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load water tiles from water_init.jsonl files."""
+    """Load water tiles from water_init.jsonl files.
+    
+    This loads ALL water tiles from ALL chunks globally into the water_tile table.
+    """
+    # Clear existing water tiles to ensure we have fresh data
+    con.execute("DELETE FROM water_tile;")
+    
     water_files = list(snapshot_dir.rglob("water_init.jsonl"))
     
     if not water_files:
         return
     
-    # Collect all water tiles
+    print(f"  Found {len(water_files)} water_init.jsonl files across all chunks")
+    
+    # Collect all water tiles from ALL chunks
     water_data = []
     for water_file in water_files:
         with open(water_file, "r") as f:
@@ -33,9 +41,10 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
                     })
     
     if water_data:
+        print(f"  Loading {len(water_data)} water tiles into water_tile table (global, across all chunks)")
         con.executemany(
             """
-            INSERT OR REPLACE INTO water_tile (entity_key, type, position)
+            INSERT INTO water_tile (entity_key, type, position)
             VALUES (?, ?, ?)
             """,
             [

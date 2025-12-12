@@ -100,6 +100,8 @@ local function aggregate_all_events()
     add_nth_tick_handler(60, function()
         local charted_chunks = Map.get_charted_chunks()
         Entities.track_all_charted_chunk_entity_status(charted_chunks)
+        -- Also dump compressed status to disk
+        Entities.dump_status_to_disk(charted_chunks)
     end)
 
     return {

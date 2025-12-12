@@ -15,7 +15,8 @@ end
 local function get_chunk_area(chunk_x, chunk_y)
     return {
         {x = chunk_x * 32, y = chunk_y * 32},
-        {x = chunk_x * 32 + 31, y = chunk_y * 32 + 31}
+        -- Full chunk bounding box: bottom-right at next tile coordinate
+        {x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32}
     }
 end
 

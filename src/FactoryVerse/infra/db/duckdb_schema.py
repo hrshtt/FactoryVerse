@@ -281,6 +281,9 @@ def create_schema(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-dat
         );
     """)
     
+    # Note: entity_status table is defined but not used for persistence.
+    # Status is loaded on-the-fly from status files into temp_entity_status table.
+    # Use entity_status_latest view to query current status.
     con.execute("""
         CREATE TABLE IF NOT EXISTS entity_status (
             entity_key VARCHAR PRIMARY KEY,
@@ -352,17 +355,20 @@ def create_schema(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-dat
             patch_id INTEGER PRIMARY KEY,
             geom GEOMETRY,
             tile_count INTEGER,
-            centroid POINT_2D
+            centroid POINT_2D,
+            tiles VARCHAR[]
         );
     """)
     
     con.execute("""
         CREATE TABLE IF NOT EXISTS resource_patch (
             patch_id INTEGER PRIMARY KEY,
+            resource_name resource_tile NOT NULL,
             geom GEOMETRY,
             tile_count INTEGER,
             total_amount INTEGER,
-            centroid POINT_2D
+            centroid POINT_2D,
+            tiles VARCHAR[]
         );
     """)
     

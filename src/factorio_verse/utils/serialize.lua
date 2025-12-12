@@ -36,6 +36,10 @@ function M.get_component_type(entity_type, entity_name)
         return "poles"
     end
 
+    if entity_type == "mining-drill" then
+        return "mining-drill"
+    end
+
     -- Default to entities for all other player-placed entities
     return "entities"
 end
@@ -88,7 +92,7 @@ local function _serialize_base_properties(entity, out)
     end
 
     -- Bounding box
-    local bb = entity.bounding_box
+    local bb = entity.selection_box
     if bb and bb.left_top and bb.right_bottom then
         out.bounding_box = {
             min_x = bb.left_top.x,
@@ -96,6 +100,16 @@ local function _serialize_base_properties(entity, out)
             max_x = bb.right_bottom.x,
             max_y = bb.right_bottom.y
         }
+    end
+end
+
+--- Serialize mining-drill specific data
+--- @param entity LuaEntity
+--- @param out table Output table to populate
+local function _serialize_mining_drill_data(entity, out)
+    local mining_area = entity.mining_area
+    if mining_area then
+        out.mining_area = mining_area
     end
 end
 
@@ -218,6 +232,14 @@ local function _serialize_inserter_data(entity, out)
     if next(ins) ~= nil then out.inserter = ins end
 end
 
+--- Serialize pole-specific data
+--- @param entity LuaEntity
+--- @param out table Output table to populate
+local function _serialize_pole_data(entity, out)
+    out.max_wire_distance = entity.prototype.get_max_wire_distance()
+    out.supply_area_distance = entity.prototype.get_supply_area_distance()
+end
+
 --- Serialize entity data for JSON storage
 --- Direct LuaEntity access - no resolution overhead (for bulk operations)
 --- @param entity LuaEntity
@@ -237,6 +259,10 @@ function M.serialize_entity(entity)
         _serialize_belt_data(entity, out)
     elseif component_type == "pipes" then
         _serialize_pipe_data(entity, out)
+    elseif component_type == "mining-drill" then
+        _serialize_mining_drill_data(entity, out)
+    -- elseif component_type == "poles" then
+    --     _serialize_pole_data(entity, out)
     end
 
     -- Inserter IO (pickup/drop positions and resolved targets)

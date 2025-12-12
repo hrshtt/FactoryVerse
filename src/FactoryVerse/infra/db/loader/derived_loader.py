@@ -5,6 +5,7 @@ Load derived tables: electric_pole, resource_patch, water_patch, belt_line, belt
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Dict, Any, List, Set, Tuple, Optional
 from collections import defaultdict
@@ -137,11 +138,15 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection, dump_file: str = "fa
     """
     Derive resource_patch table using DBSCAN clustering.
     Uses _search_radius from ElectricMiningDrillPrototype as eps parameter.
+    Clustering is done GLOBALLY across all chunks for each resource type.
     """
     if not HAS_SKLEARN:
         print("WARNING: sklearn not available. Skipping resource patch derivation.")
         print("Install with: uv add scikit-learn numpy")
         return
+    
+    # Clear existing patches first
+    con.execute("DELETE FROM resource_patch;")
     
     # Get search radius from prototype
     prototypes = get_entity_prototypes(dump_file)
@@ -152,22 +157,26 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection, dump_file: str = "fa
     if search_radius is None:
         search_radius = 2.5  # Default
     
-    # Get all resource tiles grouped by resource type
+    # Get all resource tiles grouped by resource type (GLOBALLY, across all chunks)
     resource_types = con.execute("""
         SELECT DISTINCT name FROM resource_tile
     """).fetchall()
     
     patch_id = 1
     for (resource_name,) in resource_types:
-        # Get all tiles for this resource type
+        # Get ALL tiles for this resource type GLOBALLY (across all chunks)
+        # This query fetches ALL tiles from ALL chunks in one go - no chunk filtering
         tiles = con.execute("""
             SELECT entity_key, position, amount
             FROM resource_tile
             WHERE name = ?
+            ORDER BY entity_key
         """, [resource_name]).fetchall()
         
         if not tiles:
             continue
+        
+        print(f"Clustering {len(tiles)} tiles of type '{resource_name}' globally (across all chunks)...")
         
         # Extract positions for clustering
         positions = []
@@ -193,9 +202,15 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection, dump_file: str = "fa
         if len(positions) < 2:
             continue
         
-        # Run DBSCAN clustering
+        # Run DBSCAN clustering on ALL positions at once (GLOBAL clustering)
+        # This single DBSCAN call considers all tiles together, regardless of chunk
         positions_array = np.array(positions)
         clustering = DBSCAN(eps=search_radius, min_samples=1).fit(positions_array)
+        
+        # Count unique clusters (excluding noise points with label -1)
+        unique_clusters = set(clustering.labels_)
+        unique_clusters.discard(-1)  # Remove noise label
+        print(f"  -> Found {len(unique_clusters)} patches from {len(positions)} tiles (eps={search_radius})")
         
         # Group tiles by cluster
         clusters: Dict[int, List[Tuple[str, float, float, int]]] = defaultdict(list)
@@ -212,21 +227,24 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection, dump_file: str = "fa
             
             # Calculate centroid
             centroid_x = sum(x for _, x, _, _ in cluster_tiles) / len(cluster_tiles)
-            centroid_y = sum(y for _, y, _, _ in cluster_tiles) / len(cluster_tiles)
+            centroid_y = sum(y for _, _, y, _ in cluster_tiles) / len(cluster_tiles)
             
             # Create geometry from bounding box (can be improved with ST_ConvexHull)
             min_x = min(x for _, x, _, _ in cluster_tiles)
             max_x = max(x for _, x, _, _ in cluster_tiles)
-            min_y = min(y for _, y, _, _ in cluster_tiles)
-            max_y = max(y for _, y, _, _ in cluster_tiles)
+            min_y = min(y for _, _, y, _ in cluster_tiles)
+            max_y = max(y for _, _, y, _ in cluster_tiles)
             
             # Create polygon from bounding box (simplified)
             geom_wkt = f"POLYGON(({min_x} {min_y}, {max_x} {min_y}, {max_x} {max_y}, {min_x} {max_y}, {min_x} {min_y}))"
             
+            # Extract tile keys for this patch
+            patch_tile_keys = [tile_key for tile_key, _, _, _ in cluster_tiles]
+            
             con.execute("""
-                INSERT OR REPLACE INTO resource_patch (patch_id, geom, tile_count, total_amount, centroid)
-                VALUES (?, ST_GeomFromText(?), ?, ?, ST_Point(?, ?))
-            """, [patch_id, geom_wkt, len(cluster_tiles), total_amount, centroid_x, centroid_y])
+                INSERT OR REPLACE INTO resource_patch (patch_id, resource_name, geom, tile_count, total_amount, centroid, tiles)
+                VALUES (?, ?, ST_GeomFromText(?), ?, ?, ST_Point(?, ?), ?)
+            """, [patch_id, resource_name, geom_wkt, len(cluster_tiles), total_amount, centroid_x, centroid_y, patch_tile_keys])
             
             patch_id += 1
 
@@ -235,18 +253,29 @@ def derive_water_patches(con: duckdb.DuckDBPyConnection) -> None:
     """
     Derive water_patch table using 8-connectivity (including diagonals).
     Uses Union-Find algorithm in Python, then creates spatial geometries.
+    Clusters water tiles that have any other water tile in their 8 neighbors.
+    This is done GLOBALLY across all chunks - all water tiles are considered together.
     """
-    # Get all water tiles
+    # Clear existing patches
+    con.execute("DELETE FROM water_patch;")
+    
+    # Get ALL water tiles GLOBALLY (across all chunks)
+    # This query should return tiles from ALL chunks, not filtered by chunk
     tiles = con.execute("""
         SELECT entity_key, position
         FROM water_tile
+        ORDER BY entity_key
     """).fetchall()
     
     if not tiles:
         return
     
-    # Build tile map
+    print(f"Clustering {len(tiles)} water tiles globally (across all chunks)...")
+    
+    # Build tile map - use floor to get integer tile coordinates
     tile_map: Dict[Tuple[int, int], str] = {}
+    position_map: Dict[Tuple[int, int], Tuple[float, float]] = {}  # Store original positions for centroid
+    
     for row in tiles:
         tile_key = row[0]
         position_data = row[1]  # This is already a dict (STRUCT from DuckDB)
@@ -259,17 +288,26 @@ def derive_water_patches(con: duckdb.DuckDBPyConnection) -> None:
         else:
             continue
         
-        # Round to integer tile coordinates
-        tile_x, tile_y = int(round(pos.get("x", 0))), int(round(pos.get("y", 0)))
-        tile_map[(tile_x, tile_y)] = tile_key
+        # Get tile coordinates - use floor to ensure we get the correct tile
+        # Water tiles are typically at integer positions, but we floor to be safe
+        x = pos.get("x", 0)
+        y = pos.get("y", 0)
+        tile_x = int(math.floor(x))
+        tile_y = int(math.floor(y))
+        
+        tile_coord = (tile_x, tile_y)
+        tile_map[tile_coord] = tile_key
+        position_map[tile_coord] = (float(x), float(y))
     
     # Union-Find for 8-connectivity
     parent: Dict[Tuple[int, int], Tuple[int, int]] = {}
     
     def find(p: Tuple[int, int]) -> Tuple[int, int]:
-        if parent.get(p, p) != p:
+        if p not in parent:
+            parent[p] = p
+        if parent[p] != p:
             parent[p] = find(parent[p])
-        return parent.get(p, p)
+        return parent[p]
     
     def union(p1: Tuple[int, int], p2: Tuple[int, int]):
         root1 = find(p1)
@@ -283,13 +321,23 @@ def derive_water_patches(con: duckdb.DuckDBPyConnection) -> None:
         (1, 1), (1, -1), (-1, 1), (-1, -1)  # Diagonal
     ]
     
-    # Union all connected tiles
+    # Initialize all tiles in union-find
+    for tile_pos in tile_map.keys():
+        parent[tile_pos] = tile_pos
+    
+    # Union all connected tiles (8-connectivity)
+    # This should connect ALL tiles globally, regardless of which chunk they came from
+    connections_made = 0
     for (x, y) in tile_map.keys():
-        parent[(x, y)] = (x, y)  # Initialize
         for dx, dy in neighbors:
             neighbor = (x + dx, y + dy)
             if neighbor in tile_map:
-                union((x, y), neighbor)
+                # Check if they're already in the same set
+                root1 = find((x, y))
+                root2 = find(neighbor)
+                if root1 != root2:
+                    union((x, y), neighbor)
+                    connections_made += 1
     
     # Group tiles by root
     patches: Dict[Tuple[int, int], List[Tuple[int, int]]] = defaultdict(list)
@@ -297,30 +345,39 @@ def derive_water_patches(con: duckdb.DuckDBPyConnection) -> None:
         root = find(tile_pos)
         patches[root].append(tile_pos)
     
+    print(f"  -> Made {connections_made} connections, found {len(patches)} water patches from {len(tile_map)} tiles")
+    
+    # Debug: show patch sizes
+    patch_sizes = sorted([len(tiles) for tiles in patches.values()], reverse=True)
+    print(f"  -> Patch sizes: {patch_sizes[:10]}")  # Show top 10
+    
     # Create patches
     patch_id = 1
     for root, tile_positions in patches.items():
         if len(tile_positions) < 1:
             continue
         
-        # Calculate centroid
-        centroid_x = sum(x for x, _ in tile_positions) / len(tile_positions)
-        centroid_y = sum(y for _, y in tile_positions) / len(tile_positions)
+        # Calculate centroid using original positions
+        centroid_x = sum(position_map[pos][0] for pos in tile_positions) / len(tile_positions)
+        centroid_y = sum(position_map[pos][1] for pos in tile_positions) / len(tile_positions)
         
         # Create geometry from tile positions
-        # Create a polygon from the bounding box (can be improved with actual union)
-        min_x = min(x for x, _ in tile_positions)
-        max_x = max(x for x, _ in tile_positions)
-        min_y = min(y for _, y in tile_positions)
-        max_y = max(y for _, y in tile_positions)
+        # Use original positions for bounding box
+        min_x = min(position_map[pos][0] for pos in tile_positions)
+        max_x = max(position_map[pos][0] for pos in tile_positions)
+        min_y = min(position_map[pos][1] for pos in tile_positions)
+        max_y = max(position_map[pos][1] for pos in tile_positions)
         
         # Create polygon (simplified - could use ST_Union for better shape)
         geom_wkt = f"POLYGON(({min_x} {min_y}, {max_x} {min_y}, {max_x} {max_y}, {min_x} {max_y}, {min_x} {min_y}))"
         
+        # Extract tile keys for this patch
+        patch_tile_keys = [tile_map[pos] for pos in tile_positions]
+        
         con.execute("""
-            INSERT OR REPLACE INTO water_patch (patch_id, geom, tile_count, centroid)
-            VALUES (?, ST_GeomFromText(?), ?, ST_Point(?, ?))
-        """, [patch_id, geom_wkt, len(tile_positions), centroid_x, centroid_y])
+            INSERT OR REPLACE INTO water_patch (patch_id, geom, tile_count, centroid, tiles)
+            VALUES (?, ST_GeomFromText(?), ?, ST_Point(?, ?), ?)
+        """, [patch_id, geom_wkt, len(tile_positions), centroid_x, centroid_y, patch_tile_keys])
         
         patch_id += 1
 
