@@ -38,14 +38,14 @@ class BasePrototype:
         return self._data
 
 
-@dataclass
+@dataclass(frozen=True)
 class TransportBeltPrototype(BasePrototype):
     """Prototype accessor for transport-belt."""
 
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class ElectricMiningDrillPrototype(BasePrototype):
     """Prototype accessor for electric-mining-drill."""
 
@@ -88,7 +88,7 @@ class ElectricMiningDrillPrototype(BasePrototype):
         return apply_cardinal_vector(centroid, self._output_vector, direction)
 
 
-@dataclass
+@dataclass(frozen=True)
 class BurnerMiningDrillPrototype(BasePrototype):
     """Prototype accessor for burner-mining-drill."""
 
@@ -96,7 +96,7 @@ class BurnerMiningDrillPrototype(BasePrototype):
         return self._data.get("energy_source", {}).get("fuel_category")
 
 
-@dataclass
+@dataclass(frozen=True)
 class PumpjackPrototype(BasePrototype):
     """Prototype accessor for pumpjack."""
 
@@ -124,7 +124,7 @@ class PumpjackPrototype(BasePrototype):
         ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class InserterPrototype(BasePrototype):
     """Prototype accessor for inserter."""
 
@@ -136,8 +136,8 @@ class InserterPrototype(BasePrototype):
         """Create instance from raw prototype data."""
         return cls(
             _data=data,
-            _pickup_vector=tuple(data["pickup_vector"]),
-            _insert_vector=tuple(data["insert_vector"]),
+            _pickup_vector=tuple(data["pickup_position"]),
+            _insert_vector=tuple(data["insert_position"]),
         )
 
     def pickup_position(
@@ -149,7 +149,7 @@ class InserterPrototype(BasePrototype):
         return apply_cardinal_vector(centroid, self._insert_vector, direction)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LongHandedInserterPrototype(InserterPrototype):
     """Prototype accessor for long-handed-inserter."""
 
@@ -159,10 +159,23 @@ class LongHandedInserterPrototype(InserterPrototype):
         """Create instance from raw prototype data."""
         return cls(
             _data=data,
-            _pickup_vector=tuple(data["pickup_vector"]),
-            _insert_vector=tuple(data["insert_vector"]),
+            _pickup_vector=tuple(data["pickup_position"]),
+            _insert_vector=tuple(data["insert_position"]),
         )
 
+
+@dataclass(frozen=True)
+class FastInserterPrototype(InserterPrototype):
+    """Prototype accessor for fast-inserter."""
+
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "FastInserterPrototype":
+        """Create instance from raw prototype data."""
+        return cls(
+            _data=data,
+            _pickup_vector=tuple(data["pickup_position"]),
+            _insert_vector=tuple(data["insert_position"]),
+        )
 
 class EntityPrototypes:
     """Aggregator for all prototype property accessors."""
@@ -171,23 +184,64 @@ class EntityPrototypes:
         with open(dump_file, "r") as f:
             self.data = json.load(f)
 
+        # Build reverse map: entity_name -> category (type)
+        # Exclude known non-entity categories to avoid collisions (e.g., technology vs entity name)
+        ignore_categories = {
+            "item", "recipe", "technology", "fluid", "tile", "virtual-signal", 
+            "achievement", "item-group", "item-subgroup", "recipe-category",
+            "fuel-category", "resource-category", "module-category", "equipment-category",
+            "ammo-category", "autoplace-control", "custom-input", "font", "gui-style",
+            "mouse-cursor", "noise-layer", "particle", "sound", "sprite", "tile-effect",
+            "tips-and-tricks-item-category", "tips-and-tricks-item", "trivial-smoke",
+            "utility-constants", "utility-sounds", "utility-sprites"
+        }
+        
+        self.entity_type_map: Dict[str, str] = {}
+        for category, entities in self.data.items():
+            if category in ignore_categories:
+                continue
+            if isinstance(entities, dict):
+                for entity_name in entities:
+                    self.entity_type_map[entity_name] = category
+
         # Instantiate all prototypes once
-        self.transport_belt = TransportBeltPrototype(
-            _data=self.data["transport-belt"]["transport-belt"]
-        )
-        self.electric_mining_drill = ElectricMiningDrillPrototype.from_data(
-            self.data["mining-drill"]["electric-mining-drill"]
-        )
-        self.burner_mining_drill = BurnerMiningDrillPrototype(
-            _data=self.data["mining-drill"]["burner-mining-drill"]
-        )
-        self.pumpjack = PumpjackPrototype.from_data(
-            self.data["mining-drill"]["pumpjack"]
-        )
-        self.inserter = InserterPrototype.from_data(self.data["inserter"]["inserter"])
-        self.long_handed_inserter = LongHandedInserterPrototype.from_data(
-            self.data["inserter"]["long-handed-inserter"]
-        )
+        if "transport-belt" in self.data and "transport-belt" in self.data["transport-belt"]:
+            self.transport_belt = TransportBeltPrototype(
+                _data=self.data["transport-belt"]["transport-belt"]
+            )
+        else:
+             # Fallback or optional?
+             pass
+
+        if "mining-drill" in self.data:
+            if "electric-mining-drill" in self.data["mining-drill"]:
+                self.electric_mining_drill = ElectricMiningDrillPrototype.from_data(
+                    self.data["mining-drill"]["electric-mining-drill"]
+                )
+            if "burner-mining-drill" in self.data["mining-drill"]:
+                self.burner_mining_drill = BurnerMiningDrillPrototype(
+                    _data=self.data["mining-drill"]["burner-mining-drill"]
+                )
+            if "pumpjack" in self.data["mining-drill"]:
+                self.pumpjack = PumpjackPrototype.from_data(
+                    self.data["mining-drill"]["pumpjack"]
+                )
+        
+        if "inserter" in self.data:
+            if "inserter" in self.data["inserter"]:
+                self.inserter = InserterPrototype.from_data(self.data["inserter"]["inserter"])
+            if "long-handed-inserter" in self.data["inserter"]:
+                self.long_handed_inserter = LongHandedInserterPrototype.from_data(
+                    self.data["inserter"]["long-handed-inserter"]
+                )
+            if "fast-inserter" in self.data["inserter"]:
+                self.fast_inserter = FastInserterPrototype.from_data(
+                    self.data["inserter"]["fast-inserter"]
+                )
+
+    def get_entity_type(self, entity_name: str) -> Optional[str]:
+        """Get the prototype category (type) for an entity name."""
+        return self.entity_type_map.get(entity_name)
 
 class ItemPrototypes:
     """Prototype accessor for items."""
@@ -195,14 +249,21 @@ class ItemPrototypes:
     def __init__(self, dump_file: str):
         with open(dump_file, "r") as f:
             self.data = json.load(f)
+        
+        # item data is usually under data['item']
+        self.items = self.data.get("item", {})
 
-
-        # Instantiate all item prototypes once
-        # self.item = ItemPrototype.from_data(self.data["item"]["item"])
+    def get_place_result(self, item_name: str) -> Optional[str]:
+        """Get the entity name that this item places, if any."""
+        item_data = self.items.get(item_name)
+        if not item_data:
+            return None
+        return item_data.get("place_result")
 
 
 # Singleton instance - owned by this module
 _prototypes: Optional[EntityPrototypes] = None
+_item_prototypes: Optional[ItemPrototypes] = None
 
 # Default dump file path (can be overridden in get_prototypes)
 DEFAULT_DUMP_FILE = "factorio-data-dump.json"
@@ -243,7 +304,9 @@ def reset_prototypes():
         >>> prototypes = get_prototypes("new-dump-file.json")
     """
     global _prototypes
+    global _item_prototypes
     _prototypes = None
+    _item_prototypes = None
 
 def get_item_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> ItemPrototypes:
     """Get the global item prototypes singleton instance."""

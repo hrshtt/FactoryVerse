@@ -407,13 +407,56 @@ function Agent:get_inventory_contents()
     return {}
 end
 
+--- Get agent inventory items
+--- Returns agent's main inventory contents as a table
+--- @return table Inventory contents {item_name = count, ...} or empty table if invalid
+function Agent:get_inventory_items()
+    if not (self.character and self.character.valid) then
+        return {}
+    end
+
+    local contents = self:get_inventory_contents()
+    if contents and next(contents) ~= nil then
+        return contents
+    end
+
+    return {}
+end
+
+--- Check if agent can reach a position
+--- @param position table Position {x, y}
+--- @return boolean
+function Agent:can_reach_position(position)
+    if not (self.character and self.character.valid) then
+        return false
+    end
+
+    local agent_pos = self.character.position
+    local dx = position.x - agent_pos.x
+    local dy = position.y - agent_pos.y
+    local distance = math.sqrt(dx * dx + dy * dy)
+    
+    -- Character reach_distance is typically 2.5, but we'll use it directly
+    return distance <= self.character.reach_distance
+end
+
+--- Check if agent can reach an entity
+--- @param entity LuaEntity Entity to check
+--- @return boolean
+function Agent:can_reach_entity(entity)
+    if not (self.character and self.character.valid) then
+        return false
+    end
+
+    return self.character.can_reach_entity(entity)
+end
+
 --- Inspect agent details
---- @param attach_inventory boolean|nil Include inventory
---- @param attach_reachable_entities boolean|nil Include reachable entities
---- @return table Inspection result
-function Agent:inspect(attach_inventory, attach_reachable_entities)
-    attach_inventory = attach_inventory or false
-    attach_reachable_entities = attach_reachable_entities or false
+--- Returns only agent position. Optionally attaches processed agent activity state.
+--- @param attach_state boolean|nil Include processed agent activity state (walking, mining, crafting)
+--- @return table Inspection result with position, and optionally processed activity state
+function Agent:inspect(attach_state)
+    attach_state = attach_state or false
 
     if not (self.character and self.character.valid) then
         return {
@@ -438,107 +481,70 @@ function Agent:inspect(attach_inventory, attach_reachable_entities)
         position = { x = position.x, y = position.y }
     }
 
-    -- Get agent inventory only if requested
-    if attach_inventory then
-        local inventory = {}
-        local contents = self:get_inventory_contents()
-        if contents and next(contents) ~= nil then
-            inventory = contents
+    -- Attach processed agent activity state if requested
+    if attach_state then
+        local state = {
+            walking = {
+                active = false,
+                path_id = nil,
+                progress = 0,
+                goal = nil,
+                action_id = nil,
+            },
+            mining = {
+                active = false,
+                entity_name = nil,
+                entity_type = nil,
+                count_progress = 0,
+                target_count = nil,
+                action_id = nil,
+            },
+            crafting = {
+                active = false,
+                recipe = nil,
+                count = 0,
+                queue_length = 0,
+                action_id = nil,
+            },
+        }
+        
+        -- Walking state
+        if self.walking then
+            local has_path = self.walking.path and #self.walking.path > 0
+            local has_path_request = self.walking.path_id ~= nil
+            state.walking.active = has_path or has_path_request
+            state.walking.path_id = self.walking.path_id
+            state.walking.progress = self.walking.progress or 0
+            state.walking.goal = self.walking.goal
+            state.walking.action_id = self.walking.action_id
         end
-        result.inventory = inventory
-    end
-
-    -- Get entities within reach only if requested
-    if attach_reachable_entities then
-        local reachable_resources = {}
-        local reachable_entities = {}
-        local surface = self.character.surface or game.surfaces[1]
-
-        -- Find resources within resource_reach_distance (includes resources, trees, and rocks)
-        local resource_reach = self.character.resource_reach_distance
-        -- Search for resources, trees, and simple-entities (rocks) separately
-        local resources = surface.find_entities_filtered({
-            position = position,
-            radius = resource_reach,
-            type = "resource"
-        })
-
-        for _, resource in ipairs(resources) do
-            if resource and resource.valid then
-                table.insert(reachable_resources, {
-                    name = resource.name,
-                    position = { x = resource.position.x, y = resource.position.y },
-                    type = resource.type
-                })
-            end
+        
+        -- Mining state
+        if self.mining then
+            local is_mining = self.character and self.character.valid and self.character.mining_state.mining
+            state.mining.active = is_mining or (self.mining.action_id ~= nil)
+            state.mining.entity_name = self.mining.entity_name
+            state.mining.entity_type = self.mining.entity_type
+            state.mining.count_progress = self.mining.count_progress or 0
+            state.mining.target_count = self.mining.target_count
+            state.mining.action_id = self.mining.action_id
         end
-
-        -- Find trees within resource_reach_distance
-        local trees = surface.find_entities_filtered({
-            position = position,
-            radius = resource_reach,
-            type = "tree"
-        })
-
-        for _, tree in ipairs(trees) do
-            if tree and tree.valid then
-                table.insert(reachable_resources, {
-                    name = tree.name,
-                    position = { x = tree.position.x, y = tree.position.y },
-                    type = tree.type,
-                    products = tree.prototype.mineable_properties.products
-                })
-            end
+        
+        -- Crafting state
+        if self.crafting and self.crafting.in_progress then
+            state.crafting.active = true
+            state.crafting.recipe = self.crafting.in_progress.recipe
+            state.crafting.count = self.crafting.in_progress.count or 0
+            state.crafting.action_id = self.crafting.in_progress.action_id
         end
-
-        -- Find simple-entities (rocks) within resource_reach_distance
-        local rocks = surface.find_entities_filtered({
-            position = position,
-            radius = resource_reach,
-            type = "simple-entity"
-        })
-
-        for _, rock in ipairs(rocks) do
-            if rock and rock.valid then
-                table.insert(reachable_resources, {
-                    name = rock.name,
-                    position = { x = rock.position.x, y = rock.position.y },
-                    type = rock.type,
-                    products = rock.prototype.mineable_properties.products
-                })
-            end
+        
+        -- Get crafting queue length from character
+        if self.character and self.character.valid then
+            local queue = self.character.crafting_queue
+            state.crafting.queue_length = queue and #queue or 0
         end
-
-        -- Find other entities (non-resources, non-trees, non-rocks) within reach_distance
-        local build_reach = self.character.reach_distance
-        local other_entities = surface.find_entities_filtered({
-            position = position,
-            radius = build_reach
-        })
-
-        for _, entity in ipairs(other_entities) do
-            if entity and entity.valid
-                and entity.type ~= "resource"
-                and entity.type ~= "tree"
-                and entity.type ~= "simple-entity"
-                and entity ~= self.character then
-                -- Exclude tree stumps and other tree-related corpses
-                local is_tree_corpse = (entity.type == "corpse" and
-                    (string.find(entity.name, "stump") or
-                        string.find(entity.name, "tree")))
-                if not is_tree_corpse then
-                    table.insert(reachable_entities, {
-                        name = entity.name,
-                        position = { x = entity.position.x, y = entity.position.y },
-                        type = entity.type
-                    })
-                end
-                -- TODO: Add inventory to reachable entities using get_contents()
-            end
-        end
-
-        result.reachable_resources = reachable_resources
-        result.reachable_entities = reachable_entities
+        
+        result.state = state
     end
 
     return result
@@ -583,77 +589,6 @@ function Agent:get_queued_messages()
     return self.message_queue or {}
 end
 
--- ============================================================================
--- ACTIVITY STATE QUERY (for testing)
--- ============================================================================
-
---- Get current activity state for all async actions
---- Used by test scenarios to verify state machine progress
---- @return table Activity state {walking, mining, crafting}
-function Agent:get_activity_state()
-    local state = {
-        walking = {
-            active = false,
-            path_id = nil,
-            progress = 0,
-            goal = nil,
-            action_id = nil,
-        },
-        mining = {
-            active = false,
-            entity_name = nil,
-            entity_type = nil,
-            count_progress = 0,
-            target_count = nil,
-            action_id = nil,
-        },
-        crafting = {
-            active = false,
-            recipe = nil,
-            count = 0,
-            queue_length = 0,
-            action_id = nil,
-        },
-    }
-    
-    -- Walking state
-    if self.walking then
-        local has_path = self.walking.path and #self.walking.path > 0
-        local has_path_request = self.walking.path_id ~= nil
-        state.walking.active = has_path or has_path_request
-        state.walking.path_id = self.walking.path_id
-        state.walking.progress = self.walking.progress or 0
-        state.walking.goal = self.walking.goal
-        state.walking.action_id = self.walking.action_id
-    end
-    
-    -- Mining state
-    if self.mining then
-        local is_mining = self.character and self.character.valid and self.character.mining_state.mining
-        state.mining.active = is_mining or (self.mining.action_id ~= nil)
-        state.mining.entity_name = self.mining.entity_name
-        state.mining.entity_type = self.mining.entity_type
-        state.mining.count_progress = self.mining.count_progress or 0
-        state.mining.target_count = self.mining.target_count
-        state.mining.action_id = self.mining.action_id
-    end
-    
-    -- Crafting state
-    if self.crafting and self.crafting.in_progress then
-        state.crafting.active = true
-        state.crafting.recipe = self.crafting.in_progress.recipe
-        state.crafting.count = self.crafting.in_progress.count or 0
-        state.crafting.action_id = self.crafting.in_progress.action_id
-    end
-    
-    -- Get crafting queue length from character
-    if self.character and self.character.valid then
-        local queue = self.character.crafting_queue
-        state.crafting.queue_length = queue and #queue or 0
-    end
-    
-    return state
-end
 
 -- ============================================================================
 -- STATE MACHINE PROCESSING
