@@ -9,13 +9,14 @@ local PlacementActions = {}
 --- @param self Agent
 --- @param entity_name string Entity prototype name
 --- @param position table Position {x, y}
---- @param options table|nil Placement options {direction, orient_towards}
+--- @param direction number Direction (4=east, 6=west, 8=south, 10=north)
+--- @param ghost boolean Whether to place a ghost entity
 --- @return table Result with {success, position, entity_name, entity_type}
-function PlacementActions.place_entity(self, entity_name, position, options)
+function PlacementActions.place_entity(self, entity_name, position, direction, ghost)
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
-    
+
     if not entity_name or type(entity_name) ~= "string" then
         error("Agent: entity_name (string) is required")
     end
@@ -23,8 +24,21 @@ function PlacementActions.place_entity(self, entity_name, position, options)
     if not position or type(position.x) ~= "number" or type(position.y) ~= "number" then
         error("Agent: position {x, y} is required")
     end
+
+    if direction and type(direction) ~= "number" then
+        error("Agent: direction (number) must be nil or a number")
+    end
     
-    options = options or {}
+    if ghost ~= nil and type(ghost) ~= "boolean" then
+        error("Agent: ghost (boolean) must be nil or true/false")
+    end
+
+    ghost = ghost or false
+
+    -- Validate agent can reach placement position
+    if not ghost and not self:can_reach_position(position) then
+        error("Agent: Placement position is out of reach: " .. position.x .. ", " .. position.y)
+    end
     
     -- Validate entity prototype exists
     local proto = prototypes and prototypes.entity and prototypes.entity[entity_name]
@@ -32,18 +46,23 @@ function PlacementActions.place_entity(self, entity_name, position, options)
         error("Agent: Unknown entity prototype: " .. entity_name)
     end
 
-    local item_count = self.character.get_main_inventory().get_item_count(entity_name)
-    if item_count < 1 then
-        error("Agent: Insufficient items in agent inventory (have " .. item_count .. ", need 1)")
+    if not ghost then
+        local item_count = self.character.get_main_inventory().get_item_count(entity_name)
+        if item_count < 1 then
+            error("Agent: Insufficient items in agent inventory (have " .. item_count .. ", need 1)")
+        end
     end
     
     local can_place_params = {
         name = entity_name,
         position = position,
-        direction = options.direction,
+        direction = direction,
         force = self.character.force,
         build_check_type = defines.build_check_type.manual,
     }
+    if ghost then
+        can_place_params.build_check_type = defines.build_check_type.manual_ghost
+    end
 
     if not game.surfaces[1].can_place_entity(can_place_params) then
         -- TODO: Need to implement proper diagnostics for why it can't be placed
@@ -61,56 +80,37 @@ function PlacementActions.place_entity(self, entity_name, position, options)
         move_stuck_players = true,
     }
     
-    -- Handle direction
-    if options.direction ~= nil then
-        placement.direction = options.direction
-    elseif options.orient_towards then
-        -- Derive direction from orient_towards
-        local target_pos = nil
-        
-        if options.orient_towards.entity_name and options.orient_towards.position then
-            local ok, ent = pcall(function()
-                return game.surfaces[1].find_entity(options.orient_towards.entity_name, options.orient_towards.position)
-            end)
-            if ok and ent and ent.valid then
-                target_pos = ent.position
-            end
-        end
-        
-        if not target_pos and options.orient_towards.position then
-            target_pos = options.orient_towards.position
-        end
-        
-        if target_pos then
-            local dx = target_pos.x - placement.position.x
-            local dy = target_pos.y - placement.position.y
-            local angle = math.atan2(dy, dx)
-            -- Convert angle to direction (0 = east, increments of 45 degrees)
-            local dir_enum = math.floor((angle + math.pi) / (math.pi / 4) + 0.5) % 8
-            placement.direction = dir_enum
-        end
+    if ghost then
+        placement.inner_name = entity_name
+        placement.name = "entity-ghost"
     end
-    
+
     -- Place entity
     local created_entity = game.surfaces[1].create_entity(placement)
     if not created_entity or not created_entity.valid then
         error("Agent: Failed to place entity")
     end
-    self.character.get_main_inventory().remove({ name = entity_name, count = 1 })
+    if not ghost then
+        self.character.get_main_inventory().remove({ name = entity_name, count = 1 })
+    end
     
     local entity_pos = { x = created_entity.position.x, y = created_entity.position.y }
 
-    
-    -- Enqueue completion message
-    self:enqueue_message({
+    local message = {
         action = "place_entity",
         agent_id = self.agent_id,
         success = true,
         position = entity_pos,
         entity_name = entity_name,
         entity_type = created_entity.type,
-        tick = game.tick or 0,
-    }, "placement")
+    }
+
+    if ghost then
+        message.ghost = true
+    end
+    
+    -- Enqueue completion message
+    self:enqueue_message(message, "placement")
     
     return {
         success = true,
@@ -338,6 +338,4 @@ function PlacementActions.get_placement_cues(self, entity_name)
     return response
 end
 
-
 return PlacementActions
-

@@ -1,15 +1,182 @@
 import json
-from typing import Any, Dict, Optional, Union
+import asyncio
+import time
+import logging
+from typing import Any, Dict, Optional, Union, List, Literal, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
+
 from src.FactoryVerse.dsl.types import MapPosition
-from factorio_rcon import RconClient
+from src.FactoryVerse.dsl.item.base import ItemStack
+from src.FactoryVerse.dsl.recipe.base import Recipes, BaseRecipe, BasicRecipeName
+from factorio_rcon import RCONClient as RconClient
 from contextvars import ContextVar
 from contextlib import contextmanager
+from src.FactoryVerse.dsl.types import Direction, MapPosition, BoundingBox
+from src.FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
+from src.FactoryVerse.dsl.ghosts import GhostManager
+
+if TYPE_CHECKING:
+    from src.FactoryVerse.dsl.item.base import Item, PlaceableItem
 
 
 # Game context: agent is "playing" the factory game
 _playing_factory: ContextVar[Optional["PlayingFactory"]] = ContextVar(
     "playing_factory", default=None
 )
+
+
+class AsyncActionListener:
+    """UDP listener for async action completion events."""
+    
+    def __init__(self, udp_dispatcher: Optional[UDPDispatcher] = None, timeout: int = 30):
+        """
+        Initialize the UDP listener.
+        
+        Args:
+            udp_dispatcher: Optional UDPDispatcher instance. If None, uses global dispatcher.
+            timeout: Default timeout in seconds for waiting on actions
+        """
+        self.udp_dispatcher = udp_dispatcher
+        self.timeout = timeout
+        self.pending_actions: Dict[str, asyncio.Event] = {}
+        self.action_results: Dict[str, Dict[str, Any]] = {}
+        self.event_loops: Dict[str, asyncio.AbstractEventLoop] = {}
+        self.action_timeouts: Dict[str, float] = {}  # Track timeout deadlines for progress extension
+        self.action_progress: Dict[str, Dict[str, Any]] = {}  # Track progress for actions
+        self.running = False
+        
+    async def start(self):
+        """Subscribe to UDP dispatcher for action completion events."""
+        if self.udp_dispatcher is None:
+            self.udp_dispatcher = get_udp_dispatcher()
+        
+        if not self.udp_dispatcher.is_running():
+            await self.udp_dispatcher.start()
+        
+        self.udp_dispatcher.subscribe("*", self._handle_udp_message)
+        self.running = True
+    
+    
+    def _handle_udp_message(self, payload: Dict[str, Any]):
+        """Process received UDP message from dispatcher (called by dispatcher thread).
+        
+        Implements state machine contract:
+        - status: "queued" -> ignore (logging only)
+        - status: "progress" -> track progress, extend timeout for walking
+        - status: "completed" -> finish await
+        - status: "cancelled" -> finish await with cancellation
+        """
+        logger.info(f"UDP RX: {payload}")
+        try:
+            action_id = payload.get('action_id')
+            if not action_id:
+                return
+            
+            # Require status field (no backwards compatibility)
+            status = payload.get('status')
+            if not status:
+                logger.warning(f"UDP message missing required 'status' field: {payload}")
+                return
+            
+            if action_id not in self.pending_actions:
+                return
+            
+            # State machine routing
+            if status == "queued":
+                # Ignore - logging only, redundant with RCON response
+                return
+            
+            if status == "progress":
+                # Track progress
+                self.action_progress[action_id] = payload.get('result', {})
+                
+                # Extend timeout for walking only
+                action_type = payload.get('action_type')
+                if action_type == 'walk_to' and action_id in self.action_timeouts:
+                    # Extend timeout by default timeout duration when progress is received
+                    self.action_timeouts[action_id] = time.time() + self.timeout
+                    logger.debug(f"Extended timeout for {action_id} due to progress")
+                
+                return
+            
+            if status in ("completed", "cancelled"):
+                # Finish await
+                self.action_results[action_id] = payload
+                event = self.pending_actions[action_id]
+                
+                loop = self.event_loops.get(action_id)
+                if loop and loop.is_running():
+                    loop.call_soon_threadsafe(event.set)
+                else:
+                    event.set()
+                return
+            
+            # Unknown status
+            logger.warning(f"Unknown status '{status}' for action {action_id}")
+        except Exception as e:
+            print(f"❌ Error processing UDP message: {e}")
+    
+    async def stop(self):
+        """Unsubscribe from UDP dispatcher."""
+        if self.udp_dispatcher and self.running:
+            self.udp_dispatcher.unsubscribe("*", self._handle_udp_message)
+        self.running = False
+    
+    def register_action(self, action_id: str, initial_timeout_deadline: Optional[float] = None):
+        """Register an action to wait for completion via UDP.
+        
+        Args:
+            action_id: The action ID to register
+            initial_timeout_deadline: Optional initial timeout deadline in seconds since epoch (for progress-based extension)
+        """
+        event = asyncio.Event()
+        self.pending_actions[action_id] = event
+        self.action_results[action_id] = None
+        self.action_progress[action_id] = {}
+        if initial_timeout_deadline:
+            self.action_timeouts[action_id] = initial_timeout_deadline
+        try:
+            self.event_loops[action_id] = asyncio.get_running_loop()
+        except RuntimeError:
+            self.event_loops[action_id] = None
+    
+    async def wait_for_action(self, action_id: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Wait for an action to complete via UDP.
+        
+        Args:
+            action_id: The action ID to wait for
+            timeout: Optional timeout override in seconds
+            
+        Returns:
+            The action completion payload
+            
+        Raises:
+            TimeoutError: If action doesn't complete within timeout
+            ValueError: If action_id not registered
+        """
+        if action_id not in self.pending_actions:
+            raise ValueError(f"Action not registered: {action_id}")
+        
+        event = self.pending_actions[action_id]
+        timeout_secs = timeout or self.timeout
+        
+        # Initialize timeout deadline for progress-based extension (walking only)
+        if action_id not in self.action_timeouts:
+            self.action_timeouts[action_id] = time.time() + timeout_secs
+        
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout_secs)
+            return self.action_results[action_id]
+        except asyncio.TimeoutError:
+            raise
+        finally:
+            self.pending_actions.pop(action_id, None)
+            self.action_results.pop(action_id, None)
+            self.action_timeouts.pop(action_id, None)
+            self.action_progress.pop(action_id, None)
+            self.event_loops.pop(action_id, None)
 
 
 class AgentCommands:
@@ -26,36 +193,498 @@ class AgentCommands:
         self.agent_id = agent_id
 
 
+class AgentInventory:
+    """Represents the agent's inventory with helper methods for querying and shaping items.
+    
+    This is not an action class (doesn't mutate state), but provides helper methods
+    to shape inventory items and stacks for downstream actions.
+    """
+
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
+
+    @property
+    def item_stacks(self) -> List[ItemStack]:
+        """Get agent inventory as list of ItemStack objects.
+        
+        Equivalent to the old get_inventory_items() top-level function.
+        """
+        result = self._factory.get_inventory_items()
+        inventory_data = json.loads(result)
+        
+        items = []
+        for stack_obj in inventory_data:
+            # Default subgroup - could be enhanced to lookup from prototypes
+            item_name = stack_obj.get("name")
+            count = stack_obj.get("count")
+            subgroup = stack_obj.get("subgroup", "raw-material")
+            items.append(ItemStack(name=item_name, count=count, subgroup=subgroup))
+        
+        return items
+
+    def get_total(self, item_name: str) -> int:
+        """Get total count of an item across all stacks.
+        
+        Args:
+            item_name: Name of the item to count
+            
+        Returns:
+            Total count of the item in inventory
+        """
+        return sum(stack.count for stack in self.item_stacks if stack.name == item_name)
+
+    def get_item(self, item_name: str) -> Optional[Union["Item", "PlaceableItem"]]:
+        """Get a single Item or PlaceableItem instance for the given item name.
+        
+        Args:
+            item_name: Name of the item
+            
+        Returns:
+            Item or PlaceableItem instance, or None if item is not in inventory
+        """
+        if self.get_total(item_name) == 0:
+            return None
+        
+        from src.FactoryVerse.dsl.item.base import get_item
+        return get_item(item_name)
+
+    def get_item_stacks(
+        self,
+        item_name: str,
+        count: Union[int, Literal["half", "full"]],
+        number_of_stacks: Union[int, Literal["max"]] = "max",
+        strict: bool = False
+    ) -> List[ItemStack]:
+        """Get item stacks for a specific item.
+        
+        Args:
+            item_name: Name of the item
+            count: Count per stack (int), "half" for half stack, or "full" for full stack
+            number_of_stacks: Number of stacks to return, or "max" for all possible stacks (default: "max")
+            strict: If True, raises exception when insufficient items. If False, returns all possible.
+            
+        Returns:
+            List of ItemStack instances
+            
+        Raises:
+            ValueError: If strict=True and insufficient items available
+        """
+        total_available = self.get_total(item_name)
+        
+        # Determine count per stack first (needed for validation)
+        if count == "half":
+            # Get stack size from item prototype
+            item = self.get_item(item_name)
+            if item:
+                stack_size = item.stack_size
+                count_per_stack = stack_size // 2
+            else:
+                # Fallback to default
+                count_per_stack = 25
+        elif count == "full":
+            # Get stack size from item prototype
+            item = self.get_item(item_name)
+            if item:
+                count_per_stack = item.stack_size
+            else:
+                # Fallback to default
+                count_per_stack = 50
+        else:
+            count_per_stack = count
+        
+        # Early return if no items available
+        if total_available == 0:
+            if strict and isinstance(number_of_stacks, int) and number_of_stacks > 0:
+                raise ValueError(f"No {item_name} available in inventory")
+            return []
+        
+        # Validate if requested count exceeds available (strict mode)
+        if strict and count_per_stack > total_available:
+            raise ValueError(
+                f"Insufficient {item_name}: requested count {count_per_stack} exceeds available {total_available}"
+            )
+        
+        # Determine number of stacks
+        if number_of_stacks == "max":
+            # Calculate how many stacks we can make
+            max_stacks = total_available // count_per_stack
+            number_of_stacks = max_stacks
+            # If strict and we can't make at least one stack, raise exception
+            if strict and max_stacks == 0:
+                raise ValueError(
+                    f"Insufficient {item_name}: cannot make even one stack of {count_per_stack}, available {total_available}"
+                )
+        else:
+            # Validate if we have enough
+            required = count_per_stack * number_of_stacks
+            if strict and required > total_available:
+                raise ValueError(
+                    f"Insufficient {item_name}: required {required}, available {total_available}"
+                )
+            # Cap at available (if not strict, give all possible)
+            if not strict:
+                max_possible = total_available // count_per_stack
+                number_of_stacks = min(number_of_stacks, max_possible)
+        
+        # Ensure number_of_stacks is non-negative
+        number_of_stacks = max(0, number_of_stacks)
+        
+        # Create stacks
+        stacks = []
+        remaining = total_available
+        
+        for _ in range(number_of_stacks):
+            if remaining <= 0:
+                break
+            stack_count = min(count_per_stack, remaining)
+            stacks.append(ItemStack(name=item_name, count=stack_count, subgroup="raw-material"))
+            remaining -= stack_count
+        
+        return stacks
+
+    def check_recipe_count(self, recipe_name: str) -> int:
+        """Check how many times a recipe can be crafted based on available ingredients.
+        
+        Args:
+            recipe_name: Name of the recipe
+            
+        Returns:
+            Maximum number of times the recipe can be crafted
+        """
+        recipe = self._factory.recipes[recipe_name]
+        
+        if not recipe or not recipe.ingredients:
+            return 0
+        
+        # Calculate how many times we can craft for each ingredient
+        max_crafts_per_ingredient = []
+        for ingredient in recipe.ingredients:
+            available_count = self.get_total(ingredient.name)
+            if ingredient.count == 0:
+                max_crafts_per_ingredient.append(float("inf"))
+            else:
+                max_crafts = available_count // ingredient.count
+                max_crafts_per_ingredient.append(max_crafts)
+        
+        # Find the minimum (bottleneck ingredient)
+        if not max_crafts_per_ingredient:
+            return 0
+        
+        actual_crafts = min(max_crafts_per_ingredient)
+        return int(actual_crafts) if actual_crafts != float("inf") else 0
+
+
+class WalkingAction:
+    """Walking action wrapper."""
+    
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
+    
+    async def to(
+        self,
+        position: Union[Dict[str, float], MapPosition],
+        strict_goal: bool = False,
+        options: Optional[Dict] = None,
+        timeout: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Walk to a position (async/await).
+        
+        Args:
+            position: Target position
+            strict_goal: If true, fail if exact position unreachable
+            options: Additional pathfinding options
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            Completion payload
+        """
+        response = self._factory.walk_to(position, strict_goal, options)
+        return await self._factory._await_action(response, timeout=timeout)
+    
+    def cancel(self) -> str:
+        """Cancel current walking action."""
+        return self._factory.stop_walking()
+
+
+class MiningAction:
+    """Mining action wrapper."""
+    
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
+    
+    async def mine(
+        self,
+        resource_name: str,
+        max_count: Optional[int] = None,
+        timeout: Optional[int] = None
+    ) -> List[ItemStack]:
+        """Mine a resource (async/await).
+        
+        Args:
+            resource_name: Resource prototype name
+            max_count: Max items to mine (None = deplete resource)
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            List of ItemStack objects obtained from mining
+        """
+        response = self._factory.mine_resource(resource_name, max_count)
+        result_payload = await self._factory._await_action(response, timeout=timeout)
+        
+        # Parse result for items
+        items = []
+        result_data = result_payload.get("result", {})
+        if "actual_products" in result_data:
+            for name, count in result_data["actual_products"].items():
+                items.append(ItemStack(name=name, count=count, subgroup="raw-resource")) # Default to raw-resource or infer
+                
+        return items
+    
+    def cancel(self) -> str:
+        """Cancel current mining action."""
+        return self._factory.stop_mining()
+
+
+class CraftingAction:
+    """Crafting action wrapper."""
+    
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
+    
+    async def craft(
+        self,
+        recipe: str,
+        count: int = 1,
+        timeout: Optional[int] = None
+    ) -> List[ItemStack]:
+        """Craft a recipe (async/await).
+        
+        Args:
+            recipe: Recipe name to craft
+            count: Number of times to craft
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            List of ItemStack objects crafted
+        """
+        response = self._factory.craft_enqueue(recipe, count)
+        result_payload = await self._factory._await_action(response, timeout=timeout)
+        
+        # Parse result for items
+        items = []
+        result_data = result_payload.get("result", {})
+        if "products" in result_data:
+            for name, count in result_data["products"].items():
+                items.append(ItemStack(name=name, count=count, subgroup="intermediate-product")) # Default or infer
+                
+        return items
+    
+    def enqueue(self, recipe: str, count: int = 1) -> Dict[str, Any]:
+        """Enqueue a recipe for crafting.
+        
+        Args:
+            recipe: Recipe name to craft
+            count: Number of times to craft
+            
+        Returns:
+            Response dict with queued status
+        """
+        return self._factory.craft_enqueue(recipe, count)
+    
+    def dequeue(self, recipe: str, count: Optional[int] = None) -> str:
+        """Cancel queued crafting.
+        
+        Args:
+            recipe: Recipe name to cancel
+            count: Number to cancel (None = all)
+        """
+        return self._factory.craft_dequeue(recipe, count)
+    
+    def status(self) -> Dict[str, Any]:
+        """Get current crafting status.
+        
+        Returns:
+            Crafting state dict with active, recipe, action_id
+        """
+        result = self._factory.inspect(attach_state=True)
+        state = json.loads(result)
+        return state.get("state", {}).get("crafting", {})
+
+
+class ResearchAction:
+    """Research action wrapper."""
+    
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
+    
+    def enqueue(self, technology: str) -> str:
+        """Start researching a technology.
+        
+        Args:
+            technology: Technology name to research
+        """
+        return self._factory.enqueue_research(technology)
+    
+    def dequeue(self) -> str:
+        """Cancel current research."""
+        return self._factory.cancel_current_research()
+    
+    def status(self) -> Dict[str, Any]:
+        """Get current research status.
+        
+        Returns:
+            Research state dict
+        """
+        result = self._factory.get_technologies(only_available=False)
+        techs_data = json.loads(result)
+        # Find currently researching tech
+        for tech in techs_data.get("technologies", []):
+            if tech.get("researching", False):
+                return tech
+        return {}
+
+
 class PlayingFactory:
     """Represents the agent's active gameplay session with RCON access."""
 
-    rcon: RconClient
-    agent_id: str
+    _rcon: RconClient
+    _agent_id: str
     agent_commands: AgentCommands
+    recipes: Recipes
+    _async_listener: AsyncActionListener
+    _ghost_manager: GhostManager
 
-    def __init__(self, rcon_client: "RconClient", agent_id: str):
-        self.rcon = rcon_client
+    def __init__(self, rcon_client: "RconClient", agent_id: str, recipes: Recipes, 
+                 udp_dispatcher: Optional[UDPDispatcher] = None):
+        self._rcon = rcon_client
         self._agent_id = agent_id
         self.agent_commands = AgentCommands(agent_id)
+        self.recipes = recipes
+        self._async_listener = AsyncActionListener(udp_dispatcher=udp_dispatcher)
+        self._ghost_manager = GhostManager(self, agent_id=agent_id)
+        
+        # Initialize action wrappers
+        self._walking = WalkingAction(self)
+        self._crafting = CraftingAction(self)
+        self._mining = MiningAction(self)
+        self._research = ResearchAction(self)
+        self._inventory = AgentInventory(self)
+    
+    async def _ensure_async_listener(self):
+        """Ensure async listener is started."""
+        if not self._async_listener.running:
+            await self._async_listener.start()
+    
+    async def _await_action(self, response: Dict[str, Any], timeout: Optional[int] = None) -> Dict[str, Any]:
+        """Wait for an async action to complete.
+        
+        Args:
+            response: Response dict from async action (should have action_id)
+            timeout: Optional timeout in seconds (overrides calculated timeout)
+            
+        Returns:
+            Completion payload from UDP
+        """
+        if not response.get('queued'):
+            return response
+        
+        action_id = response.get('action_id')
+        if not action_id:
+            return response
+        
+        await self._ensure_async_listener()
+        
+        # Calculate timeout with 0.5x buffer for mining/crafting based on estimated_ticks
+        calculated_timeout = timeout
+        if timeout is None:
+            estimated_ticks = response.get('estimated_ticks')
+            if estimated_ticks:
+                # Convert ticks to seconds: 1 tick = 1/60 seconds at game.speed = 1.0
+                # Add 0.5x buffer for safety
+                base_seconds = (estimated_ticks / 60.0)
+                calculated_timeout = base_seconds * 1.5
+                logger.debug(f"Calculated timeout for {action_id}: {calculated_timeout:.2f}s (from {estimated_ticks} ticks)")
+            else:
+                calculated_timeout = self._async_listener.timeout
+        
+        self._async_listener.register_action(action_id)
+        return await self._async_listener.wait_for_action(action_id, timeout=calculated_timeout)
 
     @property
     def agent_id(self) -> str:
         return self._agent_id
+    
+    @property
+    def walking(self) -> "WalkingAction":
+        """Walking action wrapper."""
+        return self._walking
+    
+    @property
+    def crafting(self) -> "CraftingAction":
+        """Crafting action wrapper."""
+        return self._crafting
+    
+    @property
+    def mining(self) -> "MiningAction":
+        """Mining action wrapper."""
+        return self._mining
+    
+    @property
+    def research(self) -> "ResearchAction":
+        """Research action wrapper."""
+        return self._research
+
+    @property
+    def inventory(self) -> "AgentInventory":
+        """Agent inventory helper with methods for querying and shaping items."""
+        return self._inventory
+    
+    def update_recipes(self) -> None:
+        cmd = self._build_command("get_recipes")
+        result = self.execute(cmd)
+        Recipes = Recipes(json.loads(result))
+        self.recipes = Recipes
 
     def execute(self, command: str, silent: bool = True) -> str:
         if silent:
-            command = f"/sc {command}"
+            full_command = f"/sc {command}"
         else:
-            command = f"/c {command}"
-        return self.rcon.send_command(command)
+            full_command = f"/c {command}"
+            
+        logger.info(f"RCON TX: {full_command}")
+        response = self._rcon.send_command(full_command)
+        logger.info(f"RCON RX: {response}")
+        return response
 
-    def _build_command(self, method: str, **kwargs) -> str:
-        """Build RCON command string for a method call with only named keyword arguments."""
-        if not kwargs:
-            # No arguments
-            return f"rcon.print(helpers.table_to_json(remote.call('{self.agent_id}', '{method}')))"
-        args = f"helpers.json_to_table('{json.dumps(kwargs)}')"
-        return f"rcon.print(helpers.table_to_json(remote.call('{self.agent_id}', '{method}', {args})))"
+    def _build_command(self, method: str, *args) -> str:
+        """Build RCON command string for a method call with positional arguments.
+        
+        Args are passed as positional arguments to match RemoteInterface method signatures.
+        """
+        remote_call = f"remote.call('{self.agent_id}', '{method}'"
+        
+        if args:
+            # Convert args to JSON and pass as table
+            args_json = json.dumps(list(args))
+            remote_call += f", table.unpack(helpers.json_to_table('{args_json}'))"
+        
+        remote_call += ")"
+        return f"rcon.print(helpers.table_to_json({remote_call}))"
+
+    def _execute_and_parse_json(self, command: str) -> Dict[str, Any]:
+        """Execute RCON command and parse resultant JSON with error handling."""
+        result = self.execute(command)
+        if not result or not result.strip():
+            # Sometimes RCON returns empty string on silent failure or no output
+            # Raise descriptive error
+            raise RuntimeError(f"RCON command returned empty response. Command: {command}")
+        
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError as e:
+            # Log the raw result for debugging
+            logger.error(f"JSON decode failed. Result: '{result}'")
+            raise RuntimeError(f"Failed to decode JSON from RCON. Response: '{result}'. Error: {e}") from e
 
     # ========================================================================
     # ASYNC: Walking
@@ -66,18 +695,24 @@ class PlayingFactory:
         goal: Union[Dict[str, float], "MapPosition"],
         strict_goal: bool = False,
         options: Optional[Dict] = None,
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """Walk the agent to a target position using pathfinding.
 
         Args:
-            goal: Target position {x, y} or MapPosition objectxw
+            goal: Target position {x, y} or MapPosition object
             strict_goal: If true, fail if exact position unreachable
             options: Additional pathfinding options
+            
+        Returns:
+            Response dict with queued status and action_id
         """
         if options is None:
             options = {}
+        # Convert MapPosition to dict if needed
+        if hasattr(goal, 'x') and hasattr(goal, 'y'):
+            goal = {"x": goal.x, "y": goal.y}
         cmd = self._build_command("walk_to", goal, strict_goal, options)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     def stop_walking(self) -> str:
         """Immediately stop the agent's current walking action."""
@@ -88,18 +723,18 @@ class PlayingFactory:
     # ASYNC: Mining
     # ========================================================================
 
-    def mine_resource(self, resource_name: str, max_count: Optional[int] = None) -> str:
+    def mine_resource(self, resource_name: str, max_count: Optional[int] = None) -> Dict[str, Any]:
         """Mine a resource within reach of the agent.
 
         Args:
             resource_name: Resource prototype name (e.g., 'iron-ore', 'coal', 'stone')
             max_count: Max items to mine (None = deplete resource)
+            
+        Returns:
+            Response dict with queued status and action_id
         """
-        if max_count is None:
-            cmd = self._build_command("mine_resource", resource_name, None)
-            return self.execute(cmd)
         cmd = self._build_command("mine_resource", resource_name, max_count)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     def stop_mining(self) -> str:
         """Immediately stop the agent's current mining action."""
@@ -110,15 +745,22 @@ class PlayingFactory:
     # ASYNC: Crafting
     # ========================================================================
 
-    def craft_enqueue(self, recipe_name: str, count: int = 1) -> str:
+    def craft_enqueue(self, recipe_name: str, count: int = 1) -> Dict[str, Any]:
         """Queue a recipe for hand-crafting.
 
         Args:
             recipe_name: Recipe name to craft
             count: Number of times to craft the recipe
+            
+        Returns:
+            Response dict with queued status and action_id
         """
+        if not self.recipes[recipe_name].is_hand_craftable():
+            raise ValueError(f"Recipe {recipe_name} is not hand-craftable")
+        if not self.recipes[recipe_name].enabled:
+            raise ValueError(f"Recipe {recipe_name} is not enabled, try researching technology first")
         cmd = self._build_command("craft_enqueue", recipe_name, count)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     def craft_dequeue(self, recipe_name: str, count: Optional[int] = None) -> str:
         """Cancel queued crafting for a recipe.
@@ -264,18 +906,48 @@ class PlayingFactory:
         self,
         entity_name: str,
         position: Union[Dict[str, float], "MapPosition"],
-        options: Optional[Dict] = None,
-    ) -> str:
+        direction: Optional[Direction] = None,
+        ghost=False,
+        label: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Place an entity from the agent's inventory onto the map.
 
         Args:
             entity_name: Entity prototype name to place
             position: MapPosition to place entity
-            options: Placement options (direction, force_build, etc.)
+            direction: Optional direction for placement
+            ghost: Whether to place as ghost entity (default: False)
+            label: Optional label for ghost entities (Python-only, for grouping/staging)
+
+        Returns:
+            Result dict with success, position, entity_name, etc.
         """
-        if options is None:
-            options = {}
-        return self._build_command("place_entity", entity_name, position, options)
+        # Convert MapPosition to dict if needed
+        if hasattr(position, 'x') and hasattr(position, 'y'):
+            position = {"x": position.x, "y": position.y}
+        
+        cmd = self._build_command(
+            "place_entity", entity_name, position, direction, ghost
+        )
+        result_str = self.execute(cmd)
+        result = json.loads(result_str)
+        
+        # Track ghost if placed
+        if ghost and result.get("success"):
+            pos = result.get("position", position)
+            self._ghost_manager.add_ghost(
+                position=pos,
+                entity_name=entity_name,
+                label=label,
+                placed_tick=result.get("tick", 0)
+            )
+        elif not ghost and result.get("success"):
+            # If placing a real entity, check if we're replacing a tracked ghost
+            # Note: position here might be dict or MapPosition, GhostManager handles both
+            if self._ghost_manager.remove_ghost(position=position, entity_name=entity_name):
+                logger.warning(f"Ghost at {position} for {entity_name} replaced by real entity.")
+        
+        return result
 
     def pickup_entity(
         self,
@@ -290,6 +962,32 @@ class PlayingFactory:
         """
         cmd = self._build_command("pickup_entity", entity_name, position)
         return self.execute(cmd)
+
+    def remove_ghost(self, entity_name: str, position: MapPosition) -> Dict[str, Any]:
+        """Remove a ghost entity from the map.
+
+        Args:
+            entity_name: Entity prototype name to remove
+            position: Entity position
+
+        Returns:
+            Result dict with success status
+        """
+        # Convert MapPosition to dict if needed
+        if hasattr(position, 'x') and hasattr(position, 'y'):
+            pos_dict = {"x": position.x, "y": position.y}
+        else:
+            pos_dict = position
+        
+        cmd = self._build_command("remove_ghost", entity_name, pos_dict)
+        result_str = self.execute(cmd)
+        result = json.loads(result_str)
+        
+        # Remove from tracking if successful
+        if result.get("success"):
+            self._ghost_manager.remove_ghost(position=pos_dict, entity_name=entity_name)
+        
+        return result
 
     # ========================================================================
     # SYNC: Movement
@@ -308,16 +1006,22 @@ class PlayingFactory:
     # QUERIES
     # ========================================================================
 
-    def inspect(
-        self, attach_inventory: bool = False, attach_entities: bool = False
-    ) -> str:
-        """Get current agent state including position, inventory, and nearby entities.
+    def inspect(self, attach_state: bool = False) -> str:
+        """Get current agent position.
 
         Args:
-            attach_inventory: Include inventory contents
-            attach_entities: Include nearby entities
+            attach_state: Include processed agent activity state (walking, mining, crafting)
         """
-        cmd = self._build_command("inspect", attach_inventory, attach_entities)
+        cmd = self._build_command("inspect", attach_state)
+        return self.execute(cmd)
+
+    def get_inventory_items(self) -> str:
+        """Get agent's main inventory contents.
+
+        Returns:
+            JSON string with inventory contents {item_name: count, ...}
+        """
+        cmd = self._build_command("get_inventory_items")
         return self.execute(cmd)
 
     def get_placement_cues(self, entity_name: str) -> str:
@@ -352,10 +1056,6 @@ class PlayingFactory:
         cmd = self._build_command("get_technologies", only_available)
         return self.execute(cmd)
 
-    def get_activity_state(self) -> str:
-        """Get current state of all async activities (walking, mining, crafting)."""
-        cmd = self._build_command("get_activity_state")
-        return self.execute(cmd)
 
     # ========================================================================
     # RESEARCH
@@ -379,15 +1079,29 @@ class PlayingFactory:
     # REACHABILITY
     # ========================================================================
 
-    def get_reachable(self) -> str:
-        """Get cached reachable entities and resources (position keys only)."""
-        cmd = self._build_command("get_reachable")
-        return self.execute(cmd)
-
-    def get_reachable_full(self) -> str:
-        """Get full reachable snapshot with complete entity data."""
-        cmd = self._build_command("get_reachable_full")
-        return self.execute(cmd)
+    def get_reachable(self, attach_ghosts: bool = True) -> Dict[str, Any]:
+        """Get full reachable snapshot with complete entity data.
+        
+        Args:
+            attach_ghosts: Whether to include ghosts in response (default: True)
+            
+        Returns:
+            Dict with entities, resources, ghosts (if attach_ghosts=True), agent_position, tick
+        """
+        cmd = self._build_command("get_reachable", attach_ghosts)
+        result_str = self.execute(cmd)
+        result = json.loads(result_str)
+        
+        return result
+    
+    @property
+    def ghosts(self) -> GhostManager:
+        """Get the ghost manager for this factory.
+        
+        Returns:
+            GhostManager instance for managing tracked ghosts
+        """
+        return self._ghost_manager
 
     # ========================================================================
     # DEBUG
@@ -400,7 +1114,8 @@ class PlayingFactory:
 
 
 @contextmanager
-def playing_factorio(rcon_client: "RconClient", agent_id: str):
+def playing_factorio(rcon_client: "RconClient", agent_id: str, recipes: Optional[Recipes] = None,
+                     udp_dispatcher: Optional[UDPDispatcher] = None):
     """Context manager for agent gameplay operations.
 
     This context enables entities to perform remote operations via RCON.
@@ -409,13 +1124,23 @@ def playing_factorio(rcon_client: "RconClient", agent_id: str):
     Args:
         rcon_client: RCON client for remote interface calls
         agent_id: Agent ID (e.g., 'agent_1')
+        recipes: Optional Recipes instance (will be fetched if None)
+        udp_dispatcher: Optional UDP dispatcher for async actions
 
     Example:
-        with playing_factory(rcon, 'agent_1'):
-            assembler = entities[0]  # From reachable API
-            assembler.set_recipe('iron-plate')
+        with playing_factorio(rcon, 'agent_1'):
+            await factory.walking.to(MapPosition(x=10, y=20))
+            factory.crafting.enqueue('iron-plate', count=10)
     """
-    factory = PlayingFactory(rcon_client, agent_id)
+    # Fetch recipes if not provided
+    if recipes is None:
+        # Create a temporary factory to fetch recipes
+        temp_factory = PlayingFactory(rcon_client, agent_id, Recipes([]), udp_dispatcher)
+        recipes_json = temp_factory.get_recipes()
+        recipes_data = json.loads(recipes_json)
+        recipes = Recipes(recipes_data.get("recipes", []))
+    
+    factory = PlayingFactory(rcon_client, agent_id, recipes, udp_dispatcher)
     token = _playing_factory.set(factory)
     try:
         yield factory

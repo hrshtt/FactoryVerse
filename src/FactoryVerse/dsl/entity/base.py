@@ -1,5 +1,5 @@
 import pydantic
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Literal
 from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction
 from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack
 from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
@@ -9,6 +9,9 @@ from src.FactoryVerse.dsl.prototypes import (
     PumpjackPrototype,
     InserterPrototype,
     LongHandedInserterPrototype,
+    FastInserterPrototype,
+    TransportBeltPrototype,
+    apply_cardinal_vector,
 )
 
 
@@ -17,8 +20,9 @@ class BaseEntity(pydantic.BaseModel):
 
     name: str
     position: MapPosition
-    bounding_box: BoundingBox
     direction: Optional[Direction] = None
+
+    model_config = {"arbitrary_types_allowed": True}
 
     @property
     def _factory(self) -> "PlayingFactory":
@@ -42,11 +46,14 @@ class BaseEntity(pydantic.BaseModel):
 
 class GhostEntity(BaseEntity):
     """A ghost entity."""
-    ...
 
     def remove(self) -> bool:
         """Remove the ghost entity."""
         return self._factory.remove_ghost(self.name, self.position)
+    
+    def build(self) -> bool:
+        """Build the ghost entity."""
+        return self._factory.place_entity(self.name, self.position)
 
 class Container(BaseEntity):
     """A container entity."""
@@ -56,6 +63,10 @@ class Container(BaseEntity):
     def store_items(self, items: List[ItemStack]):
         """Store items in the container."""
         return self._factory.put_inventory_items(self.name, self.position, items)
+
+    def take_items(self, items: List[ItemStack]):
+        """Take items from the container."""
+        return self._factory.take_inventory_items(self.name, self.position, items)
 
 class WoodenChest(Container): ...
 
@@ -132,8 +143,9 @@ class Furnace(BaseEntity):
 class ElectricPole(BaseEntity):
     """An electric pole entity."""
 
-    def extend_to(self, direction: Direction, distance: Optional[float] = None):
-        """Extend the electric pole to the given direction and distance."""
+    def extend(self, direction: Direction, distance: Optional[float] = None):
+        """Extend the electric pole to the given direction and distance.
+        No distance = MAX possible for the entity"""
         return self._factory.extend_electric_pole(self.name, self.position, direction, distance)
 
 
@@ -157,20 +169,15 @@ class Inserter(BaseEntity):
             raise ValueError("Inserter direction must be set to calculate pickup position")
         return self.prototype.pickup_position(self.position, self.direction)
 
-    def extend_to(self, direction: Direction, distance: Optional[float] = None):
-        """Extend the inserter to the given direction and distance."""
-        return self._factory.extend_inserter(self.name, self.position, direction, distance)
 
 
+class FastInserter(Inserter):
+    """Fast inserter entity."""
 
-class FastInserter(Inserter): ...
-
-    # def extend_to(self, direction: Direction, distance: Optional[float] = None):
-    #     """Extend the fast inserter to the given direction and distance."""
-    #     if distance is None:
-    #         return self._factory.extend_fast_inserter(self.name, self.position, direction)
-    #     else:
-    #         return self._factory.extend_fast_inserter(self.name, self.position, direction, distance)
+    @property
+    def prototype(self) -> FastInserterPrototype:
+        """Get the prototype for this long-handed inserter type."""
+        return get_entity_prototypes().fast_inserter
 
 
 class LongHandInserter(Inserter):
@@ -181,41 +188,45 @@ class LongHandInserter(Inserter):
         """Get the prototype for this long-handed inserter type."""
         return get_entity_prototypes().long_handed_inserter
 
-    def extend_to(self, direction: Direction, distance: Optional[float] = None):
-        """Extend the long hand inserter to the given direction and distance."""
-        if distance is None:
-            self._factory.rcon.execute_command(
-                f"extend_long_hand_inserter {self.name} {self.position.x} {self.position.y} {direction.value}"
-            )
-        else:
-            self._factory.rcon.execute_command(
-                f"extend_long_hand_inserter {self.name} {self.position.x} {self.position.y} {direction.value} {distance}"
-            )
-
 class AssemblingMachine(BaseEntity):
     """An assembling machine entity."""
 
-    def set_recipe(self, recipe: Union[ItemName, PlaceableItemName]) -> bool: # TODO: Implement Recipe literal
+    def set_recipe(self, recipe: "Recipe") -> bool: # TODO: Implement Recipe literal
         """Set the recipe of the assembling machine."""
         return self._factory.set_assembling_machine_recipe(self.name, self.position, recipe)
 
-    def get_input_type(self) -> ItemName:
+    def get_recipe(self) -> Optional["Recipe"]:
         """Get the input type of the assembling machine."""
         return self._factory.get_assembling_machine_input_type(self.name, self.position)
     
-    def get_output_type(self) -> ItemName:
-        """Get the output type of the assembling machine."""
-        return self._factory.get_assembling_machine_output_type(self.name, self.position)
+    def get_output_items(self) -> ItemStack:
+        return ItemStack.from_result
 
 
 class TransportBelt(BaseEntity):
     """A transport belt entity."""
 
-    def extend_by_one(self, direction: Optional[Direction] = None) -> bool:
+    @property
+    def prototype(self) -> TransportBeltPrototype:
+        """Get the prototype for this transport belt type."""
+        return get_entity_prototypes().transport_belt
+    
+    @property
+    def selection_box(self) -> BoundingBox:
+        """Get the selection box of the transport belt."""
+        return BoundingBox.from_tuple(self.prototype["selection_box"])
+
+    def extend(self, turn: Optional[Literal["left", "right"]] = None) -> bool:
         """Extend the transport belt by one entity."""
-        if direction is None:
-            direction = self.direction
-        return self._factory.place_entity(self.name, self.position, direction)
+        if turn is not None and turn not in ["left", "right"]:
+            raise ValueError(f"Invalid turn: {turn}")
+        direction = self.direction
+        if turn == "left":
+            direction = self.direction.turn_left()
+        elif turn == "right":
+            direction = self.direction.turn_right()
+        position = self.position.offset(offset=(1, 1), direction=direction) # TODO: get offset from prototypes
+        return self._factory.place_entity(self.name, position, direction)
 
 
 class Splitter(BaseEntity):
@@ -230,10 +241,9 @@ class ElectricMiningDrill(BaseEntity):
         """Get the prototype for this electric mining drill type."""
         return get_entity_prototypes().electric_mining_drill
 
-    def place_adjacent(self, placeable_item: PlaceableItemName) -> bool:
-        """Place an adjacent mining drill."""
-        if placeable_item != "electric-mining-drill":
-            raise ValueError(f"Invalid placeable item: {placeable_item}")
+    def place_adjacent(self, side: Literal["left", "right"]) -> bool:
+        """Place an adjacent mining drill on left or right side."""
+        placeable_item = "electric-mining-drill"
         return self._factory.place_entity(placeable_item, self.position, self.direction)
 
     def output_position(self) -> MapPosition:

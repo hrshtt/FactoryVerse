@@ -310,18 +310,11 @@ The agent must have the items in their inventory.]],
 The agent must have the item in their inventory and be within build reach.
 Returns an entity reference for further operations on the placed entity.]],
         paramspec = {
-            _param_order = { "entity_name", "position", "options" },
+            _param_order = { "entity_name", "position", "direction", "ghost" },
             entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to place" },
             position = { type = "position", required = true, doc = "Position to place entity" },
-            options = {
-                type = "table",
-                default = {},
-                doc = "Placement options",
-                schema = {
-                    direction = { type = "number", doc = "Direction (0=north, 2=east, 4=south, 6=west)" },
-                    force_build = { type = "boolean", doc = "Force placement even if blocked" },
-                },
-            },
+            direction = { type = "number", default = nil, doc = "Direction (4=east, 6=west, 8=south, 10=north)" },
+            ghost = { type = "boolean", default = false, doc = "Whether to place a ghost entity" },
         },
         returns = {
             type = "entity_ref",
@@ -333,8 +326,8 @@ Returns an entity reference for further operations on the placed entity.]],
                 entity_type = { type = "string", doc = "Entity type string" },
             },
         },
-        func = function(self, entity_name, position, options)
-            return self:place_entity(entity_name, position, options)
+        func = function(self, entity_name, position, direction, ghost)
+            return self:place_entity(entity_name, position, direction, ghost)
         end,
     },
     pickup_entity = {
@@ -357,6 +350,26 @@ The entity must be within reach and mineable/deconstructable.]],
         },
         func = function(self, entity_name, position)
             return self:pickup_entity(entity_name, position)
+        end,
+    },
+    remove_ghost = {
+        category = "placement",
+        is_async = false,
+        doc = [[Remove a ghost entity from the map.
+The ghost entity must be within reach.]],
+        paramspec = {
+            _param_order = { "entity_name", "position" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to remove" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
+        },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if ghost was removed" },
+            },
+        },
+        func = function(self, entity_name, position)
+            return self:remove_ghost(entity_name, position)
         end,
     },
 
@@ -390,12 +403,12 @@ Use for testing/debugging. For normal gameplay, use walk_to instead.]],
     inspect = {
         category = "query",
         is_async = false,
-        doc = [[Get current agent state including position, inventory, and nearby entities.
-This is the primary way to observe the agent's current situation.]],
+        doc = [[Get current agent position.
+Optionally attaches processed agent activity state (walking, mining, crafting).
+This is the primary way to observe the agent's current position and activity status.]],
         paramspec = {
-            _param_order = { "attach_inventory", "attach_entities" },
-            attach_inventory = { type = "boolean", default = false, doc = "Include inventory contents" },
-            attach_entities = { type = "boolean", default = false, doc = "Include nearby entities" },
+            _param_order = { "attach_state" },
+            attach_state = { type = "boolean", default = false, doc = "Include processed activity state" },
         },
         returns = {
             type = "agent_state",
@@ -403,13 +416,29 @@ This is the primary way to observe the agent's current situation.]],
                 agent_id = { type = "number", doc = "Agent ID" },
                 tick = { type = "number", doc = "Current game tick" },
                 position = { type = "position", doc = "Agent position" },
-                inventory = { type = "table", doc = "Inventory: {item_name: count, ...} (if requested)" },
-                reachable_resources = { type = "table", doc = "Resources in mining range (if requested)" },
-                reachable_entities = { type = "table", doc = "Entities in build range (if requested)" },
+                state = { type = "table", doc = "Processed activity state: {walking, mining, crafting} with active flags (if requested)" },
             },
         },
-        func = function(self, attach_inventory, attach_entities)
-            return self:inspect(attach_inventory, attach_entities)
+        func = function(self, attach_state)
+            return self:inspect(attach_state)
+        end,
+    },
+    get_inventory_items = {
+        category = "query",
+        is_async = false,
+        doc = [[Get agent's main inventory contents.
+Returns a table mapping item names to counts.]],
+        paramspec = {
+            _param_order = {},
+        },
+        returns = {
+            type = "table",
+            schema = {
+                item_name = { type = "number", doc = "Item count for each item name" },
+            },
+        },
+        func = function(self)
+            return self:get_inventory_items()
         end,
     },
     get_placement_cues = {
@@ -487,48 +516,6 @@ Can filter to only show currently researchable technologies.]],
             return self:get_technologies(only_available)
         end,
     },
-    get_activity_state = {
-        category = "query",
-        is_async = false,
-        doc = [[Get current state of all async activities (walking, mining, crafting).
-Useful for checking if agent is busy or idle.]],
-        paramspec = { _param_order = {} },
-        returns = {
-            type = "activity_state",
-            schema = {
-                walking = {
-                    type = "table",
-                    doc = "Walking state",
-                    schema = {
-                        active = { type = "boolean", doc = "True if walking" },
-                        goal = { type = "position", doc = "Target position" },
-                        action_id = { type = "string", doc = "Current action ID" },
-                    },
-                },
-                mining = {
-                    type = "table",
-                    doc = "Mining state",
-                    schema = {
-                        active = { type = "boolean", doc = "True if mining" },
-                        entity_name = { type = "string", doc = "Resource being mined" },
-                        action_id = { type = "string", doc = "Current action ID" },
-                    },
-                },
-                crafting = {
-                    type = "table",
-                    doc = "Crafting state",
-                    schema = {
-                        active = { type = "boolean", doc = "True if crafting" },
-                        recipe = { type = "string", doc = "Recipe being crafted" },
-                        action_id = { type = "string", doc = "Current action ID" },
-                    },
-                },
-            },
-        },
-        func = function(self)
-            return self:get_activity_state()
-        end,
-    },
 
     -- ========================================================================
     -- RESEARCH
@@ -575,32 +562,14 @@ The agent's force must have labs with science packs available.]],
     get_reachable = {
         category = "query",
         is_async = false,
-        doc = [[Get cached reachable entities and resources (position keys only).
-Returns position keys for entities within build reach and resources within mining reach.
-The cache is updated when agent stops walking, teleports, or entities are built/destroyed.
-Python should cache last_updated_tick and only re-fetch when tick changes.
-Use get_reachable_full for complete entity data with volatile state.]],
-        paramspec = { _param_order = {} },
-        returns = {
-            type = "reachable_cache",
-            schema = {
-                entities = { type = "table", doc = "Position keys for reachable entities: {'x,y': true, ...}" },
-                resources = { type = "table", doc = "Position keys for reachable resources: {'x,y': true, ...}" },
-                last_updated_tick = { type = "number", doc = "Game tick when cache was last updated" },
-            },
-        },
-        func = function(self)
-            return self:get_reachable()
-        end,
-    },
-    get_reachable_full = {
-        category = "query",
-        is_async = false,
         doc = [[Get full reachable snapshot with complete entity data.
 Returns arrays of entity/resource data including volatile state (inventory, fuel, recipe, status).
 Use this for the reachable_snapshot() context manager in Python.
-More expensive than get_reachable - use only when you need entity properties.]],
-        paramspec = { _param_order = {} },
+Includes ghosts by default (set attach_ghosts=false to exclude).]],
+        paramspec = {
+            _param_order = { "attach_ghosts" },
+            attach_ghosts = { type = "boolean", default = true, doc = "Whether to include ghosts in response (default: true)" },
+        },
         returns = {
             type = "reachable_snapshot",
             schema = {
@@ -633,12 +602,24 @@ More expensive than get_reachable - use only when you need entity properties.]],
                         products = { type = "table", doc = "Mineable products" },
                     },
                 },
+                ghosts = {
+                    type = "array",
+                    doc = "Array of ghost entity data objects (only if attach_ghosts=true)",
+                    item_schema = {
+                        name = { type = "string", doc = "Always 'entity-ghost'" },
+                        type = { type = "string", doc = "Always 'entity-ghost'" },
+                        position = { type = "position", doc = "Ghost position" },
+                        position_key = { type = "string", doc = "Position key for lookups" },
+                        ghost_name = { type = "string", doc = "The entity this ghost represents" },
+                        direction = { type = "number", doc = "Ghost direction (if applicable)" },
+                    },
+                },
                 agent_position = { type = "position", doc = "Agent position at snapshot time" },
                 tick = { type = "number", doc = "Game tick when snapshot was taken" },
             },
         },
-        func = function(self)
-            return self:get_reachable_full()
+        func = function(self, attach_ghosts)
+            return self:get_reachable(attach_ghosts)
         end,
     },
 
@@ -646,7 +627,7 @@ More expensive than get_reachable - use only when you need entity properties.]],
     -- DEBUG
     -- ========================================================================
     inspect_state = {
-        category = "debug",
+        category = "development",
         is_async = false,
         doc = "Get raw agent state object (for debugging).",
         paramspec = { _param_order = {} },
