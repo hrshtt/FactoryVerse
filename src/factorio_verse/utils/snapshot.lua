@@ -90,6 +90,32 @@ function M.ghosts_updates_path()
     return M.SNAPSHOT_BASE_DIR .. "/ghosts-updates.jsonl"
 end
 
+--- Generate path for status dump file
+--- @param tick number Game tick
+--- @return string
+function M.status_dump_path(tick)
+    return "factoryverse/status/status-" .. tostring(tick) .. ".jsonl"
+end
+
+--- Generate path for resource file based on file type
+--- Used when rewriting resource files after depletion
+--- @param chunk_x number
+--- @param chunk_y number
+--- @param file_type string - "tiles", "water-tiles", or "entities"
+--- @return string
+function M.resource_file_path(chunk_x, chunk_y, file_type)
+    if file_type == "tiles" then
+        return M.resources_init_path(chunk_x, chunk_y)
+    elseif file_type == "water-tiles" then
+        return M.water_init_path(chunk_x, chunk_y)
+    elseif file_type == "entities" then
+        return M.trees_rocks_init_path(chunk_x, chunk_y)
+    else
+        log("Unknown resource file type: " .. tostring(file_type))
+        return nil
+    end
+end
+
 -- ============================================================================
 -- JSONL INIT FILE WRITING (for initial snapshots)
 -- ============================================================================
@@ -147,6 +173,20 @@ function M.write_jsonl_init_from_tables(file_path, entries)
     end
     
     return M.write_jsonl_init(file_path, lines)
+end
+
+--- Write resource file (overwrites existing file)
+--- Used when rewriting resource files after depletion
+--- @param file_path string - Full path relative to script-output
+--- @param data table - Array of resource entries to serialize
+--- @return boolean - Success status
+function M.write_resource_file(file_path, data)
+    if not file_path then
+        return false
+    end
+    
+    -- Use the existing write function which overwrites the file
+    return M.write_jsonl_init_from_tables(file_path, data)
 end
 
 -- ============================================================================
@@ -415,6 +455,43 @@ function M.send_status_snapshot_udp(status_records)
     }
 
     return M.send_udp_notification(payload)
+end
+
+-- ============================================================================
+-- STATUS DUMP FILE MANAGEMENT
+-- ============================================================================
+
+--- Maximum number of status dump files to keep on disk
+M.MAX_STATUS_DUMP_FILES = 100
+
+--- Track a status dump file in storage
+--- @param tick number Game tick
+function M.track_status_dump_file(tick)
+    storage.status_dump_files = storage.status_dump_files or {}
+    table.insert(storage.status_dump_files, tick)
+end
+
+--- Cleanup old status dump files, keeping only the most recent MAX_STATUS_DUMP_FILES
+function M.cleanup_old_status_dumps()
+    storage.status_dump_files = storage.status_dump_files or {}
+    
+    -- Sort by tick (ascending)
+    table.sort(storage.status_dump_files)
+    
+    -- Remove oldest files if we exceed the limit
+    while #storage.status_dump_files > M.MAX_STATUS_DUMP_FILES do
+        local oldest_tick = table.remove(storage.status_dump_files, 1)
+        local file_path = M.status_dump_path(oldest_tick)
+        
+        -- Delete the file (best-effort, ignore errors)
+        pcall(function()
+            helpers.remove_path(file_path)
+        end)
+        
+        if M.DEBUG and game and game.print then
+            game.print(string.format("[status_dump] Deleted old status dump: %s", file_path))
+        end
+    end
 end
 
 return M

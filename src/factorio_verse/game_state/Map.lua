@@ -710,9 +710,13 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         return
     end
     
+    -- NOTE: Factorio chunk is 32x32 tiles. For area-based APIs (find/count_*_filtered),
+    -- use a full chunk bounding box with right_bottom at the next tile coordinate.
+    -- This avoids missing the last row/column of the chunk (which can create "gaps"
+    -- between adjacent chunks and fragment connected components like water).
     local chunk_area = {
         left_top = { x = chunk_x * 32, y = chunk_y * 32 },
-        right_bottom = { x = chunk_x * 32 + 31, y = chunk_y * 32 + 31 }
+        right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
     }
     local chunk = { x = chunk_x, y = chunk_y, area = chunk_area }
     
@@ -894,6 +898,10 @@ local function phase_serialize(state)
         state.write_index = 1
         local chunk_x = state.chunk_x
         local chunk_y = state.chunk_y
+
+        -- if not serialized then
+        --     return
+        -- end
         
         -- Queue resources_init.jsonl write (ore tiles)
         if #serialized.resources_json > 0 then
