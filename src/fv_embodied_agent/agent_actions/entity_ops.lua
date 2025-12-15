@@ -4,6 +4,7 @@
 --- These methods are mixed into the Agent class at module level
 
 local EntityInterface = require("game_state.EntityInterface")
+local custom_events = require("utils.custom_events")
 
 local EntityOpsActions = {}
 
@@ -75,6 +76,14 @@ function EntityOpsActions.set_entity_recipe(self, entity_name, position, recipe_
     -- Set recipe via EntityInterface
     entity_interface:set_recipe(recipe_name, true)  -- Allow overwrite
     
+    -- Raise agent entity configuration changed event
+    script.raise_event(custom_events.on_agent_entity_configuration_changed, {
+        entity = entity,
+        agent_id = self.agent_id,
+        change_type = "recipe",
+        new_value = recipe_name,
+    })
+    
     -- Enqueue completion message (sync action)
     self:enqueue_message({
         action = "set_entity_recipe",
@@ -119,6 +128,16 @@ function EntityOpsActions.set_entity_filter(self, entity_name, position, invento
     
     -- Set filter via EntityInterface
     entity_interface:set_filter(inventory_type, filter_index, filter_item)
+    
+    -- Raise agent entity configuration changed event
+    script.raise_event(custom_events.on_agent_entity_configuration_changed, {
+        entity = entity,
+        agent_id = self.agent_id,
+        change_type = "filter",
+        inventory_type = inventory_type,
+        filter_index = filter_index,
+        new_value = filter_item,
+    })
     
     -- Enqueue completion message (sync action)
     self:enqueue_message({
@@ -167,6 +186,15 @@ function EntityOpsActions.set_inventory_limit(self, entity_name, position, inven
     
     -- Set limit via EntityInterface
     entity_interface:set_inventory_limit(inventory_type, limit)
+    
+    -- Raise agent entity configuration changed event
+    script.raise_event(custom_events.on_agent_entity_configuration_changed, {
+        entity = entity,
+        agent_id = self.agent_id,
+        change_type = "inventory_limit",
+        inventory_type = inventory_type,
+        new_value = limit,
+    })
     
     -- Enqueue completion message (sync action)
     self:enqueue_message({
@@ -506,7 +534,20 @@ function EntityOpsActions.remove_ghost(self, entity_name, position)
         end
     end
     
+    -- Store entity info before destruction
+    local ghost_name = ghost.ghost_name
+    local ghost_position = { x = ghost.position.x, y = ghost.position.y }
+    
     ghost.destroy()
+    
+    -- Raise agent entity destroyed event (for ghost removal)
+    -- Note: Ghosts are tracked separately, but we raise the event for consistency
+    script.raise_event(custom_events.on_agent_entity_destroyed, {
+        entity = ghost,  -- Entity may be invalid, but event handlers should check
+        agent_id = self.agent_id,
+        entity_name = ghost_name,
+        position = ghost_position,
+    })
 
     return {
         success = true,

@@ -14,9 +14,15 @@ local Resource = require("game_state.Resource")
 -- local Entities = require("game_state.Entities")
 local snapshot = require("utils.snapshot")
 local serialize = require("__fv_embodied_agent__/utils/serialize")
+local udp_payloads = require("utils.udp_payloads")
 
 -- Agent is from fv_embodied_agent mod (dependency)
 local Agent = require("__fv_embodied_agent__.Agent")
+
+-- ============================================================================
+-- DEBUG FLAG
+-- ============================================================================
+local DEBUG = false
 
 -- ============================================================================
 -- SNAPSHOT STATE MACHINE - Spreads chunk processing across multiple ticks
@@ -609,6 +615,15 @@ local function find_next_pending_chunk()
     return nil, nil
 end
 
+--- Send snapshot state payload
+--- @param state_name string State name (IDLE, FIND_ENTITIES, SERIALIZE, WRITE, COMPLETE)
+--- @param chunk table|nil Chunk coordinates {x, y}
+--- @param progress table|nil Progress metrics
+local function send_snapshot_state_payload(state_name, chunk, progress)
+    local payload = udp_payloads.snapshot_state(state_name, chunk, game.tick, progress)
+    udp_payloads.send_snapshot_state(payload)
+end
+
 --- Get current snapshot state machine status
 --- @return table Status info including phase, current chunk, queue sizes
 function M.get_snapshot_status()
@@ -768,6 +783,12 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         chunk = chunk,
     }
     
+    if DEBUG then
+        local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
+        game.print(string.format("[DEBUG Map.phase_find_entities] Tick %d: chunk (%d,%d) - resources=%d, water=%d, trees=%d, rocks=%d, entities=%d, ghosts=%d, total=%d", 
+            game.tick, chunk_x, chunk_y, #gathered.resources, #gathered.water, #gathered.trees, #gathered.rocks, #player_entities, #ghosts, total))
+    end
+    
     -- Initialize serialization state
     state.serialized = {
         resources_json = {},      -- Array of JSON strings for tiles.jsonl
@@ -780,6 +801,17 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     
     -- Transition to SERIALIZE phase
     state.phase = SnapshotPhase.SERIALIZE
+    
+    -- Send snapshot state payload
+    local chunk = { x = chunk_x, y = chunk_y }
+    local progress = {
+        entities_found = #player_entities,
+        resources_found = #gathered.resources,
+        water_tiles_found = #gathered.water,
+        trees_rocks_found = #gathered.trees + #gathered.rocks,
+        ghosts_found = ghosts and #ghosts or 0,
+    }
+    send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.SERIALIZE, chunk, progress)
     
     if snapshot.DEBUG and game and game.print then
         local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
@@ -796,6 +828,12 @@ local function phase_serialize(state)
     local budget = SnapshotConfig.SERIALIZATIONS_PER_TICK
     local processed = 0
     local idx = state.serialize_index
+    
+    if DEBUG and idx == 1 then
+        local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #gathered.player_entities + (#gathered.ghosts or 0)
+        game.print(string.format("[DEBUG Map.phase_serialize] Tick %d: Starting serialization, total items=%d, budget=%d", 
+            game.tick, total, budget))
+    end
     
     -- Calculate total items to serialize
     local total_resources = #gathered.resources
@@ -987,10 +1025,21 @@ local function phase_serialize(state)
         -- Transition to WRITE phase
         state.phase = SnapshotPhase.WRITE
         
-        if snapshot.DEBUG and game and game.print then
-            game.print(string.format("[snapshot] SERIALIZE complete for chunk (%d, %d): %d files queued (was %d entities)",
-                chunk_x, chunk_y, #state.write_queue, #serialized.player_entity_data))
+        -- Send snapshot state payload
+        local chunk = { x = chunk_x, y = chunk_y }
+        local progress = {
+            files_queued = #state.write_queue,
+            entities_serialized = #serialized.player_entity_data,
+        }
+        send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.WRITE, chunk, progress)
+        
+        if DEBUG then
+            game.print(string.format("[DEBUG Map.phase_serialize] Tick %d: SERIALIZE complete for chunk (%d, %d): %d files queued (%d entities)",
+                game.tick, chunk_x, chunk_y, #state.write_queue, #serialized.player_entity_data))
         end
+    elseif DEBUG and processed > 0 then
+        game.print(string.format("[DEBUG Map.phase_serialize] Tick %d: Serialized %d items, index now %d", 
+            game.tick, processed, idx))
     end
 end
 
@@ -1002,6 +1051,11 @@ local function phase_write(state)
     local chunk_x = state.chunk_x
     local chunk_y = state.chunk_y
     
+    if DEBUG and state.write_index == 1 then
+        game.print(string.format("[DEBUG Map.phase_write] Tick %d: Starting writes for chunk (%d,%d), queue_size=%d, budget=%d", 
+            game.tick, chunk_x, chunk_y, #state.write_queue, budget))
+    end
+    
     while state.write_index <= #state.write_queue and processed < budget do
         local item = state.write_queue[state.write_index]
         
@@ -1009,39 +1063,30 @@ local function phase_write(state)
         local append_mode = item.append == true
         local ok = pcall(helpers.write_file, item.path, item.content, append_mode)
         
-        -- Send UDP notification on success (simplified for new approach)
+        -- Send UDP notification on success using payload module
         if ok then
+            local chunk = { x = chunk_x, y = chunk_y }
+            local file_op = append_mode and udp_payloads.FILE_OP.APPENDED or udp_payloads.FILE_OP.WRITTEN
+            
             -- For entities_init, send chunk_init_complete notification
             if item.file_type == "entities_init" then
-                snapshot.send_chunk_init_complete_udp(chunk_x, chunk_y, item.entity_count or 0)
+                local payload = udp_payloads.chunk_init_complete(chunk, item.entity_count or 0)
+                udp_payloads.send_event(payload)
+                -- Also send file_written payload
+                local file_payload = udp_payloads.file_written(item.file_type, chunk, item.path, game.tick, item.entity_count)
+                udp_payloads.send_file_io(file_payload)
             elseif item.file_type == "ghosts_init" then
-                -- For ghosts, send file event with chunk info
-                snapshot.send_file_event_udp(
-                    item.event_type,
-                    item.file_type,
-                    chunk_x,
-                    chunk_y,
-                    nil, -- no position for bulk files
-                    nil, -- no entity_name
-                    nil, -- no component_type
-                    item.path
-                )
+                -- For ghosts, send file_appended payload
+                local file_payload = udp_payloads.file_appended(item.file_type, chunk, item.path, game.tick, item.ghost_count)
+                udp_payloads.send_file_io(file_payload)
                 if snapshot.DEBUG and game and game.print then
                     game.print(string.format("[snapshot] Appended %d ghosts to top-level file from chunk (%d, %d)",
                         item.ghost_count or 0, chunk_x, chunk_y))
                 end
             else
-                -- For other file types, use the standard file event
-                snapshot.send_file_event_udp(
-                    item.event_type,
-                    item.file_type,
-                    chunk_x,
-                    chunk_y,
-                    nil, -- no position for bulk files
-                    nil, -- no entity_name
-                    nil, -- no component_type
-                    item.path
-                )
+                -- For other file types, send file_written payload
+                local file_payload = udp_payloads.file_written(item.file_type, chunk, item.path, game.tick)
+                udp_payloads.send_file_io(file_payload)
             end
         elseif snapshot.DEBUG and game and game.print then
             game.print(string.format("[snapshot] WARNING: Failed to write file: %s", item.path))
@@ -1049,11 +1094,28 @@ local function phase_write(state)
         
         state.write_index = state.write_index + 1
         processed = processed + 1
+        
+        if DEBUG then
+            game.print(string.format("[DEBUG Map.phase_write] Tick %d: Wrote file %d/%d: %s", 
+                game.tick, state.write_index - 1, #state.write_queue, item.file_type or "unknown"))
+        end
+    end
+    
+    if DEBUG and processed > 0 then
+        game.print(string.format("[DEBUG Map.phase_write] Tick %d: Wrote %d files, %d remaining", 
+            game.tick, processed, #state.write_queue - state.write_index + 1))
     end
     
     -- Check if all writes are complete
     if state.write_index > #state.write_queue then
         state.phase = SnapshotPhase.COMPLETE
+        
+        -- Send snapshot state payload
+        local chunk = { x = chunk_x, y = chunk_y }
+        local progress = {
+            files_written = #state.write_queue,
+        }
+        send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.COMPLETE, chunk, progress)
         
         if snapshot.DEBUG and game and game.print then
             game.print(string.format("[snapshot] WRITE complete for chunk (%d, %d)", chunk_x, chunk_y))
@@ -1068,6 +1130,11 @@ local function phase_complete(state)
     local chunk_x = state.chunk_x
     local chunk_y = state.chunk_y
     local gathered = state.gathered
+    
+    if DEBUG then
+        game.print(string.format("[DEBUG Map.phase_complete] Tick %d: Completing chunk (%d,%d)", 
+            game.tick, chunk_x, chunk_y))
+    end
     
     -- Update ChunkTracker with gathered data
     if gathered then
@@ -1109,8 +1176,9 @@ local function phase_complete(state)
         game.print(string.format("[snapshot] COMPLETE: Chunk (%d, %d) fully snapshotted", chunk_x, chunk_y))
     end
     
-    -- Reset state for next chunk
+    -- Reset state for next chunk (will transition to IDLE)
     reset_snapshot_state()
+    send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.IDLE, nil)
 end
 
 --- Process one chunk snapshot per tick using state machine
@@ -1123,26 +1191,37 @@ function M._on_tick_snapshot_chunks(event)
     if state.phase == SnapshotPhase.IDLE then
         local chunk_x, chunk_y = find_next_pending_chunk()
         if chunk_x and chunk_y then
-    local tracker = M.get_chunk_tracker()
+            local tracker = M.get_chunk_tracker()
             -- Double-check chunk still needs snapshotting
             if tracker:chunk_needs_snapshot(chunk_x, chunk_y) then
                 state.chunk_x = chunk_x
                 state.chunk_y = chunk_y
                 state.phase = SnapshotPhase.FIND_ENTITIES
                 
-            if snapshot.DEBUG and game and game.print then
-                    game.print(string.format("[snapshot] Starting chunk (%d, %d)", chunk_x, chunk_y))
+                -- Send snapshot state payload
+                local chunk = { x = chunk_x, y = chunk_y }
+                send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.FIND_ENTITIES, chunk)
+                
+                if DEBUG then
+                    game.print(string.format("[DEBUG Map._on_tick_snapshot_chunks] Starting chunk (%d, %d)", chunk_x, chunk_y))
                 end
             end
+        else
+            -- No pending chunks, IDLE state - don't spam UDP every tick
+            -- Only send IDLE state when transitioning from active state (handled in phase_complete)
         end
         return
     end
     
     -- FIND_ENTITIES: Gather all data (one tick)
     if state.phase == SnapshotPhase.FIND_ENTITIES then
-        phase_find_entities(state, state.chunk_x, state.chunk_y)
-            return
+        if DEBUG then
+            game.print(string.format("[DEBUG Map._on_tick_snapshot_chunks] FIND_ENTITIES phase for chunk (%d, %d)", 
+                state.chunk_x, state.chunk_y))
         end
+        phase_find_entities(state, state.chunk_x, state.chunk_y)
+        return
+    end
         
     -- SERIALIZE: Convert to JSON (batched across ticks)
     if state.phase == SnapshotPhase.SERIALIZE then
@@ -1250,7 +1329,15 @@ function M._on_chunk_charted(event)
     local chunk_x = event.position.x
     local chunk_y = event.position.y
     local tracker = M.get_chunk_tracker()
+    
+    -- Check if chunk needs snapshotting (not already snapshotted)
+    local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
     tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+    
+    -- Send chunk_charted payload
+    local chunk = { x = chunk_x, y = chunk_y }
+    local payload = udp_payloads.chunk_charted(chunk, game.tick, "player", needs_snapshot)
+    udp_payloads.send_event(payload)
 end
 
 --- Handle agent chunk charted event
@@ -1261,7 +1348,17 @@ function M._on_agent_chunk_charted(event)
     local chunk_x = event.chunk_x
     local chunk_y = event.chunk_y
     local tracker = M.get_chunk_tracker()
+    
+    -- Check if chunk needs snapshotting (not already snapshotted)
+    local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
     tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+    
+    -- Send chunk_charted payload
+    local chunk = { x = chunk_x, y = chunk_y }
+    local agent_id = event.agent_id or "unknown"
+    local payload = udp_payloads.chunk_charted(chunk, game.tick, "agent", needs_snapshot)
+    payload.agent_id = agent_id  -- Include agent_id if available
+    udp_payloads.send_event(payload)
 end
 
 return M

@@ -4,6 +4,7 @@
 
 local snapshot = require("utils.snapshot")
 local Agents = require("__fv_embodied_agent__/game_state/Agents")
+local udp_payloads = require("utils.udp_payloads")
 
 local M = {}
 
@@ -26,12 +27,15 @@ function M._on_nth_tick_agent_production_snapshot()
                 statistics = stats
             }
             local json_line = helpers.table_to_json(entry) .. "\n"
-            helpers.write_file(
-                snapshot.SNAPSHOT_BASE_DIR .. "/" .. agent_id .. "/production_statistics.jsonl",
-                json_line,
-                true -- append
-                -- for_player omitted (server/global)
-            )
+            local file_path = snapshot.SNAPSHOT_BASE_DIR .. "/" .. agent_id .. "/production_statistics.jsonl"
+            local success = pcall(helpers.write_file, file_path, json_line, true) -- append
+            
+            -- Send UDP notification for file append
+            if success then
+                local payload = udp_payloads.file_appended("agent_production_statistics", nil, file_path, game.tick, 1)
+                payload.agent_id = agent_id  -- Include agent_id in payload
+                udp_payloads.send_file_io(payload)
+            end
         end
         ::continue::
     end

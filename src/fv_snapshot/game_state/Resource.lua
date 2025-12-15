@@ -8,8 +8,14 @@ local pairs = pairs
 local GameStateError = require("utils.Error")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
+local udp_payloads = require("utils.udp_payloads")
 
 local M = {}
+
+-- ============================================================================
+-- DEBUG FLAG
+-- ============================================================================
+M.DEBUG = false
 
 --- Serialize a single resource tile
 --- @param entity LuaEntity - the resource entity
@@ -189,6 +195,67 @@ function M.gather_resources_for_chunk(chunk)
     return gathered
 end
 
+--- Create a trees/rocks update entry when a tree or rock is mined
+--- @param entity LuaEntity - The mined entity (tree or rock)
+--- @param chunk_x number
+--- @param chunk_y number
+function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
+    -- Accept either a real entity or a fake entity with position table
+    if not entity then
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: entity is nil", game.tick))
+        end
+        return false
+    end
+    
+    -- Position can be a Position object (from real entity) or {x, y} table (from fake entity)
+    local position = entity.position
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: entity.name=%s, position type=%s, position=%s", 
+            game.tick, tostring(entity.name), type(position), 
+            position and string.format("{x=%s, y=%s}", tostring(position.x), tostring(position.y)) or "nil"))
+    end
+    
+    if not position or not position.x or not position.y then
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: Position validation failed - position=%s, has_x=%s, has_y=%s", 
+                game.tick, tostring(position), tostring(position and position.x ~= nil), tostring(position and position.y ~= nil)))
+        end
+        return false
+    end
+    
+    local entity_name = entity.name or "unknown"
+    local ent_key = utils.entity_key(entity_name, position.x, position.y)
+    
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: entity_name=%s, ent_key=%s, chunk=(%d,%d), position={x=%f, y=%f}", 
+            game.tick, entity_name, ent_key, chunk_x, chunk_y, position.x, position.y))
+    end
+    
+    local operation = snapshot.make_remove_operation(ent_key, position, entity_name)
+    
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: operation created: op=%s, tick=%s, key=%s", 
+            game.tick, tostring(operation.op), tostring(operation.tick), tostring(operation.key)))
+    end
+    
+    local success = snapshot.append_trees_rocks_operation(chunk_x, chunk_y, operation)
+    
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: Trees/rocks update entry created for %s at (%d,%d), success=%s", 
+            game.tick, entity_name, chunk_x, chunk_y, tostring(success)))
+    end
+    
+    -- Send UDP notification
+    if success then
+        local chunk = { x = chunk_x, y = chunk_y }
+        local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity_name, position)
+        udp_payloads.send_entity_operation(payload)
+    end
+    
+    return success
+end
+
 --- Rewrite resource file for a chunk
 --- Called when resources are depleted or changed
 --- @param chunk_x number
@@ -212,21 +279,11 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
         local tiles_path = snapshot.resource_file_path(chunk_x, chunk_y, "tiles")
         local tiles_success = snapshot.write_resource_file(tiles_path, gathered.resources)
         
-        -- Send UDP notification for tiles file update
+        -- Send UDP notification for tiles file write (overwrite operation)
         if tiles_success then
-            local udp_success = snapshot.send_file_event_udp(
-                "file_updated",
-                "resource",
-                chunk_x,
-                chunk_y,
-                nil, -- no position for tiles files
-                nil, -- no entity_name
-                nil, -- no component_type
-                tiles_path
-            )
-            if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for tiles file: %s", tiles_path))
-            end
+            local chunk = { x = chunk_x, y = chunk_y }
+            local payload = udp_payloads.file_written("resource", chunk, tiles_path, game.tick, #gathered.resources)
+            udp_payloads.send_file_io(payload)
         end
     end
 
@@ -235,21 +292,11 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
         local water_tiles_path = snapshot.resource_file_path(chunk_x, chunk_y, "water-tiles")
         local water_tiles_success = snapshot.write_resource_file(water_tiles_path, gathered.water)
         
-        -- Send UDP notification for water-tiles file update
+        -- Send UDP notification for water-tiles file write (overwrite operation)
         if water_tiles_success then
-            local udp_success = snapshot.send_file_event_udp(
-                "file_updated",
-                "water",
-                chunk_x,
-                chunk_y,
-                nil, -- no position for water-tiles files
-                nil, -- no entity_name
-                nil, -- no component_type
-                water_tiles_path
-            )
-            if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for water-tiles file: %s", water_tiles_path))
-            end
+            local chunk = { x = chunk_x, y = chunk_y }
+            local payload = udp_payloads.file_written("water", chunk, water_tiles_path, game.tick, #gathered.water)
+            udp_payloads.send_file_io(payload)
         end
     end
 
@@ -261,25 +308,35 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
     for _, tree in ipairs(gathered.trees) do
         table.insert(entities, tree)
     end
+    
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: Chunk (%d,%d) - trees=%d, rocks=%d, total_entities=%d", 
+            game.tick, chunk_x, chunk_y, #gathered.trees, #gathered.rocks, #entities))
+    end
+    
     if #entities > 0 then
         local entities_path = snapshot.resource_file_path(chunk_x, chunk_y, "entities")
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: Writing %d entities to %s", 
+                game.tick, #entities, entities_path))
+        end
         local entities_success = snapshot.write_resource_file(entities_path, entities)
         
-        -- Send UDP notification for entities file update
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: Write success=%s", 
+                game.tick, tostring(entities_success)))
+        end
+        
+        -- Send UDP notification for entities file write (overwrite operation)
         if entities_success then
-            local udp_success = snapshot.send_file_event_udp(
-                "file_updated",
-                "entity",
-                chunk_x,
-                chunk_y,
-                nil, -- no position for entities files
-                nil, -- no entity_name
-                nil, -- no component_type
-                entities_path
-            )
-            if not udp_success and snapshot.DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to send UDP notification for entities file: %s", entities_path))
-            end
+            local chunk = { x = chunk_x, y = chunk_y }
+            local payload = udp_payloads.file_written("trees_rocks", chunk, entities_path, game.tick, #entities)
+            udp_payloads.send_file_io(payload)
+        end
+    else
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: No entities to write for chunk (%d,%d)", 
+                game.tick, chunk_x, chunk_y))
         end
     end
 end

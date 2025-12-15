@@ -20,8 +20,8 @@ local M = {}
 -- Base directory for snapshots (relative to script-output)
 M.SNAPSHOT_BASE_DIR = "factoryverse/snapshots"
 
--- UDP port for all notifications (action port as source of truth)
-M.UDP_PORT = 34202
+-- UDP port for snapshot notifications (separate from agent action ports)
+M.UDP_PORT = 34400
 
 -- Debug flag for verbose logging
 M.DEBUG = false
@@ -76,6 +76,14 @@ end
 --- @return string
 function M.trees_rocks_init_path(chunk_x, chunk_y)
     return M.chunk_dir_path(chunk_x, chunk_y) .. "/trees_rocks_init.jsonl"
+end
+
+--- Generate path for trees and rocks updates file (append-only operations log)
+--- @param chunk_x number
+--- @param chunk_y number
+--- @return string
+function M.trees_rocks_updates_path(chunk_x, chunk_y)
+    return M.chunk_dir_path(chunk_x, chunk_y) .. "/trees_rocks-update.jsonl"
 end
 
 --- Generate path for ghosts init file (top-level, not chunk-wise)
@@ -251,6 +259,62 @@ function M.make_remove_operation(entity_key, position, entity_name)
         position = position,
         name = entity_name,
     }
+end
+
+--- Append a trees/rocks operation to the trees_rocks updates log
+--- This is the key function for event-driven trees/rocks updates - uses append mode
+--- @param chunk_x number
+--- @param chunk_y number
+--- @param operation table - Operation record with {op, tick, ...}
+--- @return boolean - Success status
+function M.append_trees_rocks_operation(chunk_x, chunk_y, operation)
+    if not chunk_x or not chunk_y or not operation then
+        if M.DEBUG and game and game.print then
+            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Missing params - chunk_x=%s, chunk_y=%s, operation=%s", 
+                game.tick, tostring(chunk_x), tostring(chunk_y), tostring(operation)))
+        end
+        return false
+    end
+    
+    local file_path = M.trees_rocks_updates_path(chunk_x, chunk_y)
+    
+    if M.DEBUG and game and game.print then
+        game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: file_path=%s, chunk=(%d,%d)", 
+            game.tick, file_path, chunk_x, chunk_y))
+    end
+    
+    local ok, json_str = pcall(helpers.table_to_json, operation)
+    if not ok or not json_str then
+        if M.DEBUG and game and game.print then
+            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Serialization failed - ok=%s, json_str=%s", 
+                game.tick, tostring(ok), tostring(json_str)))
+        end
+        log("Failed to serialize trees/rocks operation for append: " .. tostring(file_path))
+        return false
+    end
+    
+    if M.DEBUG and game and game.print then
+        game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Serialized operation (length=%d): %s", 
+            game.tick, string.len(json_str), json_str))
+    end
+    
+    -- CRITICAL: Use append=true for the third parameter
+    local ok_write, write_err = pcall(helpers.write_file, file_path, json_str .. "\n", true)
+    if not ok_write then
+        if M.DEBUG and game and game.print then
+            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Write failed - ok=%s, err=%s, file_path=%s", 
+                game.tick, tostring(ok_write), tostring(write_err), file_path))
+        end
+        log("Failed to append trees/rocks operation to: " .. tostring(file_path))
+        return false
+    end
+    
+    if M.DEBUG and game and game.print then
+        game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Write succeeded! Appended %s op to trees_rocks-update for chunk (%d, %d), file_path=%s", 
+            game.tick, operation.op or "unknown", chunk_x, chunk_y, file_path))
+    end
+    
+    return true
 end
 
 --- Append a ghost operation to the top-level ghosts updates log

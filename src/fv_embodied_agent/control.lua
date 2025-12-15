@@ -6,6 +6,7 @@ local utils = require("utils.utils")
 -- Require game state modules at module level (required by Factorio)
 local Agents = require("game_state.Agents")
 local Agent = require("Agent")
+local custom_events = require("utils.custom_events")
 
 -- ============================================================================
 -- EVENT DISPATCHER PATTERN
@@ -149,6 +150,23 @@ local function register_all_remote_interfaces()
         end
     end
 
+    -- Register custom events interface
+    -- Allows other mods (like FVSnapshot) to access event IDs via remote call
+    if custom_events and custom_events.register_remote_interface then
+        local custom_events_interface = custom_events.register_remote_interface()
+        if custom_events_interface and next(custom_events_interface) ~= nil then
+            local interface_name = "custom_events"
+            if remote.interfaces[interface_name] then
+                log("Removing existing '" .. interface_name .. "' interface")
+                remote.remove_interface(interface_name)
+            end
+            local method_count = 0
+            for _ in pairs(custom_events_interface) do method_count = method_count + 1 end
+            log("Registering '" .. interface_name .. "' interface with " .. method_count .. " method(s)")
+            remote.add_interface(interface_name, custom_events_interface)
+        end
+    end
+
     -- Register global documentation API
     -- Returns paramspec for each method (the only runtime-relevant metadata)
     local docs_interface = {
@@ -240,6 +258,11 @@ script.on_init(function()
         log("Initialized empty agents storage for new game")
     end
 
+    -- Initialize custom events storage
+    if custom_events and custom_events.initialize_storage then
+        custom_events.initialize_storage()
+    end
+
     log("Initialized fv_embodied_agent game state modules")
 
     -- Register remote interfaces (required for mods, also works for scenarios)
@@ -254,6 +277,10 @@ end)
 
 script.on_load(function()
     log("hello from fv_embodied_agent on_load")
+
+    -- Note: storage is read-only in on_load, so we don't initialize custom_events here
+    -- The storage should already exist from on_init and persist across saves
+    -- If storage.custom_events doesn't exist, it will be initialized on the next on_init
 
     log("Re-initialized fv_embodied_agent game state modules after mod reload")
 

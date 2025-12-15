@@ -8,6 +8,7 @@
 local GameStateError = require("utils.Error")
 
 local snapshot = require("utils.snapshot")
+local udp_payloads = require("utils.udp_payloads")
 
 local M = {}
 
@@ -33,12 +34,14 @@ function M._on_nth_tick_global_power_snapshot()
         statistics = stats
     }
     local json_line = helpers.table_to_json(entry) .. "\n"
-    helpers.write_file(
-        snapshot.SNAPSHOT_BASE_DIR .. "/global_power_statistics.jsonl",
-        json_line,
-        true -- append
-        -- for_player omitted (server/global)
-    )
+    local file_path = snapshot.SNAPSHOT_BASE_DIR .. "/global_power_statistics.jsonl"
+    local success = pcall(helpers.write_file, file_path, json_line, true) -- append
+    
+    -- Send UDP notification for file append
+    if success then
+        local payload = udp_payloads.file_appended("power_statistics", nil, file_path, game.tick, 1)
+        udp_payloads.send_file_io(payload)
+    end
 end
 
 M.power_api = {}
