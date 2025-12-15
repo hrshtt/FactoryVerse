@@ -440,6 +440,28 @@ Returns a table mapping item names to counts.]],
             return self:get_inventory_items()
         end,
     },
+    get_position = {
+        category = "query",
+        is_async = false,
+        doc = [[Get current agent position.
+Simple position query without additional state information.]],
+        paramspec = {
+            _param_order = {},
+        },
+        returns = {
+            type = "position",
+            schema = {
+                x = { type = "number", doc = "X coordinate" },
+                y = { type = "number", doc = "Y coordinate" },
+            },
+        },
+        func = function(self)
+            if not (self.character and self.character.valid) then
+                error("Agent: Agent entity is invalid")
+            end
+            return { x = self.character.position.x, y = self.character.position.y }
+        end,
+    },
     get_placement_cues = {
         category = "query",
         is_async = false,

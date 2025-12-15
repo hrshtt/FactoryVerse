@@ -1,6 +1,5 @@
 --- Agent placement action methods
 --- Methods operate directly on Agent instances (self)
---- State is stored in self.placing (jobs, next_job_id)
 --- These methods are mixed into the Agent class at module level
 
 local PlacementActions = {}

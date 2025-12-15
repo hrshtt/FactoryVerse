@@ -10,7 +10,10 @@
 --- @field progress number Current waypoint index
 --- @field action_id string|nil Action ID for completion tracking
 --- @field start_tick number|nil Tick when walking started (for time calculation)
---- @field goal table|nil Goal position {x, y} for completion tracking
+--- @field goal table|nil Goal position {x, y} used for pathfinding (may be adjusted perimeter goal)
+--- @field original_goal table|nil Original goal position {x, y} if adjusted for entity collision
+--- @field goal_entity LuaEntity|nil Entity at original goal position (if goal was inside entity)
+--- @field last_distance_to_entity number|nil Last measured distance to goal entity (for progress tracking)
 
 --- @class AgentMiningState : table
 --- @field mode string|nil Mining mode: "incremental" or "deplete"
@@ -30,19 +33,6 @@
 --- @class AgentCraftingState : table
 --- @field in_progress table|nil Active crafting tracking {recipe, count, action_id, ...}
 
---- @class AgentPlacementState : table
---- @field entities_to_place table[] Entities to place keyed by entity_name
---- @field progress number Current progress of placement
---- @field undo_stack table[] Undo stack for placement jobs
---- @field jobs table[] Active placement jobs
---- @field next_job_id number Next job ID to assign
-
---- @class AgentReachableState : table
---- @field entities table Position keys for entities within build reach {"x,y" = true, ...}
---- @field resources table Position keys for resources within mining reach {"x,y" = true, ...}
---- @field last_updated_tick number Game tick when cache was last computed
---- @field dirty boolean True if cache needs recomputation
-
 --- Agent class definition, wraps all agent actions and state
 --- @class Agent
 --- @field agent_id number Agent ID
@@ -55,7 +45,6 @@
 --- @field walking AgentWalkingState Walking state (jobs, intents)
 --- @field mining AgentMiningState Mining state (active job)
 --- @field crafting AgentCraftingState Crafting state (in-progress tracking)
---- @field placing AgentPlacementState Placement state (active jobs)
 --- @field charted_chunks table[] List of charted chunk coordinates
 --- @field walk_to fun(self: Agent, goal: {x: number, y: number}, strict_goal?: boolean, options?: table): table
 --- @field stop_walking fun(self: Agent): table
@@ -84,9 +73,6 @@
 --- @field chart_view fun(self: Agent, rechart?: boolean): boolean
 --- @field register_remote_interface fun(self: Agent): nil
 --- @field unregister_remote_interface fun(self: Agent): nil
---- @field reachable AgentReachableState Reachability cache for DSL reference validation
---- @field mark_reachable_dirty fun(self: Agent): nil
---- @field process_reachable fun(self: Agent): nil
 --- @field get_reachable fun(self: Agent): table
 local Agent = {}
 
@@ -157,20 +143,7 @@ function Agent:new(agent_id, color, force_name, spawn_position)
         crafting = {
             in_progress = nil,
         },
-        placing = {
-            jobs = {},
-            next_job_id = 1,
-        },
         charted_chunks = {},
-
-        -- Reachability cache for DSL reference validation
-        -- Updated on walking stop, teleport, and entity build/destroy events
-        reachable = {
-            entities = {},           -- { ["x,y"] = true, ... } position keys for build-reach entities
-            resources = {},          -- { ["x,y"] = true, ... } position keys for mining-reach resources
-            last_updated_tick = 0,   -- Tick when reachability was last computed
-            dirty = true,            -- True if needs recomputation
-        },
 
         -- Message queue for UDP notifications (processed by game state)
         -- Structure: message_queue[category_string] = {message1, message2, ...}
@@ -368,7 +341,7 @@ end
 -- - types/agent/walking.lua: walk_to, stop_walking
 -- - types/agent/mining.lua: mine_resource, stop_mining
 -- - types/agent/crafting.lua: craft_enqueue, craft_dequeue
--- - types/agent/placement.lua: place_entity, TODO: place_in_line, cancel_place_in_line, undo_place_in_line
+-- - types/agent/placement.lua: place_entity, get_placement_cues
 -- - types/agent/entity_ops.lua: set_entity_recipe, set_entity_filter, set_inventory_limit, get_inventory_item, set_inventory_item, pickup_entity
 -- ============================================================================
 
@@ -385,9 +358,6 @@ function Agent:teleport(position)
     end
 
     self.character.teleport(position)
-    
-    -- Mark reachability cache as dirty after teleport
-    self:mark_reachable_dirty()
     
     return true
 end
@@ -612,13 +582,6 @@ function Agent:process(event)
 
     -- Process crafting
     self:process_crafting()
-
-    -- Process placement jobs
-    -- TODO: Implement placement job processing
-    -- For now, jobs are queued but not processed
-    
-    -- Process reachability cache (only if dirty)
-    self:process_reachable()
 end
 
 return Agent

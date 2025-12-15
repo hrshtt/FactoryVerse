@@ -419,31 +419,12 @@ function M._delete_entity_snapshot(entity)
     return success
 end
 
--- ============================================================================
--- AGENT REACHABILITY INTEGRATION
--- ============================================================================
-
---- Mark all agents' reachability cache as dirty
---- Called when entities are built or destroyed anywhere on the map
-local function _mark_all_agents_reachable_dirty()
-    if storage.agents then
-        for _, agent in pairs(storage.agents) do
-            if agent and agent.reachable then
-                agent.reachable.dirty = true
-            end
-        end
-    end
-end
-
 --- Handle entity built event (on_built_entity, script_raised_built)
 --- @param event table Event data with entity field
 local function _on_entity_built(event)
     local entity = event.entity
     if entity and entity.valid then
         M.write_entity_snapshot(entity, false)
-        
-        -- Mark all agents' reachability as dirty
-        _mark_all_agents_reachable_dirty()
     end
 end
 
@@ -453,9 +434,6 @@ local function _on_entity_destroyed(event)
     local entity = event.entity
     if entity then
         M._delete_entity_snapshot(entity)
-        
-        -- Mark all agents' reachability as dirty
-        _mark_all_agents_reachable_dirty()
     end
 end
 

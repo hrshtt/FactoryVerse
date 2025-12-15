@@ -7,32 +7,86 @@ local WalkingActions = {}
 
 DEBUG = true
 
-local function get_goal_radius(surface, goal)
-    local entities = surface.find_entities_filtered({ position = goal })
-    if #entities == 0 then return 0.0 end
+--- Calculate a perimeter goal point outside an entity's collision box
+--- Returns a point on the edge of the entity closest to the start position
+--- @param start_pos {x:number, y:number} Starting position
+--- @param target_entity LuaEntity Target entity
+--- @param agent_collision_box BoundingBox|nil Agent's collision box (centered at 0,0)
+--- @return {x:number, y:number} Perimeter goal position
+local function get_perimeter_goal(start_pos, target_entity, agent_collision_box)
+    -- Get the radius of the target (approximate from bounding box)
+    local bb = target_entity.bounding_box
+    local target_radius = math.max(
+        bb.right_bottom.x - bb.left_top.x,
+        bb.right_bottom.y - bb.left_top.y
+    ) / 2
+    
+    -- Calculate agent's collision box size
+    local agent_size = 0
+    if agent_collision_box then
+        agent_size = math.max(
+            agent_collision_box.right_bottom.x - agent_collision_box.left_top.x,
+            agent_collision_box.right_bottom.y - agent_collision_box.left_top.y
+        ) / 2
+    end
+    
+    -- Add agent size + safety buffer so agent can stand outside the entity
+    -- This ensures the agent can actually stand at the goal position
+    local safe_distance = target_radius + agent_size + 0.5
+    
+    -- Get vector from target to start
+    local vec = {
+        x = start_pos.x - target_entity.position.x,
+        y = start_pos.y - target_entity.position.y
+    }
+    
+    -- Normalize and scale
+    local distance = math.sqrt(vec.x * vec.x + vec.y * vec.y)
+    if distance < 0.001 then
+        -- If start and target are at same position, use a default direction
+        vec = {x = 1.0, y = 0.0}
+        distance = 1.0
+    end
+    
+    local offset_x = (vec.x / distance) * safe_distance
+    local offset_y = (vec.y / distance) * safe_distance
+    
+    -- New valid goal outside the entity
+    return {
+        x = target_entity.position.x + offset_x,
+        y = target_entity.position.y + offset_y
+    }
+end
 
-    local max_radius = 0
+--- Find entities at goal position and calculate perimeter goal if needed
+--- @param surface LuaSurface Surface to search
+--- @param goal {x:number, y:number} Goal position
+--- @param start_pos {x:number, y:number} Starting position
+--- @param agent_collision_box BoundingBox|nil Agent's collision box (centered at 0,0)
+--- @return {x:number, y:number}|nil Adjusted goal (nil if no entities found)
+--- @return LuaEntity|nil Entity found at goal (nil if none)
+local function find_and_adjust_goal(surface, goal, start_pos, agent_collision_box)
+    local entities = surface.find_entities_filtered({ position = goal })
+    if #entities == 0 then
+        return nil, nil
+    end
+    
+    -- Use the first valid entity found
+    local target_entity = nil
     for _, entity in pairs(entities) do
-        -- Get the entity's bounding box
-        local bbox = entity.bounding_box
-        
-        -- Calculate how far the furthest corner is from the goal point
-        local corners = {
-            {x = bbox.left_top.x, y = bbox.left_top.y},
-            {x = bbox.right_bottom.x, y = bbox.left_top.y},
-            {x = bbox.left_top.x, y = bbox.right_bottom.y},
-            {x = bbox.right_bottom.x, y = bbox.right_bottom.y}
-        }
-        
-        for _, corner in pairs(corners) do
-            local dx = corner.x - goal.x
-            local dy = corner.y - goal.y
-            local distance = math.sqrt(dx * dx + dy * dy)
-            max_radius = math.max(max_radius, distance)
+        if entity and entity.valid then
+            target_entity = entity
+            break
         end
     end
     
-    return max_radius
+    if not target_entity then
+        return nil, nil
+    end
+    
+    -- Calculate perimeter goal with agent collision box
+    local perimeter_goal = get_perimeter_goal(start_pos, target_entity, agent_collision_box)
+    return perimeter_goal, target_entity
 end
 
 
@@ -51,19 +105,36 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options)
 
     strict_goal = strict_goal or false
     options = options or {}
-    options.goal = goal
     options.start = self.character.position
     options.bounding_box = self.character.prototype.collision_box
     options.collision_mask = self.character.prototype.collision_mask
     options.force = self.character.force.name
-    options.radius = get_goal_radius(self.character.surface, goal)
     options.entity_to_ignore = self.character -- entity pathfinding has to ignore itself 
-
-    if options.radius > 0 and strict_goal then
-        error(
-            "There are entities at the goal position."
-            ..
-            "Provide strict_goal=false to approximate to non-colliding position.")
+    
+    -- Check if goal is inside an entity's collision box and calculate perimeter goal
+    local adjusted_goal, goal_entity = find_and_adjust_goal(
+        self.character.surface,
+        goal,
+        self.character.position,
+        self.character.prototype.collision_box
+    )
+    
+    if adjusted_goal and goal_entity then
+        if strict_goal then
+            error(
+                "There are entities at the goal position. " ..
+                "Provide strict_goal=false to approximate to non-colliding position.")
+        end
+        -- Use the perimeter goal for pathfinding
+        options.goal = adjusted_goal
+        -- Store original goal and entity for completion checking
+        self.walking.original_goal = goal
+        self.walking.goal_entity = goal_entity
+    else
+        -- No entities at goal, use goal as-is
+        options.goal = goal
+        self.walking.original_goal = nil
+        self.walking.goal_entity = nil
     end
     local job_id = self.character.surface.request_path(options)
     self.walking.path_id = job_id
@@ -73,7 +144,8 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options)
     local rcon_tick = game.tick
     self.walking.action_id = action_id
     self.walking.start_tick = rcon_tick
-    self.walking.goal = goal
+    -- Store the actual goal used for pathfinding (may be adjusted perimeter goal)
+    self.walking.goal = options.goal
     
     options.entity_to_ignore = options.entity_to_ignore.name .. "_" .. options.entity_to_ignore.name_tag
     return {
@@ -99,38 +171,74 @@ WalkingActions.process_walking = function(self)
     end
 
     if not path or walking.progress > #path then
-        -- Walking completed - send completion message
-        if walking.action_id then
-            local actual_ticks = nil
-            if walking.start_tick then
-                actual_ticks = (game.tick or 0) - walking.start_tick
+        -- Check if we need to validate distance to original goal entity
+        local reached_goal = true
+        if walking.goal_entity and walking.goal_entity.valid then
+            -- Check if agent is within reach distance of the original goal entity
+            local agent_pos = self.character.position
+            local entity_pos = walking.goal_entity.position
+            local dx = entity_pos.x - agent_pos.x
+            local dy = entity_pos.y - agent_pos.y
+            local distance = math.sqrt(dx * dx + dy * dy)
+            
+            -- Check if agent can reach the entity (within character's reach distance)
+            local reach_distance = self.character.reach_distance or 2.5
+            reached_goal = distance <= reach_distance
+            
+            -- If not close enough, continue walking toward the entity
+            if not reached_goal then
+                local last_distance = walking.last_distance_to_entity or math.huge
+                -- If we're not making progress AND we're reasonably close (within 2x reach distance),
+                -- consider it complete to avoid infinite stuck state
+                if distance >= last_distance and distance <= (reach_distance * 2) then
+                    reached_goal = true
+                elseif distance < last_distance then
+                    walking.last_distance_to_entity = distance
+                    -- Continue processing (don't mark as complete yet)
+                    return
+                else
+                    -- Not making progress and still far, mark complete to avoid infinite loop
+                    reached_goal = true
+                end
             end
-            
-            self:enqueue_message({
-                action = "walk_to",
-                agent_id = self.agent_id,
-                action_id = walking.action_id,
-                success = true,
-                status = "completed",
-                tick = game.tick or 0,
-                position = { x = self.character.position.x, y = self.character.position.y },
-                goal = walking.goal,
-                actual_ticks = actual_ticks,
-            }, "walking")
-            
-            -- Clear tracking
-            walking.action_id = nil
-            walking.start_tick = nil
-            walking.goal = nil
         end
         
-        walking.progress = 0
-        walking.path = {}
-        self.character.walking_state = { walking = false }
-        
-        -- Mark reachability cache as dirty after walking completes
-        self:mark_reachable_dirty()
-        return
+        if reached_goal then
+            -- Walking completed - send completion message
+            if walking.action_id then
+                local actual_ticks = nil
+                if walking.start_tick then
+                    actual_ticks = (game.tick or 0) - walking.start_tick
+                end
+                
+                local reported_goal = walking.original_goal or walking.goal
+                self:enqueue_message({
+                    action = "walk_to",
+                    agent_id = self.agent_id,
+                    action_id = walking.action_id,
+                    success = true,
+                    status = "completed",
+                    tick = game.tick or 0,
+                    position = { x = self.character.position.x, y = self.character.position.y },
+                    goal = reported_goal,
+                    actual_ticks = actual_ticks,
+                }, "walking")
+                
+                -- Clear tracking
+                walking.action_id = nil
+                walking.start_tick = nil
+                walking.goal = nil
+                walking.original_goal = nil
+                walking.goal_entity = nil
+                walking.last_distance_to_entity = nil
+            end
+            
+            walking.progress = 0
+            walking.path = {}
+            self.character.walking_state = { walking = false }
+            
+            return
+        end
     end
 
     local waypoint = path[walking.progress]
@@ -140,38 +248,76 @@ WalkingActions.process_walking = function(self)
     if dx * dx + dy * dy < 0.0625 then -- 0.25^2
         walking.progress = walking.progress + 1
         if walking.progress > #path then
-            -- Walking completed - send completion message
-            if walking.action_id then
-                local actual_ticks = nil
-                if walking.start_tick then
-                    actual_ticks = (game.tick or 0) - walking.start_tick
+            -- All waypoints reached, check if we need to validate distance to original goal entity
+            local reached_goal = true
+            if walking.goal_entity and walking.goal_entity.valid then
+                -- Check if agent is within reach distance of the original goal entity
+                local agent_pos = self.character.position
+                local entity_pos = walking.goal_entity.position
+                local dx_entity = entity_pos.x - agent_pos.x
+                local dy_entity = entity_pos.y - agent_pos.y
+                local distance = math.sqrt(dx_entity * dx_entity + dy_entity * dy_entity)
+                
+                -- Check if agent can reach the entity (within character's reach distance)
+                local reach_distance = self.character.reach_distance or 2.5
+                reached_goal = distance <= reach_distance
+                
+                -- If not close enough, continue walking toward the entity
+                if not reached_goal then
+                    local last_distance = walking.last_distance_to_entity or math.huge
+                    -- If we're not making progress AND we're reasonably close (within 2x reach distance),
+                    -- consider it complete to avoid infinite stuck state
+                    if distance >= last_distance and distance <= (reach_distance * 2) then
+                        reached_goal = true
+                    elseif distance < last_distance then
+                        walking.last_distance_to_entity = distance
+                        -- Continue processing (don't mark as complete yet)
+                        -- Reset progress to keep walking
+                        walking.progress = walking.progress - 1
+                        return
+                    else
+                        -- Not making progress and still far, mark complete to avoid infinite loop
+                        reached_goal = true
+                    end
                 end
-                
-                self:enqueue_message({
-                    action = "walk_to",
-                    agent_id = self.agent_id,
-                    action_id = walking.action_id,
-                    success = true,
-                    status = "completed",
-                    tick = game.tick or 0,
-                    position = { x = self.character.position.x, y = self.character.position.y },
-                    goal = walking.goal,
-                    actual_ticks = actual_ticks,
-                }, "walking")
-                
-                -- Clear tracking
-                walking.action_id = nil
-                walking.start_tick = nil
-                walking.goal = nil
             end
             
-            walking.progress = 0
-            walking.path = {}
-            self.character.walking_state = { walking = false }
-            
-            -- Mark reachability cache as dirty after walking completes
-            self:mark_reachable_dirty()
-            return
+            if reached_goal then
+                -- Walking completed - send completion message
+                if walking.action_id then
+                    local actual_ticks = nil
+                    if walking.start_tick then
+                        actual_ticks = (game.tick or 0) - walking.start_tick
+                    end
+                    
+                    local reported_goal = walking.original_goal or walking.goal
+                    self:enqueue_message({
+                        action = "walk_to",
+                        agent_id = self.agent_id,
+                        action_id = walking.action_id,
+                        success = true,
+                        status = "completed",
+                        tick = game.tick or 0,
+                        position = { x = self.character.position.x, y = self.character.position.y },
+                        goal = reported_goal,
+                        actual_ticks = actual_ticks,
+                    }, "walking")
+                    
+                    -- Clear tracking
+                    walking.action_id = nil
+                    walking.start_tick = nil
+                    walking.goal = nil
+                    walking.original_goal = nil
+                    walking.goal_entity = nil
+                    walking.last_distance_to_entity = nil
+                end
+                
+                walking.progress = 0
+                walking.path = {}
+                self.character.walking_state = { walking = false }
+                
+                return
+            end
         end
         waypoint = path[walking.progress]
         dx, dy = waypoint.position.x - pos.x, waypoint.position.y - pos.y
@@ -201,14 +347,14 @@ WalkingActions.stop_walking = function(self)
     self.walking.action_id = nil
     self.walking.start_tick = nil
     self.walking.goal = nil
+    self.walking.original_goal = nil
+    self.walking.goal_entity = nil
+    self.walking.last_distance_to_entity = nil
     
     self.character.walking_state = { walking = false }
     self.walking.path = nil
     self.walking.path_id = nil
     self.walking.progress = 0
-    
-    -- Mark reachability cache as dirty after walking stops
-    self:mark_reachable_dirty()
     
     return {
         success = true,
@@ -217,3 +363,4 @@ WalkingActions.stop_walking = function(self)
 end
 
 return WalkingActions
+
