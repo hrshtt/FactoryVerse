@@ -7,7 +7,13 @@ local Agent = require("Agent")
 local udp = require("utils.udp")
 local utils = require("utils.utils")
 local ParamSpec = require("utils.ParamSpec")
+local custom_events = require("utils.custom_events")
 local M = {}
+
+-- ============================================================================
+-- DEBUG FLAG
+-- ============================================================================
+M.DEBUG = false
 
 
 -- ============================================================================
@@ -61,15 +67,16 @@ local function generate_agent_color(index, total_agents)
     return utils.hsv_to_rgb(hue, saturation, value)
 end
 
---- Create a new agent using Agent class
+--- Create a new agent instance using Agent class (internal helper)
 --- @param agent_id number
 --- @param color table|nil RGB color {r, g, b}
 --- @param force_name string|nil Optional force name (if nil, uses agent-{agent_id})
 --- @param spawn_position table|nil Optional spawn position {x, y}
+--- @param udp_port number|nil Optional UDP port for agent-specific payloads (defaults to 34202)
 --- @return Agent Agent instance
-function M.create_agent(agent_id, color, force_name, spawn_position)
+function M._create_agent_instance(agent_id, color, force_name, spawn_position, udp_port)
     -- Use Agent:new() which handles all initialization
-    local agent = Agent:new(agent_id, color, force_name, spawn_position)
+    local agent = Agent:new(agent_id, color, force_name, spawn_position, udp_port)
     
     return agent
 end
@@ -94,13 +101,13 @@ function M.get_agent(agent_id)
     return agent
 end
 
---- Create multiple agents
---- @param num_agents number Number of agents to create
+--- Create a single agent
+--- @param udp_port number|nil UDP port for agent-specific payloads (defaults to 34202)
 --- @param destroy_existing boolean|nil If true, destroy existing agents
---- @param set_unique_forces boolean|nil Default false - use player force; if true, each agent gets unique force
+--- @param set_unique_forces boolean|nil Default false - use player force; if true, agent gets unique force
 --- @param default_common_force string|nil Force name to use if set_unique_forces=false (default: "player")
---- @return table Array of created agent info {agent_id, force_name}
-function M.create_agents(num_agents, destroy_existing, set_unique_forces, default_common_force)
+--- @return table Created agent info {agent_id, force_name, interface_name}
+function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_common_force)
     if not storage.agents then
         storage.agents = {}
     end
@@ -143,29 +150,27 @@ function M.create_agents(num_agents, destroy_existing, set_unique_forces, defaul
         end
     end
 
-    local created_agents = {}
-    for i = 1, num_agents do
-        log("Creating agent " .. i .. " of " .. num_agents)
-        
-        local position = { x = 0, y = (i - 1) * 2 }
-        local force_name = nil
-        if use_unique_forces then
-            force_name = nil  -- Will auto-generate agent-{agent_id}
-        else
-            force_name = default_common_force or "player"
-        end
-        
-        local color = generate_agent_color(i, num_agents)
-        local agent = M.create_agent(i, color, force_name, position)
-        
-        table.insert(created_agents, {
-            agent_id = agent.agent_id,
-            force_name = agent.force_name,
-            iterface_name = "agent_" .. agent.agent_id,
-        })
+    -- Create single agent with ID 1
+    local agent_id = 1
+    log("Creating agent " .. agent_id)
+    
+    local position = { x = 0, y = 0 }
+    local force_name = nil
+    if use_unique_forces then
+        force_name = nil  -- Will auto-generate agent-{agent_id}
+    else
+        force_name = default_common_force or "player"
     end
     
-    return created_agents
+    local color = generate_agent_color(1, 1)
+    local agent = M._create_agent_instance(agent_id, color, force_name, position, udp_port)
+    
+    return {
+        agent_id = agent.agent_id,
+        force_name = agent.force_name,
+        interface_name = "agent_" .. agent.agent_id,
+        udp_port = agent.udp_port,
+    }
 end
 
 --- Destroy an agent
@@ -211,13 +216,27 @@ end
 -- ============================================================================
 
 --- Process agent message queue and send UDP notifications
---- Converts agent message queue format to udp.send_action_completion_udp format
+--- Converts agent message queue format to consistent action payload format
 --- Iterates over all categories and sends all messages with category in metadata
 --- @param agent Agent Agent instance
 local function process_agent_messages(agent)
     local message_queue = agent:get_queued_messages()
     if not message_queue or next(message_queue) == nil then
+        -- Queue is empty, no UDP to send
         return
+    end
+    
+    if M.DEBUG then
+        local total_messages = 0
+        for category, messages in pairs(message_queue) do
+            if messages then
+                total_messages = total_messages + #messages
+            end
+        end
+        if total_messages > 0 then
+            game.print(string.format("[DEBUG process_agent_messages] Agent %d: Processing %d messages from queue", 
+                agent.agent_id, total_messages))
+        end
     end
     
     -- Iterate over all categories
@@ -225,35 +244,33 @@ local function process_agent_messages(agent)
         if messages and type(messages) == "table" then
             -- Send all messages in this category
             for _, message in ipairs(messages) do
-                -- Convert agent message format to UDP payload format
-                local payload = {
-                    action_id = message.action_id or string.format("%s_%d_%d", message.action or "unknown", game.tick, agent.agent_id),
-                    agent_id = agent.agent_id,
-                    action_type = message.action or "unknown",
-                    status = message.status,  -- REQUIRED: explicit state machine status
-                    category = category,  -- Include category in metadata
-                    rcon_tick = message.tick or game.tick,
-                    completion_tick = game.tick,
-                    success = message.success ~= false,  -- Default to true if not specified
-                    result = message,
-                }
-                
-                -- Handle cancelled flag if present
-                if message.cancelled ~= nil then
-                    payload.cancelled = message.cancelled
+                -- Clean up message for result field (remove redundant fields)
+                local result = {}
+                for k, v in pairs(message) do
+                    if k ~= "action" and k ~= "agent_id" and k ~= "tick" and 
+                       k ~= "action_id" and k ~= "success" and k ~= "cancelled" and k ~= "status" then
+                        result[k] = v
+                    end
                 end
                 
-                -- Remove redundant fields from result
-                payload.result.action = nil
-                payload.result.agent_id = nil
-                payload.result.tick = nil
-                payload.result.action_id = nil
-                payload.result.success = nil
-                payload.result.cancelled = nil
-                payload.result.status = nil  -- Status is top-level, not in result
+                -- Create action payload using consistent schema
+                local action_id = message.action_id or string.format("%s_%d_%d", message.action or "unknown", game.tick, agent.agent_id)
+                local status = message.status  -- REQUIRED: explicit state machine status
+                local payload = udp.create_action_payload(
+                    action_id,
+                    agent.agent_id,
+                    message.action or "unknown",
+                    status,
+                    message.tick,
+                    next(result) ~= nil and result or nil,  -- Only include if non-empty
+                    message.success,
+                    message.cancelled,
+                    category
+                )
                 
-                -- Send UDP notification
-                udp.send_action_completion_udp(payload)
+                -- Send UDP notification using agent-specific port
+                local agent_udp_port = (agent and agent.udp_port) or udp.UDP_PORT
+                udp.send_udp_notification(payload, agent_udp_port)
             end
         end
     end
@@ -270,6 +287,9 @@ function M.on_tick(event)
         return
     end
     
+    local agent_count = 0
+    local message_count = 0
+    
     -- Process each agent
     for agent_id, agent in pairs(storage.agents) do
         -- Skip if not a valid Agent instance
@@ -277,19 +297,39 @@ function M.on_tick(event)
             goto continue
         end
         
+        agent_count = agent_count + 1
+        
         -- Process agent state machine updates
         -- This updates walking, mining, crafting, placement state machines
         -- and enqueues completion messages
         agent:process(event)
-
-        -- game.print(string.format("Processing agent %d", agent_id))
         
         -- Process and send UDP messages from agent's message queue
+        local agent_message_count = 0
+        if agent.message_queue then
+            for category, messages in pairs(agent.message_queue) do
+                if messages then
+                    agent_message_count = agent_message_count + #messages
+                    message_count = message_count + #messages
+                end
+            end
+        end
         process_agent_messages(agent)
         
-        ::continue::
+        -- Only log when agent actually sends messages (not on every tick)
+        if M.DEBUG and agent_message_count > 0 then
+            game.print(string.format("[DEBUG Agents.on_tick] Agent %d sent %d messages", agent_id, agent_message_count))
         end
+        
+        ::continue::
     end
+    
+    -- Only log summary when messages were sent (not on every idle tick)
+    if M.DEBUG and message_count > 0 then
+        game.print(string.format("[DEBUG Agents.on_tick] Tick %d: processed %d agents, %d total messages", 
+            game.tick, agent_count, message_count))
+    end
+end
     
 --- Get on_tick handlers for agent processing
 --- @return table Array of handler functions
@@ -378,9 +418,9 @@ end
 
 --- Specifications for admin API methods
 M.AdminApiSpecs = {
-    create_agents = {
-        _param_order = {"num_agents", "destroy_existing", "set_unique_forces", "default_common_force"},
-        num_agents = {type = "number", required = true},
+    create_agent = {
+        _param_order = {"udp_port", "destroy_existing", "set_unique_forces", "default_common_force"},
+        udp_port = {type = "number", required = false},
         destroy_existing = {type = "boolean", required = false},
         set_unique_forces = {type = "boolean", required = false},
         default_common_force = {type = "string", required = false},
@@ -464,7 +504,7 @@ function M.inspect_research(force_name)
 end
 
 M.admin_api = {
-    create_agents = M.create_agents,
+    create_agent = M.create_agent,
     destroy_agents = M.destroy_agents,
     update_agent_friends = M.update_agent_friends,
     update_agent_enemies = M.update_agent_enemies,
@@ -505,6 +545,14 @@ function M.get_events()
         nth_tick = {}
     }
 end
+
+-- ============================================================================
+-- CUSTOM EVENT EXPORTS
+-- ============================================================================
+
+--- Export custom events for use by fv_snapshot
+--- These events are raised by agent actions and listened to by fv_snapshot
+M.custom_events = custom_events
 
 -- ============================================================================
 -- REMOTE INTERFACE REGISTRATION

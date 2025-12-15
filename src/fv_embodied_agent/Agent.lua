@@ -39,6 +39,7 @@
 --- @field character LuaEntity Character entity for the agent
 --- @field force_name string Force name (access force via entity.force)
 --- @field labels AgentLabels Rendering labels for the agent
+--- @field udp_port number UDP port for agent-specific payloads
 --- @field get_production_statistics function Production statistics
 --- @field message_queue table[] Queue of UDP messages to be sent (processed by game state)
 --- @field on_chunk_charted defines.events Event name for chunk charted event
@@ -82,10 +83,12 @@ local Agent = {}
 
 Agent.__index = Agent
 
--- Generate custom event IDs (must be at module load time)
-Agent.on_chunk_charted = script.generate_event_name()
-Agent.on_agent_created = script.generate_event_name()
-Agent.on_agent_removed = script.generate_event_name()
+-- Import custom events (must be at module load time)
+local custom_events = require("utils.custom_events")
+local udp = require("utils.udp")
+Agent.on_chunk_charted = custom_events.on_chunk_charted
+Agent.on_agent_created = custom_events.on_agent_created
+Agent.on_agent_removed = custom_events.on_agent_removed
 
 -- Register metatable for save/load persistence
 -- This must happen at module load time, not in on_init/on_load
@@ -119,8 +122,9 @@ end
 --- @param color table|nil RGB color {r, g, b}
 --- @param force_name string|nil Optional force name (if nil, uses agent-{agent_id})
 --- @param spawn_position table|nil Optional spawn position {x, y}
+--- @param udp_port number|nil Optional UDP port for agent-specific payloads (defaults to 34202)
 --- @return Agent
-function Agent:new(agent_id, color, force_name, spawn_position)
+function Agent:new(agent_id, color, force_name, spawn_position, udp_port)
     -- Initialize storage if needed
     storage.agents = storage.agents or {}
 
@@ -129,12 +133,17 @@ function Agent:new(agent_id, color, force_name, spawn_position)
         return storage.agents[agent_id]
     end
 
+    -- Default UDP port
+    local default_udp_port = udp.UDP_PORT or 34202
+    local agent_udp_port = udp_port or default_udp_port
+
     -- Create agent instance with all state consolidated
     local agent = setmetatable({
         agent_id = agent_id,
         entity = nil,     -- Will be set in _create_entity
         force_name = nil, -- Will be set in _create_entity
         labels = {},
+        udp_port = agent_udp_port, -- UDP port for agent-specific payloads
 
         -- Consolidated activity state
         walking = {},

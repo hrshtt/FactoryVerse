@@ -2,6 +2,8 @@
 --- Methods operate directly on Agent instances (self)
 --- These methods are mixed into the Agent class at module level
 
+local custom_events = require("utils.custom_events")
+
 local PlacementActions = {}
 
 --- Place an entity (sync)
@@ -94,6 +96,14 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
     end
     
     local entity_pos = { x = created_entity.position.x, y = created_entity.position.y }
+
+    -- Raise agent entity built event for non-ghost entities (ghosts are handled separately)
+    if not ghost and created_entity.type ~= "entity-ghost" then
+        script.raise_event(custom_events.on_agent_entity_built, {
+            entity = created_entity,
+            agent_id = self.agent_id,
+        })
+    end
 
     local message = {
         action = "place_entity",

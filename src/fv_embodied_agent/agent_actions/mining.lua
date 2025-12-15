@@ -10,6 +10,7 @@
 --- Only huge-rock (stochastic products) blocks crafting due to inventory diff requirement.
 
 local debug_render = require("utils.debug_render")
+local custom_events = require("utils.custom_events")
 
 local MiningActions = {}
 
@@ -391,6 +392,50 @@ function MiningActions.finalize_mining(self, reason)
     
     self:enqueue_message(message, "mining")
     
+    -- Raise custom event for entity destruction (for trees/rocks that get depleted)
+    -- This ensures FVSnapshot mod can track the entity destruction
+    -- Only raise for depleted entities (not cancelled or incremental completed)
+    game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: reason=%s, entity_name=%s, entity_position=%s, entity_type=%s", 
+        game.tick, reason or "nil", tostring(mining_state and mining_state.entity_name), 
+        mining_state and mining_state.entity_position and string.format("{%f,%f}", mining_state.entity_position.x, mining_state.entity_position.y) or "nil",
+        tostring(mining_state and mining_state.entity_type)))
+    
+    if reason == "depleted" and mining_state and mining_state.entity_name and mining_state.entity_position then
+        -- Check if it's a resource entity (tree or rock)
+        local is_resource_entity = false
+        if mining_state.entity_type == "tree" then
+            is_resource_entity = true
+            game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: Detected tree entity", game.tick))
+        elseif mining_state.entity_type == "simple-entity" and mining_state.entity_name then
+            if mining_state.entity_name:match("rock") or mining_state.entity_name:match("stone") then
+                is_resource_entity = true
+                game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: Detected rock entity: %s", game.tick, mining_state.entity_name))
+            end
+        end
+        
+        game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: is_resource_entity=%s", game.tick, tostring(is_resource_entity)))
+        
+        -- Raise event for resource entities (trees/rocks)
+        if is_resource_entity then
+            game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: About to raise on_agent_entity_destroyed event, event_id=%s", 
+                game.tick, tostring(custom_events.on_agent_entity_destroyed)))
+            script.raise_event(custom_events.on_agent_entity_destroyed, {
+                entity = nil,  -- Entity is already destroyed, pass nil
+                agent_id = self.agent_id,
+                entity_name = mining_state.entity_name,
+                entity_type = mining_state.entity_type,
+                position = mining_state.entity_position,
+            })
+            game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: Successfully raised on_agent_entity_destroyed event", game.tick))
+        else
+            game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: NOT raising event - not a resource entity", game.tick))
+        end
+    else
+        game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: NOT raising event - reason=%s, has_name=%s, has_position=%s", 
+            game.tick, reason or "nil", tostring(mining_state and mining_state.entity_name ~= nil), 
+            tostring(mining_state and mining_state.entity_position ~= nil)))
+    end
+    
     -- Clear mining state
     self.mining = {}
     self.character.clear_selected_entity()
@@ -419,9 +464,11 @@ function MiningActions.process_mining(self)
     
     -- Check if we WERE mining (have mining state) but Factorio stopped it
     -- This happens when entity is depleted - Factorio auto-clears mining_state
-    if mining_state.mode and not self.character.mining_state.mining then
+    if mining_state and mining_state.mode and not self.character.mining_state.mining then
         -- Factorio stopped mining for us - entity was depleted
         local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
+        game.print(string.format("[DEBUG mining.process_mining] Tick %d: Factorio stopped mining, calling finalize_mining with reason=%s", 
+            game.tick, reason))
         self:finalize_mining(reason)
         return
     end
@@ -435,7 +482,9 @@ function MiningActions.process_mining(self)
     
     -- Check entity validity (depleted) - backup check
     if not entity or not entity.valid then
-        local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
+        local reason = mining_state and mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
+        game.print(string.format("[DEBUG mining.process_mining] Tick %d: Entity invalid, calling finalize_mining with reason=%s", 
+            game.tick, reason))
         self:finalize_mining(reason)
         return
     end
