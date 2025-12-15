@@ -13,8 +13,10 @@ local utils = require("utils.utils")
 local Resource = require("game_state.Resource")
 -- local Entities = require("game_state.Entities")
 local snapshot = require("utils.snapshot")
-local serialize = require("utils.serialize")
-local Agent = require("Agent")
+local serialize = require("__fv_embodied_agent__/utils/serialize")
+
+-- Agent is from fv_embodied_agent mod (dependency)
+local Agent = require("__fv_embodied_agent__.Agent")
 
 -- ============================================================================
 -- SNAPSHOT STATE MACHINE - Spreads chunk processing across multiple ticks
@@ -690,7 +692,7 @@ function M._build_disk_write_snapshot()
     
     -- Agent.on_chunk_charted: mark chunks for snapshotting when charted by agents
     -- Note: Agents also mark chunks directly in charting.lua, but this handles the event for consistency
-    if Agent.on_chunk_charted then
+    if Agent and Agent.on_chunk_charted then
         events[Agent.on_chunk_charted] = M._on_agent_chunk_charted
     end
     

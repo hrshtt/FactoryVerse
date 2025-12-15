@@ -5,6 +5,7 @@ from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
 from src.FactoryVerse.dsl.recipe.base import Recipes
 
 from typing import List, Optional, Dict, Any, Union, Literal
+from pathlib import Path
 import json
 import logging
 import sys
@@ -118,12 +119,135 @@ class _InventoryAccessor:
         return _get_factory().inventory.check_recipe_count(recipe_name)
 
 
+class _ReachableAccessor:
+    """Top-level reachable entities/resources helper accessor.
+    
+    Provides access to ReachableEntities and ReachableResources methods.
+    """
+    
+    def get_entity(
+        self,
+        entity_name: str,
+        position: Optional[MapPosition] = None,
+        options: Optional[Dict[str, Any]] = None
+    ):
+        """Get a single entity matching criteria.
+        
+        Args:
+            entity_name: Entity prototype name (e.g., "electric-mining-drill")
+            position: Optional exact position match
+            options: Optional dict with filters:
+                - recipe: str - filter by recipe name
+                - direction: Direction - filter by direction
+                - entity_type: str - filter by Factorio entity type
+                - status: str - filter by status (e.g., "working", "no-power")
+        
+        Returns:
+            First matching BaseEntity instance, or None if not found
+        """
+        return _get_factory().reachable_entities.get_entity(entity_name, position, options)
+    
+    def get_entities(
+        self,
+        entity_name: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None
+    ):
+        """Get entities matching criteria.
+        
+        Args:
+            entity_name: Optional entity prototype name filter
+            options: Optional dict with filters (same as get_entity)
+        
+        Returns:
+            List of matching BaseEntity instances (may be empty)
+        """
+        return _get_factory().reachable_entities.get_entities(entity_name, options)
+    
+    def get_resource(
+        self,
+        resource_name: str,
+        position: Optional[MapPosition] = None
+    ):
+        """Get a single resource matching criteria.
+        
+        Args:
+            resource_name: Resource name (e.g., "iron-ore", "tree")
+            position: Optional exact position match
+        
+        Returns:
+            Resource data dict, or None if not found
+        """
+        return _get_factory().reachable_resources.get_resource(resource_name, position)
+
+
 # Top-level action instances - use these in DSL context
 walking = _WalkingAccessor()
 mining = _MiningAccessor()
 crafting = _CraftingAccessor()
 research = _ResearchAccessor()
 inventory = _InventoryAccessor()
+reachable = _ReachableAccessor()
+
+# Ghost manager - direct access (not wrapped, accessed as property-like)
+class _GhostManagerProxy:
+    """Proxy to access ghost_manager methods directly."""
+    
+    def __getattr__(self, name):
+        """Delegate all attribute access to the factory's ghost manager."""
+        return getattr(_get_factory().ghosts, name)
+
+ghost_manager = _GhostManagerProxy()
+
+
+class _DuckDBAccessor:
+    """Top-level DuckDB database accessor.
+    
+    Provides high-level method to load snapshot data into the database.
+    """
+    
+    def load_snapshots(
+        self,
+        snapshot_dir: Optional[Path] = None,
+        db_path: Optional[Union[str, Path]] = None,
+        **kwargs
+    ):
+        """Load snapshot data into the database.
+        
+        High-level method that auto-creates connection, schema, and
+        auto-detects snapshot directory if not provided.
+        
+        Args:
+            snapshot_dir: Path to snapshot directory (auto-detects if None)
+            db_path: Optional path to DuckDB database file (uses in-memory if None)
+            **kwargs: Additional arguments passed to factory.load_snapshots()
+        
+        Returns:
+            None
+        """
+        return _get_factory().load_snapshots(
+            snapshot_dir=snapshot_dir,
+            db_path=db_path,
+            **kwargs
+        )
+    
+    @property
+    def connection(self):
+        """Get the DuckDB connection.
+        
+        Returns:
+            DuckDB connection object
+        
+        Raises:
+            RuntimeError: If database has not been loaded yet
+        """
+        con = _get_factory().duckdb_connection
+        if con is None:
+            raise RuntimeError(
+                "DuckDB database not loaded. Call map_db.load_snapshots() first."
+            )
+        return con
+
+map_db = _DuckDBAccessor()
 
 
 

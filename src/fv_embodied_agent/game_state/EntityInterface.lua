@@ -19,6 +19,7 @@
 --- @class EntityInterface
 --- @field entity LuaEntity The wrapped LuaEntity instance
 --- @field on_entity_configuration_changed number Custom event ID for configuration changes
+--- @field on_entity_rotated number Custom event ID for entity rotation
 --- @field set_recipe fun(self: EntityInterface, recipe_name: string|nil, overwrite?: boolean): boolean
 --- @field set_filter fun(self: EntityInterface, inventory_type: InventoryType, filter_index?: number, filter_item?: string): boolean
 --- @field set_inventory_limit fun(self: EntityInterface, inventory_type: InventoryType, limit?: number): boolean
@@ -46,10 +47,14 @@ script.register_metatable('EntityInterface', EntityInterface)
 -- CUSTOM EVENT INITIALIZATION (must be at module load time)
 -- ============================================================================
 
--- Generate custom event ID for entity configuration changes
--- This event is raised whenever entity configuration changes (recipe, filter, inventory_limit, etc.)
+-- Generate custom event IDs (must be at module load time)
+-- Entity configuration changed event
 EntityInterface.on_entity_configuration_changed = script.generate_event_name()
 log("EntityInterface: Generated custom event 'entity_configuration_changed': " .. tostring(EntityInterface.on_entity_configuration_changed))
+
+-- Entity rotated event
+EntityInterface.on_entity_rotated = script.generate_event_name()
+log("EntityInterface: Generated custom event 'entity_rotated': " .. tostring(EntityInterface.on_entity_rotated))
 
 -- ============================================================================
 -- ENTITY RESOLUTION
@@ -530,11 +535,13 @@ function EntityInterface:rotate(direction)
         error("EntityInterface: Entity is invalid")
     end
     
+    local old_direction = self.entity.direction
+    
     if direction then
         self.entity.direction = direction
     else
         -- Rotate 90 degrees
-        local current_dir = self.entity.direction or defines.direction.north
+        local current_dir = old_direction or defines.direction.north
         local dir_map = {
             [defines.direction.north] = defines.direction.east,
             [defines.direction.east] = defines.direction.south,
@@ -546,6 +553,15 @@ function EntityInterface:rotate(direction)
             [defines.direction.northwest] = defines.direction.northeast,
         }
         self.entity.direction = dir_map[current_dir] or defines.direction.north
+    end
+    
+    -- Only raise event if direction actually changed
+    if old_direction ~= self.entity.direction then
+        script.raise_event(EntityInterface.on_entity_rotated, {
+            entity = self.entity,
+            old_direction = old_direction,
+            new_direction = self.entity.direction,
+        })
     end
     
     return true

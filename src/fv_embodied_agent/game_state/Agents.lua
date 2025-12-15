@@ -4,9 +4,8 @@
 --- Uses new Agent class with metatable registration for OOP-based state management.
 
 local Agent = require("Agent")
-local snapshot = require("utils.snapshot")
+local udp = require("utils.udp")
 local utils = require("utils.utils")
-local Map = require("game_state.Map")
 local ParamSpec = require("utils.ParamSpec")
 local M = {}
 
@@ -212,7 +211,7 @@ end
 -- ============================================================================
 
 --- Process agent message queue and send UDP notifications
---- Converts agent message queue format to snapshot.send_action_completion_udp format
+--- Converts agent message queue format to udp.send_action_completion_udp format
 --- Iterates over all categories and sends all messages with category in metadata
 --- @param agent Agent Agent instance
 local function process_agent_messages(agent)
@@ -254,7 +253,7 @@ local function process_agent_messages(agent)
                 payload.result.status = nil  -- Status is top-level, not in result
                 
                 -- Send UDP notification
-                snapshot.send_action_completion_udp(payload)
+                udp.send_action_completion_udp(payload)
             end
         end
     end
@@ -372,29 +371,6 @@ function M.list_agent_forces()
     return mapping
 end
 
-function M._on_nth_tick_agent_production_snapshot()
-    local agents = M.list_agent_forces()
-    for agent_id, force_name in pairs(agents) do
-        local agent = M.get_agent(agent_id)
-        if agent and agent.character.valid then
-            stats = agent:get_production_statistics()
-            if not stats then goto continue end
-            -- Append a snapshot entry in JSONL format
-            local entry = {
-                tick = game.tick,
-                statistics = stats
-            }
-            local json_line = helpers.table_to_json(entry) .. "\n"
-            helpers.write_file(
-                snapshot.SNAPSHOT_BASE_DIR .. "/" .. agent_id .. "/production_statistics.jsonl",
-                json_line,
-                true -- append
-                -- for_player omitted (server/global)
-            )
-        end
-        ::continue::
-    end
-end
 
 -- ============================================================================
 -- ADMIN API AND SNAPSHOTS
@@ -427,7 +403,65 @@ M.AdminApiSpecs = {
     list_agent_forces = {
         _param_order = {},
     },
+    reset_research = {
+        _param_order = {"force_name"},
+        force_name = {type = "string", required = true},
+    },
+    inspect_research = {
+        _param_order = {"force_name"},
+        force_name = {type = "string", required = true},
+    },
 }
+
+-- ============================================================================
+-- RESEARCH METHODS (Agent-centric, uses force_name)
+-- ============================================================================
+
+--- Reset research for a force (agent-centric: uses force_name)
+--- @param force_name string Force name
+--- @return table Result
+function M.reset_research(force_name)
+    if not force_name or type(force_name) ~= "string" then
+        return { error = "force_name (string) is required" }
+    end
+    
+    local force = game.forces[force_name]
+    if not force then
+        return { error = "Force '" .. force_name .. "' not found" }
+    end
+    
+    force.cancel_current_research()
+    force.reset_technology_effects()
+    force.reset_technologies()
+    
+    return { success = true, force_name = force_name }
+end
+
+--- Inspect research for a force (agent-centric: uses force_name)
+--- @param force_name string Force name
+--- @return table Research information
+function M.inspect_research(force_name)
+    if not force_name or type(force_name) ~= "string" then
+        return { error = "force_name (string) is required" }
+    end
+    
+    local force = game.forces[force_name]
+    if not force then
+        return { error = "Force '" .. force_name .. "' not found" }
+    end
+    
+    local current_research = force.research_queue
+    local current_research_name = nil
+    if current_research and #current_research > 0 then
+        current_research_name = current_research[1].name
+    end
+    
+    return {
+        force_name = force_name,
+        current_research = current_research_name,
+        queue_length = current_research and #current_research or 0,
+    }
+end
 
 M.admin_api = {
     create_agents = M.create_agents,
@@ -435,6 +469,8 @@ M.admin_api = {
     update_agent_friends = M.update_agent_friends,
     update_agent_enemies = M.update_agent_enemies,
     list_agent_forces = M.list_agent_forces,
+    reset_research = M.reset_research,
+    inspect_research = M.inspect_research,
 }
 
 -- ============================================================================

@@ -82,7 +82,10 @@ local Agent = {}
 
 Agent.__index = Agent
 
+-- Generate custom event IDs (must be at module load time)
 Agent.on_chunk_charted = script.generate_event_name()
+Agent.on_agent_created = script.generate_event_name()
+Agent.on_agent_removed = script.generate_event_name()
 
 -- Register metatable for save/load persistence
 -- This must happen at module load time, not in on_init/on_load
@@ -155,6 +158,13 @@ function Agent:new(agent_id, color, force_name, spawn_position)
 
     -- Store agent instance
     storage.agents[agent_id] = agent
+
+    -- Raise agent created event
+    script.raise_event(Agent.on_agent_created, {
+        agent_id = agent_id,
+        force_name = agent.force_name,
+        position = agent.character.position,
+    })
 
     -- Register per-agent remote interface
     agent:register_remote_interface()
@@ -312,6 +322,12 @@ function Agent:destroy(remove_force)
             game.merge_forces(agent_force, game.forces.player)
         end
     end
+
+    -- Raise agent removed event (before removing from storage)
+    script.raise_event(Agent.on_agent_removed, {
+        agent_id = self.agent_id,
+        force_name = self.force_name,
+    })
 
     -- Remove from storage
     storage.agents[self.agent_id] = nil
@@ -534,7 +550,7 @@ end
 
 --- Enqueue a UDP message to be sent by game state
 --- Agent is not aware of UDP sending - only queues messages
---- @param message table UDP message payload (will be sent via snapshot.send_action_completion_udp)
+--- @param message table UDP message payload (will be sent via udp.send_action_completion_udp)
 --- @param category string Category for the message (e.g., "walking", "mining", "crafting", "entity_ops")
 function Agent:enqueue_message(message, category)
     self.message_queue = self.message_queue or {}

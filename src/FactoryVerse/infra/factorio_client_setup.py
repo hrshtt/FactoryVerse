@@ -197,22 +197,35 @@ def _update_mod_list(mod_path: Path, mod_name: str, enabled: bool) -> None:
     _save_mod_list(mod_path, mod_list)
 
 
-def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bool = False, project_scenarios_dir: Optional[Path] = None, as_mod: bool = False) -> None:
+def setup_client(work_dir_or_mod_dir: Path, scenario: str = "test_scenario", force: bool = False, project_scenarios_dir: Optional[Path] = None, as_mod: bool = False) -> None:
     """
-    Setup client with factorio_verse mod and scenarios.
+    Setup client with FactoryVerse mods and scenarios.
     
     NOTE: After running setup, you must restart Factorio for mod/scenario changes to take effect.
     Factorio only loads mods and scenarios at startup, not during runtime.
     
     Args:
-        verse_mod_dir: Path to factorio_verse mod directory
+        work_dir_or_mod_dir: Path to work directory (preferred) or mod directory (for backward compatibility)
         scenario: Scenario name to setup
         force: Force copy scenario even if it exists
         project_scenarios_dir: Path to project scenarios directory (for copying non-factorio_verse scenarios)
-        as_mod: If True, force loading factorio_verse as a mod (removes existing copies and copies fresh files)
+        as_mod: If True, force loading FactoryVerse mods (fv_embodied_agent and fv_snapshot) as mods
     """
     mod_path = _get_mod_path()
     scenario_path = _get_scenario_path()
+    
+    # Derive work_dir from the input path
+    # If it's a mod directory (e.g., work_dir/src/factorio_verse), go up to work_dir
+    # Otherwise, assume it's already work_dir
+    if work_dir_or_mod_dir.name in ["factorio_verse", "fv_embodied_agent", "fv_snapshot"]:
+        # If work_dir_or_mod_dir points to a mod directory, get the work_dir
+        work_dir = work_dir_or_mod_dir.parent.parent
+    else:
+        # If work_dir_or_mod_dir is actually work_dir
+        work_dir = work_dir_or_mod_dir
+    
+    embodied_agent_mod_dir = work_dir / "src" / "fv_embodied_agent"
+    snapshot_mod_dir = work_dir / "src" / "fv_snapshot"
     
     # Ensure directories exist
     mod_path.mkdir(parents=True, exist_ok=True)
@@ -224,36 +237,65 @@ def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bo
     print(f"📱 Setting up Factorio client (scenario: {scenario})")
     
     if as_mod:
-        # Force loading as mod: remove all existing factorio_verse mod copies and copy fresh files
-        print("📦 Removing existing factorio_verse mod copies...")
-        for old_mod in mod_path.glob("factorio_verse*"):
-            if old_mod.is_dir():
-                print(f"   Removing {old_mod.name}...")
-                shutil.rmtree(old_mod)
+        # When as_mod=True, we're loading mods, so any scenario name is fine
+        # Check that both mod directories exist
+        if not embodied_agent_mod_dir.exists():
+            raise RuntimeError(f"FV Embodied Agent mod not found at {embodied_agent_mod_dir}")
+        if not snapshot_mod_dir.exists():
+            raise RuntimeError(f"FV Snapshot mod not found at {snapshot_mod_dir}")
         
-        # Also remove any scenario copy if it exists
-        client_scenario_dir = scenario_path / "factorio_verse"
-        if client_scenario_dir.exists():
-            print(f"   Removing scenario copy at {client_scenario_dir}...")
-            shutil.rmtree(client_scenario_dir)
+        # Remove all existing FactoryVerse mod copies
+        print("📦 Removing existing FactoryVerse mod copies...")
+        for old_mod_pattern in ["fv_embodied_agent*", "fv_snapshot*", "factorio_verse*"]:
+            for old_mod in mod_path.glob(old_mod_pattern):
+                if old_mod.is_dir():
+                    print(f"   Removing {old_mod.name}...")
+                    shutil.rmtree(old_mod)
         
-        # Read version from info.json
-        info_json_path = verse_mod_dir / "info.json"
+        # Also remove any scenario copies if they exist
+        for scenario_name in ["factorio_verse", "fv_embodied_agent", "fv_snapshot"]:
+            client_scenario_dir = scenario_path / scenario_name
+            if client_scenario_dir.exists():
+                print(f"   Removing scenario copy at {client_scenario_dir}...")
+                shutil.rmtree(client_scenario_dir)
+        
+        # Prepare fv_embodied_agent mod
+        print("📦 Preparing fv_embodied_agent mod...")
+        info_json_path = embodied_agent_mod_dir / "info.json"
         if info_json_path.exists():
             info = json.loads(info_json_path.read_text())
+            mod_name = info.get("name", "fv_embodied_agent")
             mod_version = info.get("version", "1.0.0")
         else:
+            mod_name = "fv_embodied_agent"
             mod_version = "1.0.0"
         
-        # Copy fresh mod files with versioned name
-        client_mod_dir = mod_path / f"factorio_verse_{mod_version}"
-        print(f"📦 Copying fresh factorio_verse mod as {client_mod_dir.name}...")
-        shutil.copytree(verse_mod_dir, client_mod_dir)
+        client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
+        if client_mod_dir.exists():
+            shutil.rmtree(client_mod_dir)
+        shutil.copytree(embodied_agent_mod_dir, client_mod_dir)
+        _update_mod_list(mod_path, mod_name, True)
+        print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+        print(f"✓ {mod_name}: enabled in mod-list")
         
-        # Enable factorio_verse in mod-list
-        _update_mod_list(mod_path, "factorio_verse", True)
-        print(f"✓ factorio_verse mod copied as {client_mod_dir.name}")
-        print("✓ factorio_verse: enabled in mod-list")
+        # Prepare fv_snapshot mod
+        print("📦 Preparing fv_snapshot mod...")
+        info_json_path = snapshot_mod_dir / "info.json"
+        if info_json_path.exists():
+            info = json.loads(info_json_path.read_text())
+            mod_name = info.get("name", "fv_snapshot")
+            mod_version = info.get("version", "1.0.0")
+        else:
+            mod_name = "fv_snapshot"
+            mod_version = "1.0.0"
+        
+        client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
+        if client_mod_dir.exists():
+            shutil.rmtree(client_mod_dir)
+        shutil.copytree(snapshot_mod_dir, client_mod_dir)
+        _update_mod_list(mod_path, mod_name, True)
+        print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+        print(f"✓ {mod_name}: enabled in mod-list")
         
         # Handle scenario if project_scenarios_dir is provided
         if project_scenarios_dir and scenario != "factorio_verse":
@@ -273,49 +315,17 @@ def setup_client(verse_mod_dir: Path, scenario: str = "test_scenario", force: bo
             else:
                 print(f"ℹ️  Scenario '{scenario}' already exists (use --force to overwrite)")
     elif scenario == "factorio_verse":
-        # Always copy factorio_verse as a scenario
-        print("📋 Copying factorio_verse as scenario...")
-        client_scenario_dir = scenario_path / "factorio_verse"
-        
-        # Remove old scenario if exists (always overwrite for factorio_verse)
-        if client_scenario_dir.exists():
-            shutil.rmtree(client_scenario_dir)
-        
-        # Copy to scenario directory
-        shutil.copytree(verse_mod_dir, client_scenario_dir)
-        
-        # Disable factorio_verse in mod-list (it's a scenario now, not a mod)
-        _update_mod_list(mod_path, "factorio_verse", False)
-        print("✓ factorio_verse copied as scenario")
-        print("🚫 factorio_verse: disabled (used as scenario)")
+        # Raise error for scenario route
+        raise RuntimeError(
+            "❌ Error: Scenario route for FactoryVerse is not supported. "
+            "FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot). "
+            "Please use --as-mod flag with a different scenario, or plan scenario support separately."
+        )
     else:
-        # Copy factorio_verse as a mod
-        # Factorio requires mod folders to be named modname_version (e.g., factorio_verse_1.0.0)
-        print("📦 Copying factorio_verse mod...")
+        # For other scenarios without --as-mod, we don't need to prepare mods
+        print(f"ℹ️  Using scenario mode (no mods needed for scenario: {scenario})")
         
-        # Read version from info.json
-        info_json_path = verse_mod_dir / "info.json"
-        if info_json_path.exists():
-            info = json.loads(info_json_path.read_text())
-            mod_version = info.get("version", "1.0.0")
-        else:
-            mod_version = "1.0.0"
-        
-        client_mod_dir = mod_path / f"factorio_verse_{mod_version}"
-        
-        # Remove old mod versions if they exist
-        for old_mod in mod_path.glob("factorio_verse*"):
-            if old_mod.is_dir():
-                shutil.rmtree(old_mod)
-        
-        # Copy to mod directory with versioned name
-        shutil.copytree(verse_mod_dir, client_mod_dir)
-        
-        # Enable factorio_verse in mod-list
-        _update_mod_list(mod_path, "factorio_verse", True)
-        print(f"✓ factorio_verse mod copied as {client_mod_dir.name}")
-        
-        # Handle other scenarios if project_scenarios_dir is provided
+        # Handle scenarios if project_scenarios_dir is provided
         if project_scenarios_dir:
             client_scenario_dir = scenario_path / scenario
             project_scenario_dir = project_scenarios_dir / scenario
@@ -390,9 +400,9 @@ def launch_factorio_client() -> None:
         sys.exit(1)
 
 
-def dump_data_raw(verse_mod_dir: Path, scenario: str = "factorio_verse", force: bool = False, project_scenarios_dir: Optional[Path] = None, as_mod: bool = False) -> Path:
+def dump_data_raw(work_dir: Path, scenario: str = "factorio_verse", force: bool = False, project_scenarios_dir: Optional[Path] = None, as_mod: bool = False) -> Path:
     """Dump Factorio's data.raw to JSON using --dump-data flag."""
-    setup_client(verse_mod_dir, scenario=scenario, force=force, project_scenarios_dir=project_scenarios_dir, as_mod=as_mod)
+    setup_client(work_dir, scenario=scenario, force=force, project_scenarios_dir=project_scenarios_dir, as_mod=as_mod)
     
     factorio_exe = _find_factorio_executable()
     script_output_dir = get_client_script_output_dir()
