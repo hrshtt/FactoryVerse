@@ -1,8 +1,8 @@
+from __future__ import annotations
 import pydantic
-from typing import List, Optional, Union, Literal
-from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction
+from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
+from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
 from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack
-from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
 from src.FactoryVerse.dsl.prototypes import (
     get_entity_prototypes,
     ElectricMiningDrillPrototype,
@@ -13,6 +13,12 @@ from src.FactoryVerse.dsl.prototypes import (
     TransportBeltPrototype,
     apply_cardinal_vector,
 )
+
+if TYPE_CHECKING:
+    from src.FactoryVerse.dsl.agent import PlayingFactory
+
+# Import _playing_factory safely
+from src.FactoryVerse.dsl.agent import _playing_factory
 
 
 class BaseEntity(pydantic.BaseModel):
@@ -273,3 +279,82 @@ class Pumpjack(BaseEntity):
     def get_output_pipe_connections(self) -> List[MapPosition]:
         """Get the output pipe connections of the pumpjack."""
         return self.prototype.output_pipe_connections(self.position)
+
+
+def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:
+    """Factory function to create the appropriate Entity subclass from raw data.
+    
+    Args:
+        entity_data: Raw entity data dict from get_reachable()
+        
+    Returns:
+        BaseEntity instance (or appropriate subclass)
+    """
+    name = entity_data.get("name", "")
+    position_data = entity_data.get("position", {})
+    position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
+    
+    # Parse bounding box if available
+    bbox_data = entity_data.get("bounding_box")
+    if bbox_data:
+        # Handle different bounding box formats
+        if "left_top" in bbox_data and "right_bottom" in bbox_data:
+            left_top = Position(x=bbox_data["left_top"]["x"], y=bbox_data["left_top"]["y"])
+            right_bottom = Position(x=bbox_data["right_bottom"]["x"], y=bbox_data["right_bottom"]["y"])
+        elif "min_x" in bbox_data:
+            # Alternative format from serialize.lua
+            left_top = Position(x=bbox_data["min_x"], y=bbox_data["min_y"])
+            right_bottom = Position(x=bbox_data["max_x"], y=bbox_data["max_y"])
+        else:
+            # Fallback
+            left_top = Position(x=position.x, y=position.y)
+            right_bottom = Position(x=position.x + 1, y=position.y + 1)
+        bounding_box = BoundingBox(left_top=left_top, right_bottom=right_bottom)
+    else:
+        # Create minimal bounding box
+        bounding_box = BoundingBox(
+            left_top=Position(x=position.x, y=position.y),
+            right_bottom=Position(x=position.x + 1, y=position.y + 1)
+        )
+    
+    # Parse direction if available
+    direction = None
+    if "direction" in entity_data:
+        try:
+            direction = Direction(entity_data["direction"])
+        except (ValueError, KeyError, TypeError):
+            pass
+    
+    # Map entity names to specific classes
+    entity_map = {
+        "electric-mining-drill": ElectricMiningDrill,
+        "burner-mining-drill": BurnerMiningDrill,
+        "pumpjack": Pumpjack,
+        "inserter": Inserter,
+        "fast-inserter": FastInserter,
+        "long-handed-inserter": LongHandInserter,
+        "transport-belt": TransportBelt,
+        "splitter": Splitter,
+        "assembling-machine-1": AssemblingMachine,
+        "assembling-machine-2": AssemblingMachine,
+        "assembling-machine-3": AssemblingMachine,
+        "stone-furnace": Furnace,
+        "steel-furnace": Furnace,
+        "electric-furnace": Furnace,
+        "small-electric-pole": ElectricPole,
+        "medium-electric-pole": ElectricPole,
+        "big-electric-pole": ElectricPole,
+        "substation": ElectricPole,
+        "wooden-chest": WoodenChest,
+        "iron-chest": IronChest,
+        "steel-chest": Container,
+    }
+    
+    entity_class = entity_map.get(name, BaseEntity)
+    
+    return entity_class(
+        name=name,
+        position=position,
+        bounding_box=bounding_box,
+        direction=direction
+    )

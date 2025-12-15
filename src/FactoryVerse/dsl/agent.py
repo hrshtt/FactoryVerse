@@ -1,7 +1,9 @@
+from __future__ import annotations
 import json
 import asyncio
 import time
 import logging
+from pathlib import Path
 from typing import Any, Dict, Optional, Union, List, Literal, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,12 @@ from src.FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatc
 from src.FactoryVerse.dsl.ghosts import GhostManager
 
 if TYPE_CHECKING:
+    import duckdb
+
+if TYPE_CHECKING:
     from src.FactoryVerse.dsl.item.base import Item, PlaceableItem
+    from src.FactoryVerse.dsl.entity.base import BaseEntity
+    import duckdb
 
 
 # Game context: agent is "playing" the factory game
@@ -374,6 +381,175 @@ class AgentInventory:
         return int(actual_crafts) if actual_crafts != float("inf") else 0
 
 
+class ReachableEntities:
+    """Represents reachable entities with query methods.
+    
+    Similar to AgentInventory but for entities. Provides filtering
+    and query capabilities without returning raw lists.
+    """
+    
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
+        self._entities_data: Optional[List[Dict]] = None
+        self._entities_instances: Optional[List[BaseEntity]] = None
+    
+    def _ensure_loaded(self):
+        """Lazy-load entities data from factory."""
+        if self._entities_data is None:
+            data = self._factory.get_reachable(attach_ghosts=False)
+            self._entities_data = data.get("entities", [])
+            # Convert to entity instances
+            from src.FactoryVerse.dsl.entity.base import create_entity_from_data
+            self._entities_instances = [
+                create_entity_from_data(entity_data)
+                for entity_data in self._entities_data
+            ]
+    
+    def get_entity(
+        self,
+        entity_name: str,
+        position: Optional[MapPosition] = None,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Optional[BaseEntity]:
+        """Get a single entity matching criteria.
+        
+        Args:
+            entity_name: Entity prototype name (e.g., "electric-mining-drill")
+            position: Optional exact position match
+            options: Optional dict with filters:
+                - recipe: str - filter by recipe name
+                - direction: Direction - filter by direction
+                - entity_type: str - filter by Factorio entity type
+                - status: str - filter by status (e.g., "working", "no-power")
+        
+        Returns:
+            First matching BaseEntity instance, or None if not found
+        """
+        self._ensure_loaded()
+        options = options or {}
+        
+        # Filter by name first
+        matches = [
+            (inst, data) for inst, data in zip(self._entities_instances, self._entities_data)
+            if inst.name == entity_name
+        ]
+        
+        # Filter by position if provided
+        if position is not None:
+            matches = [(inst, data) for inst, data in matches if inst.position == position]
+        
+        # Apply option filters
+        if "recipe" in options:
+            recipe = options["recipe"]
+            matches = [(inst, data) for inst, data in matches if data.get("recipe") == recipe]
+        
+        if "direction" in options:
+            direction = options["direction"]
+            matches = [(inst, data) for inst, data in matches if inst.direction == direction]
+        
+        if "entity_type" in options:
+            entity_type = options["entity_type"]
+            matches = [(inst, data) for inst, data in matches if data.get("type") == entity_type]
+        
+        if "status" in options:
+            status = options["status"]
+            matches = [(inst, data) for inst, data in matches if data.get("status") == status]
+        
+        return matches[0][0] if matches else None
+    
+    def get_entities(
+        self,
+        entity_name: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None
+    ) -> List[BaseEntity]:
+        """Get entities matching criteria.
+        
+        Args:
+            entity_name: Optional entity prototype name filter
+            options: Optional dict with filters (same as get_entity)
+        
+        Returns:
+            List of matching BaseEntity instances (may be empty)
+        """
+        self._ensure_loaded()
+        options = options or {}
+        
+        # Start with all entities
+        matches = [
+            (inst, data) for inst, data in zip(self._entities_instances, self._entities_data)
+        ]
+        
+        # Filter by name if provided
+        if entity_name is not None:
+            matches = [(inst, data) for inst, data in matches if inst.name == entity_name]
+        
+        # Apply option filters (same logic as get_entity)
+        if "recipe" in options:
+            recipe = options["recipe"]
+            matches = [(inst, data) for inst, data in matches if data.get("recipe") == recipe]
+        
+        if "direction" in options:
+            direction = options["direction"]
+            matches = [(inst, data) for inst, data in matches if inst.direction == direction]
+        
+        if "entity_type" in options:
+            entity_type = options["entity_type"]
+            matches = [(inst, data) for inst, data in matches if data.get("type") == entity_type]
+        
+        if "status" in options:
+            status = options["status"]
+            matches = [(inst, data) for inst, data in matches if data.get("status") == status]
+        
+        return [inst for inst, _ in matches]
+
+
+class ReachableResources:
+    """Represents reachable resources with query methods.
+    
+    Similar pattern to AgentInventory but for resources (ores, trees, rocks).
+    """
+    
+    def __init__(self, factory: "PlayingFactory"):
+        self._factory = factory
+        self._resources_data: Optional[List[Dict]] = None
+    
+    def _ensure_loaded(self):
+        """Lazy-load resources data from factory."""
+        if self._resources_data is None:
+            data = self._factory.get_reachable(attach_ghosts=False)
+            self._resources_data = data.get("resources", [])
+    
+    def get_resource(
+        self,
+        resource_name: str,
+        position: Optional[MapPosition] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get a single resource matching criteria.
+        
+        Args:
+            resource_name: Resource name (e.g., "iron-ore", "tree")
+            position: Optional exact position match
+        
+        Returns:
+            Resource data dict, or None if not found
+        """
+        self._ensure_loaded()
+        
+        matches = [
+            data for data in self._resources_data
+            if data.get("name") == resource_name
+        ]
+        
+        if position is not None:
+            matches = [
+                data for data in matches
+                if data.get("position", {}).get("x") == position.x
+                and data.get("position", {}).get("y") == position.y
+            ]
+        
+        return matches[0] if matches else None
+
+
 class WalkingAction:
     """Walking action wrapper."""
     
@@ -553,6 +729,7 @@ class PlayingFactory:
     recipes: Recipes
     _async_listener: AsyncActionListener
     _ghost_manager: GhostManager
+    _duckdb_connection: Optional["duckdb.DuckDBPyConnection"]
 
     def __init__(self, rcon_client: "RconClient", agent_id: str, recipes: Recipes, 
                  udp_dispatcher: Optional[UDPDispatcher] = None):
@@ -562,6 +739,7 @@ class PlayingFactory:
         self.recipes = recipes
         self._async_listener = AsyncActionListener(udp_dispatcher=udp_dispatcher)
         self._ghost_manager = GhostManager(self, agent_id=agent_id)
+        self._duckdb_connection = None
         
         # Initialize action wrappers
         self._walking = WalkingAction(self)
@@ -638,6 +816,20 @@ class PlayingFactory:
     def inventory(self) -> "AgentInventory":
         """Agent inventory helper with methods for querying and shaping items."""
         return self._inventory
+    
+    @property
+    def reachable_entities(self) -> "ReachableEntities":
+        """Get reachable entities accessor."""
+        if not hasattr(self, '_reachable_entities'):
+            self._reachable_entities = ReachableEntities(self)
+        return self._reachable_entities
+    
+    @property
+    def reachable_resources(self) -> "ReachableResources":
+        """Get reachable resources accessor."""
+        if not hasattr(self, '_reachable_resources'):
+            self._reachable_resources = ReachableResources(self)
+        return self._reachable_resources
     
     def update_recipes(self) -> None:
         cmd = self._build_command("get_recipes")
@@ -1024,6 +1216,17 @@ class PlayingFactory:
         cmd = self._build_command("get_inventory_items")
         return self.execute(cmd)
 
+    def get_position(self) -> MapPosition:
+        """Get current agent position.
+
+        Returns:
+            MapPosition of the agent
+        """
+        cmd = self._build_command("get_position")
+        result_str = self.execute(cmd)
+        result = json.loads(result_str)
+        return MapPosition(x=result["x"], y=result["y"])
+
     def get_placement_cues(self, entity_name: str) -> str:
         """Get placement information for an entity type.
 
@@ -1102,6 +1305,88 @@ class PlayingFactory:
             GhostManager instance for managing tracked ghosts
         """
         return self._ghost_manager
+    
+    def load_snapshots(
+        self,
+        snapshot_dir: Optional[Path] = None,
+        db_path: Optional[Union[str, Path]] = None,
+        dump_file: str = "factorio-data-dump.json",
+        prototype_api_file: Optional[str] = None,
+        *,
+        include_base: bool = True,
+        include_components: bool = True,
+        include_derived: bool = True,
+        include_ghosts: bool = True,
+        include_analytics: bool = True,
+        replay_updates: bool = True,
+    ) -> None:
+        """Load snapshot data into the database.
+        
+        High-level method that auto-creates connection, schema, and auto-detects
+        snapshot directory. This is the primary way to set up the database.
+        
+        Args:
+            snapshot_dir: Path to snapshot directory. If None, auto-detects from
+                         Factorio client script-output directory.
+            db_path: Optional path to DuckDB database file. If None, uses in-memory.
+            dump_file: Path to Factorio prototype data dump JSON file
+            prototype_api_file: Optional path to prototype-api.json file
+            include_base: Load base tables (water, resources, entities)
+            include_components: Load component tables (inserters, belts, etc.)
+            include_derived: Load derived tables (patches, belt networks)
+            include_ghosts: Load ghost tables
+            include_analytics: Load analytics tables (power, agent stats)
+            replay_updates: Replay operations logs (entities_updates.jsonl, etc.)
+        
+        TODO: Add refresh() method for incremental updates from same directory
+        """
+        import duckdb
+        
+        # Auto-create connection if not already loaded
+        if self._duckdb_connection is None:
+            if db_path is None:
+                con = duckdb.connect(':memory:')
+            else:
+                from src.FactoryVerse.infra.db.duckdb_schema import connect
+                con = connect(db_path)
+            self._duckdb_connection = con
+        
+        # Auto-detect snapshot directory if not provided
+        # Uses Factorio client script-output directory as default
+        if snapshot_dir is None:
+            try:
+                from src.FactoryVerse.infra.factorio_client_setup import get_client_script_output_dir
+                snapshot_dir = get_client_script_output_dir()
+            except Exception as e:
+                raise ValueError(
+                    f"snapshot_dir required and could not be auto-detected: {e}"
+                )
+        
+        snapshot_dir = Path(snapshot_dir)
+        
+        # Load data (this will auto-create schema if needed)
+        from src.FactoryVerse.infra.db.loader import load_all
+        load_all(
+            self._duckdb_connection,
+            snapshot_dir,
+            dump_file,
+            prototype_api_file,
+            include_base=include_base,
+            include_components=include_components,
+            include_derived=include_derived,
+            include_ghosts=include_ghosts,
+            include_analytics=include_analytics,
+            replay_updates=replay_updates,
+        )
+    
+    @property
+    def duckdb_connection(self):
+        """Get the DuckDB connection.
+        
+        Returns:
+            DuckDB connection object, or None if not loaded
+        """
+        return self._duckdb_connection
 
     # ========================================================================
     # DEBUG

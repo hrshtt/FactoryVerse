@@ -1,9 +1,0 @@
-{
-  "name": "factorio_verse",
-  "version": "1.0.0",
-  "factorio_version": "2.0",
-  "title": "Factorio Verse",
-  "author": "FactoryVerse Contributors",
-  "description": "Core mod providing actions, snapshots, and agent environment for Factorio",
-  "dependencies": ["base >= 2.0"]
-}

@@ -1,14 +1,16 @@
 """
-Load base tables: water_tile, resource_tile, resource_entity, map_entity.
+Load base tables: water_tile, resource_tile, resource_entity, map_entity, ghosts.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple, Optional
 
 import duckdb
+
+from .utils import normalize_snapshot_dir, load_jsonl_file, iter_chunk_dirs
 
 
 def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
@@ -16,6 +18,8 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
     
     This loads ALL water tiles from ALL chunks globally into the water_tile table.
     """
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
+    
     # Clear existing water tiles to ensure we have fresh data
     con.execute("DELETE FROM water_tile;")
     
@@ -60,6 +64,7 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
 
 def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     """Load resource tiles from resources_init.jsonl files."""
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     resource_files = list(snapshot_dir.rglob("resources_init.jsonl"))
     
     if not resource_files:
@@ -99,6 +104,7 @@ def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> N
 
 def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     """Load resource entities (trees, rocks) from trees_rocks_init.jsonl files."""
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     entity_files = list(snapshot_dir.rglob("trees_rocks_init.jsonl"))
     
     if not entity_files:
@@ -166,12 +172,73 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -
                 )
 
 
-def load_map_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load map entities from entities_init.jsonl files."""
-    entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
+def _process_entity_data(
+    data: Dict[str, Any],
+    entity_data: List[Dict[str, Any]],
+    valid_entities: Optional[set],
+) -> int:
+    """
+    Process a single entity data dict and add to entity_data list.
     
-    if not entity_files:
-        return
+    Returns:
+        Number of skipped entities (0 or 1)
+    """
+    entity_name = data.get("name")
+    if not entity_name:
+        return 0
+    
+    # Filter out entities not in our placeable_entity ENUM
+    if valid_entities and entity_name not in valid_entities:
+        return 1
+    
+    entity_key = data.get("key")
+    if not entity_key:
+        return 0
+    
+    bbox = data.get("bounding_box", {})
+    pos = data.get("position", {})
+    px = float(pos.get("x", 0.0))
+    py = float(pos.get("y", 0.0))
+    
+    # Store bounding box coordinates for GEOMETRY construction
+    if bbox:
+        min_x = float(bbox.get("min_x", px))
+        min_y = float(bbox.get("min_y", py))
+        max_x = float(bbox.get("max_x", px))
+        max_y = float(bbox.get("max_y", py))
+        bbox_coords = (min_x, min_y, max_x, max_y)
+    else:
+        # Fallback to point
+        min_x = min_y = px
+        max_x = max_y = py
+        bbox_coords = (min_x, min_y, max_x, max_y)
+    
+    entity_data.append({
+        "entity_key": entity_key,
+        "position": {"x": px, "y": py},
+        "entity_name": entity_name,
+        "bbox": bbox_coords,
+        "electric_network_id": data.get("electric_network_id"),
+    })
+    return 0
+
+
+def load_map_entities(
+    con: duckdb.DuckDBPyConnection, 
+    snapshot_dir: Path,
+    replay_updates: bool = True,
+) -> None:
+    """
+    Load map entities from entities_init.jsonl files.
+    
+    Optionally replays entities_updates.jsonl to compute current state.
+    
+    Args:
+        con: DuckDB connection
+        snapshot_dir: Path to snapshot directory
+        replay_updates: If True, replay entities_updates.jsonl operations log
+    """
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     
     # Get valid placeable entity names from the ENUM
     try:
@@ -185,47 +252,39 @@ def load_map_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> Non
     
     entity_data = []
     skipped_count = 0
-    for entity_file in entity_files:
-        with open(entity_file, "r") as f:
-            for line in f:
-                if line.strip():
-                    data = json.loads(line)
-                    entity_name = data["name"]
-                    
-                    # Filter out entities not in our placeable_entity ENUM
-                    if valid_entities and entity_name not in valid_entities:
-                        skipped_count += 1
-                        continue
-                    
-                    entity_key = data["key"]
-                    bbox = data.get("bounding_box", {})
-                    
-                    # Store bounding box coordinates for GEOMETRY construction
-                    if bbox:
-                        min_x = float(bbox.get("min_x", data["position"]["x"]))
-                        min_y = float(bbox.get("min_y", data["position"]["y"]))
-                        max_x = float(bbox.get("max_x", data["position"]["x"]))
-                        max_y = float(bbox.get("max_y", data["position"]["y"]))
-                        bbox_coords = (min_x, min_y, max_x, max_y)
-                    else:
-                        # Fallback to point
-                        pos = data["position"]
-                        min_x = min_y = float(pos['x'])
-                        max_x = max_y = float(pos['y'])
-                        bbox_coords = (min_x, min_y, max_x, max_y)
-                    
-                    entity_data.append({
-                        "entity_key": entity_key,
-                        "position": {"x": float(data["position"]["x"]), "y": float(data["position"]["y"])},
-                        "entity_name": entity_name,
-                        "bbox": bbox_coords,
-                        "electric_network_id": data.get("electric_network_id"),
-                    })
+    
+    # Load initial state from all chunks
+    for chunk_x, chunk_y, chunk_dir in iter_chunk_dirs(snapshot_dir):
+        init_file = chunk_dir / "entities_init.jsonl"
+        if init_file.exists():
+            for entry in load_jsonl_file(init_file):
+                skipped_count += _process_entity_data(entry, entity_data, valid_entities)
+        
+        # Replay operations log if requested
+        if replay_updates:
+            updates_file = chunk_dir / "entities_updates.jsonl"
+            if updates_file.exists():
+                for op in load_jsonl_file(updates_file):
+                    op_type = op.get("op")
+                    if op_type == "upsert":
+                        entity_data_entry = op.get("entity")
+                        if entity_data_entry:
+                            skipped_count += _process_entity_data(
+                                entity_data_entry, entity_data, valid_entities
+                            )
+                    elif op_type == "remove":
+                        entity_key = op.get("key")
+                        if entity_key:
+                            # Remove from entity_data list
+                            entity_data[:] = [e for e in entity_data if e["entity_key"] != entity_key]
     
     if skipped_count > 0:
         print(f"  Skipped {skipped_count} entities not in placeable_entity ENUM")
     
     if entity_data:
+        # Clear existing entities
+        con.execute("DELETE FROM map_entity;")
+        
         for e in entity_data:
             # Use ST_MakeEnvelope to create GEOMETRY (POLYGON)
             min_x, min_y, max_x, max_y = e["bbox"]
@@ -247,15 +306,124 @@ def load_map_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> Non
             )
 
 
+def load_ghosts(
+    con: duckdb.DuckDBPyConnection,
+    snapshot_dir: Path,
+    replay_updates: bool = True,
+) -> None:
+    """
+    Load ghosts from ghosts-init.jsonl file.
+    
+    Optionally replays ghosts-updates.jsonl to compute current state.
+    
+    Args:
+        con: DuckDB connection
+        snapshot_dir: Path to snapshot directory
+        replay_updates: If True, replay ghosts-updates.jsonl operations log
+    """
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
+    
+    # Check if ghost table exists (may not be in schema)
+    try:
+        con.execute("SELECT 1 FROM ghost_layer LIMIT 1;")
+    except:
+        # Table doesn't exist, skip ghost loading
+        return
+    
+    con.execute("DELETE FROM ghost_layer;")
+    
+    ghosts_by_key: Dict[str, Tuple] = {}
+    
+    # Load initial state from top-level ghosts-init.jsonl
+    init_file = snapshot_dir / "ghosts-init.jsonl"
+    if init_file.exists():
+        for entry in load_jsonl_file(init_file):
+            ghost_name = entry.get("ghost_name") or "unknown"
+            pos = entry.get("position") or {}
+            px = float(pos.get("x", 0.0))
+            py = float(pos.get("y", 0.0))
+            
+            ghost_key = entry.get("key") or f"{ghost_name}:{px}:{py}"
+            
+            chunk = entry.get("chunk") or {}
+            chunk_x = chunk.get("x") if chunk else None
+            chunk_y = chunk.get("y") if chunk else None
+            
+            ghosts_by_key[ghost_key] = (
+                ghost_key,
+                ghost_name,
+                entry.get("force"),
+                px,
+                py,
+                entry.get("direction"),
+                entry.get("direction_name"),
+                chunk_x,
+                chunk_y,
+            )
+    
+    # Replay operations log if requested
+    if replay_updates:
+        updates_file = snapshot_dir / "ghosts-updates.jsonl"
+        if updates_file.exists():
+            for op in load_jsonl_file(updates_file):
+                op_type = op.get("op")
+                if op_type == "upsert":
+                    ghost_data = op.get("ghost")
+                    if ghost_data:
+                        ghost_name = ghost_data.get("ghost_name") or "unknown"
+                        pos = ghost_data.get("position") or {}
+                        px = float(pos.get("x", 0.0))
+                        py = float(pos.get("y", 0.0))
+                        ghost_key = ghost_data.get("key") or f"{ghost_name}:{px}:{py}"
+                        chunk = ghost_data.get("chunk") or {}
+                        chunk_x = chunk.get("x") if chunk else None
+                        chunk_y = chunk.get("y") if chunk else None
+                        ghosts_by_key[ghost_key] = (
+                            ghost_key,
+                            ghost_name,
+                            ghost_data.get("force"),
+                            px,
+                            py,
+                            ghost_data.get("direction"),
+                            ghost_data.get("direction_name"),
+                            chunk_x,
+                            chunk_y,
+                        )
+                elif op_type == "remove":
+                    ghost_key = op.get("key")
+                    if ghost_key:
+                        ghosts_by_key.pop(ghost_key, None)
+    
+    # Insert into database
+    if ghosts_by_key:
+        con.executemany(
+            """
+            INSERT INTO ghost_layer (
+                ghost_key, ghost_name, force_name,
+                map_position,
+                direction, direction_name,
+                chunk_x, chunk_y
+            )
+            VALUES (
+                ?, ?, ?,
+                ST_Point(?, ?),
+                ?, ?,
+                ?, ?
+            )
+            """,
+            list(ghosts_by_key.values()),
+        )
+
+
 def load_base_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     """
     Load all base tables from snapshot directory.
     
     Args:
         con: DuckDB connection
-        snapshot_dir: Path to snapshot directory (e.g., script-output/factoryverse/snapshots)
+        snapshot_dir: Path to snapshot directory (will be normalized)
     """
-    snapshot_dir = Path(snapshot_dir)
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     
     print("Loading water tiles...")
     load_water_tiles(con, snapshot_dir)

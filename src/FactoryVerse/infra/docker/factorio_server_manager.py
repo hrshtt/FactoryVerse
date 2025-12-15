@@ -72,7 +72,10 @@ class FactorioServerManager:
     
     def __init__(self, work_dir: Path):
         self.work_dir = work_dir.resolve()
+        # Legacy: keep verse_mod_dir for backward compatibility, but it's deprecated
         self.verse_mod_dir = self.work_dir / "src" / "factorio_verse"
+        self.embodied_agent_mod_dir = self.work_dir / "src" / "fv_embodied_agent"
+        self.snapshot_mod_dir = self.work_dir / "src" / "fv_snapshot"
         self.scenarios_dir = self.work_dir / "src" / "factorio" / "scenarios"
         self.config_dir = self.work_dir / "src" / "factorio" / "config"
         self.mod_path = _detect_mod_path()
@@ -133,78 +136,85 @@ class FactorioServerManager:
             self.clear_server_snapshot_dir(i)
     
     def prepare_mods(self, scenario: str, as_mod: bool = False) -> None:
-        """Prepare factorio_verse mod for server.
+        """Prepare FactoryVerse mods for server.
         
         Args:
             scenario: Scenario name to use
-            as_mod: If True, force loading factorio_verse as a mod (removes existing copies and copies fresh files)
+            as_mod: If True, force loading FactoryVerse mods (fv_embodied_agent and fv_snapshot) as mods
         """
-        if not self.verse_mod_dir.exists():
-            raise RuntimeError(f"FactoryVerse mod not found at {self.verse_mod_dir}")
-        
-        print(f"📦 Preparing FactoryVerse for server...")
-        
         if as_mod:
-            # Force loading as mod: remove all existing factorio_verse mod copies and copy fresh files
-            print("📦 Removing existing factorio_verse mod copies...")
-            for old_mod in self.mod_path.glob("factorio_verse*"):
-                if old_mod.is_dir():
-                    print(f"   Removing {old_mod.name}...")
-                    shutil.rmtree(old_mod)
+            # Raise error if trying to use scenario route for FactoryVerse
+            if scenario == "factorio_verse":
+                raise RuntimeError(
+                    "❌ Error: Cannot use scenario route for FactoryVerse. "
+                    "FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot). "
+                    "Please use --as-mod flag with a different scenario, or plan scenario support separately."
+                )
             
-            # Read version from info.json
-            info_json_path = self.verse_mod_dir / "info.json"
+            # Check that both mod directories exist
+            if not self.embodied_agent_mod_dir.exists():
+                raise RuntimeError(f"FV Embodied Agent mod not found at {self.embodied_agent_mod_dir}")
+            if not self.snapshot_mod_dir.exists():
+                raise RuntimeError(f"FV Snapshot mod not found at {self.snapshot_mod_dir}")
+            
+            print(f"📦 Preparing FactoryVerse mods for server...")
+            
+            # Remove all existing FactoryVerse mod copies
+            print("📦 Removing existing FactoryVerse mod copies...")
+            for old_mod_pattern in ["fv_embodied_agent*", "fv_snapshot*", "factorio_verse*"]:
+                for old_mod in self.mod_path.glob(old_mod_pattern):
+                    if old_mod.is_dir():
+                        print(f"   Removing {old_mod.name}...")
+                        shutil.rmtree(old_mod)
+            
+            # Prepare fv_embodied_agent mod
+            print("📦 Preparing fv_embodied_agent mod...")
+            info_json_path = self.embodied_agent_mod_dir / "info.json"
             if info_json_path.exists():
                 info = json.loads(info_json_path.read_text())
+                mod_name = info.get("name", "fv_embodied_agent")
                 mod_version = info.get("version", "1.0.0")
             else:
+                mod_name = "fv_embodied_agent"
                 mod_version = "1.0.0"
             
-            # Copy fresh mod files with versioned name (Factorio requires modname_version format)
-            server_mod_dir = self.mod_path / f"factorio_verse_{mod_version}"
-            print(f"📦 Copying fresh factorio_verse mod as {server_mod_dir.name}...")
-            shutil.copytree(self.verse_mod_dir, server_mod_dir)
+            server_mod_dir = self.mod_path / f"{mod_name}_{mod_version}"
+            if server_mod_dir.exists():
+                shutil.rmtree(server_mod_dir)
+            shutil.copytree(self.embodied_agent_mod_dir, server_mod_dir)
+            _update_mod_list(self.mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod copied as {server_mod_dir.name}")
+            print(f"✓ {mod_name}: enabled in mod-list")
             
-            # Enable factorio_verse in mod-list
-            _update_mod_list(self.mod_path, "factorio_verse", True)
-            print(f"✓ factorio_verse mod copied as {server_mod_dir.name}")
-            print("✓ factorio_verse: enabled in mod-list")
-        elif scenario == "factorio_verse":
-            # Remove all existing mod copies (both versioned and unversioned)
-            print("📦 Removing existing factorio_verse mod copies...")
-            for old_mod in self.mod_path.glob("factorio_verse*"):
-                if old_mod.is_dir():
-                    print(f"   Removing {old_mod.name}...")
-                    shutil.rmtree(old_mod)
+            # Prepare fv_snapshot mod
+            print("📦 Preparing fv_snapshot mod...")
+            info_json_path = self.snapshot_mod_dir / "info.json"
+            if info_json_path.exists():
+                info = json.loads(info_json_path.read_text())
+                mod_name = info.get("name", "fv_snapshot")
+                mod_version = info.get("version", "1.0.0")
+            else:
+                mod_name = "fv_snapshot"
+                mod_version = "1.0.0"
             
-            # Disable factorio_verse in mod-list (it will be used as scenario)
-            _update_mod_list(self.mod_path, "factorio_verse", False)
-            print("✓ factorio_verse mod copies removed (will be used as scenario)")
+            server_mod_dir = self.mod_path / f"{mod_name}_{mod_version}"
+            if server_mod_dir.exists():
+                shutil.rmtree(server_mod_dir)
+            shutil.copytree(self.snapshot_mod_dir, server_mod_dir)
+            _update_mod_list(self.mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod copied as {server_mod_dir.name}")
+            print(f"✓ {mod_name}: enabled in mod-list")
         else:
-            # Remove all existing mod copies (both versioned and unversioned)
-            print("📦 Removing existing factorio_verse mod copies...")
-            for old_mod in self.mod_path.glob("factorio_verse*"):
-                if old_mod.is_dir():
-                    print(f"   Removing {old_mod.name}...")
-                    shutil.rmtree(old_mod)
+            # Legacy scenario mode - raise error for factorio_verse scenario
+            if scenario == "factorio_verse":
+                raise RuntimeError(
+                    "❌ Error: Scenario route for FactoryVerse is not supported. "
+                    "FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot). "
+                    "Please use --as-mod flag with a different scenario, or plan scenario support separately."
+                )
             
-            # Read version from info.json
-            info_json_path = self.verse_mod_dir / "info.json"
-            if info_json_path.exists():
-                info = json.loads(info_json_path.read_text())
-                mod_version = info.get("version", "1.0.0")
-            else:
-                mod_version = "1.0.0"
-            
-            # Copy fresh mod files with versioned name (Factorio requires modname_version format)
-            server_mod_dir = self.mod_path / f"factorio_verse_{mod_version}"
-            print(f"📦 Copying factorio_verse mod as {server_mod_dir.name}...")
-            shutil.copytree(self.verse_mod_dir, server_mod_dir)
-            
-            # Enable factorio_verse in mod-list
-            _update_mod_list(self.mod_path, "factorio_verse", True)
-            print(f"✓ factorio_verse mod copied as {server_mod_dir.name}")
-            print("✓ factorio_verse: enabled in mod-list")
+            # For other scenarios, we don't need to prepare mods (they use scenarios)
+            print(f"ℹ️  Using scenario mode (no mods needed for scenario: {scenario})")
         
         # Ensure DLC mods are disabled
         dlc_mods = ["space-age", "quality", "elevated-rails"]

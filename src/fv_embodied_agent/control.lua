@@ -1,19 +1,10 @@
--- control.lua: Central event dispatcher using aggregation pattern
--- Coordinates game state modules to aggregate events and register remote interfaces
--- Events can only be registered once, so we aggregate all handlers and register via chains
---
--- Note: Per-agent remote interfaces (agent_1, agent_2, etc.) are registered automatically
--- when agents are created via Agent:register_remote_interface()
+-- control.lua: Event dispatcher for fv_embodied_agent mod
+-- Registers agent-related remote interfaces and event handlers
 
 local utils = require("utils.utils")
 
 -- Require game state modules at module level (required by Factorio)
 local Agents = require("game_state.Agents")
-local Entities = require("game_state.Entities")
-local Resource = require("game_state.Resource")
-local Map = require("game_state.Map")
-local Power = require("game_state.Power")
-local Research = require("game_state.Research")
 local Agent = require("Agent")
 
 -- ============================================================================
@@ -50,7 +41,7 @@ local function aggregate_all_events()
     end
 
     -- Collect all modules
-    local modules = { Agents, Entities, Resource, Map, Power, Research }
+    local modules = { Agents }
 
     -- 1. Aggregate on_tick handlers from all modules
     for _, module in ipairs(modules) do
@@ -94,15 +85,6 @@ local function aggregate_all_events()
             end
         end
     end
-
-    -- 3. Entity status tracking (every 60 ticks)
-    -- Map orchestrates getting chunks, Entities provides the tracking logic
-    add_nth_tick_handler(60, function()
-        local charted_chunks = Map.get_charted_chunks()
-        Entities.track_all_charted_chunk_entity_status(charted_chunks)
-        -- Also dump compressed status to disk
-        Entities.dump_status_to_disk(charted_chunks)
-    end)
 
     return {
         defined_events = defined_events,
@@ -151,32 +133,19 @@ local function register_all_remote_interfaces()
     -- automatically when agents are created via Agent:register_remote_interface()
     -- These interfaces expose agent methods directly (walk_to, mine_resource, etc.)
 
-    -- Collect all modules
-    local modules = {
-        { name = "agent",    module = Agents },
-        { name = "entities", module = Entities },
-        { name = "map",      module = Map },
-        { name = "power",    module = Power },
-        { name = "research", module = Research },
-        { name = "resource", module = Resource },
-    }
-
-    -- Register each module's remote interface
-    for _, mod_info in ipairs(modules) do
-        local module = mod_info.module
-        if module and module.register_remote_interface then
-            local interface = module.register_remote_interface()
-            if interface and next(interface) ~= nil then
-                local interface_name = mod_info.name
-                if remote.interfaces[interface_name] then
-                    log("Removing existing '" .. interface_name .. "' interface")
-                    remote.remove_interface(interface_name)
-                end
-                local method_count = 0
-                for _ in pairs(interface) do method_count = method_count + 1 end
-                log("Registering '" .. interface_name .. "' interface with " .. method_count .. " methods")
-                remote.add_interface(interface_name, interface)
+    -- Register agent admin interface
+    if Agents and Agents.register_remote_interface then
+        local interface = Agents.register_remote_interface()
+        if interface and next(interface) ~= nil then
+            local interface_name = "agent"
+            if remote.interfaces[interface_name] then
+                log("Removing existing '" .. interface_name .. "' interface")
+                remote.remove_interface(interface_name)
             end
+            local method_count = 0
+            for _ in pairs(interface) do method_count = method_count + 1 end
+            log("Registering '" .. interface_name .. "' interface with " .. method_count .. " methods")
+            remote.add_interface(interface_name, interface)
         end
     end
 
@@ -263,7 +232,7 @@ end
 -- ============================================================================
 
 script.on_init(function()
-    log("hello from on_init")
+    log("hello from fv_embodied_agent on_init")
 
     -- Initialize agents storage
     if not storage.agents then
@@ -271,13 +240,7 @@ script.on_init(function()
         log("Initialized empty agents storage for new game")
     end
 
-    -- Initialize game state modules (must happen before event registration)
-    -- This generates custom event IDs that will be used in event handlers
-    Entities.init()
-    Resource.init()
-    Map.init()
-
-    log("Initialized game state modules and custom events")
+    log("Initialized fv_embodied_agent game state modules")
 
     -- Register remote interfaces (required for mods, also works for scenarios)
     register_all_remote_interfaces()
@@ -290,15 +253,9 @@ script.on_init(function()
 end)
 
 script.on_load(function()
-    log("hello from on_load")
+    log("hello from fv_embodied_agent on_load")
 
-    -- Initialize game state modules (must happen before event registration)
-    -- Custom events are preserved across reload, but we need to rebuild disk_write_snapshot tables
-    Entities.init()
-    Resource.init()
-    Map.init() -- Will check and queue chunks if needed
-
-    log("Re-initialized game state modules after mod reload")
+    log("Re-initialized fv_embodied_agent game state modules after mod reload")
 
     -- Re-register remote interfaces (required for mods, also works for scenarios)
     -- Remote interfaces are cleared on reload, so we must re-register them
@@ -314,5 +271,6 @@ script.on_load(function()
 end)
 
 script.on_configuration_changed(function()
-    log("hello from on_configuration_changed")
+    log("hello from fv_embodied_agent on_configuration_changed")
 end)
+

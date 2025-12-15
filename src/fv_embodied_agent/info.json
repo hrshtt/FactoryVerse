@@ -1,0 +1,10 @@
+{
+  "name": "fv_embodied_agent",
+  "version": "1.0.0",
+  "factorio_version": "2.0",
+  "title": "FV Embodied Agent",
+  "author": "FactoryVerse Contributors",
+  "description": "Embodied agent mod providing actions, entity interface, and agent lifecycle for Factorio",
+  "dependencies": ["base >= 2.0"]
+}
+

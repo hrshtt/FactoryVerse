@@ -3,7 +3,7 @@
 --- Uses EntityInterface for low-level entity operations
 --- These methods are mixed into the Agent class at module level
 
-local EntityInterface = require("EntityInterface")
+local EntityInterface = require("game_state.EntityInterface")
 
 local EntityOpsActions = {}
 

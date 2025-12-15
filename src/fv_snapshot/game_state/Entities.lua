@@ -11,8 +11,9 @@
 local pairs = pairs
 local ipairs = ipairs
 
-local EntityInterface = require("EntityInterface")
-local serialize = require("utils.serialize")
+-- EntityInterface is from fv_embodied_agent mod (dependency)
+local EntityInterface = require("__fv_embodied_agent__.game_state.EntityInterface")
+local serialize = require("__fv_embodied_agent__/utils/serialize")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
 
@@ -437,7 +438,7 @@ local function _on_entity_destroyed(event)
     end
 end
 
-local debug_render = require("utils.debug_render")
+local debug_render = require("__fv_embodied_agent__/utils/debug_render")
 
 local function _on_player_mined_item(event)
 
@@ -473,23 +474,39 @@ local function _on_entity_configuration_changed(event)
     end
 end
 
+--- Handle entity rotated event (from EntityInterface)
+--- Listens to EntityInterface's entity_rotated event
+--- @param event table Event data with entity, old_direction, and new_direction fields
+local function _on_entity_rotated(event)
+    local entity = event.entity
+    if entity and entity.valid then
+        -- Write snapshot for rotation change
+        M.write_entity_snapshot(entity, true)
+    end
+end
+
 --- Build disk write snapshot events table
 --- Called after init() to populate events
 function M._build_disk_write_snapshot()
-    if not EntityInterface.on_entity_configuration_changed then
-        return { events = {}, nth_tick = {} }
+    local events = {
+        [defines.events.on_built_entity] = _on_entity_built,
+        [defines.events.script_raised_built] = _on_entity_built,
+        -- [defines.events.on_player_mined_entity] = _on_entity_destroyed,sa
+        -- [defines.events.on_player_mined_item] = _on_player_mined_item,
+        [defines.events.script_raised_destroy] = _on_entity_destroyed,
+        [defines.events.on_entity_settings_pasted] = _on_entity_settings_pasted,
+    }
+    
+    -- Add EntityInterface events (from fv_embodied_agent mod dependency)
+    if EntityInterface.on_entity_configuration_changed then
+        events[EntityInterface.on_entity_configuration_changed] = _on_entity_configuration_changed
+    end
+    if EntityInterface.on_entity_rotated then
+        events[EntityInterface.on_entity_rotated] = _on_entity_rotated
     end
 
     return {
-        events = {
-            [defines.events.on_built_entity] = _on_entity_built,
-            [defines.events.script_raised_built] = _on_entity_built,
-            -- [defines.events.on_player_mined_entity] = _on_entity_destroyed,sa
-            -- [defines.events.on_player_mined_item] = _on_player_mined_item,
-            [defines.events.script_raised_destroy] = _on_entity_destroyed,
-            [defines.events.on_entity_settings_pasted] = _on_entity_settings_pasted,
-            [EntityInterface.on_entity_configuration_changed] = _on_entity_configuration_changed,
-        },
+        events = events,
         nth_tick = {}
     }
 end
