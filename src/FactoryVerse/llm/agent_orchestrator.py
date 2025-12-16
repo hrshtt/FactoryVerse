@@ -1,6 +1,7 @@
 """Simplified agent orchestrator for LLM-powered Factorio gameplay."""
 import json
 import logging
+import datetime
 from typing import Optional, Dict, Any
 
 from FactoryVerse.llm.client import PrimeIntellectClient
@@ -64,10 +65,14 @@ class FactorioAgentOrchestrator:
         Returns:
             Agent's text response
         """
+        # Log user message
+        self._log_to_chat(f"**User:** {user_message}\n\n")
+        
         # Add user message
         self.messages.append({"role": "user", "content": user_message})
         
         tool_calls_executed = 0
+        tool_results = []
         
         # Loop until agent responds with text (max 10 iterations)
         for iteration in range(1, 11):
@@ -93,6 +98,15 @@ class FactorioAgentOrchestrator:
                     response_text = "I apologize, I don't have a response. Could you rephrase your request?"
                 else:
                     response_text = response.content
+                
+                # Log agent response
+                self._log_to_chat(f"**Agent:** {response_text}\n\n")
+                if tool_results:
+                    self._log_to_chat("<details>\n<summary>Tool calls executed</summary>\n\n")
+                    for tool_result in tool_results:
+                        self._log_to_chat(f"**{tool_result['tool']}:**\n```\n{tool_result['result']}\n```\n\n")
+                    self._log_to_chat("</details>\n\n")
+                self._log_to_chat("---\n\n")
                 
                 self.turn_number += 1
                 return response_text
@@ -124,6 +138,12 @@ class FactorioAgentOrchestrator:
                         )
                         tool_calls_executed += 1
                     
+                    # Track for chat log
+                    tool_results.append({
+                        'tool': tool_name,
+                        'result': result[:500] + "..." if len(result) > 500 else result
+                    })
+            
                 except json.JSONDecodeError as e:
                     result = f"❌ Invalid JSON arguments: {str(e)}"
                     status = ActionStatus.FAILURE
@@ -155,6 +175,12 @@ class FactorioAgentOrchestrator:
         logger.warning(f"Turn {self.turn_number}: Reached max iterations")
         self.turn_number += 1
         return "Max iterations reached. Please try a simpler request."
+
+    def _log_to_chat(self, message: str):
+        """Append message to chat log file."""
+        if self.chat_log_path:
+            with open(self.chat_log_path, 'a') as f:
+                f.write(message)
     
     async def _execute_tool(
         self,

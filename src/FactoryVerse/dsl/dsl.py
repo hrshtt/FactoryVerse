@@ -45,25 +45,6 @@ class _WalkingAccessor:
         return _get_factory().walking.cancel()
 
 
-class _MiningAccessor:
-    """Top-level mining action accessor."""
-    
-    def __repr__(self) -> str:
-        return """MiningAffordance
-  Methods:
-    - mine(resource_name, max_count?, timeout?) - Mine resources (async)
-    - cancel() - Cancel current mining action
-  Usage: await mining.mine('iron-ore', max_count=50)"""
-    
-    async def mine(self, resource_name: str, max_count: Optional[int] = None, timeout: Optional[int] = None):
-        """Mine a resource (async/await)."""
-        return await _get_factory().mining.mine(resource_name, max_count, timeout)
-    
-    def cancel(self):
-        """Cancel current mining action."""
-        return _get_factory().mining.cancel()
-
-
 class _CraftingAccessor:
     """Top-level crafting action accessor."""
     
@@ -175,6 +156,7 @@ class _ReachableAccessor:
     - get_entity(entity_name, position?, options?) - Get a single entity matching criteria
     - get_entities(entity_name?, options?) - Get all entities matching criteria
     - get_resource(resource_name, position?) - Get a single resource matching criteria
+    - get_resources(resource_name?, resource_type?) - Get all resources matching criteria
   Usage: reachable.get_entity('stone-furnace')"""
     
     def get_current_position(self) -> MapPosition:
@@ -235,14 +217,39 @@ class _ReachableAccessor:
             position: Optional exact position match
         
         Returns:
-            Resource data dict, or None if not found
+            BaseResource instance (or appropriate subclass), or None if not found
         """
         return _get_factory().reachable_resources.get_resource(resource_name, position)
+    
+    def get_resources(
+        self,
+        resource_name: Optional[str] = None,
+        resource_type: Optional[str] = None
+    ):
+        """Get resources matching criteria.
+        
+        Returns ResourceOrePatch for multiple ore patches of same type,
+        BaseResource for single ore patches or entities.
+        
+        Args:
+            resource_name: Optional resource name filter (e.g., "iron-ore", "tree")
+            resource_type: Optional resource type filter. Can be:
+                - "ore" or "resource" - filters to ore patches (type="resource")
+                - "entity" - filters to trees and rocks (type="tree" or "simple-entity")
+                - "tree" - filters to trees only
+                - "simple-entity" - filters to rocks only
+                - "resource" - filters to ore patches only (Factorio type)
+        
+        Returns:
+            List[Union[ResourceOrePatch, BaseResource]]:
+            - ResourceOrePatch: Multiple ore patches of same type (consolidated)
+            - BaseResource: Single ore patch or entity (trees/rocks)
+        """
+        return _get_factory().reachable_resources.get_resources(resource_name, resource_type)
 
 
 # Top-level action instances - use these in DSL context
 walking = _WalkingAccessor()
-mining = _MiningAccessor()
 crafting = _CraftingAccessor()
 research = _ResearchAccessor()
 inventory = _InventoryAccessor()
@@ -573,15 +580,13 @@ def playing_factorio():
         _playing_factory.reset(token)
 
 """
-with playing_factorio(rcon, 'agent_1'):
+with playing_factorio():
     # Async/await actions
     await walking.to(MapPosition(x=10, y=20))
-    await mining.mine('iron-ore', max_count=50)
     await crafting.craft('iron-plate', count=10)
     
     # Sync actions
     walking.cancel()
-    mining.cancel()
     crafting.enqueue('iron-plate', count=10)
     crafting.dequeue('iron-plate')
     crafting.status()
@@ -592,13 +597,20 @@ with playing_factorio(rcon, 'agent_1'):
     
     # Top-level utilities
     inventory.item_stacks  # Get inventory
-    stone_funace = inventory.get_item("stone-furnace")
-    stone_funace.place(MapPosition(x=10, y=20))
-    stone_funace = inventory.get_item("electric-mining-drill")
+    stone_furnace = inventory.get_item("stone-furnace")
+    stone_furnace.place(MapPosition(x=10, y=20))
+    mining_drill = inventory.get_item("electric-mining-drill")
     mining_drill.get_placement_cues()
     inventory.get_total("iron-plate")
     inventory.get_item_stacks("iron-plate", "full", 3)  # 3 full stacks
     inventory.get_item_stacks("iron-plate", "full")  # max full stacks (default)
     inventory.check_recipe_count("iron-plate")
+    
+    # Resources - mine directly from reachable resources
+    copper_patches = reachable.get_resources("copper-ore")
+    if copper_patches:
+        copper_patch = copper_patches[0]
+        await copper_patch[0].mine(max_count=50)  # Mine first tile in patch
+    
     get_reachable_entities()
 """

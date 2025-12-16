@@ -1,6 +1,5 @@
 from .dsl import (
     walking,
-    mining,
     crafting,
     research,
     inventory,
@@ -15,7 +14,6 @@ from .dsl import (
 
 __all__ = [
     "walking",
-    "mining",
     "crafting",
     "research",
     "inventory",

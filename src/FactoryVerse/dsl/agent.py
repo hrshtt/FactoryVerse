@@ -457,24 +457,24 @@ class ReachableEntities:
     
     Similar to AgentInventory but for entities. Provides filtering
     and query capabilities without returning raw lists.
+    
+    Note: Always fetches fresh data from the game - no caching.
     """
     
     def __init__(self, factory: "PlayingFactory"):
         self._factory = factory
-        self._entities_data: Optional[List[Dict]] = None
-        self._entities_instances: Optional[List[BaseEntity]] = None
     
-    def _ensure_loaded(self):
-        """Lazy-load entities data from factory."""
-        if self._entities_data is None:
-            data = self._factory.get_reachable(attach_ghosts=False)
-            self._entities_data = data.get("entities", [])
-            # Convert to entity instances
-            from src.FactoryVerse.dsl.entity.base import create_entity_from_data
-            self._entities_instances = [
-                create_entity_from_data(entity_data)
-                for entity_data in self._entities_data
-            ]
+    def _fetch_fresh_data(self):
+        """Fetch fresh entities data from factory (no caching)."""
+        data = self._factory.get_reachable(attach_ghosts=False)
+        entities_data = data.get("entities", [])
+        # Convert to entity instances
+        from src.FactoryVerse.dsl.entity.base import create_entity_from_data
+        entities_instances = [
+            create_entity_from_data(entity_data)
+            for entity_data in entities_data
+        ]
+        return entities_instances, entities_data
     
     def get_entity(
         self,
@@ -483,6 +483,8 @@ class ReachableEntities:
         options: Optional[Dict[str, Any]] = None
     ) -> Optional[BaseEntity]:
         """Get a single entity matching criteria.
+        
+        Always fetches fresh data from the game - no caching.
         
         Args:
             entity_name: Entity prototype name (e.g., "electric-mining-drill")
@@ -496,12 +498,13 @@ class ReachableEntities:
         Returns:
             First matching BaseEntity instance, or None if not found
         """
-        self._ensure_loaded()
+        # Always fetch fresh data
+        entities_instances, entities_data = self._fetch_fresh_data()
         options = options or {}
         
         # Filter by name first
         matches = [
-            (inst, data) for inst, data in zip(self._entities_instances, self._entities_data)
+            (inst, data) for inst, data in zip(entities_instances, entities_data)
             if inst.name == entity_name
         ]
         
@@ -535,6 +538,8 @@ class ReachableEntities:
     ) -> List[BaseEntity]:
         """Get entities matching criteria.
         
+        Always fetches fresh data from the game - no caching.
+        
         Args:
             entity_name: Optional entity prototype name filter
             options: Optional dict with filters (same as get_entity)
@@ -542,12 +547,13 @@ class ReachableEntities:
         Returns:
             List of matching BaseEntity instances (may be empty)
         """
-        self._ensure_loaded()
+        # Always fetch fresh data
+        entities_instances, entities_data = self._fetch_fresh_data()
         options = options or {}
         
         # Start with all entities
         matches = [
-            (inst, data) for inst, data in zip(self._entities_instances, self._entities_data)
+            (inst, data) for inst, data in zip(entities_instances, entities_data)
         ]
         
         # Filter by name if provided
@@ -578,36 +584,41 @@ class ReachableResources:
     """Represents reachable resources with query methods.
     
     Similar pattern to AgentInventory but for resources (ores, trees, rocks).
+    
+    Note: Always fetches fresh data from the game - no caching.
     """
     
     def __init__(self, factory: "PlayingFactory"):
         self._factory = factory
-        self._resources_data: Optional[List[Dict]] = None
     
-    def _ensure_loaded(self):
-        """Lazy-load resources data from factory."""
-        if self._resources_data is None:
-            data = self._factory.get_reachable(attach_ghosts=False)
-            self._resources_data = data.get("resources", [])
+    def _fetch_fresh_data(self):
+        """Fetch fresh resources data from factory (no caching)."""
+        data = self._factory.get_reachable(attach_ghosts=False)
+        return data.get("resources", [])
     
     def get_resource(
         self,
         resource_name: str,
         position: Optional[MapPosition] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[Any]:
         """Get a single resource matching criteria.
+        
+        Always fetches fresh data from the game - no caching.
         
         Args:
             resource_name: Resource name (e.g., "iron-ore", "tree")
             position: Optional exact position match
         
         Returns:
-            Resource data dict, or None if not found
+            BaseResource instance (or appropriate subclass), or None if not found
         """
-        self._ensure_loaded()
+        from src.FactoryVerse.dsl.resource.base import _create_resource_from_data
+        
+        # Always fetch fresh data
+        resources_data = self._fetch_fresh_data()
         
         matches = [
-            data for data in self._resources_data
+            data for data in resources_data
             if data.get("name") == resource_name
         ]
         
@@ -618,7 +629,100 @@ class ReachableResources:
                 and data.get("position", {}).get("y") == position.y
             ]
         
-        return matches[0] if matches else None
+        if matches:
+            return _create_resource_from_data(matches[0])
+        return None
+    
+    def get_resources(
+        self,
+        resource_name: Optional[str] = None,
+        resource_type: Optional[str] = None
+    ) -> List[Any]:
+        """Get resources matching criteria.
+        
+        Returns ResourceOrePatch for multiple ore patches of same type,
+        BaseResource for single ore patches or entities.
+        
+        Always fetches fresh data from the game - no caching.
+        
+        Args:
+            resource_name: Optional resource name filter (e.g., "iron-ore", "tree")
+            resource_type: Optional resource type filter. Can be:
+                - "ore" or "resource" - filters to ore patches (type="resource")
+                - "entity" - filters to trees and rocks (type="tree" or "simple-entity")
+                - "tree" - filters to trees only
+                - "simple-entity" - filters to rocks only
+                - "resource" - filters to ore patches only (Factorio type)
+        
+        Returns:
+            List[Union[ResourceOrePatch, BaseResource]]:
+            - ResourceOrePatch: Multiple ore patches of same type (consolidated)
+            - BaseResource: Single ore patch or entity (trees/rocks)
+        """
+        from src.FactoryVerse.dsl.resource.base import ResourceOrePatch, BaseResource, _create_resource_from_data
+        
+        # Always fetch fresh data
+        resources_data = self._fetch_fresh_data()
+        
+        matches = resources_data
+        
+        # Filter by name if provided
+        if resource_name is not None:
+            matches = [
+                data for data in matches
+                if data.get("name") == resource_name
+            ]
+        
+        # Filter by type if provided
+        if resource_type is not None:
+            # Handle simplified aliases
+            if resource_type == "ore":
+                resource_type = "resource"
+            elif resource_type == "entity":
+                # Match both trees and simple-entities
+                matches = [
+                    data for data in matches
+                    if data.get("type") in ("tree", "simple-entity")
+                ]
+            else:
+                # Direct type match (resource, tree, simple-entity)
+                matches = [
+                    data for data in matches
+                    if data.get("type") == resource_type
+                ]
+        
+        # Group by resource name
+        resources_by_name: Dict[str, List[Dict[str, Any]]] = {}
+        for data in matches:
+            name = data.get("name", "")
+            if name not in resources_by_name:
+                resources_by_name[name] = []
+            resources_by_name[name].append(data)
+        
+        # Build result list
+        result: List[Union[ResourceOrePatch, BaseResource]] = []
+        
+        for name, data_list in resources_by_name.items():
+            resource_type_val = data_list[0].get("type", "resource")
+            
+            # Entities (trees, rocks) are always returned as BaseResource
+            if resource_type_val in ("tree", "simple-entity"):
+                for data in data_list:
+                    result.append(_create_resource_from_data(data))
+            # Ore patches: consolidate if multiple, return single as BaseResource
+            elif resource_type_val == "resource":
+                if len(data_list) > 1:
+                    # Multiple tiles of same ore type -> ResourceOrePatch
+                    result.append(ResourceOrePatch(name, data_list))
+                else:
+                    # Single tile -> BaseResource
+                    result.append(_create_resource_from_data(data_list[0]))
+            else:
+                # Unknown type, return as BaseResource
+                for data in data_list:
+                    result.append(_create_resource_from_data(data))
+        
+        return result
 
 
 class WalkingAction:
