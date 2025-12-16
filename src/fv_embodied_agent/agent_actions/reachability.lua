@@ -132,8 +132,8 @@ local function serialize_resource(entity)
         position_key = position_key(entity.position.x, entity.position.y),
     }
     
-    -- Add amount for resources
-    if entity.amount then
+    -- Add amount for resources (only resource type entities have amount property)
+    if entity.type == "resource" and entity.amount then
         data.amount = entity.amount
     end
     
