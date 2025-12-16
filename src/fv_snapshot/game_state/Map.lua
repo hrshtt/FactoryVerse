@@ -19,10 +19,13 @@ local udp_payloads = require("utils.udp_payloads")
 -- Agent is from fv_embodied_agent mod (dependency)
 local Agent = require("__fv_embodied_agent__.Agent")
 
+-- Forward declaration for functions used by ChunkTracker (defined later)
+local enqueue_chunk_for_snapshot
+
 -- ============================================================================
 -- DEBUG FLAG
 -- ============================================================================
-local DEBUG = false
+local DEBUG = false  -- Enable detailed logging for performance analysis
 
 -- ============================================================================
 -- SNAPSHOT STATE MACHINE - Spreads chunk processing across multiple ticks
@@ -51,6 +54,27 @@ local SnapshotPhase = {
     COMPLETE = 4,
 }
 
+-- ============================================================================
+-- SYSTEM PHASE - Separates initial snapshotting from maintenance
+-- ============================================================================
+--
+-- INITIAL_SNAPSHOTTING: Process all initially charted chunks ASAP
+--   - Disable entity status tracking (no 120-tick scans)
+--   - Disable event-driven entity updates
+--   - Run snapshot state machine at maximum throughput
+--   - Exit when pending_chunks queue is empty
+--
+-- MAINTENANCE: Keep snapshots up-to-date as game evolves
+--   - Enable entity status tracking (120-tick scans)
+--   - Enable event-driven entity updates
+--   - Process new charted chunks as they appear
+--   - Handle dirty chunks (mutations)
+
+local SystemPhase = {
+    INITIAL_SNAPSHOTTING = "INITIAL_SNAPSHOTTING",
+    MAINTENANCE = "MAINTENANCE"
+}
+
 -- Tunable performance parameters
 -- These control how much work is done per tick
 local SnapshotConfig = {
@@ -70,6 +94,14 @@ local SnapshotConfig = {
     -- Less expensive than disk I/O but still has overhead
     SERIALIZATIONS_PER_TICK = 200,
 }
+
+--- System state for snapshot management
+--- @class SystemState
+--- @field phase string Current system phase (SystemPhase enum)
+--- @field pending_chunks table Array of {x, y, priority} chunks needing snapshot
+--- @field stats table System statistics {chunks_snapshotted, chunks_pending, phase_start_tick, initial_snapshot_duration_ticks}
+--- @field bootstrap_wait_ticks number Ticks to wait after on_init before checking for MAINTENANCE transition (allows charting to complete)
+--- @field current_wait_tick number Current tick counter during bootstrap waiting
 
 --- Snapshot state stored in storage for persistence across saves
 --- @class SnapshotState
@@ -237,7 +269,7 @@ end
 
 --- Mark a chunk as needing snapshotting (e.g., when charted)
 --- Creates chunk entry if it doesn't exist (with snapshot_tick = nil)
---- IMPORTANT: This just sets the flag - on_tick handler will check and process
+--- IMPORTANT: This enqueues the chunk for processing by the state machine
 --- Agents should overwrite flags, not read them, for safe control flow
 --- NOTE: Will not re-queue chunks that have already been snapshotted
 --- @param chunk_x number Chunk X coordinate
@@ -250,8 +282,9 @@ function ChunkTracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
         -- Chunk has already been snapshotted, don't re-queue it
         return
     end
-    -- Chunk entry already has snapshot_tick = nil (needs snapshotting)
-    -- No change needed, chunk will be processed by on_tick handler
+    -- Chunk entry has snapshot_tick = nil (needs snapshotting)
+    -- Enqueue it for processing (uses forward-declared function)
+    enqueue_chunk_for_snapshot(chunk_x, chunk_y, 1)
 end
 
 --- Mark a chunk as dirty (needs re-snapshotting due to mutation)
@@ -566,6 +599,123 @@ function M.get_chunk_lookup()
 end
 
 -- ============================================================================
+-- SYSTEM STATE MANAGEMENT
+-- ============================================================================
+
+--- Get or initialize the system state
+--- @return SystemState
+local function get_system_state()
+    if not storage.system_state then
+        storage.system_state = {
+            phase = SystemPhase.INITIAL_SNAPSHOTTING,
+            pending_chunks = {},  -- Queue of {x, y, priority}
+            stats = {
+                chunks_snapshotted = 0,
+                chunks_pending = 0,
+                phase_start_tick = game and game.tick or 0,
+                initial_snapshot_duration_ticks = nil,
+            },
+            -- Bootstrap waiting: Allow time for scenario/freeplay charting to complete
+            -- Scenarios like freeplay call force.chart() which is ASYNCHRONOUS
+            -- The on_chunk_charted events fire AFTER chart() returns
+            -- We wait 300 ticks (~5 seconds) to let initial charting complete before checking queue
+            bootstrap_wait_ticks = 300,  -- Configurable wait time
+            current_wait_tick = 0,
+        }
+    end
+    return storage.system_state
+end
+
+--- Get current system phase
+--- @return string SystemPhase enum value
+local function get_system_phase()
+    local state = get_system_state()
+    return state.phase
+end
+
+--- Transition to MAINTENANCE phase
+local function transition_to_maintenance()
+    local state = get_system_state()
+    if state.phase == SystemPhase.MAINTENANCE then
+        return  -- Already in maintenance
+    end
+    
+    state.phase = SystemPhase.MAINTENANCE
+    state.stats.initial_snapshot_duration_ticks = game.tick - state.stats.phase_start_tick
+    
+    -- Log transition with performance summary
+    if game and game.print then
+        local duration_seconds = state.stats.initial_snapshot_duration_ticks / 60
+        game.print("═══════════════════════════════════════════════════════════")
+        game.print(string.format("[Snapshot System] ✅ Initial snapshotting COMPLETE after %.1f seconds (%d ticks).", 
+            duration_seconds, state.stats.initial_snapshot_duration_ticks))
+        game.print(string.format("[Snapshot System] Total chunks snapshotted: %d", state.stats.chunks_snapshotted))
+        game.print(string.format("[Snapshot System] Average: %.2f seconds/chunk", 
+            duration_seconds / math.max(1, state.stats.chunks_snapshotted)))
+        game.print(string.format("[Snapshot System] Transitioning to MAINTENANCE mode."))
+        game.print("═══════════════════════════════════════════════════════════")
+    end
+    
+    -- Send UDP notification
+    local payload = udp_payloads.system_phase_changed(SystemPhase.MAINTENANCE, state.stats)
+    udp_payloads.send_event(payload)
+end
+
+--- Enqueue a chunk for snapshotting
+--- @param chunk_x number
+--- @param chunk_y number
+--- @param priority number|nil Priority (default 1, higher = processed first)
+enqueue_chunk_for_snapshot = function(chunk_x, chunk_y, priority)
+    local state = get_system_state()
+    priority = priority or 1
+    
+    -- Check if already in queue
+    for _, chunk in ipairs(state.pending_chunks) do
+        if chunk.x == chunk_x and chunk.y == chunk_y then
+            return  -- Already queued
+        end
+    end
+    
+    table.insert(state.pending_chunks, {
+        x = chunk_x,
+        y = chunk_y,
+        priority = priority
+    })
+    state.stats.chunks_pending = #state.pending_chunks
+    
+    -- If we receive chunks during bootstrap waiting, reset the wait counter
+    -- This handles the case where charting happens over multiple ticks
+    if state.phase == SystemPhase.INITIAL_SNAPSHOTTING and state.current_wait_tick > 0 then
+        if DEBUG then
+            game.print(string.format("[Snapshot System] Chunk (%d,%d) enqueued during bootstrap wait (tick %d). Resetting wait counter.",
+                chunk_x, chunk_y, state.current_wait_tick))
+        end
+        state.current_wait_tick = 0  -- Reset wait, more chunks are coming
+    end
+end
+
+-- Also expose as module function
+M.enqueue_chunk_for_snapshot = enqueue_chunk_for_snapshot
+
+--- Dequeue next pending chunk (highest priority first)
+--- @return number|nil chunk_x
+--- @return number|nil chunk_y
+local function dequeue_next_pending_chunk()
+    local state = get_system_state()
+    local queue = state.pending_chunks
+    
+    if #queue == 0 then
+        return nil, nil
+    end
+    
+    -- For now, FIFO (could add priority sorting later if needed)
+    local chunk = table.remove(queue, 1)
+    state.stats.chunks_pending = #queue
+    
+    return chunk.x, chunk.y
+end
+
+-- ============================================================================
 -- SNAPSHOT STATE MACHINE HELPERS
 -- These must be defined before get_snapshot_status() and admin_api
 -- ============================================================================
@@ -601,10 +751,11 @@ local function reset_snapshot_state()
     state.write_index = 1
 end
 
---- Find next chunk that needs snapshotting
---- @return number|nil chunk_x
---- @return number|nil chunk_y
-local function find_next_pending_chunk()
+--- DEPRECATED: Old implementation that scanned chunk_lookup with pairs()
+--- This was expensive for large chunk counts (O(n) every tick)
+--- Replaced with queue-based approach (enqueue/dequeue)
+--- Kept for reference only - DO NOT USE
+local function find_next_pending_chunk_DEPRECATED()
     local tracker = M.get_chunk_tracker()
     for chunk_key, chunk_entry in pairs(tracker.chunk_lookup) do
         if chunk_key and chunk_entry.snapshot_tick == nil then
@@ -628,6 +779,7 @@ end
 --- @return table Status info including phase, current chunk, queue sizes
 function M.get_snapshot_status()
     local state = get_snapshot_state()
+    local sys_state = get_system_state()
     local tracker = M.get_chunk_tracker()
     
     -- Count pending chunks
@@ -652,17 +804,24 @@ function M.get_snapshot_status()
     return {
         phase = phase_names[state.phase] or "UNKNOWN",
         phase_id = state.phase,
+        system_phase = sys_state.phase,
         current_chunk = state.chunk_x and { x = state.chunk_x, y = state.chunk_y } or nil,
         pending_chunks = pending_count,
         completed_chunks = completed_count,
         serialize_index = state.serialize_index,
         write_queue_size = state.write_queue and #state.write_queue or 0,
         write_index = state.write_index,
+        bootstrap_wait = {
+            current_tick = sys_state.current_wait_tick,
+            total_ticks = sys_state.bootstrap_wait_ticks,
+            waiting = sys_state.phase == SystemPhase.INITIAL_SNAPSHOTTING and #sys_state.pending_chunks == 0,
+        },
         config = {
             entities_per_tick = SnapshotConfig.ENTITIES_PER_TICK,
             tiles_per_tick = SnapshotConfig.TILES_PER_TICK,
             writes_per_tick = SnapshotConfig.WRITES_PER_TICK,
             serializations_per_tick = SnapshotConfig.SERIALIZATIONS_PER_TICK,
+            bootstrap_wait_ticks = sys_state.bootstrap_wait_ticks,
         },
     }
 end
@@ -683,6 +842,16 @@ function M.set_snapshot_config(config)
     if config.serializations_per_tick then
         SnapshotConfig.SERIALIZATIONS_PER_TICK = config.serializations_per_tick
     end
+    if config.bootstrap_wait_ticks then
+        local sys_state = get_system_state()
+        sys_state.bootstrap_wait_ticks = config.bootstrap_wait_ticks
+    end
+end
+
+--- Get current system phase (for external modules)
+--- @return string SystemPhase enum value
+function M.get_system_phase()
+    return get_system_phase()
 end
 
 M.admin_api = {
@@ -693,6 +862,7 @@ M.admin_api = {
     get_chunk_lookup = M.get_chunk_lookup,
     get_snapshot_status = M.get_snapshot_status,
     set_snapshot_config = M.set_snapshot_config,
+    get_system_phase = M.get_system_phase,
 }
 
 M.event_based_snapshot = {}
@@ -721,6 +891,11 @@ end
 --- @param chunk_x number
 --- @param chunk_y number
 local function phase_find_entities(state, chunk_x, chunk_y)
+    local start_tick = game.tick
+    if DEBUG then
+        game.print(string.format("[PERF] FIND_ENTITIES START: chunk (%d,%d) at tick %d", chunk_x, chunk_y, start_tick))
+    end
+    
     local surface = game.surfaces[1]
     if not surface then
         reset_snapshot_state()
@@ -738,33 +913,57 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     local chunk = { x = chunk_x, y = chunk_y, area = chunk_area }
     
     -- Gather all data using Resource module (this does the find_entities_filtered calls)
+    if DEBUG then
+        game.print(string.format("[PERF]   Calling Resource.gather_resources_for_chunk..."))
+    end
     local gathered = Resource.gather_resources_for_chunk(chunk)
+    if DEBUG then
+        game.print(string.format("[PERF]   Resources gathered: resources=%d, trees=%d, rocks=%d, water=%d",
+            #gathered.resources, #gathered.trees, #gathered.rocks, #gathered.water))
+    end
     
     -- Also gather player-placed entities (excluding ghosts)
+    -- PERFORMANCE: count first, then find only if count > 0
     local player_entities = {}
+    if DEBUG then
+        game.print(string.format("[PERF]   Counting player entities..."))
+    end
     local entity_count = surface.count_entities_filtered {
         area = chunk_area,
         force = "player",
     }
+    if DEBUG then
+        game.print(string.format("[PERF]   Player entity count: %d", entity_count))
+    end
     if entity_count > 0 then
         local all_entities = surface.find_entities_filtered {
             area = chunk_area,
             force = "player",
         }
-        -- Filter out ghosts from player entities
+        -- Filter out ghosts from player entities (in Lua, not C++)
         for _, entity in ipairs(all_entities) do
             if entity and entity.valid and entity.type ~= "entity-ghost" then
                 table.insert(player_entities, entity)
             end
         end
+        if DEBUG then
+            game.print(string.format("[PERF]   Player entities after filtering: %d", #player_entities))
+        end
     end
     
     -- Gather ghosts separately (for top-level ghosts-init.jsonl)
+    -- PERFORMANCE: count first, then find only if count > 0
     local ghosts = {}
+    if DEBUG then
+        game.print(string.format("[PERF]   Counting ghosts..."))
+    end
     local ghost_count = surface.count_entities_filtered {
         area = chunk_area,
         type = "entity-ghost",
     }
+    if DEBUG then
+        game.print(string.format("[PERF]   Ghost count: %d", ghost_count))
+    end
     if ghost_count > 0 then
         ghosts = surface.find_entities_filtered {
             area = chunk_area,
@@ -783,10 +982,15 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         chunk = chunk,
     }
     
+    local end_tick = game.tick
+    local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
     if DEBUG then
-        local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
-        game.print(string.format("[DEBUG Map.phase_find_entities] Tick %d: chunk (%d,%d) - resources=%d, water=%d, trees=%d, rocks=%d, entities=%d, ghosts=%d, total=%d", 
-            game.tick, chunk_x, chunk_y, #gathered.resources, #gathered.water, #gathered.trees, #gathered.rocks, #player_entities, #ghosts, total))
+        local duration = end_tick - start_tick
+        game.print(string.format("[PERF] FIND_ENTITIES COMPLETE: chunk (%d,%d) - took %d ticks, found %d items (res=%d, water=%d, trees=%d, rocks=%d, entities=%d, ghosts=%d)", 
+            chunk_x, chunk_y, duration, total, #gathered.resources, #gathered.water, #gathered.trees, #gathered.rocks, #player_entities, #ghosts))
+        if duration > 0 then
+            game.print(string.format("[PERF] ⚠️  WARNING: FIND_ENTITIES took %d ticks - this should complete in 1 tick!", duration))
+        end
     end
     
     -- Initialize serialization state
@@ -823,16 +1027,19 @@ end
 --- PHASE: SERIALIZE - Convert gathered data to JSON strings (batched)
 --- @param state SnapshotState
 local function phase_serialize(state)
+    local start_tick = game.tick
     local gathered = state.gathered
     local serialized = state.serialized
     local budget = SnapshotConfig.SERIALIZATIONS_PER_TICK
     local processed = 0
     local idx = state.serialize_index
+    local pcall_count = 0
+    local pcall_failures = 0
     
     if DEBUG and idx == 1 then
         local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #gathered.player_entities + (#gathered.ghosts or 0)
-        game.print(string.format("[DEBUG Map.phase_serialize] Tick %d: Starting serialization, total items=%d, budget=%d", 
-            game.tick, total, budget))
+        game.print(string.format("[PERF] SERIALIZE START: tick %d, total=%d items, budget=%d/tick", 
+            start_tick, total, budget))
     end
     
     -- Calculate total items to serialize
@@ -845,11 +1052,16 @@ local function phase_serialize(state)
     local total_trees_rocks = total_trees + total_rocks
     
     -- Serialize resources (tiles.jsonl)
+    -- NOTE: Using pcall for error safety, but adds overhead
+    -- Each pcall has ~10-20% overhead vs direct call
     while idx <= total_resources and processed < budget do
         local resource = gathered.resources[idx]
+        pcall_count = pcall_count + 1
         local ok, json_str = pcall(helpers.table_to_json, resource)
         if ok and json_str then
             table_insert(serialized.resources_json, json_str)
+        else
+            pcall_failures = pcall_failures + 1
         end
         idx = idx + 1
         processed = processed + 1
@@ -860,9 +1072,12 @@ local function phase_serialize(state)
     while idx >= water_start and idx < water_start + total_water and processed < budget do
         local water_idx = idx - total_resources
         local water = gathered.water[water_idx]
+        pcall_count = pcall_count + 1
         local ok, json_str = pcall(helpers.table_to_json, water)
         if ok and json_str then
             table_insert(serialized.water_json, json_str)
+        else
+            pcall_failures = pcall_failures + 1
         end
         idx = idx + 1
         processed = processed + 1
@@ -879,9 +1094,12 @@ local function phase_serialize(state)
             entity_data = gathered.rocks[entity_idx - total_trees]
         end
         if entity_data then
+            pcall_count = pcall_count + 1
             local ok, json_str = pcall(helpers.table_to_json, entity_data)
             if ok and json_str then
                 table_insert(serialized.entities_json, json_str)
+            else
+                pcall_failures = pcall_failures + 1
             end
         end
         idx = idx + 1
@@ -929,6 +1147,17 @@ local function phase_serialize(state)
     end
     
     state.serialize_index = idx
+    
+    -- Log performance metrics for this tick
+    if DEBUG and processed > 0 then
+        local end_tick = game.tick
+        local duration = end_tick - start_tick
+        game.print(string.format("[PERF] SERIALIZE tick %d: processed %d items, %d pcalls (%d failures), took %d ticks",
+            end_tick, processed, pcall_count, pcall_failures, duration))
+        if duration > 0 then
+            game.print(string.format("[PERF] ⚠️  WARNING: SERIALIZE took %d ticks for %d items - should be 1 tick!", duration, processed))
+        end
+    end
     
     -- Check if serialization is complete
     local total_items = total_resources + total_water + total_trees_rocks + total_player + total_ghosts
@@ -1046,22 +1275,32 @@ end
 --- PHASE: WRITE - Write files to disk (batched, most expensive!)
 --- @param state SnapshotState
 local function phase_write(state)
+    local start_tick = game.tick
     local budget = SnapshotConfig.WRITES_PER_TICK
     local processed = 0
     local chunk_x = state.chunk_x
     local chunk_y = state.chunk_y
+    local pcall_count = 0
+    local write_failures = 0
     
     if DEBUG and state.write_index == 1 then
-        game.print(string.format("[DEBUG Map.phase_write] Tick %d: Starting writes for chunk (%d,%d), queue_size=%d, budget=%d", 
-            game.tick, chunk_x, chunk_y, #state.write_queue, budget))
+        game.print(string.format("[PERF] WRITE START: tick %d, chunk (%d,%d), %d files queued, budget=%d writes/tick", 
+            start_tick, chunk_x, chunk_y, #state.write_queue, budget))
     end
     
     while state.write_index <= #state.write_queue and processed < budget do
         local item = state.write_queue[state.write_index]
         
         -- Write file (use append mode for ghosts-init.jsonl)
+        -- NOTE: pcall wraps disk I/O - this is BLOCKING and expensive!
+        -- Each write can take 0.1-1ms depending on disk speed
         local append_mode = item.append == true
+        pcall_count = pcall_count + 1
         local ok = pcall(helpers.write_file, item.path, item.content, append_mode)
+        
+        if not ok then
+            write_failures = write_failures + 1
+        end
         
         -- Send UDP notification on success using payload module
         if ok then
@@ -1094,20 +1333,31 @@ local function phase_write(state)
         
         state.write_index = state.write_index + 1
         processed = processed + 1
-        
-        if DEBUG then
-            game.print(string.format("[DEBUG Map.phase_write] Tick %d: Wrote file %d/%d: %s", 
-                game.tick, state.write_index - 1, #state.write_queue, item.file_type or "unknown"))
-        end
     end
     
+    -- Log performance metrics for this tick
     if DEBUG and processed > 0 then
-        game.print(string.format("[DEBUG Map.phase_write] Tick %d: Wrote %d files, %d remaining", 
-            game.tick, processed, #state.write_queue - state.write_index + 1))
+        local end_tick = game.tick
+        local duration = end_tick - start_tick
+        local remaining = #state.write_queue - state.write_index + 1
+        game.print(string.format("[PERF] WRITE tick %d: wrote %d files (%d pcalls, %d failures), %d remaining, took %d ticks",
+            end_tick, processed, pcall_count, write_failures, remaining, duration))
+        if duration > 0 then
+            game.print(string.format("[PERF] ⚠️  WARNING: WRITE took %d ticks for %d files - disk I/O is blocking!", duration, processed))
+        end
     end
     
     -- Check if all writes are complete
     if state.write_index > #state.write_queue then
+        -- Clear memory IMMEDIATELY before transitioning to COMPLETE
+        -- This prevents memory accumulation during large snapshotting operations
+        state.gathered = nil
+        state.serialized = nil
+        state.write_queue = {}
+        
+        -- Hint to Lua garbage collector (helps but doesn't guarantee immediate collection)
+        collectgarbage("step", 100)
+        
         state.phase = SnapshotPhase.COMPLETE
         
         -- Send snapshot state payload
@@ -1172,8 +1422,13 @@ local function phase_complete(state)
     -- Mark chunk as snapshotted
     tracker:mark_chunk_snapshotted(chunk_x, chunk_y)
     
+    -- Update system statistics
+    local sys_state = get_system_state()
+    sys_state.stats.chunks_snapshotted = sys_state.stats.chunks_snapshotted + 1
+    
     if snapshot.DEBUG and game and game.print then
-        game.print(string.format("[snapshot] COMPLETE: Chunk (%d, %d) fully snapshotted", chunk_x, chunk_y))
+        game.print(string.format("[snapshot] COMPLETE: Chunk (%d, %d) fully snapshotted (total: %d, pending: %d)", 
+            chunk_x, chunk_y, sys_state.stats.chunks_snapshotted, sys_state.stats.chunks_pending))
     end
     
     -- Reset state for next chunk (will transition to IDLE)
@@ -1185,11 +1440,13 @@ end
 --- Spreads the work across multiple ticks to maintain game performance
 --- @param event table on_tick event
 function M._on_tick_snapshot_chunks(event)
+    local tick_start = game.tick
     local state = get_snapshot_state()
+    local sys_state = get_system_state()
     
-    -- IDLE: Find next chunk to process
+    -- IDLE: Find next chunk to process from queue
     if state.phase == SnapshotPhase.IDLE then
-        local chunk_x, chunk_y = find_next_pending_chunk()
+        local chunk_x, chunk_y = dequeue_next_pending_chunk()
         if chunk_x and chunk_y then
             local tracker = M.get_chunk_tracker()
             -- Double-check chunk still needs snapshotting
@@ -1203,11 +1460,37 @@ function M._on_tick_snapshot_chunks(event)
                 send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.FIND_ENTITIES, chunk)
                 
                 if DEBUG then
-                    game.print(string.format("[DEBUG Map._on_tick_snapshot_chunks] Starting chunk (%d, %d)", chunk_x, chunk_y))
+                    game.print(string.format("[FLOW] Tick %d: IDLE → FIND_ENTITIES for chunk (%d,%d), queue=%d pending",
+                        tick_start, chunk_x, chunk_y, sys_state.stats.chunks_pending))
+                end
+            else
+                if DEBUG then
+                    game.print(string.format("[FLOW] Tick %d: Chunk (%d,%d) already snapshotted, skipping", tick_start, chunk_x, chunk_y))
                 end
             end
         else
-            -- No pending chunks, IDLE state - don't spam UDP every tick
+            -- No pending chunks in queue
+            -- Check if we should transition to MAINTENANCE phase
+            if get_system_phase() == SystemPhase.INITIAL_SNAPSHOTTING then
+                -- Bootstrap waiting: Don't immediately transition to MAINTENANCE
+                -- Scenarios (like freeplay) call force.chart() which is asynchronous
+                -- on_chunk_charted events fire AFTER the chart() call returns
+                -- Wait for bootstrap_wait_ticks to allow charting to complete
+                sys_state.current_wait_tick = sys_state.current_wait_tick + 1
+                
+                if sys_state.current_wait_tick >= sys_state.bootstrap_wait_ticks then
+                    -- Waited long enough, transition to MAINTENANCE
+                    if DEBUG or true then  -- Always log this important transition
+                        game.print(string.format("[Snapshot System] Bootstrap wait complete (%d ticks). Pending chunks: %d. Transitioning to MAINTENANCE.",
+                            sys_state.current_wait_tick, #sys_state.pending_chunks))
+                    end
+                    transition_to_maintenance()
+                elseif DEBUG and sys_state.current_wait_tick % 60 == 0 then
+                    -- Log every second during bootstrap wait
+                    game.print(string.format("[Snapshot System] Bootstrap waiting... %d/%d ticks, %d pending chunks",
+                        sys_state.current_wait_tick, sys_state.bootstrap_wait_ticks, #sys_state.pending_chunks))
+                end
+            end
             -- Only send IDLE state when transitioning from active state (handled in phase_complete)
         end
         return
@@ -1306,6 +1589,9 @@ end
 function M.init()
     -- Initialize ChunkTracker singleton
     ChunkTracker:new()
+    
+    -- Initialize system state
+    get_system_state()
     
     -- Build disk_write_snapshot table after events are initialized
     M.disk_write_snapshot = M._build_disk_write_snapshot()

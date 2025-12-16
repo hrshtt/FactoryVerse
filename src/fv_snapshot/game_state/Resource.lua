@@ -15,7 +15,7 @@ local M = {}
 -- ============================================================================
 -- DEBUG FLAG
 -- ============================================================================
-M.DEBUG = false
+M.DEBUG = true  -- Enable for performance analysis
 
 --- Serialize a single resource tile
 --- @param entity LuaEntity - the resource entity
@@ -108,6 +108,7 @@ end
 --- @param chunk table - {x, y, area}
 --- @return table - {resources = {...}, rocks = {...}, trees = {...}, water = {...}}
 function M.gather_resources_for_chunk(chunk)
+    local start_tick = game.tick
     local surface = game.surfaces[1]
     if not surface then
         return { resources = {}, rocks = {}, trees = {}, water = {} }
@@ -120,7 +121,7 @@ function M.gather_resources_for_chunk(chunk)
         water = {}      -- Water tiles
     }
 
-    -- Resources (including crude oil) - check count first
+    -- Resources (including crude oil) - PERFORMANCE: count before find (fast C++ check)
     local resource_count = surface.count_entities_filtered {
         area = chunk.area,
         type = "resource"
@@ -192,6 +193,17 @@ function M.gather_resources_for_chunk(chunk)
         end
     end
 
+    local end_tick = game.tick
+    if M.DEBUG then
+        local duration = end_tick - start_tick
+        local total = #gathered.resources + #gathered.rocks + #gathered.trees + #gathered.water
+        game.print(string.format("[PERF Resource] Chunk (%d,%d) gather complete: %d items in %d ticks",
+            chunk.x, chunk.y, total, duration))
+        if duration > 0 then
+            game.print(string.format("[PERF Resource] ⚠️  WARNING: gather took %d ticks - should be instant!", duration))
+        end
+    end
+    
     return gathered
 end
 

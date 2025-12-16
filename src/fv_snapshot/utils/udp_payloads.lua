@@ -2,7 +2,7 @@
 --- Centralized payload creation with consistent API schema for external DB sync
 --- All payloads follow a consistent structure for Python GameDataSyncService
 
-local udp = require("__fv_embodied_agent__/utils/udp")
+local snapshot = require("utils/snapshot")
 
 local M = {}
 
@@ -315,6 +315,25 @@ end
 -- EVENT PAYLOADS
 -- ============================================================================
 
+--- Create system phase changed payload
+--- @param phase string New phase ("INITIAL_SNAPSHOTTING" or "MAINTENANCE")
+--- @param stats table|nil System statistics {chunks_snapshotted, chunks_pending, ...}
+--- @param tick number|nil Game tick (default: game.tick)
+--- @return table Payload
+function M.system_phase_changed(phase, stats, tick)
+    local payload = {
+        event_type = "system_phase_changed",
+        phase = phase,
+        tick = tick or game.tick,
+    }
+    
+    if stats then
+        payload.stats = stats
+    end
+    
+    return payload
+end
+
 --- Create chunk charted payload
 --- @param chunk table Chunk coordinates {x, y}
 --- @param tick number|nil Game tick (default: game.tick)
@@ -378,35 +397,35 @@ end
 --- @param payload table Action payload
 --- @return boolean Success status
 function M.send_action(payload)
-    return udp.send_udp_notification(add_sequence(payload))
+    return snapshot.send_udp_notification(add_sequence(payload))
 end
 
 --- Send snapshot state payload
 --- @param payload table Snapshot state payload
 --- @return boolean Success status
 function M.send_snapshot_state(payload)
-    return udp.send_udp_notification(add_sequence(payload))
+    return snapshot.send_udp_notification(add_sequence(payload))
 end
 
 --- Send entity operation payload
 --- @param payload table Entity operation payload
 --- @return boolean Success status
 function M.send_entity_operation(payload)
-    return udp.send_udp_notification(add_sequence(payload))
+    return snapshot.send_udp_notification(add_sequence(payload))
 end
 
 --- Send file IO payload
 --- @param payload table File IO payload
 --- @return boolean Success status
 function M.send_file_io(payload)
-    return udp.send_udp_notification(add_sequence(payload))
+    return snapshot.send_udp_notification(add_sequence(payload))
 end
 
 --- Send event payload
 --- @param payload table Event payload
 --- @return boolean Success status
 function M.send_event(payload)
-    return udp.send_udp_notification(add_sequence(payload))
+    return snapshot.send_udp_notification(add_sequence(payload))
 end
 
 return M
