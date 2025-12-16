@@ -78,9 +78,11 @@ local function serialize_entity_full(entity)
     end
     
     -- Add recipe if applicable (assemblers, furnaces, chemical plants)
-    local recipe = entity.get_recipe and entity.get_recipe()
-    if recipe then
-        data.recipe = recipe.name
+    if entity.get_recipe then
+        local success, recipe = pcall(entity.get_recipe, entity)
+        if success and recipe then
+            data.recipe = recipe.name
+        end
     end
     
     -- Add fuel count if has fuel inventory
