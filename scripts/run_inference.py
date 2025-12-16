@@ -71,11 +71,14 @@ async def main():
     
     # 5. Create orchestrator
     print("🎯 Initializing Agent Orchestrator...")
+    chat_log_path = notebook_path.parent / f"chat_{notebook_path.stem}.md"
     agent = FactorioAgentOrchestrator(
         llm_client=llm,
         runtime=runtime,
-        system_prompt_path="factoryverse-system-prompt.md"
+        system_prompt_path="factoryverse-system-prompt.md",
+        chat_log_path=str(chat_log_path)
     )
+    print(f"💬 Chat log: {chat_log_path}")
     
     # 6. Interactive loop
     print("\n🤖 Agent Online. Type 'exit' to quit.")
