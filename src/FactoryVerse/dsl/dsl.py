@@ -171,10 +171,19 @@ class _ReachableAccessor:
     def __repr__(self) -> str:
         return """ReachableAffordance
   Methods:
+    - get_current_position() - Get current agent position
     - get_entity(entity_name, position?, options?) - Get a single entity matching criteria
     - get_entities(entity_name?, options?) - Get all entities matching criteria
     - get_resource(resource_name, position?) - Get a single resource matching criteria
   Usage: reachable.get_entity('stone-furnace')"""
+    
+    def get_current_position(self) -> MapPosition:
+        """Get current agent position from Lua.
+        
+        Returns:
+            MapPosition of the agent's current location
+        """
+        return _get_factory().get_position()
     
     def get_entity(
         self,
