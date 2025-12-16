@@ -935,6 +935,14 @@ class PlayingFactory:
         logger.info(f"RCON RX: {response}")
         return response
 
+    def _serialize_arg(self, arg):
+        """Convert argument to JSON-serializable format."""
+        # Handle Position/MapPosition/EntityPosition objects
+        if hasattr(arg, 'x') and hasattr(arg, 'y'):
+            return {"x": arg.x, "y": arg.y}
+        # Handle other common types
+        return arg
+    
     def _build_command(self, method: str, *args) -> str:
         """Build RCON command string for a method call with positional arguments.
         
@@ -943,8 +951,9 @@ class PlayingFactory:
         remote_call = f"remote.call('{self.agent_id}', '{method}'"
         
         if args:
-            # Convert args to JSON and pass as table
-            args_json = json.dumps(list(args))
+            # Convert args to JSON-serializable format and pass as table
+            serialized_args = [self._serialize_arg(arg) for arg in args]
+            args_json = json.dumps(serialized_args)
             remote_call += f", table.unpack(helpers.json_to_table('{args_json}'))"
         
         remote_call += ")"
@@ -1232,15 +1241,28 @@ class PlayingFactory:
         self,
         entity_name: str,
         position: Optional[Union[Dict[str, float], "MapPosition"]] = None,
-    ) -> str:
+    ) -> List["ItemStack"]:
         """Pick up an entity from the map into the agent's inventory.
 
         Args:
             entity_name: Entity prototype name to pick up
             position: Entity position (None = nearest)
+            
+        Returns:
+            List of ItemStack objects representing items added to inventory
         """
+        from src.FactoryVerse.dsl.item.base import ItemStack
+        
         cmd = self._build_command("pickup_entity", entity_name, position)
-        return self.execute(cmd)
+        result = self._execute_and_parse_json(cmd)
+        
+        # Parse extracted_items into ItemStack objects
+        extracted_items = result.get("extracted_items", {})
+        item_stacks = []
+        for item_name, count in extracted_items.items():
+            item_stacks.append(ItemStack(name=item_name, count=count))
+        
+        return item_stacks
 
     def remove_ghost(self, entity_name: str, position: MapPosition) -> Dict[str, Any]:
         """Remove a ghost entity from the map.
@@ -1379,8 +1401,7 @@ class PlayingFactory:
             Dict with entities, resources, ghosts (if attach_ghosts=True), agent_position, tick
         """
         cmd = self._build_command("get_reachable", attach_ghosts)
-        result_str = self.execute(cmd)
-        result = json.loads(result_str)
+        result = self._execute_and_parse_json(cmd)
         
         return result
     

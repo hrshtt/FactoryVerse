@@ -24,43 +24,92 @@ from src.FactoryVerse.dsl.agent import _playing_factory
 class EntityPosition(MapPosition):
     """Position with entity-aware spatial operations.
     
-    Extends MapPosition with methods for offsetting by entity/item/prototype dimensions.
-    This keeps MapPosition pure while providing DSL-aware spatial reasoning.
+    High-level position type that knows about entities, items, and prototypes.
+    Provides spatial reasoning for placement and layout calculations.
+    MapPosition remains pure - this handles the DSL-aware logic.
+    
+    Can be bound to a parent entity, making offset calculations more ergonomic:
+        furnace.position.offset_by_entity(direction=Direction.NORTH)
     """
+    
+    def __init__(self, x: float, y: float, entity: Optional[Union["BaseEntity", PlaceableItem]] = None):
+        """Initialize EntityPosition, optionally bound to an entity.
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate
+            entity: Optional parent entity for default dimension calculations
+        """
+        super().__init__(x, y)
+        self._entity = entity
     
     def offset_by_entity(
         self, 
-        entity: Union["BaseEntity", PlaceableItem, BasePrototype],
-        direction: Direction,
+        entity: Optional[Union["BaseEntity", PlaceableItem, BasePrototype]] = None,
+        direction: Direction = None,
         gap: int = 0
     ) -> "EntityPosition":
-        """Offset by entity dimensions in the given direction.
+        """Calculate position offset by entity dimensions in a cardinal direction.
+        
+        Uses parent entity dimensions if no entity is provided.
         
         Args:
-            entity: Entity, item, or prototype to get dimensions from
-            direction: Cardinal direction to offset
+            entity: Entity, item, or prototype to get dimensions from (uses parent if None)
+            direction: Cardinal direction to offset (NORTH/SOUTH/EAST/WEST)
             gap: Additional tiles of spacing (default 0 for touching)
         
         Returns:
             New EntityPosition offset by entity dimensions + gap
         
-        Example:
+        Examples:
+            >>> # Offset using bound entity (most ergonomic)
             >>> furnace = reachable_entities.get_entity("stone-furnace")
-            >>> entity_pos = EntityPosition(x=furnace.position.x, y=furnace.position.y)
-            >>> next_pos = entity_pos.offset_by_entity(furnace, Direction.NORTH, gap=0)
-            >>> stone_furnace_item.place(next_pos)
+            >>> next_pos = furnace.position.offset_by_entity(direction=Direction.NORTH)
+            >>> 
+            >>> # Offset using different entity's dimensions
+            >>> next_pos = furnace.position.offset_by_entity(drill_item, Direction.EAST)
+            >>>
+            >>> # Standalone usage
+            >>> entity_pos = EntityPosition(x=10, y=20)
+            >>> next_pos = entity_pos.offset_by_entity(furnace, Direction.NORTH, gap=1)
         """
+        if direction is None:
+            raise ValueError("direction is required")
+            
+        ref = entity or self._entity
+        if ref is None:
+            raise ValueError(
+                "No entity provided and no parent entity bound to this position. "
+                "Either pass an entity or use EntityPosition from an entity's .position property."
+            )
+        
+        if not direction.is_cardinal():
+            raise ValueError(f"Cannot offset in non-cardinal direction: {direction.name}")
+        
         # Extract tile dimensions (all three types have these properties)
-        tile_w = entity.tile_width
-        tile_h = entity.tile_height
+        tile_w = ref.tile_width
+        tile_h = ref.tile_height
         
-        # Apply gap
-        offset_w = tile_w + gap
-        offset_h = tile_h + gap
+        # Calculate distance based on direction
+        # NORTH/SOUTH: use height, EAST/WEST: use width
+        if direction in (Direction.NORTH, Direction.SOUTH):
+            distance = tile_h + gap
+        else:  # EAST or WEST
+            distance = tile_w + gap
         
-        # Use pure MapPosition.offset for coordinate math
-        offset_result = self.offset((offset_w, offset_h), direction)
-        return EntityPosition(x=offset_result.x, y=offset_result.y)
+        # Calculate new position based on cardinal direction
+        # Positive x = east, positive y = south
+        if direction == Direction.NORTH:
+            new_x, new_y = self.x, self.y - distance
+        elif direction == Direction.EAST:
+            new_x, new_y = self.x + distance, self.y
+        elif direction == Direction.SOUTH:
+            new_x, new_y = self.x, self.y + distance
+        else:  # WEST
+            new_x, new_y = self.x - distance, self.y
+        
+        # Return new EntityPosition, not bound to any entity (it's just a calculated position)
+        return EntityPosition(x=new_x, y=new_y)
 
 
 class BaseEntity:
@@ -78,13 +127,22 @@ class BaseEntity:
         **kwargs  # For backward compatibility with subclasses
     ):
         self.name = name
-        self.position = position
+        self._raw_position = position  # Store raw position internally
         self.direction = direction
         self._prototype_cache: Optional[BasePrototype] = None
         
         # Handle any additional kwargs for subclasses
         for key, value in kwargs.items():
             setattr(self, key, value)
+    
+    @property
+    def position(self) -> EntityPosition:
+        """Get the entity's position as an EntityPosition bound to this entity.
+        
+        This allows ergonomic spatial operations like:
+            next_pos = entity.position.offset_by_entity(direction=Direction.NORTH)
+        """
+        return EntityPosition(x=self._raw_position.x, y=self._raw_position.y, entity=self)
 
     @property
     def _factory(self) -> "PlayingFactory":
@@ -129,35 +187,12 @@ class BaseEntity:
         """Get the tile height of this entity from its prototype."""
         return self.prototype.tile_height
 
-    def offset_by_entity(
-        self,
-        direction: Direction,
-        gap: int = 0,
-        reference: Optional[Union['BaseEntity', 'PlaceableItem']] = None
-    ) -> MapPosition:
-        """Offset this entity's position by entity dimensions.
-        
-        Convenience method that creates EntityPosition and offsets by dimensions.
-        
-        Args:
-            direction: Direction to offset
-            gap: Tile gap (default 0 for touching)
-            reference: Entity/item to use for dimensions (default: self)
+    def pickup(self) -> List[ItemStack]:
+        """Pick up the entity and return items added to inventory.
         
         Returns:
-            MapPosition offset by reference entity's dimensions
-        
-        Example:
-            >>> furnace = reachable_entities.get_entity("stone-furnace")
-            >>> next_pos = furnace.offset_by_entity(Direction.NORTH)
-            >>> stone_furnace_item.place(next_pos)
+            List of ItemStack objects representing items extracted from the entity
         """
-        ref = reference or self
-        entity_pos = EntityPosition(x=self.position.x, y=self.position.y)
-        return entity_pos.offset_by_entity(ref, direction, gap)
-
-    def pickup(self) -> bool:
-        """Pick up the entity."""
         return self._factory.pickup_entity(self.name, self.position)
 
 class GhostEntity(BaseEntity):

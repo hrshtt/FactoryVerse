@@ -109,7 +109,12 @@ class Position:
 class AnchorVector(Position): ...
 
 
-class MapPosition(Position): ...
+class MapPosition(Position):
+    """Coordinates of a tile in a map.
+    
+    Pure position data - just x, y coordinates.
+    """
+    pass
 
 
 class RealOrientation(float):

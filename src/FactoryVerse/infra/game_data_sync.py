@@ -359,21 +359,24 @@ class GameDataSyncService:
             logger.debug(f"⚙️  Processing update: type={update_type}, payload={payload.get('op', 'N/A')}")
             
             # Check sequence number to detect packet loss
+            # NOTE: Lua uses a GLOBAL sequence counter across all event types,
+            # so we track globally, not per-event-type
             sequence = payload.get("sequence")
             if sequence is not None:
                 event_type = payload.get("event_type", update_type)
-                last_seq = self._last_sequence.get(event_type, -1)
+                last_seq = self._last_sequence.get("_global", -1)
                 
                 if last_seq >= 0 and sequence != last_seq + 1:
-                    # Gap detected!
+                    # Gap detected! This indicates actual packet loss
                     gap = (event_type, last_seq + 1, sequence)
                     self._sequence_gaps.append(gap)
-                    logger.warning(
-                        f"Sequence gap detected for {event_type}: expected {last_seq + 1}, got {sequence}. "
-                        f"May have missed {sequence - last_seq - 1} packet(s). File replay recommended."
+                    # Log to file only (DEBUG level) - don't spam notebooks
+                    logger.debug(
+                        f"Packet loss detected: expected seq {last_seq + 1}, got {sequence} (event: {event_type}). "
+                        f"Missed {sequence - last_seq - 1} packet(s). File replay recommended."
                     )
                 
-                self._last_sequence[event_type] = sequence
+                self._last_sequence["_global"] = sequence
             
             # Process update
             if update_type == "entity_operation":
@@ -1664,4 +1667,42 @@ class GameDataSyncService:
     def is_running(self) -> bool:
         """Check if service is running."""
         return self._running
+    
+    def get_sequence_gap_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about sequence gaps (actual UDP packet loss detection).
+        
+        Uses global sequence tracking across all event types to detect real packet loss.
+        Gaps indicate actual dropped UDP packets, not interleaving of event types.
+        
+        Returns:
+            Dictionary with gap statistics:
+            - total_gaps: Total number of packet loss events detected
+            - gaps_by_type: Dictionary grouping gaps by the event_type where loss was detected
+            - summary: Human-readable summary
+        """
+        from collections import defaultdict
+        
+        gaps_by_type = defaultdict(list)
+        for event_type, expected, received in self._sequence_gaps:
+            gaps_by_type[event_type].append({
+                'expected': expected,
+                'received': received,
+                'gap_size': received - expected
+            })
+        
+        total_gaps = len(self._sequence_gaps)
+        summary_lines = [f"Total sequence gaps: {total_gaps}"]
+        
+        if total_gaps > 0:
+            summary_lines.append("\nGaps by event type:")
+            for event_type, gaps in sorted(gaps_by_type.items(), key=lambda x: len(x[1]), reverse=True):
+                total_missed = sum(g['gap_size'] for g in gaps)
+                summary_lines.append(f"  {event_type}: {len(gaps)} gaps, {total_missed} packets missed")
+        
+        return {
+            'total_gaps': total_gaps,
+            'gaps_by_type': dict(gaps_by_type),
+            'summary': '\n'.join(summary_lines)
+        }
 
