@@ -78,7 +78,7 @@ function ChartingHelpers.chart_spawn_area(self)
     local surface = game.surfaces[1]
     local force = self.character.force
     local spawn_position = force.get_spawn_position(surface)
-    local r = 7
+    local r = 3  -- 7x7 grid: -3 to +3 = 7 chunks per axis (49 total chunks)
     
     -- Calculate spawn chunk coordinates
     local spawn_chunk = map_to_chunk_coords(spawn_position)
