@@ -78,6 +78,14 @@ ENTITY_NAME_ENUM = {
     "transport-belt": 53,
     "underground-belt": 54,
     "wooden-chest": 55,
+    "crash-site-chest-1": 56,
+    "crash-site-chest-2": 57,
+    "crash-site-spaceship": 58,
+    "crash-site-spaceship-wreck-big-1": 59,
+    "crash-site-spaceship-wreck-big-2": 60,
+    "crash-site-spaceship-wreck-medium-1": 61,
+    "crash-site-spaceship-wreck-medium-2": 62,
+    "crash-site-spaceship-wreck-medium-3": 63,
 }
 
 # Reverse mapping: enum value -> entity name
