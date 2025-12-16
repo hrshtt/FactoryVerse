@@ -91,13 +91,18 @@ local function aggregate_all_events()
         end
     end
 
-    -- 3. Entity status tracking (every 60 ticks)
+    -- 3. Entity status tracking (every 120 ticks)
     -- Map orchestrates getting chunks, Entities provides the tracking logic
-    add_nth_tick_handler(60, function()
-        local charted_chunks = Map.get_charted_chunks()
-        Entities.track_all_charted_chunk_entity_status(charted_chunks)
-        -- Also dump compressed status to disk
-        Entities.dump_status_to_disk(charted_chunks)
+    -- Changed from 60 to 120 ticks to reduce performance overhead
+    -- ONLY runs during MAINTENANCE phase (disabled during initial snapshotting)
+    add_nth_tick_handler(120, function()
+        -- Check system phase before running status tracking
+        if Map.get_system_phase() == "MAINTENANCE" then
+            local charted_chunks = Map.get_charted_chunks()
+            Entities.track_all_charted_chunk_entity_status(charted_chunks)
+            -- Also dump compressed status to disk
+            Entities.dump_status_to_disk(charted_chunks)
+        end
     end)
 
     return {

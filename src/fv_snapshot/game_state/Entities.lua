@@ -304,9 +304,8 @@ function M.dump_status_to_disk(charted_chunks)
     snapshot.track_status_dump_file(game.tick)
     snapshot.cleanup_old_status_dumps()
     
-    -- Send UDP notification that status file was written (overwrite operation)
-    local payload = udp_payloads.file_written("status", nil, file_path, game.tick, #status_records)
-    udp_payloads.send_file_io(payload)
+    -- NO UDP notification for status dumps - disk-only design
+    -- External systems are responsible for reading and managing their own memory
     
     if M.DEBUG and game and game.print then
         game.print(string.format("[status_dump] Wrote status dump: %s (%d entities)", file_path, #status_records))
