@@ -411,6 +411,58 @@ function M.list_agent_forces()
     return mapping
 end
 
+--- List all agents with their details
+--- @return table[] Array of agent entries with id, force, udp_port, interface_name, entity_valid, position, agent_tag, and agent_color
+function M.list_agents()
+    local agents_list = {}
+    
+    if not storage.agents then
+        return agents_list
+    end
+    
+    for agent_id, agent in pairs(storage.agents) do
+        if agent then
+            local agent_id_value = agent.agent_id or agent_id
+            local entry = {
+                id = agent_id_value,
+                force = agent.force_name,
+                udp_port = agent.udp_port,
+                interface_name = "agent_" .. agent_id_value,
+                entity_valid = false,
+            }
+            
+            -- Check if character entity is valid and get position, tag, and color
+            if agent.character and agent.character.valid then
+                entry.entity_valid = true
+                local pos = agent.character.position
+                if pos then
+                    entry.position = { x = pos.x, y = pos.y }
+                end
+                
+                -- Get character name tag
+                if agent.character.name_tag then
+                    entry.agent_tag = agent.character.name_tag
+                end
+                
+                -- Get character color
+                if agent.character.color then
+                    local color = agent.character.color
+                    entry.agent_color = { r = color.r, g = color.g, b = color.b, a = color.a or 1.0 }
+                end
+            end
+            
+            table.insert(agents_list, entry)
+        end
+    end
+    
+    -- Sort by agent ID for consistent ordering
+    table.sort(agents_list, function(a, b)
+        return (a.id or 0) < (b.id or 0)
+    end)
+    
+    return agents_list
+end
+
 
 -- ============================================================================
 -- ADMIN API AND SNAPSHOTS
@@ -441,6 +493,9 @@ M.AdminApiSpecs = {
         force_names = {type = "table", required = true},
     },
     list_agent_forces = {
+        _param_order = {},
+    },
+    list_agents = {
         _param_order = {},
     },
     reset_research = {
@@ -509,6 +564,7 @@ M.admin_api = {
     update_agent_friends = M.update_agent_friends,
     update_agent_enemies = M.update_agent_enemies,
     list_agent_forces = M.list_agent_forces,
+    list_agents = M.list_agents,
     reset_research = M.reset_research,
     inspect_research = M.inspect_research,
 }
