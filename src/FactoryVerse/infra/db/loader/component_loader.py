@@ -6,13 +6,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Set
 
 import duckdb
 
+from .utils import normalize_snapshot_dir, load_jsonl_file, iter_chunk_dirs
 
-def load_inserters(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load inserters from entities_init.jsonl files."""
+
+def load_inserters(
+    con: duckdb.DuckDBPyConnection, 
+    snapshot_dir: Path,
+    replay_updates: bool = True,
+) -> None:
+    """
+    Load inserters from entities_init.jsonl files.
+    
+    Optionally replays entities_updates.jsonl to compute current state.
+    """
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
@@ -24,46 +35,67 @@ def load_inserters(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     except:
         valid_entities = None
     
-    inserter_data = []
+    inserter_data: Dict[str, Dict[str, Any]] = {}
+    
+    def process_inserter_entity(data: Dict[str, Any]) -> None:
+        """Process a single entity and add to inserter_data if it's an inserter."""
+        # Filter out entities not in our placeable_entity ENUM
+        if valid_entities and data.get("name") not in valid_entities:
+            return
+        if data.get("type") == "inserter" and "inserter" in data:
+            inserter_info = data["inserter"]
+            direction_name = data.get("direction_name", "north")
+            
+            # Build output struct
+            drop_pos = inserter_info.get("drop_position", {})
+            output_struct = None
+            if drop_pos:
+                output_struct = {
+                    "position": {"x": drop_pos.get("x", 0), "y": drop_pos.get("y", 0)},
+                    "entity_key": inserter_info.get("drop_target_key"),
+                }
+            
+            # Build input struct
+            pickup_pos = inserter_info.get("pickup_position", {})
+            input_struct = None
+            if pickup_pos:
+                input_struct = {
+                    "position": {"x": pickup_pos.get("x", 0), "y": pickup_pos.get("y", 0)},
+                    "entity_key": inserter_info.get("pickup_target_key"),
+                }
+            
+            entity_key = data.get("key")
+            if entity_key:
+                inserter_data[entity_key] = {
+                    "entity_key": entity_key,
+                    "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
+                    "output": output_struct,
+                    "input": input_struct,
+                }
+    
+    # Load initial state
     for entity_file in entity_files:
-        with open(entity_file, "r") as f:
-            for line in f:
-                if line.strip():
-                    data = json.loads(line)
-                    # Filter out entities not in our placeable_entity ENUM
-                    if valid_entities and data.get("name") not in valid_entities:
-                        continue
-                    if data.get("type") == "inserter" and "inserter" in data:
-                        inserter_info = data["inserter"]
-                        direction_name = data.get("direction_name", "north")
-                        
-                        # Build output struct
-                        drop_pos = inserter_info.get("drop_position", {})
-                        output_struct = None
-                        if drop_pos:
-                            output_struct = {
-                                "position": {"x": drop_pos.get("x", 0), "y": drop_pos.get("y", 0)},
-                                "entity_key": inserter_info.get("drop_target_key"),
-                            }
-                        
-                        # Build input struct
-                        pickup_pos = inserter_info.get("pickup_position", {})
-                        input_struct = None
-                        if pickup_pos:
-                            input_struct = {
-                                "position": {"x": pickup_pos.get("x", 0), "y": pickup_pos.get("y", 0)},
-                                "entity_key": inserter_info.get("pickup_target_key"),
-                            }
-                        
-                        inserter_data.append({
-                            "entity_key": data["key"],
-                            "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
-                            "output": output_struct,
-                            "input": input_struct,
-                        })
+        for entry in load_jsonl_file(entity_file):
+            process_inserter_entity(entry)
+    
+    # Replay operations log if requested
+    if replay_updates:
+        for chunk_x, chunk_y, chunk_dir in iter_chunk_dirs(snapshot_dir):
+            updates_file = chunk_dir / "entities_updates.jsonl"
+            if updates_file.exists():
+                for op in load_jsonl_file(updates_file):
+                    op_type = op.get("op")
+                    if op_type == "upsert":
+                        entity_data = op.get("entity")
+                        if entity_data:
+                            process_inserter_entity(entity_data)
+                    elif op_type == "remove":
+                        entity_key = op.get("key")
+                        if entity_key:
+                            inserter_data.pop(entity_key, None)
     
     if inserter_data:
-        for i in inserter_data:
+        for i in inserter_data.values():
             # Cast string to ENUM type explicitly
             con.execute(
                 """
@@ -79,8 +111,17 @@ def load_inserters(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
             )
 
 
-def load_transport_belts(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load transport belts from entities_init.jsonl files."""
+def load_transport_belts(
+    con: duckdb.DuckDBPyConnection, 
+    snapshot_dir: Path,
+    replay_updates: bool = True,
+) -> None:
+    """
+    Load transport belts from entities_init.jsonl files.
+    
+    Optionally replays entities_updates.jsonl to compute current state.
+    """
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
@@ -92,39 +133,60 @@ def load_transport_belts(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> 
     except:
         valid_entities = None
     
-    belt_data = []
+    belt_data: Dict[str, Dict[str, Any]] = {}
+    
+    def process_belt_entity(data: Dict[str, Any]) -> None:
+        """Process a single entity and add to belt_data if it's a transport belt."""
+        # Filter out entities not in our placeable_entity ENUM
+        if valid_entities and data.get("name") not in valid_entities:
+            return
+        if data.get("type") == "transport-belt" and "belt_data" in data:
+            belt_info = data["belt_data"]
+            neighbours = belt_info.get("belt_neighbours", {})
+            direction_name = data.get("direction_name", "north")
+            
+            # Output is a single struct
+            outputs = neighbours.get("outputs", [])
+            output_struct = None
+            if outputs:
+                output_struct = {"entity_key": outputs[0]}
+            
+            # Input is an array of structs
+            inputs = neighbours.get("inputs", [])
+            input_array = [{"entity_key": inp} for inp in inputs] if inputs else []
+            
+            entity_key = data.get("key")
+            if entity_key:
+                belt_data[entity_key] = {
+                    "entity_key": entity_key,
+                    "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
+                    "output": output_struct,
+                    "input": input_array,
+                }
+    
+    # Load initial state
     for entity_file in entity_files:
-        with open(entity_file, "r") as f:
-            for line in f:
-                if line.strip():
-                    data = json.loads(line)
-                    # Filter out entities not in our placeable_entity ENUM
-                    if valid_entities and data.get("name") not in valid_entities:
-                        continue
-                    if data.get("type") == "transport-belt" and "belt_data" in data:
-                        belt_info = data["belt_data"]
-                        neighbours = belt_info.get("belt_neighbours", {})
-                        direction_name = data.get("direction_name", "north")
-                        
-                        # Output is a single struct
-                        outputs = neighbours.get("outputs", [])
-                        output_struct = None
-                        if outputs:
-                            output_struct = {"entity_key": outputs[0]}
-                        
-                        # Input is an array of structs
-                        inputs = neighbours.get("inputs", [])
-                        input_array = [{"entity_key": inp} for inp in inputs] if inputs else []
-                        
-                        belt_data.append({
-                            "entity_key": data["key"],
-                            "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
-                            "output": output_struct,
-                            "input": input_array,
-                        })
+        for entry in load_jsonl_file(entity_file):
+            process_belt_entity(entry)
+    
+    # Replay operations log if requested
+    if replay_updates:
+        for chunk_x, chunk_y, chunk_dir in iter_chunk_dirs(snapshot_dir):
+            updates_file = chunk_dir / "entities_updates.jsonl"
+            if updates_file.exists():
+                for op in load_jsonl_file(updates_file):
+                    op_type = op.get("op")
+                    if op_type == "upsert":
+                        entity_data = op.get("entity")
+                        if entity_data:
+                            process_belt_entity(entity_data)
+                    elif op_type == "remove":
+                        entity_key = op.get("key")
+                        if entity_key:
+                            belt_data.pop(entity_key, None)
     
     if belt_data:
-        for b in belt_data:
+        for b in belt_data.values():
             # Cast string to ENUM type explicitly
             con.execute(
                 """
@@ -142,6 +204,7 @@ def load_transport_belts(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> 
 
 def load_mining_drills(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     """Load mining drills from entities_init.jsonl files."""
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
@@ -209,6 +272,7 @@ def load_mining_drills(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> No
 
 def load_assemblers(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     """Load assemblers from entities_init.jsonl files."""
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
@@ -280,6 +344,7 @@ def load_assemblers(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
 
 def load_pumpjacks(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     """Load pumpjacks from entities_init.jsonl files."""
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
@@ -322,21 +387,26 @@ def load_pumpjacks(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
             )
 
 
-def load_component_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
+def load_component_tables(
+    con: duckdb.DuckDBPyConnection, 
+    snapshot_dir: Path,
+    replay_updates: bool = True,
+) -> None:
     """
     Load all component tables from snapshot directory.
     
     Args:
         con: DuckDB connection
-        snapshot_dir: Path to snapshot directory
+        snapshot_dir: Path to snapshot directory (will be normalized)
+        replay_updates: If True, replay entities_updates.jsonl operations log
     """
-    snapshot_dir = Path(snapshot_dir)
+    snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     
     print("Loading inserters...")
-    load_inserters(con, snapshot_dir)
+    load_inserters(con, snapshot_dir, replay_updates)
     
     print("Loading transport belts...")
-    load_transport_belts(con, snapshot_dir)
+    load_transport_belts(con, snapshot_dir, replay_updates)
     
     print("Loading mining drills...")
     load_mining_drills(con, snapshot_dir)

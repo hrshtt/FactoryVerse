@@ -538,6 +538,8 @@ def load_derived_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, dump
         snapshot_dir: Path to snapshot directory (unused but kept for consistency)
         dump_file: Path to Factorio prototype data dump JSON file
     """
+    # snapshot_dir is normalized by caller, but we don't use it here
+    # (derived tables are computed from base tables in the database)
     print("Deriving electric poles...")
     derive_electric_poles(con, dump_file)
     

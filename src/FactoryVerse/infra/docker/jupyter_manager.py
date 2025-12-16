@@ -27,6 +27,8 @@ class JupyterManager:
                     "JUPYTER_ENABLE_LAB": "yes",
                     "GRANT_SUDO": "yes",
                     "JUPYTER_TOKEN": "",  # Disable token for local dev
+                    # Disable XSRF checking for programmatic API access
+                    "JUPYTER_SERVER_ARGS": "--ServerApp.disable_check_xsrf=True",
                 },
                 "ports": ["8888:8888/tcp"],
                 "volumes": [

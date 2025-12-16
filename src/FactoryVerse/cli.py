@@ -93,47 +93,53 @@ def cmd_client_launch(args):
     # Determine scenario
     scenario = args.scenario
     
+    # Raise error if trying to use scenario route for FactoryVerse
+    if scenario == "factorio_verse" and not args.as_mod:
+        print("❌ Error: Scenario route for FactoryVerse is not supported.", file=sys.stderr)
+        print("   FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot).", file=sys.stderr)
+        print("   Please use --as-mod flag with a different scenario, or plan scenario support separately.", file=sys.stderr)
+        sys.exit(1)
+    
     # Setup client
+    # Pass work_dir directly (setup_client will derive mod paths from it)
     if args.as_mod:
         # Force loading as mod regardless of scenario
-        print(f"📱 Setting up Factorio client (factorio_verse as MOD, scenario: {scenario})")
-        setup_client(server_mgr.verse_mod_dir, scenario=scenario, force=args.force,
+        print(f"📱 Setting up Factorio client (FactoryVerse mods, scenario: {scenario})")
+        setup_client(work_dir, scenario=scenario, force=args.force,
                     project_scenarios_dir=server_mgr.scenarios_dir, as_mod=True)
-    elif scenario == "factorio_verse":
-        # Setup factorio_verse as scenario (no mod needed)
-        print(f"📱 Setting up Factorio client (factorio_verse as SCENARIO)")
-        setup_client(server_mgr.verse_mod_dir, scenario="factorio_verse", force=args.force,
-                    project_scenarios_dir=server_mgr.scenarios_dir)
     else:
-        # Setup factorio_verse as mod + specified scenario
-        print(f"📱 Setting up Factorio client (factorio_verse as MOD, scenario: {scenario})")
-        setup_client(server_mgr.verse_mod_dir, scenario=scenario, force=args.force, 
-                    project_scenarios_dir=server_mgr.scenarios_dir)
+        # Setup for other scenarios (no FactoryVerse mods needed)
+        print(f"📱 Setting up Factorio client (scenario: {scenario})")
+        setup_client(work_dir, scenario=scenario, force=args.force, 
+                    project_scenarios_dir=server_mgr.scenarios_dir, as_mod=False)
     
     # Launch client
     print("\n🚀 Launching Factorio client...")
     launch_factorio_client()
     
-    # Start hotreload watcher if requested (only for factorio_verse scenario mode)
-    if args.watch and scenario != "factorio_verse":
-        print("⚠️  --watch ignored: hotreload only works with scenario=factorio_verse")
-    elif args.watch:
-        print("\n🔥 Starting hot-reload watcher...")
-        watcher = HotreloadWatcher(server_mgr.verse_mod_dir, debounce_ms=2000)  # 2 second debounce for IDE flush
-        
-        def sync_and_reload():
-            sync_hotreload_to_client(server_mgr.verse_mod_dir)
-        
-        watcher.start(sync_and_reload)
-        
-        try:
-            print("Press Ctrl+C to stop watching...")
-            while True:
-                import time
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nStopping watcher...")
-            watcher.stop()
+    # Start hotreload watcher if requested (only works with scenarios, not mods)
+    if args.watch:
+        if args.as_mod:
+            print("⚠️  --watch ignored: hotreload only works with scenarios, not mods")
+        else:
+            print("\n🔥 Starting hot-reload watcher...")
+            # Note: hotreload currently only works for factorio_verse scenario mode
+            # Since we've removed scenario support for FactoryVerse, this may not work
+            watcher = HotreloadWatcher(server_mgr.verse_mod_dir, debounce_ms=2000)  # 2 second debounce for IDE flush
+            
+            def sync_and_reload():
+                sync_hotreload_to_client(server_mgr.verse_mod_dir)
+            
+            watcher.start(sync_and_reload)
+            
+            try:
+                print("Press Ctrl+C to stop watching...")
+                while True:
+                    import time
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\nStopping watcher...")
+                watcher.stop()
 
 
 def cmd_client_log(args):
@@ -146,7 +152,8 @@ def cmd_client_dump_data(args):
     from pathlib import Path
     work_dir = Path.cwd()
     server_mgr = FactorioServerManager(work_dir)
-    dump_data_raw(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, 
+    # Pass work_dir directly (dump_data_raw will derive mod paths from it)
+    dump_data_raw(work_dir, scenario=args.scenario, force=args.force, 
                   project_scenarios_dir=server_mgr.scenarios_dir, as_mod=getattr(args, 'as_mod', False))
 
 
@@ -171,8 +178,17 @@ def cmd_start(args):
     
     # Setup client first
     server_mgr = FactorioServerManager(work_dir)
+    
+    # Raise error if trying to use scenario route for FactoryVerse
+    if args.scenario == "factorio_verse" and not args.as_mod:
+        print("❌ Error: Scenario route for FactoryVerse is not supported.", file=sys.stderr)
+        print("   FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot).", file=sys.stderr)
+        print("   Please use --as-mod flag with a different scenario, or plan scenario support separately.", file=sys.stderr)
+        sys.exit(1)
+    
     print(f"📱 Setting up Factorio client (scenario: {args.scenario})")
-    setup_client(server_mgr.verse_mod_dir, scenario=args.scenario, force=args.force, 
+    # Pass work_dir directly (setup_client will derive mod paths from it)
+    setup_client(work_dir, scenario=args.scenario, force=args.force, 
                  project_scenarios_dir=server_mgr.scenarios_dir, as_mod=args.as_mod)
     
     # Clear server snapshot directories before starting

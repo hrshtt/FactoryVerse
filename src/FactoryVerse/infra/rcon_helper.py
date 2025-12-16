@@ -153,7 +153,7 @@ class RconHelper:
     }
     
     def __init__(self, rcon_client, udp_listener: Optional[AsyncActionListener] = None,
-                 auto_create_agent: bool = True, num_agents: int = 1, destroy_existing: bool = True):
+                 auto_create_agent: bool = True, udp_port: Optional[int] = None, destroy_existing: bool = True):
         """
         Initialize the RCON helper.
         
@@ -161,35 +161,39 @@ class RconHelper:
             rcon_client: factorio_rcon.RCONClient instance
             udp_listener: Optional AsyncActionListener for handling async action completions
                          (default: AsyncActionListener on port 34202)
-            auto_create_agent: If True, automatically create agent(s) before loading interfaces
+            auto_create_agent: If True, automatically create agent before loading interfaces
                              (default: True, since agent interfaces only appear after creation)
-            num_agents: Number of agents to create if auto_create_agent is True (default: 1)
+            udp_port: UDP port for agent-specific payloads (defaults to 34202)
             destroy_existing: If True, destroy existing agents before creating new ones (default: True)
         """
         self.rcon_client = rcon_client
         self.udp_listener = udp_listener
         
-        # Create agent(s) if requested (before fetching interfaces, since agent interfaces
+        # Create agent if requested (before fetching interfaces, since agent interfaces
         # like "agent_1" only appear after agents are created)
         if auto_create_agent:
-            self._create_agents(num_agents, destroy_existing)
+            self._create_agent(udp_port, destroy_existing)
         
         self.interfaces = None
         self._fetch_interfaces()
     
-    def _create_agents(self, num_agents: int, destroy_existing: bool):
-        """Create agent(s) via admin API."""
+    def _create_agent(self, udp_port: Optional[int] = None, destroy_existing: bool = True):
+        """Create agent via admin API."""
         try:
-            # Use admin interface to create agents
-            # Format: remote.call('agent', 'create_agents', num_agents, destroy_existing)
-            create_cmd = f"/c local res = remote.call('agent', 'create_agents', {num_agents}, {str(destroy_existing).lower()})"
+            # Use admin interface to create agent
+            # Format: remote.call('agent', 'create_agent', udp_port, destroy_existing)
+            # udp_port defaults to 34202 if not provided
+            if udp_port is not None:
+                create_cmd = f"/c local res = remote.call('agent', 'create_agent', {udp_port}, {str(destroy_existing).lower()})"
+            else:
+                create_cmd = f"/c local res = remote.call('agent', 'create_agent', nil, {str(destroy_existing).lower()})"
             result = self.rcon_client.send_command(create_cmd)
             if result:
-                print(f"✅ Created {num_agents} agent(s)")
+                print(f"✅ Created agent")
             else:
                 print(f"⚠️  Agent creation command returned no output")
         except Exception as e:
-            print(f"⚠️  Error creating agents: {e}")
+            print(f"⚠️  Error creating agent: {e}")
             # Don't raise - allow initialization to continue even if agent creation fails
     
     def _fetch_interfaces(self):

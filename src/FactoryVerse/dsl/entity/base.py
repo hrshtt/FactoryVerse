@@ -1,8 +1,7 @@
-import pydantic
-from typing import List, Optional, Union, Literal
-from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction
-from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack
-from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
+from __future__ import annotations
+from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
+from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
+from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack, PlaceableItem
 from src.FactoryVerse.dsl.prototypes import (
     get_entity_prototypes,
     ElectricMiningDrillPrototype,
@@ -11,18 +10,139 @@ from src.FactoryVerse.dsl.prototypes import (
     LongHandedInserterPrototype,
     FastInserterPrototype,
     TransportBeltPrototype,
+    BasePrototype,
     apply_cardinal_vector,
 )
 
+if TYPE_CHECKING:
+    from src.FactoryVerse.dsl.agent import PlayingFactory
 
-class BaseEntity(pydantic.BaseModel):
-    """Base class for all entities."""
+# Import _playing_factory safely
+from src.FactoryVerse.dsl.agent import _playing_factory
 
-    name: str
-    position: MapPosition
-    direction: Optional[Direction] = None
 
-    model_config = {"arbitrary_types_allowed": True}
+class EntityPosition(MapPosition):
+    """Position with entity-aware spatial operations.
+    
+    High-level position type that knows about entities, items, and prototypes.
+    Provides spatial reasoning for placement and layout calculations.
+    MapPosition remains pure - this handles the DSL-aware logic.
+    
+    Can be bound to a parent entity, making offset calculations more ergonomic:
+        furnace.position.offset_by_entity(direction=Direction.NORTH)
+    """
+    
+    def __init__(self, x: float, y: float, entity: Optional[Union["BaseEntity", PlaceableItem]] = None):
+        """Initialize EntityPosition, optionally bound to an entity.
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate
+            entity: Optional parent entity for default dimension calculations
+        """
+        super().__init__(x, y)
+        self._entity = entity
+    
+    def offset_by_entity(
+        self, 
+        entity: Optional[Union["BaseEntity", PlaceableItem, BasePrototype]] = None,
+        direction: Direction = None,
+        gap: int = 0
+    ) -> "EntityPosition":
+        """Calculate position offset by entity dimensions in a cardinal direction.
+        
+        Uses parent entity dimensions if no entity is provided.
+        
+        Args:
+            entity: Entity, item, or prototype to get dimensions from (uses parent if None)
+            direction: Cardinal direction to offset (NORTH/SOUTH/EAST/WEST)
+            gap: Additional tiles of spacing (default 0 for touching)
+        
+        Returns:
+            New EntityPosition offset by entity dimensions + gap
+        
+        Examples:
+            >>> # Offset using bound entity (most ergonomic)
+            >>> furnace = reachable_entities.get_entity("stone-furnace")
+            >>> next_pos = furnace.position.offset_by_entity(direction=Direction.NORTH)
+            >>> 
+            >>> # Offset using different entity's dimensions
+            >>> next_pos = furnace.position.offset_by_entity(drill_item, Direction.EAST)
+            >>>
+            >>> # Standalone usage
+            >>> entity_pos = EntityPosition(x=10, y=20)
+            >>> next_pos = entity_pos.offset_by_entity(furnace, Direction.NORTH, gap=1)
+        """
+        if direction is None:
+            raise ValueError("direction is required")
+            
+        ref = entity or self._entity
+        if ref is None:
+            raise ValueError(
+                "No entity provided and no parent entity bound to this position. "
+                "Either pass an entity or use EntityPosition from an entity's .position property."
+            )
+        
+        if not direction.is_cardinal():
+            raise ValueError(f"Cannot offset in non-cardinal direction: {direction.name}")
+        
+        # Extract tile dimensions (all three types have these properties)
+        tile_w = ref.tile_width
+        tile_h = ref.tile_height
+        
+        # Calculate distance based on direction
+        # NORTH/SOUTH: use height, EAST/WEST: use width
+        if direction in (Direction.NORTH, Direction.SOUTH):
+            distance = tile_h + gap
+        else:  # EAST or WEST
+            distance = tile_w + gap
+        
+        # Calculate new position based on cardinal direction
+        # Positive x = east, positive y = south
+        if direction == Direction.NORTH:
+            new_x, new_y = self.x, self.y - distance
+        elif direction == Direction.EAST:
+            new_x, new_y = self.x + distance, self.y
+        elif direction == Direction.SOUTH:
+            new_x, new_y = self.x, self.y + distance
+        else:  # WEST
+            new_x, new_y = self.x - distance, self.y
+        
+        # Return new EntityPosition, not bound to any entity (it's just a calculated position)
+        return EntityPosition(x=new_x, y=new_y)
+
+
+class BaseEntity:
+    """Base class for all entities.
+    
+    Entities are things placed in the world with position and direction.
+    They have prototypes that define their properties and behavior.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        position: MapPosition,
+        direction: Optional[Direction] = None,
+        **kwargs  # For backward compatibility with subclasses
+    ):
+        self.name = name
+        self._raw_position = position  # Store raw position internally
+        self.direction = direction
+        self._prototype_cache: Optional[BasePrototype] = None
+        
+        # Handle any additional kwargs for subclasses
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+    
+    @property
+    def position(self) -> EntityPosition:
+        """Get the entity's position as an EntityPosition bound to this entity.
+        
+        This allows ergonomic spatial operations like:
+            next_pos = entity.position.offset_by_entity(direction=Direction.NORTH)
+        """
+        return EntityPosition(x=self._raw_position.x, y=self._raw_position.y, entity=self)
 
     @property
     def _factory(self) -> "PlayingFactory":
@@ -40,8 +160,47 @@ class BaseEntity(pydantic.BaseModel):
         """Get agent ID from gameplay context."""
         return self._factory.agent_id
 
-    def pickup(self) -> bool:
-        """Pick up the entity."""
+    @property
+    def prototype(self) -> BasePrototype:
+        """Get the cached prototype for this entity.
+        
+        Lazily loads and caches the prototype on first access.
+        """
+        if self._prototype_cache is None:
+            protos = get_entity_prototypes()
+            entity_type = protos.get_entity_type(self.name)
+            if entity_type and entity_type in protos.data:
+                entity_data = protos.data[entity_type].get(self.name, {})
+                self._prototype_cache = BasePrototype(_data=entity_data)
+            else:
+                # Fallback to empty prototype
+                self._prototype_cache = BasePrototype(_data={})
+        return self._prototype_cache
+
+    @property
+    def tile_width(self) -> int:
+        """Get the tile width of this entity from its prototype."""
+        return self.prototype.tile_width
+
+    @property
+    def tile_height(self) -> int:
+        """Get the tile height of this entity from its prototype."""
+        return self.prototype.tile_height
+
+    def __repr__(self) -> str:
+        """Simple, explicit representation of the entity."""
+        pos = self.position
+        if self.direction is not None:
+            return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}), direction={self.direction.name})"
+        else:
+            return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}))"
+
+    def pickup(self) -> List[ItemStack]:
+        """Pick up the entity and return items added to inventory.
+        
+        Returns:
+            List of ItemStack objects representing items extracted from the entity
+        """
         return self._factory.pickup_entity(self.name, self.position)
 
 class GhostEntity(BaseEntity):
@@ -56,9 +215,18 @@ class GhostEntity(BaseEntity):
         return self._factory.place_entity(self.name, self.position)
 
 class Container(BaseEntity):
-    """A container entity."""
+    """A container entity with inventory."""
 
-    inventory_size: int
+    def __init__(
+        self,
+        name: str,
+        position: MapPosition,
+        direction: Optional[Direction] = None,
+        inventory_size: int = 0,
+        **kwargs
+    ):
+        super().__init__(name, position, direction, **kwargs)
+        self.inventory_size = inventory_size
 
     def store_items(self, items: List[ItemStack]):
         """Store items in the container."""
@@ -71,6 +239,11 @@ class Container(BaseEntity):
 class WoodenChest(Container): ...
 
 class IronChest(Container): ...
+
+
+class ShipWreck(Container):
+    """A ship wreck entity (crash-site entities)."""
+    ...
 
 
 class Furnace(BaseEntity):
@@ -273,3 +446,90 @@ class Pumpjack(BaseEntity):
     def get_output_pipe_connections(self) -> List[MapPosition]:
         """Get the output pipe connections of the pumpjack."""
         return self.prototype.output_pipe_connections(self.position)
+
+
+def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:
+    """Factory function to create the appropriate Entity subclass from raw data.
+    
+    Args:
+        entity_data: Raw entity data dict from get_reachable()
+        
+    Returns:
+        BaseEntity instance (or appropriate subclass)
+    """
+    name = entity_data.get("name", "")
+    position_data = entity_data.get("position", {})
+    position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
+    
+    # Parse bounding box if available
+    bbox_data = entity_data.get("bounding_box")
+    if bbox_data:
+        # Handle different bounding box formats
+        if "left_top" in bbox_data and "right_bottom" in bbox_data:
+            left_top = Position(x=bbox_data["left_top"]["x"], y=bbox_data["left_top"]["y"])
+            right_bottom = Position(x=bbox_data["right_bottom"]["x"], y=bbox_data["right_bottom"]["y"])
+        elif "min_x" in bbox_data:
+            # Alternative format from serialize.lua
+            left_top = Position(x=bbox_data["min_x"], y=bbox_data["min_y"])
+            right_bottom = Position(x=bbox_data["max_x"], y=bbox_data["max_y"])
+        else:
+            # Fallback
+            left_top = Position(x=position.x, y=position.y)
+            right_bottom = Position(x=position.x + 1, y=position.y + 1)
+        bounding_box = BoundingBox(left_top=left_top, right_bottom=right_bottom)
+    else:
+        # Create minimal bounding box
+        bounding_box = BoundingBox(
+            left_top=Position(x=position.x, y=position.y),
+            right_bottom=Position(x=position.x + 1, y=position.y + 1)
+        )
+    
+    # Parse direction if available
+    direction = None
+    if "direction" in entity_data:
+        try:
+            direction = Direction(entity_data["direction"])
+        except (ValueError, KeyError, TypeError):
+            pass
+    
+    # Map entity names to specific classes
+    entity_map = {
+        "electric-mining-drill": ElectricMiningDrill,
+        "burner-mining-drill": BurnerMiningDrill,
+        "pumpjack": Pumpjack,
+        "inserter": Inserter,
+        "fast-inserter": FastInserter,
+        "long-handed-inserter": LongHandInserter,
+        "transport-belt": TransportBelt,
+        "splitter": Splitter,
+        "assembling-machine-1": AssemblingMachine,
+        "assembling-machine-2": AssemblingMachine,
+        "assembling-machine-3": AssemblingMachine,
+        "stone-furnace": Furnace,
+        "steel-furnace": Furnace,
+        "electric-furnace": Furnace,
+        "small-electric-pole": ElectricPole,
+        "medium-electric-pole": ElectricPole,
+        "big-electric-pole": ElectricPole,
+        "substation": ElectricPole,
+        "wooden-chest": WoodenChest,
+        "iron-chest": IronChest,
+        "steel-chest": Container,
+        "crash-site-chest-1": ShipWreck,
+        "crash-site-chest-2": ShipWreck,
+        "crash-site-spaceship": ShipWreck,
+        "crash-site-spaceship-wreck-big-1": ShipWreck,
+        "crash-site-spaceship-wreck-big-2": ShipWreck,
+        "crash-site-spaceship-wreck-medium-1": ShipWreck,
+        "crash-site-spaceship-wreck-medium-2": ShipWreck,
+        "crash-site-spaceship-wreck-medium-3": ShipWreck,
+    }
+    
+    entity_class = entity_map.get(name, BaseEntity)
+    
+    return entity_class(
+        name=name,
+        position=position,
+        bounding_box=bounding_box,
+        direction=direction
+    )

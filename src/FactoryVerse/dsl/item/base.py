@@ -1,7 +1,6 @@
-import pydantic
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal, TYPE_CHECKING
 from src.FactoryVerse.dsl.types import MapPosition, Direction
-from src.FactoryVerse.dsl.prototypes import get_item_prototypes
+from src.FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes, BasePrototype
 
 if TYPE_CHECKING:
     from src.FactoryVerse.dsl.agent import PlayingFactory
@@ -143,55 +142,98 @@ PlaceableItemName = Literal[
 ]
 
 
-class Item(pydantic.BaseModel):
-    """Base class for all items."""
+class Item:
+    """Base class for all items.
+    
+    Items are things in inventory that can be used, consumed, or placed.
+    They have prototypes that define their properties.
+    """
 
-    name: Union[ItemName, PlaceableItemName]
+    def __init__(self, name: Union[ItemName, PlaceableItemName]):
+        self.name = name
+        self._prototype_cache: Optional[Dict[str, Any]] = None
+
+    @property
+    def _item_prototype_data(self) -> Dict[str, Any]:
+        """Get cached item prototype data.
+        
+        Lazily loads and caches the item prototype on first access.
+        """
+        if self._prototype_cache is None:
+            prototypes = get_item_prototypes()
+            self._prototype_cache = prototypes.data.get("item", {}).get(self.name, {})
+        return self._prototype_cache
 
     @property
     def stack_size(self) -> int:
         """Get stack size from prototype data."""
-        # TODO: Implement item prototype lookup
-        # For now, return default stack sizes
-
-        prototypes = get_item_prototypes()
-        # Items are in prototypes.data["item"][self.name]["stack_size"]
-        item_data = prototypes.data.get("item", {}).get(self.name, {})
-        return item_data.get("stack_size", 50)  # Default to 50 if not found
+        return self._item_prototype_data.get("stack_size", 50)
 
 
 class RawMaterial(Item):
-    subgroup: ItemSubgroup = "raw-material"
+    """Raw material item."""
+    def __init__(self, name: Union[ItemName, PlaceableItemName]):
+        super().__init__(name)
+        self.subgroup: ItemSubgroup = "raw-material"
 
 
 class RawResource(Item):
-    subgroup: ItemSubgroup = "raw-resource"
+    """Raw resource item."""
+    def __init__(self, name: Union[ItemName, PlaceableItemName]):
+        super().__init__(name)
+        self.subgroup: ItemSubgroup = "raw-resource"
 
 
 class IntermediateProduct(Item):
-    subgroup: ItemSubgroup = "intermediate-product"
+    """Intermediate product item."""
+    def __init__(self, name: Union[ItemName, PlaceableItemName]):
+        super().__init__(name)
+        self.subgroup: ItemSubgroup = "intermediate-product"
 
 
 class Module(Item):
-    subgroup: ItemSubgroup = "module"
+    """Module item."""
+    def __init__(self, name: Union[ItemName, PlaceableItemName]):
+        super().__init__(name)
+        self.subgroup: ItemSubgroup = "module"
 
 
 class SciencePack(Item):
-    subgroup: ItemSubgroup = "science-pack"
+    """Science pack item."""
+    def __init__(self, name: Union[ItemName, PlaceableItemName]):
+        super().__init__(name)
+        self.subgroup: ItemSubgroup = "science-pack"
 
 
 class Fuel(Item):
-    fuel_value: Optional[float] = None
-    fuel_category: Optional[Literal["chemical", "nuclear"]] = None
-    burnt_result: Optional[ItemName] = None
-    fuel_acceleration_multiplier: Optional[float] = None
-    fuel_top_speed_multiplier: Optional[float] = None
+    """Fuel item with energy properties."""
+    def __init__(
+        self,
+        name: Union[ItemName, PlaceableItemName],
+        fuel_value: Optional[float] = None,
+        fuel_category: Optional[Literal["chemical", "nuclear"]] = None,
+        burnt_result: Optional[ItemName] = None,
+        fuel_acceleration_multiplier: Optional[float] = None,
+        fuel_top_speed_multiplier: Optional[float] = None
+    ):
+        super().__init__(name)
+        self.fuel_value = fuel_value
+        self.fuel_category = fuel_category
+        self.burnt_result = burnt_result
+        self.fuel_acceleration_multiplier = fuel_acceleration_multiplier
+        self.fuel_top_speed_multiplier = fuel_top_speed_multiplier
 
 
 class PlaceableItem(Item):
-    """Base class for items that can be placed as entities."""
+    """Items that can be placed as entities.
+    
+    These items have a place_result in their prototype, pointing to the entity they create.
+    Provides spatial awareness (tile dimensions) for placement reasoning.
+    """
 
-    name: PlaceableItemName  # Constrained to placeable items only
+    def __init__(self, name: PlaceableItemName):
+        super().__init__(name)
+        self._entity_prototype_cache: Optional[BasePrototype] = None
 
     @property
     def _factory(self) -> "PlayingFactory":
@@ -205,6 +247,37 @@ class PlaceableItem(Item):
             )
         return factory
 
+    @property
+    def prototype(self) -> BasePrototype:
+        """Get the cached entity prototype for the entity this item places.
+        
+        Lazily loads and caches the entity prototype on first access.
+        """
+        if self._entity_prototype_cache is None:
+            item_protos = get_item_prototypes()
+            place_result = item_protos.get_place_result(self.name)
+            if place_result:
+                entity_protos = get_entity_prototypes()
+                entity_type = entity_protos.get_entity_type(place_result)
+                if entity_type and entity_type in entity_protos.data:
+                    entity_data = entity_protos.data[entity_type].get(place_result, {})
+                    self._entity_prototype_cache = BasePrototype(_data=entity_data)
+                else:
+                    self._entity_prototype_cache = BasePrototype(_data={})
+            else:
+                self._entity_prototype_cache = BasePrototype(_data={})
+        return self._entity_prototype_cache
+
+    @property
+    def tile_width(self) -> int:
+        """Get the tile width of the entity this item places."""
+        return self.prototype.tile_width
+
+    @property
+    def tile_height(self) -> int:
+        """Get the tile height of the entity this item places."""
+        return self.prototype.tile_height
+
     def place(
         self, position: MapPosition, direction: Optional[Direction] = None
     ) -> "BaseEntity":
@@ -212,16 +285,93 @@ class PlaceableItem(Item):
 
         Returns the created BaseEntity instance.
         """
-        options = {}
-        if direction is not None:
-            options["direction"] = direction.value
-
-        result = self._factory.place_entity(self.name, position, options)
-        # TODO: Convert result to BaseEntity based on entity type
-        # For now, return a placeholder
-        raise NotImplementedError(
-            "Entity creation from placement result not yet implemented"
+        from src.FactoryVerse.dsl.entity.base import (
+            BaseEntity,
+            ElectricMiningDrill,
+            BurnerMiningDrill,
+            Pumpjack,
+            Inserter,
+            FastInserter,
+            LongHandInserter,
+            TransportBelt,
+            Splitter,
+            AssemblingMachine,
+            Furnace,
+            ElectricPole,
+            WoodenChest,
+            IronChest,
+            Container,
         )
+        
+        result = self._factory.place_entity(self.name, position, direction, ghost=False)
+        if not result.get("success"):
+            error_msg = result.get("error", "Unknown error")
+            raise RuntimeError(f"Failed to place entity: {error_msg}")
+        
+        # Use actual position from result if available
+        result_pos = result.get("position", position)
+        if isinstance(result_pos, dict):
+            position = MapPosition(x=result_pos["x"], y=result_pos["y"])
+        
+        # Get entity name from result (might differ from item name in some cases)
+        entity_name = result.get("entity_name", self.name)
+        
+        # Map entity names to specific classes (same as create_entity_from_data)
+        entity_map = {
+            "electric-mining-drill": ElectricMiningDrill,
+            "burner-mining-drill": BurnerMiningDrill,
+            "pumpjack": Pumpjack,
+            "inserter": Inserter,
+            "fast-inserter": FastInserter,
+            "long-handed-inserter": LongHandInserter,
+            "transport-belt": TransportBelt,
+            "splitter": Splitter,
+            "assembling-machine-1": AssemblingMachine,
+            "assembling-machine-2": AssemblingMachine,
+            "assembling-machine-3": AssemblingMachine,
+            "stone-furnace": Furnace,
+            "steel-furnace": Furnace,
+            "electric-furnace": Furnace,
+            "small-electric-pole": ElectricPole,
+            "medium-electric-pole": ElectricPole,
+            "big-electric-pole": ElectricPole,
+            "substation": ElectricPole,
+            "wooden-chest": WoodenChest,
+            "iron-chest": IronChest,
+            "steel-chest": Container,
+        }
+        
+        entity_class = entity_map.get(entity_name, BaseEntity)
+        
+        # For Container subclasses, we need inventory_size from prototypes
+        if entity_class in (WoodenChest, IronChest, Container):
+            from src.FactoryVerse.dsl.prototypes import get_entity_prototypes
+            entity_protos = get_entity_prototypes()
+            entity_type = entity_protos.get_entity_type(entity_name)
+            
+            # Try to get inventory_size from prototype data
+            inventory_size = None
+            if entity_type and entity_type in entity_protos.data:
+                entities = entity_protos.data[entity_type]
+                if isinstance(entities, dict) and entity_name in entities:
+                    entity_data = entities[entity_name]
+                    # Container entities have inventory_size in their prototype
+                    if "inventory_size" in entity_data:
+                        inventory_size = entity_data["inventory_size"]
+            
+            if inventory_size is not None:
+                # We have inventory_size, create the proper container class
+                return entity_class(
+                    name=entity_name,
+                    position=position,
+                    direction=direction,
+                    inventory_size=inventory_size
+                )
+            else:
+                # Fallback to BaseEntity if we can't get inventory_size
+                entity_class = BaseEntity
+        
+        return entity_class(name=entity_name, position=position, direction=direction)
 
     def place_ghost(
         self, 
@@ -282,50 +432,56 @@ class MiningDrillItem(PlaceableItem, PlacementCueMixin):
 
     Handles both "electric-mining-drill" and "burner-mining-drill" based on name.
     """
-
-    name: Literal["electric-mining-drill", "burner-mining-drill"]
+    pass
 
 
 class PumpjackItem(PlaceableItem, PlacementCueMixin):
     """Pumpjack item - requires placement cues."""
-
-    name: Literal["pumpjack"]
+    pass
 
 
 class OffshorePumpItem(PlaceableItem, PlacementCueMixin):
     """Offshore pump item - requires placement cues."""
-
-    name: Literal["offshore-pump"]
+    pass
 
 
 class PlaceAsEntityItem(Item):
     """Legacy class - use PlaceableItem instead."""
+    
+    def __init__(self, name: Union[ItemName, PlaceableItemName], place_result: PlaceableItemName):
+        super().__init__(name)
+        self.place_result = place_result
 
-    place_result: PlaceableItemName
 
+class ItemStack:
+    """Item stack representing a quantity of items.
+    
+    A stack is just an Item + count. Access individual items via indexing.
+    Example: stack[0].place(position) to place one item from the stack.
+    """
 
-class ItemStack(pydantic.BaseModel):
-    """Item stack with count information from inventory."""
-
-    name: str # Relaxed to str to support dynamic names
-    subgroup: Union[ItemSubgroup, PlaceableItemSubgroup, str] # Relaxed to str
-    count: int
+    def __init__(
+        self,
+        name: str,
+        count: int,
+        subgroup: Union[ItemSubgroup, PlaceableItemSubgroup, str] = "raw-material"
+    ):
+        self.name = name
+        self.count = count
+        self.subgroup = subgroup
+        self._item_cache: Optional[Item] = None
 
     @property
-    def item(self) -> "Item":
-        """Get the Item object for this stack."""
-        return get_item(self.name)
+    def item(self) -> Item:
+        """Get the Item object for this stack (cached)."""
+        if self._item_cache is None:
+            self._item_cache = get_item(self.name)
+        return self._item_cache
 
     @property
     def stack_size(self) -> int:
         """Get stack size from prototype data."""
-        from src.FactoryVerse.dsl.prototypes import get_entity_prototypes
-
-        prototypes = get_entity_prototypes()
-        # Fallback to item lookup if not in entity prototypes (which is likely)
-        # Actually prototypes.data has "item" key.
-        item_data = prototypes.data.get("item", {}).get(self.name, {})
-        return item_data.get("stack_size", 50)
+        return self.item.stack_size
 
     @property
     def half(self) -> int:
@@ -336,38 +492,52 @@ class ItemStack(pydantic.BaseModel):
     def full(self) -> int:
         """Get full stack count."""
         return self.count
-    
-    def place(
-        self, position: MapPosition, direction: Optional[Direction] = None
-    ) -> "BaseEntity":
-        """Place one item from this stack as an entity."""
-        item = self.item
-        if isinstance(item, PlaceableItem):
-            return item.place(position, direction)
-        raise ValueError(f"Item {self.name} is not placeable")
 
-    def place_ghost(
-        self, 
-        position: MapPosition, 
-        direction: Optional[Direction] = None,
-        label: Optional[str] = None
-    ) -> "GhostEntity":
-        """Place one item from this stack as a ghost entity."""
-        item = self.item
-        if isinstance(item, PlaceableItem):
-            return item.place_ghost(position, direction, label)
-        raise ValueError(f"Item {self.name} is not placeable")
+    def __repr__(self) -> str:
+        """Simple, explicit representation of the item stack."""
+        return f"{self.__class__.__name__}(name='{self.name}', count={self.count})"
+    
+    def __getitem__(self, index: int) -> Item:
+        """Get a single item from the stack.
         
-    def get_placement_cues(self) -> List[Dict[str, Any]]:
-        """Get placement cues for this item if applicable."""
-        # Check if item has the mixin or method
-        item = self.item
-        if hasattr(item, "get_placement_cues"):
-            return item.get_placement_cues()
-        return []
+        Args:
+            index: Index of the item (must be < count)
+        
+        Returns:
+            The Item object
+        
+        Example:
+            >>> stack = inventory.get_item("stone-furnace")
+            >>> stack[0].place(position)  # Place one item from stack
+        """
+        if index >= self.count:
+            raise IndexError(f"Stack only has {self.count} items, cannot access index {index}")
+        return self.item
+    
+    def __iter__(self):
+        """Iterate over individual items in the stack."""
+        for _ in range(self.count):
+            yield self.item
+    
+    def __len__(self) -> int:
+        """Get the count of items in the stack."""
+        return self.count
 
 class BeltLine(ItemStack):
-    """A belt line item stack."""
+    """A belt line item stack with belt-specific operations."""
+    
+    @property
+    def _factory(self) -> "PlayingFactory":
+        """Get the current playing factory context."""
+        from src.FactoryVerse.dsl.agent import _playing_factory
+        factory = _playing_factory.get()
+        if factory is None:
+            raise RuntimeError(
+                "No active gameplay session. "
+                "Use 'with playing_factory(rcon, agent_id):' to enable belt operations."
+            )
+        return factory
+    
     def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> "GhostEntity":
         """Get a ghost line of the belt."""
         return self._factory.get_ghost_line(self.name, position, length, direction)

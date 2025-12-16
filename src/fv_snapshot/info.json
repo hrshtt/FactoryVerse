@@ -1,0 +1,10 @@
+{
+  "name": "fv_snapshot",
+  "version": "0.1.0",
+  "factorio_version": "2.0",
+  "title": "FactoryVerse Snapshot",
+  "author": "FactoryVerse Contributors",
+  "description": "Snapshot mod providing game state synchronization, file I/O, and DuckDB sync for Factorio",
+  "dependencies": ["base >= 2.0", "fv_embodied_agent >= 0.1.1"]
+}
+

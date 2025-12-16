@@ -165,7 +165,7 @@ def _extract_enums_from_prototypes(dump_file: str, prototype_api_file: Optional[
         'wall'
     }
     
-    skip_kk = ['crash-site-', 'factorio-logo-', 'bottomless-chest']
+    skip_kk = ['factorio-logo-', 'bottomless-chest']  # Removed 'crash-site-' to allow crash-site entities
     
     flat_proto = {}
     for k, v in data.items():
@@ -189,6 +189,29 @@ def _extract_enums_from_prototypes(dump_file: str, prototype_api_file: Optional[
     }
 
 
+def _type_exists(con: duckdb.DuckDBPyConnection, type_name: str) -> bool:
+    """Check if a type exists in the database."""
+    try:
+        result = con.execute(
+            "SELECT type_name FROM duckdb_types() WHERE type_name = ?",
+            [type_name]
+        ).fetchone()
+        return result is not None
+    except:
+        return False
+
+
+def _create_type_if_not_exists(con: duckdb.DuckDBPyConnection, type_name: str, create_sql: str) -> None:
+    """Create a type only if it doesn't already exist."""
+    if not _type_exists(con, type_name):
+        try:
+            con.execute(create_sql)
+        except Exception:
+            # If creation fails for any reason, ignore
+            # (type might have been created by another connection)
+            pass
+
+
 def create_schema(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-data-dump.json", prototype_api_file: Optional[str] = None) -> None:
     """
     Create the complete schema with ENUMs and all tables.
@@ -196,52 +219,59 @@ def create_schema(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-dat
     Args:
         con: DuckDB connection
         dump_file: Path to Factorio prototype data dump JSON file
+        prototype_api_file: Optional path to prototype-api.json file
     """
-    # Install and load extensions
-    con.execute("INSTALL spatial;")
-    con.execute("LOAD spatial;")
-    con.execute("INSTALL json;")
-    con.execute("LOAD json;")
+    # Install and load extensions (ignore errors if already installed)
+    try:
+        con.execute("INSTALL spatial;")
+        con.execute("LOAD spatial;")
+    except:
+        pass
+    try:
+        con.execute("INSTALL json;")
+        con.execute("LOAD json;")
+    except:
+        pass
     
     # Extract enum values
     enums = _extract_enums_from_prototypes(dump_file, prototype_api_file)
     direction_enum = _get_direction_enum(prototype_api_file)
     status_enum = _get_status_enum(prototype_api_file)
     
-    # Create ENUM types
+    # Create ENUM types (only if they don't exist)
     if enums["recipes"]:
         recipes_str = "(" + ", ".join([f"'{r}'" for r in enums["recipes"]]) + ")"
-        con.execute(f"CREATE TYPE recipe AS ENUM {recipes_str};")
+        _create_type_if_not_exists(con, "recipe", f"CREATE TYPE recipe AS ENUM {recipes_str};")
     else:
-        con.execute("CREATE TYPE recipe AS ENUM ('none');")
+        _create_type_if_not_exists(con, "recipe", "CREATE TYPE recipe AS ENUM ('none');")
     
     if enums["resource_entities"]:
         resource_entities_str = "(" + ", ".join([f"'{e}'" for e in enums["resource_entities"]]) + ")"
-        con.execute(f"CREATE TYPE resource_entity AS ENUM {resource_entities_str};")
+        _create_type_if_not_exists(con, "resource_entity", f"CREATE TYPE resource_entity AS ENUM {resource_entities_str};")
     else:
-        con.execute("CREATE TYPE resource_entity AS ENUM ('none');")
+        _create_type_if_not_exists(con, "resource_entity", "CREATE TYPE resource_entity AS ENUM ('none');")
     
     if enums["resource_tiles"]:
         resource_tiles_str = "(" + ", ".join([f"'{t}'" for t in enums["resource_tiles"]]) + ")"
-        con.execute(f"CREATE TYPE resource_tile AS ENUM {resource_tiles_str};")
+        _create_type_if_not_exists(con, "resource_tile", f"CREATE TYPE resource_tile AS ENUM {resource_tiles_str};")
     else:
-        con.execute("CREATE TYPE resource_tile AS ENUM ('none');")
+        _create_type_if_not_exists(con, "resource_tile", "CREATE TYPE resource_tile AS ENUM ('none');")
     
     if enums["placeable_entities"]:
         placeable_entities_str = "(" + ", ".join([f"'{e}'" for e in enums["placeable_entities"]]) + ")"
-        con.execute(f"CREATE TYPE placeable_entity AS ENUM {placeable_entities_str};")
+        _create_type_if_not_exists(con, "placeable_entity", f"CREATE TYPE placeable_entity AS ENUM {placeable_entities_str};")
     else:
-        con.execute("CREATE TYPE placeable_entity AS ENUM ('none');")
+        _create_type_if_not_exists(con, "placeable_entity", "CREATE TYPE placeable_entity AS ENUM ('none');")
     
     direction_str = "(" + ", ".join([f"'{d}'" for d in direction_enum]) + ")"
-    con.execute(f"CREATE TYPE direction AS ENUM {direction_str};")
+    _create_type_if_not_exists(con, "direction", f"CREATE TYPE direction AS ENUM {direction_str};")
     
     status_str = "(" + ", ".join([f"'{s}'" for s in status_enum]) + ")"
-    con.execute(f"CREATE TYPE status AS ENUM {status_str};")
+    _create_type_if_not_exists(con, "status", f"CREATE TYPE status AS ENUM {status_str};")
     
     # Create STRUCT types
-    con.execute("CREATE TYPE chunk_id AS STRUCT(x INTEGER, y INTEGER);")
-    con.execute("CREATE TYPE map_position AS STRUCT(x DOUBLE, y DOUBLE);")
+    _create_type_if_not_exists(con, "chunk_id", "CREATE TYPE chunk_id AS STRUCT(x INTEGER, y INTEGER);")
+    _create_type_if_not_exists(con, "map_position", "CREATE TYPE map_position AS STRUCT(x DOUBLE, y DOUBLE);")
     
     # Create base tables
     con.execute("""

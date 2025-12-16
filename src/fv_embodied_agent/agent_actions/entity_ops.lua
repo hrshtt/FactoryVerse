@@ -1,0 +1,560 @@
+--- Agent entity operation methods (using EntityInterface)
+--- Methods operate directly on Agent instances (self)
+--- Uses EntityInterface for low-level entity operations
+--- These methods are mixed into the Agent class at module level
+
+local EntityInterface = require("game_state.EntityInterface")
+local custom_events = require("utils.custom_events")
+
+local EntityOpsActions = {}
+
+--- Helper to resolve entity position (use agent position with default radius if not provided)
+--- @param position table|nil Position {x, y} or nil to use agent position
+--- @param default_radius number|nil Default radius for search (default: 5.0)
+--- @return table Position {x, y}
+--- @return number|nil Radius (nil for exact lookup)
+local function _resolve_entity_position(self, position, default_radius)
+    if position then
+        return position, nil  -- Exact lookup
+    end
+    
+    -- Use agent position with default radius
+    if not (self.character and self.character.valid) then
+        error("Agent: Cannot resolve entity position - agent entity is invalid")
+    end
+    
+    local agent_pos = self.character.position
+    return { x = agent_pos.x, y = agent_pos.y }, (default_radius or 5.0)
+end
+
+
+--- Helper to validate recipe is accessible to agent's force
+--- @param recipe_name string Recipe name
+--- @return boolean
+local function _can_use_recipe(self, recipe_name)
+    if not (self.character and self.character.valid) then
+        return false
+    end
+    
+    local force = self.character.force
+    if not force then
+        return false
+    end
+    
+    -- Check if recipe is available to force
+    local recipe = force.recipes[recipe_name]
+    return recipe ~= nil and recipe.enabled
+end
+
+--- Set recipe on entity
+--- @param entity_name string Entity prototype name
+--- @param position table|nil Position {x, y} (nil to use agent position with radius search)
+--- @param recipe_name string|nil Recipe name (nil to clear recipe)
+--- @return table Result
+function EntityOpsActions.set_entity_recipe(self, entity_name, position, recipe_name)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- Resolve entity position
+    local pos, radius = _resolve_entity_position(self, position, 5.0)
+    
+    -- Create EntityInterface instance
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+    local entity = entity_interface.entity
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Validate recipe is accessible to agent's force (if setting a recipe)
+    if recipe_name and not _can_use_recipe(self, recipe_name) then
+        error("Agent: Recipe '" .. recipe_name .. "' is not available to agent's force")
+    end
+    
+    -- Set recipe via EntityInterface
+    entity_interface:set_recipe(recipe_name, true)  -- Allow overwrite
+    
+    -- Raise agent entity configuration changed event
+    script.raise_event(custom_events.on_agent_entity_configuration_changed, {
+        entity = entity,
+        agent_id = self.agent_id,
+        change_type = "recipe",
+        new_value = recipe_name,
+    })
+    
+    -- Enqueue completion message (sync action)
+    self:enqueue_message({
+        action = "set_entity_recipe",
+        agent_id = self.agent_id,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        recipe_name = recipe_name,
+        tick = game.tick or 0,
+    }, "entity_ops")
+    
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        recipe_name = recipe_name,
+    }
+end
+
+--- Set filter on entity inventory
+--- @param entity_name string Entity prototype name
+--- @param position table|nil Position {x, y} (nil to use agent position with radius search)
+--- @param inventory_type number|string Inventory type
+--- @param filter_index number|nil Filter slot index (nil for all slots)
+--- @param filter_item string|nil Item name to filter (nil to clear filter)
+--- @return table Result
+function EntityOpsActions.set_entity_filter(self, entity_name, position, inventory_type, filter_index, filter_item)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- Resolve entity position
+    local pos, radius = _resolve_entity_position(self, position, 5.0)
+    
+    -- Create EntityInterface instance
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+    local entity = entity_interface.entity
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Set filter via EntityInterface
+    entity_interface:set_filter(inventory_type, filter_index, filter_item)
+    
+    -- Raise agent entity configuration changed event
+    script.raise_event(custom_events.on_agent_entity_configuration_changed, {
+        entity = entity,
+        agent_id = self.agent_id,
+        change_type = "filter",
+        inventory_type = inventory_type,
+        filter_index = filter_index,
+        new_value = filter_item,
+    })
+    
+    -- Enqueue completion message (sync action)
+    self:enqueue_message({
+        action = "set_entity_filter",
+        agent_id = self.agent_id,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        filter_index = filter_index,
+        filter_item = filter_item,
+        tick = game.tick or 0,
+    }, "entity_ops")
+    
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        filter_index = filter_index,
+        filter_item = filter_item,
+    }
+end
+
+--- Set inventory limit on entity
+--- @param entity_name string Entity prototype name
+--- @param position table|nil Position {x, y} (nil to use agent position with radius search)
+--- @param inventory_type number|string Inventory type
+--- @param limit number|nil Limit to set (nil to clear limit)
+--- @return table Result
+function EntityOpsActions.set_inventory_limit(self, entity_name, position, inventory_type, limit)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- Resolve entity position
+    local pos, radius = _resolve_entity_position(self, position, 5.0)
+    
+    -- Create EntityInterface instance
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+    local entity = entity_interface.entity
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Set limit via EntityInterface
+    entity_interface:set_inventory_limit(inventory_type, limit)
+    
+    -- Raise agent entity configuration changed event
+    script.raise_event(custom_events.on_agent_entity_configuration_changed, {
+        entity = entity,
+        agent_id = self.agent_id,
+        change_type = "inventory_limit",
+        inventory_type = inventory_type,
+        new_value = limit,
+    })
+    
+    -- Enqueue completion message (sync action)
+    self:enqueue_message({
+        action = "set_inventory_limit",
+        agent_id = self.agent_id,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        limit = limit,
+        tick = game.tick or 0,
+    }, "entity_ops")
+    
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        limit = limit,
+    }
+end
+
+--- Get item from entity inventory (transfers to agent inventory)
+--- @param entity_name string Entity prototype name
+--- @param position table|nil Position {x, y} (nil to use agent position with radius search)
+--- @param inventory_type number|string Inventory type
+--- @param item_name string Item name to get
+--- @param count number|nil Count to get (default: all available)
+--- @return table Result
+function EntityOpsActions.get_inventory_item(self, entity_name, position, inventory_type, item_name, count)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- Resolve entity position
+    local pos, radius = _resolve_entity_position(self, position, 5.0)
+    
+    -- Create EntityInterface instance
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+    local entity = entity_interface.entity
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Get agent's main inventory
+    local agent_inventory = self.character.get_main_inventory()
+    if not agent_inventory then
+        error("Agent: Agent inventory is invalid")
+    end
+    
+    -- Resolve inventory type to defines.inventory constant
+    local inv_index = inventory_type
+    if type(inventory_type) == "string" then
+        local inv_map = {
+            chest = defines.inventory.chest,
+            fuel = defines.inventory.fuel,
+            input = defines.inventory.assembling_machine_input,
+            output = defines.inventory.assembling_machine_output,
+        }
+        inv_index = inv_map[inventory_type]
+        if not inv_index then
+            error("Agent: Unknown inventory type name: " .. inventory_type)
+        end
+    end
+    
+    -- Get entity inventory
+    local entity_inventory = entity.get_inventory(inv_index)
+    if not entity_inventory then
+        error("Agent: Entity inventory is invalid")
+    end
+    
+    -- Get available count
+    local available_count = entity_inventory.get_item_count(item_name)
+    if available_count == 0 then
+        error("Agent: Item '" .. item_name .. "' not found in entity inventory")
+    end
+    
+    -- Determine transfer count
+    local transfer_count = count or available_count
+    if transfer_count > available_count then
+        transfer_count = available_count
+    end
+    
+    -- Check agent inventory space
+    local can_insert = agent_inventory.can_insert({ name = item_name, count = transfer_count })
+    if not can_insert then
+        error("Agent: Cannot insert item into agent inventory (insufficient space)")
+    end
+    
+    -- Transfer items
+    local removed = entity_inventory.remove({ name = item_name, count = transfer_count })
+    if removed > 0 then
+        local inserted = agent_inventory.insert({ name = item_name, count = removed })
+        if inserted < removed then
+            -- Rollback: put remaining items back
+            entity_inventory.insert({ name = item_name, count = removed - inserted })
+            error("Agent: Partial transfer failed - only " .. inserted .. " of " .. removed .. " items inserted")
+        end
+    end
+    
+    -- Enqueue completion message (sync action)
+    self:enqueue_message({
+        action = "get_inventory_item",
+        agent_id = self.agent_id,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        item_name = item_name,
+        count = transfer_count,
+        tick = game.tick or 0,
+    }, "entity_ops")
+    
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        item_name = item_name,
+        count = transfer_count,
+    }
+end
+
+--- Set item in entity inventory (transfers from agent inventory)
+--- @param entity_name string Entity prototype name
+--- @param position table|nil Position {x, y} (nil to use agent position with radius search)
+--- @param inventory_type number|string Inventory type
+--- @param item_name string Item name to set
+--- @param count number Count to set
+--- @return table Result
+function EntityOpsActions.set_inventory_item(self, entity_name, position, inventory_type, item_name, count)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    if not count or count <= 0 then
+        error("Agent: Count must be positive")
+    end
+    
+    -- Resolve entity position
+    local pos, radius = _resolve_entity_position(self, position, 5.0)
+    
+    -- Create EntityInterface instance
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+    local entity = entity_interface.entity
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Get agent's main inventory
+    local agent_inventory = self.character.get_main_inventory()
+    if not agent_inventory then
+        error("Agent: Agent inventory is invalid")
+    end
+    
+    -- Check agent has items
+    local available_count = agent_inventory.get_item_count(item_name)
+    if available_count < count then
+        error("Agent: Insufficient items in agent inventory (have " .. available_count .. ", need " .. count .. ")")
+    end
+    
+    -- Resolve inventory type to defines.inventory constant
+    local inv_index = inventory_type
+    if type(inventory_type) == "string" then
+        local inv_map = {
+            chest = defines.inventory.chest,
+            fuel = defines.inventory.fuel,
+            input = defines.inventory.assembling_machine_input,
+            output = defines.inventory.assembling_machine_output,
+        }
+        inv_index = inv_map[inventory_type]
+        if not inv_index then
+            error("Agent: Unknown inventory type name: " .. inventory_type)
+        end
+    end
+    
+    -- Get entity inventory
+    local entity_inventory = entity.get_inventory(inv_index)
+    if not entity_inventory then
+        error("Agent: Entity inventory is invalid")
+    end
+    
+    -- Check entity inventory space
+    local can_insert = entity_inventory.can_insert({ name = item_name, count = count })
+    if not can_insert then
+        error("Agent: Cannot insert item into entity inventory (insufficient space)")
+    end
+    
+    -- Transfer items
+    local removed = agent_inventory.remove({ name = item_name, count = count })
+    if removed > 0 then
+        local inserted = entity_inventory.insert({ name = item_name, count = removed })
+        if inserted < removed then
+            -- Rollback: put remaining items back
+            agent_inventory.insert({ name = item_name, count = removed - inserted })
+            error("Agent: Partial transfer failed - only " .. inserted .. " of " .. removed .. " items inserted")
+        end
+    end
+    
+    -- Enqueue completion message (sync action)
+    self:enqueue_message({
+        action = "set_inventory_item",
+        agent_id = self.agent_id,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        item_name = item_name,
+        count = count,
+        tick = game.tick or 0,
+    }, "entity_ops")
+    
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        inventory_type = inventory_type,
+        item_name = item_name,
+        count = count,
+    }
+end
+
+--- Pick up an entity (transfers to agent inventory)
+--- @param self Agent
+--- @param entity_name string Entity prototype name
+--- @param position table|nil Position {x, y} (nil to use agent position with radius search)
+--- @return table Result
+function EntityOpsActions.pickup_entity(self, entity_name, position)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- Resolve entity position
+    local pos, radius = _resolve_entity_position(self, position, 5.0)
+    
+    -- Create EntityInterface instance
+    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+    local entity = entity_interface.entity
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Check if entity can be picked up
+    if not entity.minable then
+        error("Agent: Entity is not minable")
+    end
+    
+    -- Get agent's main inventory
+    local agent_inventory = self.character.get_main_inventory()
+    if not agent_inventory then
+        error("Agent: Agent inventory is invalid")
+    end
+
+    -- get_contents() returns an array of {name, count, quality} objects
+    -- Convert to {item_name = count} format
+    local before_contents_raw = agent_inventory.get_contents()
+    local before_contents = {}
+    if before_contents_raw then
+        for _, item in pairs(before_contents_raw) do
+            local item_name = item.name or item[1]
+            local count = item.count or item[2]
+            if item_name and count then
+                before_contents[item_name] = (before_contents[item_name] or 0) + count
+            end
+        end
+    end
+
+    -- Mine entity
+    self.character.mine_entity(entity)
+
+    -- get_contents() returns an array of {name, count, quality} objects
+    -- Convert to {item_name = count} format
+    local after_contents_raw = agent_inventory.get_contents()
+    local after_contents = {}
+    if after_contents_raw then
+        for _, item in pairs(after_contents_raw) do
+            local item_name = item.name or item[1]
+            local count = item.count or item[2]
+            if item_name and count then
+                after_contents[item_name] = (after_contents[item_name] or 0) + count
+            end
+        end
+    end
+
+    -- Calculate transferred items (items that were added)
+    local transferred = {}
+    -- Check all items in after_contents
+    for item_name, after_count in pairs(after_contents) do
+        local before_count = before_contents[item_name] or 0
+        local diff = after_count - before_count
+        if diff > 0 then
+            transferred[item_name] = diff
+        end
+    end
+    
+    -- Enqueue completion message (sync action)
+    self:enqueue_message({
+        action = "pickup_entity",
+        agent_id = self.agent_id,
+        entity_name = entity_name,
+        position = position,
+        extracted_items = transferred,
+        tick = game.tick or 0,
+    }, "entity_ops")
+    
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = position,
+        extracted_items = transferred,
+    }
+end
+
+function EntityOpsActions.remove_ghost(self, entity_name, position)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+
+    if entity_name and type(entity_name) ~= "string" then
+        error("Agent: entity_name (string) must be nil or a string")
+    end
+
+    local ghost = game.surfaces[1].find_entities_filtered({position=position, type="entity-ghost"})
+
+    if #(ghost) == 0 then
+        error("Agent: No ghost entity found at position " .. position.x .. ", " .. position.y)
+    end
+
+    local ghost = ghost[1]
+
+    if entity_name then
+        if ghost.ghost_name ~= entity_name then
+            error("Agent: Ghost entity name does not match expected name: " .. ghost.ghost_name)
+        end
+    end
+    
+    -- Store entity info before destruction
+    local ghost_name = ghost.ghost_name
+    local ghost_position = { x = ghost.position.x, y = ghost.position.y }
+    
+    ghost.destroy()
+    
+    -- Raise agent entity destroyed event (for ghost removal)
+    -- Note: Ghosts are tracked separately, but we raise the event for consistency
+    script.raise_event(custom_events.on_agent_entity_destroyed, {
+        entity = ghost,  -- Entity may be invalid, but event handlers should check
+        agent_id = self.agent_id,
+        entity_name = ghost_name,
+        position = ghost_position,
+    })
+
+    return {
+        success = true,
+        entity_name = entity_name,
+        position = position,
+    }
+end
+
+return EntityOpsActions
+
