@@ -29,6 +29,13 @@ def _get_factory() -> PlayingFactory:
 class _WalkingAccessor:
     """Top-level walking action accessor."""
     
+    def __repr__(self) -> str:
+        return """WalkingAffordance
+  Methods:
+    - to(position, strict_goal?, options?, timeout?) - Move agent to a position (async)
+    - cancel() - Cancel current walking action
+  Usage: await walking.to(MapPosition(x, y))"""
+    
     async def to(self, position: MapPosition, strict_goal: bool = False, options: Optional[dict] = None, timeout: Optional[int] = None):
         """Walk to a position (async/await)."""
         return await _get_factory().walking.to(position, strict_goal, options, timeout)
@@ -41,6 +48,13 @@ class _WalkingAccessor:
 class _MiningAccessor:
     """Top-level mining action accessor."""
     
+    def __repr__(self) -> str:
+        return """MiningAffordance
+  Methods:
+    - mine(resource_name, max_count?, timeout?) - Mine resources (async)
+    - cancel() - Cancel current mining action
+  Usage: await mining.mine('iron-ore', max_count=50)"""
+    
     async def mine(self, resource_name: str, max_count: Optional[int] = None, timeout: Optional[int] = None):
         """Mine a resource (async/await)."""
         return await _get_factory().mining.mine(resource_name, max_count, timeout)
@@ -52,6 +66,15 @@ class _MiningAccessor:
 
 class _CraftingAccessor:
     """Top-level crafting action accessor."""
+    
+    def __repr__(self) -> str:
+        return """CraftingAffordance
+  Methods:
+    - craft(recipe, count?, timeout?) - Craft items (async)
+    - enqueue(recipe, count?) - Enqueue recipe for crafting
+    - dequeue(recipe, count?) - Cancel queued crafting
+    - status() - Get current crafting status
+  Usage: await crafting.craft('iron-plate', count=10)"""
     
     async def craft(self, recipe: str, count: int = 1, timeout: Optional[int] = None):
         """Craft a recipe (async/await)."""
@@ -73,6 +96,14 @@ class _CraftingAccessor:
 class _ResearchAccessor:
     """Top-level research action accessor."""
     
+    def __repr__(self) -> str:
+        return """ResearchAffordance
+  Methods:
+    - enqueue(technology) - Start researching a technology
+    - dequeue() - Cancel current research
+    - status() - Get current research status
+  Usage: research.enqueue('automation')"""
+    
     def enqueue(self, technology: str):
         """Start researching a technology."""
         return _get_factory().research.enqueue(technology)
@@ -91,6 +122,17 @@ class _InventoryAccessor:
     
     Provides access to AgentInventory methods for querying and shaping items.
     """
+    
+    def __repr__(self) -> str:
+        return """InventoryAffordance
+  Properties:
+    - item_stacks - Get agent inventory as list of ItemStack objects
+  Methods:
+    - get_total(item_name) - Get total count of an item across all stacks
+    - get_item(item_name) - Get a single Item or PlaceableItem instance
+    - get_item_stacks(item_name, count, number_of_stacks?, strict?) - Get item stacks for a specific item
+    - check_recipe_count(recipe_name) - Check how many times a recipe can be crafted
+  Usage: inventory.get_total('iron-plate')"""
     
     @property
     def item_stacks(self):
@@ -125,6 +167,14 @@ class _ReachableAccessor:
     
     Provides access to ReachableEntities and ReachableResources methods.
     """
+    
+    def __repr__(self) -> str:
+        return """ReachableAffordance
+  Methods:
+    - get_entity(entity_name, position?, options?) - Get a single entity matching criteria
+    - get_entities(entity_name?, options?) - Get all entities matching criteria
+    - get_resource(resource_name, position?) - Get a single resource matching criteria
+  Usage: reachable.get_entity('stone-furnace')"""
     
     def get_entity(
         self,

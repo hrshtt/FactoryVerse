@@ -492,6 +492,10 @@ class ItemStack:
     def full(self) -> int:
         """Get full stack count."""
         return self.count
+
+    def __repr__(self) -> str:
+        """Simple, explicit representation of the item stack."""
+        return f"{self.__class__.__name__}(name='{self.name}', count={self.count})"
     
     def __getitem__(self, index: int) -> Item:
         """Get a single item from the stack.

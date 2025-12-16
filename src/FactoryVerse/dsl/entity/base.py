@@ -187,6 +187,14 @@ class BaseEntity:
         """Get the tile height of this entity from its prototype."""
         return self.prototype.tile_height
 
+    def __repr__(self) -> str:
+        """Simple, explicit representation of the entity."""
+        pos = self.position
+        if self.direction is not None:
+            return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}), direction={self.direction.name})"
+        else:
+            return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}))"
+
     def pickup(self) -> List[ItemStack]:
         """Pick up the entity and return items added to inventory.
         
