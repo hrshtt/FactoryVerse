@@ -1,244 +1,199 @@
-import json
+"""Simplified Jupyter runtime using jupyter_client."""
 import logging
-import time
-import uuid
-import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Optional, Dict, Any, List
 
 import nbformat
-import httpx
-from websocket import create_connection
+from jupyter_client import BlockingKernelClient
+from jupyter_client.manager import KernelManager
+
+from FactoryVerse.llm.output_compressor import OutputCompressor
+from FactoryVerse.llm.boilerplate import BOILERPLATE_CODE, MAP_DB_CODE
 
 logger = logging.getLogger(__name__)
 
-class FactoryVerseRuntime:
-    """
-    Manages a connection to an existing Jupyter Server kernel for the FactoryVerse agent.
-    
-    Responsibilities:
-    1. Connects to Jupyter Server (default localhost:8888).
-    2. Finds or starts the target kernel (e.g., 'fv').
-    3. Executes code via WebSocket.
-    4. Logs input/output to a local .ipynb file for visibility.
-    5. Provides OpenAI-compatible tool definitions.
-    """
 
-    def __init__(self, notebook_path: str = "runtime_log.ipynb", 
-                 kernel_name: str = "fv",
-                 server_url: str = "http://localhost:8888",
-                 token: str = ""):
+class FactoryVerseRuntime:
+    """Simple Jupyter kernel runtime using jupyter_client."""
+    
+    def __init__(
+        self,
+        notebook_path: str,
+        kernel_name: str = "fv"
+    ):
+        """
+        Initialize runtime and start kernel.
+        
+        Args:
+            notebook_path: Path to notebook file for logging
+            kernel_name: Kernel name to use
+        """
         self.notebook_path = Path(notebook_path)
         self.kernel_name = kernel_name
-        self.server_url = server_url
-        self.token = token
-        self.kernel_id: Optional[str] = None
-        self.ws = None
+        self.output_compressor = OutputCompressor()
         
-        self.session_id = str(uuid.uuid4())
-        
+        # Create notebook
         self._init_notebook()
-        self._connect_to_kernel()
-
+        
+        # Start kernel using jupyter_client
+        self.km = KernelManager(kernel_name=kernel_name)
+        self.km.start_kernel()
+        self.kc: BlockingKernelClient = self.km.client()
+        self.kc.start_channels()
+        self.kc.wait_for_ready(timeout=60)
+        
+        logger.info(f"Runtime initialized with kernel: {kernel_name}")
+    
     def _init_notebook(self):
-        """Create or load the runtime log notebook."""
-        if not self.notebook_path.exists():
-            nb = nbformat.v4.new_notebook()
-            nb.metadata.kernelspec = {
-                "display_name": self.kernel_name,
+        """Create empty notebook file."""
+        self.notebook_path.parent.mkdir(parents=True, exist_ok=True)
+        nb = nbformat.v4.new_notebook()
+        nb.metadata.update({
+            "kernelspec": {
+                "display_name": "Python 3",
                 "language": "python",
-                "name": self.kernel_name
+                "name": "python3"
             }
-            with open(self.notebook_path, 'w') as f:
-                nbformat.write(nb, f)
-            logger.info(f"Created new runtime log at {self.notebook_path}")
-
-    def _append_to_notebook(self, code: str, outputs: List[Dict[str, Any]]):
-        """Append a cell to the notebook and save it."""
-        try:
-            with open(self.notebook_path, 'r') as f:
-                nb = nbformat.read(f, as_version=4)
-            
-            # Create new code cell
-            cell = nbformat.v4.new_code_cell(source=code)
-            
-            # Format outputs for nbformat
-            formatted_outputs = []
-            for output in outputs:
-                msg_type = output.get('msg_type')
-                content = output.get('content', {})
-                
-                if msg_type == 'stream':
-                    formatted_outputs.append(
-                        nbformat.v4.new_output(
-                            output_type='stream',
-                            name=content.get('name'),
-                            text=content.get('text')
-                        )
-                    )
-                elif msg_type == 'execute_result':
-                    formatted_outputs.append(
-                        nbformat.v4.new_output(
-                            output_type='execute_result',
-                            data=content.get('data'),
-                            execution_count=content.get('execution_count')
-                        )
-                    )
-                elif msg_type == 'error':
-                     formatted_outputs.append(
-                        nbformat.v4.new_output(
-                            output_type='error',
-                            ename=content.get('ename'),
-                            evalue=content.get('evalue'),
-                            traceback=content.get('traceback')
-                        )
-                    )
-            
-            cell.outputs = formatted_outputs
-            nb.cells.append(cell)
-            
-            with open(self.notebook_path, 'w') as f:
-                nbformat.write(nb, f)
-                
-        except Exception as e:
-            logger.error(f"Failed to update notebook log: {e}")
-
-    def _connect_to_kernel(self):
-        """Find or start the kernel via Jupyter Server API."""
-        headers = {"Authorization": f"Token {self.token}"} if self.token else {}
-        
-        # 1. List kernels
-        resp = httpx.get(f"{self.server_url}/api/kernels", headers=headers)
-        if resp.status_code != 200:
-            raise RuntimeError(f"Failed to list kernels: {resp.text}")
-        
-        kernels = resp.json()
-        # Sort by last_activity descending to find the most active/recenet one
-        kernels.sort(key=lambda k: k.get('last_activity', ''), reverse=True)
-        
-        logger.info(f"Found running kernels (sorted by activity): {[k['id'] for k in kernels]}")
-        
-        # Try to find existing 'fv' kernel
-        for k in kernels:
-            # Note: Jupyter might not expose the 'name' spec clearly in list sometimes, 
-            # usually it matches the kernel spec name.
-            if self.kernel_name in k.get('name', ''): 
-                self.kernel_id = k['id']
-                logger.info(f"Connected to existing kernel {self.kernel_id} (last active: {k.get('last_activity')})")
-                break
-        
-        # 2. Start if not found
-        if not self.kernel_id:
-            logger.info(f"Starting new kernel '{self.kernel_name}'...")
-            resp = httpx.post(f"{self.server_url}/api/kernels", 
-                              headers=headers, 
-                              json={"name": self.kernel_name})
-            if resp.status_code != 201:
-                raise RuntimeError(f"Failed to start kernel: {resp.text}")
-            self.kernel_id = resp.json()['id']
-            logger.info(f"Started new kernel {self.kernel_id}")
-
-        # 3. Connect WebSocket
-        ws_url = self.server_url.replace("http", "ws")
-        url = f"{ws_url}/api/kernels/{self.kernel_id}/channels"
-        if self.token:
-            url += f"?token={self.token}"
-            
-        logger.info(f"Connecting to WebSocket: {url}")
-        self.ws = create_connection(url)
-        logger.info("WebSocket connected.")
-
-    def stop(self):
-        """Close WebSocket connection."""
-        if self.ws:
-            self.ws.close()
-            logger.info("WebSocket closed.")
-
-    def execute_code(self, code: str) -> str:
+        })
+        with open(self.notebook_path, 'w') as f:
+            nbformat.write(nb, f)
+        logger.info(f"Created notebook: {self.notebook_path}")
+    
+    def execute_code(
+        self,
+        code: str,
+        compress_output: bool = False,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
-        Execute code in the kernel via WebSocket and return text result.
-        Updates the notebook log.
+        Execute code in kernel and return result.
+        
+        Args:
+            code: Python code to execute
+            compress_output: Whether to compress output
+            metadata: Cell metadata
+            
+        Returns:
+            Execution result
         """
-        if not self.ws:
-            raise RuntimeError("WebSocket not connected.")
-
-        msg_id = str(uuid.uuid4())
-        execute_request = {
-            "header": {
-                "msg_id": msg_id,
-                "username": "agent",
-                "session": self.session_id,
-                "msg_type": "execute_request",
-                "version": "5.3",
-                "date": datetime.datetime.now().isoformat()
-            },
-            "parent_header": {},
-            "metadata": {},
-            "content": {
-                "code": code,
-                "silent": False,
-                "store_history": True,
-                "user_expressions": {},
-                "allow_stdin": False
-            }
-        }
-        
-        self.ws.send(json.dumps(execute_request))
-        
+        # Collect outputs using execute_interactive
         outputs = []
-        text_output_parts = []
+        text_parts = []
         
-        # Execution loop
-        while True:
-            resp_str = self.ws.recv()
-            resp = json.loads(resp_str)
+        def output_hook(msg):
+            """Hook to collect output messages."""
+            msg_type = msg['msg_type']
+            content = msg['content']
             
-            parent_id = resp.get("parent_header", {}).get("msg_id")
-            if parent_id != msg_id:
-                continue
-                
-            msg_type = resp["msg_type"]
-            content = resp["content"]
+            # Store for notebook
+            outputs.append({'msg_type': msg_type, 'content': content})
             
-            if msg_type == "status" and content["execution_state"] == "idle":
-                break
-                
-            if msg_type in ["stream", "execute_result", "error"]:
-                outputs.append({'msg_type': msg_type, 'content': content})
-                
-                if msg_type == "stream":
-                    text_output_parts.append(content.get("text", ""))
-                elif msg_type == "execute_result":
-                    data = content.get("data", {})
-                    text_output_parts.append(data.get("text/plain", ""))
-                elif msg_type == "error":
-                    text_output_parts.append(f"Error: {content.get('evalue')}")
-
-        # Update notebook
-        self._append_to_notebook(code, outputs)
+            # Collect text for return value
+            if msg_type == 'stream':
+                text_parts.append(content.get('text', ''))
+            elif msg_type == 'execute_result':
+                text_parts.append(content.get('data', {}).get('text/plain', ''))
+            elif msg_type == 'error':
+                text_parts.append(f"Error: {content.get('evalue', '')}\n{''.join(content.get('traceback', []))}")
         
-        return "".join(text_output_parts).strip()
-
-    def execute_duckdb(self, query: str) -> str:
-        """
-        Tool: execute_duckdb
-        Description: Execute a SQL query against the FactoryVerse database.
-        """
+        # Execute with interactive hook - much simpler!
+        self.kc.execute_interactive(code, output_hook=output_hook, timeout=60)
+        
+        raw_output = "".join(text_parts).strip()
+        
+        # Log to notebook
+        self._append_to_notebook(code, outputs, metadata or {})
+        
+        # Compress if needed
+        if compress_output and raw_output:
+            compressed = self.output_compressor.compress_action_result(
+                raw_output,
+                action_type="execute_code"
+            )
+            return compressed.text
+        
+        return raw_output
+    
+    def _append_to_notebook(
+        self,
+        code: str,
+        outputs: List[Dict],
+        metadata: Dict[str, Any]
+    ):
+        """Append code cell to notebook."""
+        with open(self.notebook_path, 'r') as f:
+            nb = nbformat.read(f, as_version=4)
+        
+        cell = nbformat.v4.new_code_cell(source=code)
+        cell.metadata.update(metadata)
+        
+        # Convert outputs to nbformat outputs
+        cell_outputs = []
+        for out in outputs:
+            msg_type = out['msg_type']
+            content = out['content']
+            
+            if msg_type == 'stream':
+                cell_outputs.append(nbformat.v4.new_output(
+                    output_type='stream',
+                    name=content.get('name', 'stdout'),
+                    text=content.get('text', '')
+                ))
+            elif msg_type == 'execute_result':
+                cell_outputs.append(nbformat.v4.new_output(
+                    output_type='execute_result',
+                    data=content.get('data', {}),
+                    execution_count=content.get('execution_count')
+                ))
+            elif msg_type == 'error':
+                cell_outputs.append(nbformat.v4.new_output(
+                    output_type='error',
+                    ename=content.get('ename', ''),
+                    evalue=content.get('evalue', ''),
+                    traceback=content.get('traceback', [])
+                ))
+        
+        cell.outputs = cell_outputs
+        nb.cells.append(cell)
+        
+        with open(self.notebook_path, 'w') as f:
+            nbformat.write(nb, f)
+    
+    def setup_boilerplate(self):
+        """Execute boilerplate setup code."""
+        logger.info("Executing boilerplate...")
+        result = self.execute_code(BOILERPLATE_CODE, compress_output=False)
+        logger.info(f"Boilerplate complete")
+        return result
+    
+    def load_map_database(self):
+        """Load map database snapshots."""
+        logger.info("Loading map database...")
+        result = self.execute_code(MAP_DB_CODE, compress_output=False)
+        logger.info(f"Map DB loaded")
+        return result
+    
+    def execute_dsl(
+        self,
+        code: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Execute DSL code (ipykernel autoawait handles async)."""
+        return self.execute_code(code, compress_output=True, metadata=metadata)
+    
+    def execute_duckdb(
+        self,
+        query: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Execute DuckDB query."""
         wrapped_code = f"""
-try:
-    print(con.sql(f\"\"\"{query}\"\"\").show())
-except Exception as e:
-    print(e)
+with playing_factorio():
+    result = map_db.connection.sql('''{query}''').show()
+    print(result)
 """
-        return self.execute_code(wrapped_code)
-
-    def execute_dsl(self, code: str) -> str:
-        """
-        Tool: execute_dsl
-        Description: Execute Python code using the FactoryVerse DSL.
-        """
-        return self.execute_code(code)
-
+        return self.execute_code(wrapped_code, compress_output=True, metadata=metadata)
+    
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Return OpenAI-compatible tool definitions."""
         return [
@@ -246,13 +201,13 @@ except Exception as e:
                 "type": "function",
                 "function": {
                     "name": "execute_duckdb",
-                    "description": "Execute a SQL query against the FactoryVerse database to analyze map state.",
+                    "description": "Execute SQL query against the FactoryVerse database to analyze map state.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "The SQL query to execute (DuckDB dialect)."
+                                "description": "SQL query (DuckDB dialect)"
                             }
                         },
                         "required": ["query"]
@@ -263,13 +218,13 @@ except Exception as e:
                 "type": "function",
                 "function": {
                     "name": "execute_dsl",
-                    "description": "Execute Python code using the FactoryVerse DSL to perform actions in the game.",
+                    "description": "Execute Python code using FactoryVerse DSL. Code runs in ipykernel with autoawait - use 'await' directly for async functions. Must wrap DSL calls in 'with playing_factorio():' context.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "code": {
                                 "type": "string",
-                                "description": "The Python code block to execute."
+                                "description": "Python code to execute"
                             }
                         },
                         "required": ["code"]
@@ -277,3 +232,13 @@ except Exception as e:
                 }
             }
         ]
+    
+    def stop(self):
+        """Stop kernel client and shutdown kernel."""
+        if hasattr(self, 'kc'):
+            self.kc.stop_channels()
+            logger.info("Kernel client stopped")
+        
+        if hasattr(self, 'km'):
+            self.km.shutdown_kernel(now=True)
+            logger.info("Kernel shutdown")
