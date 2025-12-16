@@ -165,7 +165,7 @@ def _extract_enums_from_prototypes(dump_file: str, prototype_api_file: Optional[
         'wall'
     }
     
-    skip_kk = ['crash-site-', 'factorio-logo-', 'bottomless-chest']
+    skip_kk = ['factorio-logo-', 'bottomless-chest']  # Removed 'crash-site-' to allow crash-site entities
     
     flat_proto = {}
     for k, v in data.items():

@@ -241,6 +241,11 @@ class WoodenChest(Container): ...
 class IronChest(Container): ...
 
 
+class ShipWreck(Container):
+    """A ship wreck entity (crash-site entities)."""
+    ...
+
+
 class Furnace(BaseEntity):
     """A furnace entity."""
 
@@ -510,6 +515,14 @@ def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:
         "wooden-chest": WoodenChest,
         "iron-chest": IronChest,
         "steel-chest": Container,
+        "crash-site-chest-1": ShipWreck,
+        "crash-site-chest-2": ShipWreck,
+        "crash-site-spaceship": ShipWreck,
+        "crash-site-spaceship-wreck-big-1": ShipWreck,
+        "crash-site-spaceship-wreck-big-2": ShipWreck,
+        "crash-site-spaceship-wreck-medium-1": ShipWreck,
+        "crash-site-spaceship-wreck-medium-2": ShipWreck,
+        "crash-site-spaceship-wreck-medium-3": ShipWreck,
     }
     
     entity_class = entity_map.get(name, BaseEntity)
