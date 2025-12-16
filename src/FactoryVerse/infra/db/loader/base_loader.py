@@ -102,8 +102,16 @@ def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> N
         )
 
 
-def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load resource entities (trees, rocks) from trees_rocks_init.jsonl files."""
+def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, replay_updates: bool = True) -> None:
+    """Load resource entities (trees, rocks) from trees_rocks_init.jsonl files.
+    
+    Optionally replays trees_rocks-update.jsonl to compute current state.
+    
+    Args:
+        con: DuckDB connection
+        snapshot_dir: Path to snapshot directory
+        replay_updates: If True, replay trees_rocks-update.jsonl operations log
+    """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     entity_files = list(snapshot_dir.rglob("trees_rocks_init.jsonl"))
     
@@ -170,6 +178,24 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -
                         json.dumps(e["position"]),
                     ],
                 )
+    
+    # Replay updates log (trees_rocks-update.jsonl) if requested
+    if replay_updates:
+        update_files = list(snapshot_dir.rglob("trees_rocks-update.jsonl"))
+        for update_file in update_files:
+            with open(update_file, "r") as f:
+                for line in f:
+                    if line.strip():
+                        operation = json.loads(line)
+                        op = operation.get("op")
+                        if op == "remove":
+                            # Remove the entity from the database
+                            entity_key = operation.get("key")
+                            if entity_key:
+                                con.execute(
+                                    "DELETE FROM resource_entity WHERE entity_key = ?",
+                                    [entity_key]
+                                )
 
 
 def _process_entity_data(
@@ -415,13 +441,14 @@ def load_ghosts(
         )
 
 
-def load_base_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
+def load_base_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, replay_updates: bool = True) -> None:
     """
     Load all base tables from snapshot directory.
     
     Args:
         con: DuckDB connection
         snapshot_dir: Path to snapshot directory (will be normalized)
+        replay_updates: If True, replay operations logs (entities_updates.jsonl, trees_rocks-update.jsonl)
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     
@@ -432,10 +459,10 @@ def load_base_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
     load_resource_tiles(con, snapshot_dir)
     
     print("Loading resource entities...")
-    load_resource_entities(con, snapshot_dir)
+    load_resource_entities(con, snapshot_dir, replay_updates=replay_updates)
     
     print("Loading map entities...")
-    load_map_entities(con, snapshot_dir)
+    load_map_entities(con, snapshot_dir, replay_updates=replay_updates)
     
     print("Base tables loaded successfully.")
 

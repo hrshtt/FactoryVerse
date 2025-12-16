@@ -1,8 +1,7 @@
 from __future__ import annotations
-import pydantic
 from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
 from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
-from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack
+from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack, PlaceableItem
 from src.FactoryVerse.dsl.prototypes import (
     get_entity_prototypes,
     ElectricMiningDrillPrototype,
@@ -11,6 +10,7 @@ from src.FactoryVerse.dsl.prototypes import (
     LongHandedInserterPrototype,
     FastInserterPrototype,
     TransportBeltPrototype,
+    BasePrototype,
     apply_cardinal_vector,
 )
 
@@ -21,14 +21,70 @@ if TYPE_CHECKING:
 from src.FactoryVerse.dsl.agent import _playing_factory
 
 
-class BaseEntity(pydantic.BaseModel):
-    """Base class for all entities."""
+class EntityPosition(MapPosition):
+    """Position with entity-aware spatial operations.
+    
+    Extends MapPosition with methods for offsetting by entity/item/prototype dimensions.
+    This keeps MapPosition pure while providing DSL-aware spatial reasoning.
+    """
+    
+    def offset_by_entity(
+        self, 
+        entity: Union["BaseEntity", PlaceableItem, BasePrototype],
+        direction: Direction,
+        gap: int = 0
+    ) -> "EntityPosition":
+        """Offset by entity dimensions in the given direction.
+        
+        Args:
+            entity: Entity, item, or prototype to get dimensions from
+            direction: Cardinal direction to offset
+            gap: Additional tiles of spacing (default 0 for touching)
+        
+        Returns:
+            New EntityPosition offset by entity dimensions + gap
+        
+        Example:
+            >>> furnace = reachable_entities.get_entity("stone-furnace")
+            >>> entity_pos = EntityPosition(x=furnace.position.x, y=furnace.position.y)
+            >>> next_pos = entity_pos.offset_by_entity(furnace, Direction.NORTH, gap=0)
+            >>> stone_furnace_item.place(next_pos)
+        """
+        # Extract tile dimensions (all three types have these properties)
+        tile_w = entity.tile_width
+        tile_h = entity.tile_height
+        
+        # Apply gap
+        offset_w = tile_w + gap
+        offset_h = tile_h + gap
+        
+        # Use pure MapPosition.offset for coordinate math
+        offset_result = self.offset((offset_w, offset_h), direction)
+        return EntityPosition(x=offset_result.x, y=offset_result.y)
 
-    name: str
-    position: MapPosition
-    direction: Optional[Direction] = None
 
-    model_config = {"arbitrary_types_allowed": True}
+class BaseEntity:
+    """Base class for all entities.
+    
+    Entities are things placed in the world with position and direction.
+    They have prototypes that define their properties and behavior.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        position: MapPosition,
+        direction: Optional[Direction] = None,
+        **kwargs  # For backward compatibility with subclasses
+    ):
+        self.name = name
+        self.position = position
+        self.direction = direction
+        self._prototype_cache: Optional[BasePrototype] = None
+        
+        # Handle any additional kwargs for subclasses
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     @property
     def _factory(self) -> "PlayingFactory":
@@ -46,6 +102,60 @@ class BaseEntity(pydantic.BaseModel):
         """Get agent ID from gameplay context."""
         return self._factory.agent_id
 
+    @property
+    def prototype(self) -> BasePrototype:
+        """Get the cached prototype for this entity.
+        
+        Lazily loads and caches the prototype on first access.
+        """
+        if self._prototype_cache is None:
+            protos = get_entity_prototypes()
+            entity_type = protos.get_entity_type(self.name)
+            if entity_type and entity_type in protos.data:
+                entity_data = protos.data[entity_type].get(self.name, {})
+                self._prototype_cache = BasePrototype(_data=entity_data)
+            else:
+                # Fallback to empty prototype
+                self._prototype_cache = BasePrototype(_data={})
+        return self._prototype_cache
+
+    @property
+    def tile_width(self) -> int:
+        """Get the tile width of this entity from its prototype."""
+        return self.prototype.tile_width
+
+    @property
+    def tile_height(self) -> int:
+        """Get the tile height of this entity from its prototype."""
+        return self.prototype.tile_height
+
+    def offset_by_entity(
+        self,
+        direction: Direction,
+        gap: int = 0,
+        reference: Optional[Union['BaseEntity', 'PlaceableItem']] = None
+    ) -> MapPosition:
+        """Offset this entity's position by entity dimensions.
+        
+        Convenience method that creates EntityPosition and offsets by dimensions.
+        
+        Args:
+            direction: Direction to offset
+            gap: Tile gap (default 0 for touching)
+            reference: Entity/item to use for dimensions (default: self)
+        
+        Returns:
+            MapPosition offset by reference entity's dimensions
+        
+        Example:
+            >>> furnace = reachable_entities.get_entity("stone-furnace")
+            >>> next_pos = furnace.offset_by_entity(Direction.NORTH)
+            >>> stone_furnace_item.place(next_pos)
+        """
+        ref = reference or self
+        entity_pos = EntityPosition(x=self.position.x, y=self.position.y)
+        return entity_pos.offset_by_entity(ref, direction, gap)
+
     def pickup(self) -> bool:
         """Pick up the entity."""
         return self._factory.pickup_entity(self.name, self.position)
@@ -62,9 +172,18 @@ class GhostEntity(BaseEntity):
         return self._factory.place_entity(self.name, self.position)
 
 class Container(BaseEntity):
-    """A container entity."""
+    """A container entity with inventory."""
 
-    inventory_size: int
+    def __init__(
+        self,
+        name: str,
+        position: MapPosition,
+        direction: Optional[Direction] = None,
+        inventory_size: int = 0,
+        **kwargs
+    ):
+        super().__init__(name, position, direction, **kwargs)
+        self.inventory_size = inventory_size
 
     def store_items(self, items: List[ItemStack]):
         """Store items in the container."""

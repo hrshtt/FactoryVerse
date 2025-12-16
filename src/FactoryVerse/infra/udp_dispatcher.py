@@ -5,7 +5,7 @@ messages to registered subscribers based on event type. This solves the
 OS limitation where only one socket can bind to a UDP port at a time.
 
 Usage:
-    dispatcher = UDPDispatcher(host="127.0.0.1", port=34202)
+    dispatcher = UDPDispatcher(host="127.0.0.1", port=34400)
     await dispatcher.start()
     
     # Subscribe to specific event types
@@ -30,7 +30,7 @@ class UDPDispatcher:
     Multiple components can subscribe to receive messages based on event_type.
     """
     
-    def __init__(self, host: str = "127.0.0.1", port: int = 34202):
+    def __init__(self, host: str = "127.0.0.1", port: int = 34400):
         """
         Initialize the UDP dispatcher.
         
@@ -134,6 +134,11 @@ class UDPDispatcher:
             # Get wildcard handlers (subscribe to all events)
             handlers_to_call.extend(self.subscribers.get("*", []))
         
+        # Debug logging for entity_operation events
+        if event_type == "entity_operation":
+            print(f"🔔 UDP Dispatcher: Received entity_operation - {len(handlers_to_call)} handlers")
+            print(f"   Payload: op={payload.get('op')}, key={payload.get('entity_key')}, name={payload.get('entity_name')}")
+        
         # Call handlers (outside lock to avoid deadlocks)
         for handler in handlers_to_call:
             try:
@@ -166,7 +171,7 @@ class UDPDispatcher:
 _global_dispatcher: Optional[UDPDispatcher] = None
 
 
-def get_udp_dispatcher(host: str = "127.0.0.1", port: int = 34202) -> UDPDispatcher:
+def get_udp_dispatcher(host: str = "127.0.0.1", port: int = 34400) -> UDPDispatcher:
     """
     Get or create the global UDP dispatcher instance.
     
