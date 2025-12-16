@@ -3,6 +3,8 @@ import json
 import asyncio
 import time
 import logging
+import socket
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, List, Literal, TYPE_CHECKING
 
@@ -17,6 +19,7 @@ from contextlib import contextmanager
 from src.FactoryVerse.dsl.types import Direction, MapPosition, BoundingBox
 from src.FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
 from src.FactoryVerse.dsl.ghosts import GhostManager
+from src.FactoryVerse.infra.game_data_sync import GameDataSyncService
 
 if TYPE_CHECKING:
     import duckdb
@@ -34,17 +37,29 @@ _playing_factory: ContextVar[Optional["PlayingFactory"]] = ContextVar(
 
 
 class AsyncActionListener:
-    """UDP listener for async action completion events."""
+    """UDP listener for async action completion events.
     
-    def __init__(self, udp_dispatcher: Optional[UDPDispatcher] = None, timeout: int = 30):
+    Can operate in two modes:
+    1. Direct UDP listening on agent-specific port (agent_port specified)
+    2. Through UDPDispatcher for shared port (udp_dispatcher specified)
+    """
+    
+    def __init__(self, udp_dispatcher: Optional[UDPDispatcher] = None, 
+                 agent_port: Optional[int] = None, 
+                 host: str = "127.0.0.1",
+                 timeout: int = 30):
         """
         Initialize the UDP listener.
         
         Args:
-            udp_dispatcher: Optional UDPDispatcher instance. If None, uses global dispatcher.
+            udp_dispatcher: Optional UDPDispatcher instance. If None and agent_port is None, uses global dispatcher.
+            agent_port: Optional direct UDP port for agent-specific messages. If provided, listens directly on this port.
+            host: Host to bind to (only used if agent_port is provided)
             timeout: Default timeout in seconds for waiting on actions
         """
         self.udp_dispatcher = udp_dispatcher
+        self.agent_port = agent_port
+        self.host = host
         self.timeout = timeout
         self.pending_actions: Dict[str, asyncio.Event] = {}
         self.action_results: Dict[str, Dict[str, Any]] = {}
@@ -52,17 +67,64 @@ class AsyncActionListener:
         self.action_timeouts: Dict[str, float] = {}  # Track timeout deadlines for progress extension
         self.action_progress: Dict[str, Dict[str, Any]] = {}  # Track progress for actions
         self.running = False
+        self.sock: Optional[socket.socket] = None
+        self.listener_thread: Optional[threading.Thread] = None
         
     async def start(self):
-        """Subscribe to UDP dispatcher for action completion events."""
-        if self.udp_dispatcher is None:
-            self.udp_dispatcher = get_udp_dispatcher()
+        """Start listening for UDP messages.
         
-        if not self.udp_dispatcher.is_running():
-            await self.udp_dispatcher.start()
-        
-        self.udp_dispatcher.subscribe("*", self._handle_udp_message)
-        self.running = True
+        If agent_port is set, listens directly on that port.
+        Otherwise, subscribes to UDP dispatcher.
+        """
+        if self.agent_port is not None:
+            # Direct UDP listening mode (agent-specific port)
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                self.sock.bind((self.host, self.agent_port))
+            except OSError as e:
+                self.sock.close()
+                self.sock = None
+                raise RuntimeError(f"Failed to bind UDP socket to {self.host}:{self.agent_port}: {e}")
+            
+            self.sock.settimeout(0.5)  # Non-blocking with timeout
+            self.running = True
+            
+            # Start listener thread
+            self.listener_thread = threading.Thread(target=self._direct_listen_loop, daemon=True)
+            self.listener_thread.start()
+            
+            logger.info(f"✅ AsyncActionListener started on direct port {self.host}:{self.agent_port}")
+        else:
+            # Dispatcher mode (shared port)
+            if self.udp_dispatcher is None:
+                self.udp_dispatcher = get_udp_dispatcher()
+            
+            if not self.udp_dispatcher.is_running():
+                await self.udp_dispatcher.start()
+            
+            self.udp_dispatcher.subscribe("*", self._handle_udp_message)
+            self.running = True
+            logger.info("✅ AsyncActionListener started via UDPDispatcher")
+    
+    def _direct_listen_loop(self):
+        """Background thread loop for receiving UDP packets directly."""
+        while self.running and self.sock:
+            try:
+                data, addr = self.sock.recvfrom(65535)
+                try:
+                    payload = json.loads(data.decode('utf-8'))
+                    # Only process action events (agent-specific)
+                    if payload.get('event_type') == 'action':
+                        self._handle_udp_message(payload)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"⚠️  Failed to decode UDP JSON from {addr}: {e}")
+                except Exception as e:
+                    logger.error(f"❌ Error processing UDP message from {addr}: {e}")
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self.running:
+                    logger.error(f"❌ Error in direct UDP listener: {e}")
     
     
     def _handle_udp_message(self, payload: Dict[str, Any]):
@@ -125,10 +187,19 @@ class AsyncActionListener:
             print(f"❌ Error processing UDP message: {e}")
     
     async def stop(self):
-        """Unsubscribe from UDP dispatcher."""
-        if self.udp_dispatcher and self.running:
-            self.udp_dispatcher.unsubscribe("*", self._handle_udp_message)
+        """Stop listening for UDP messages."""
         self.running = False
+        
+        if self.agent_port is not None and self.sock:
+            # Direct UDP listening mode - close socket
+            if self.listener_thread:
+                self.listener_thread.join(timeout=2)
+            if self.sock:
+                self.sock.close()
+                self.sock = None
+        elif self.udp_dispatcher and self.running:
+            # Dispatcher mode - unsubscribe
+            self.udp_dispatcher.unsubscribe("*", self._handle_udp_message)
     
     def register_action(self, action_id: str, initial_timeout_deadline: Optional[float] = None):
         """Register an action to wait for completion via UDP.
@@ -730,16 +801,32 @@ class PlayingFactory:
     _async_listener: AsyncActionListener
     _ghost_manager: GhostManager
     _duckdb_connection: Optional["duckdb.DuckDBPyConnection"]
+    _game_data_sync: Optional["GameDataSyncService"]
 
     def __init__(self, rcon_client: "RconClient", agent_id: str, recipes: Recipes, 
-                 udp_dispatcher: Optional[UDPDispatcher] = None):
+                 udp_dispatcher: Optional[UDPDispatcher] = None,
+                 agent_udp_port: Optional[int] = None):
+        """
+        Initialize PlayingFactory.
+        
+        Args:
+            rcon_client: RCON client for remote interface calls
+            agent_id: Agent ID (e.g., 'agent_1')
+            recipes: Recipes instance
+            udp_dispatcher: Optional UDPDispatcher for shared port mode (deprecated, use agent_udp_port instead)
+            agent_udp_port: Optional UDP port for agent-specific async actions. If provided, agent owns this port completely.
+        """
         self._rcon = rcon_client
         self._agent_id = agent_id
         self.agent_commands = AgentCommands(agent_id)
         self.recipes = recipes
-        self._async_listener = AsyncActionListener(udp_dispatcher=udp_dispatcher)
+        self._async_listener = AsyncActionListener(
+            udp_dispatcher=udp_dispatcher,
+            agent_port=agent_udp_port
+        )
         self._ghost_manager = GhostManager(self, agent_id=agent_id)
         self._duckdb_connection = None
+        self._game_data_sync = None
         
         # Initialize action wrappers
         self._walking = WalkingAction(self)
@@ -1306,7 +1393,7 @@ class PlayingFactory:
         """
         return self._ghost_manager
     
-    def load_snapshots(
+    async def load_snapshots(
         self,
         snapshot_dir: Optional[Path] = None,
         db_path: Optional[Union[str, Path]] = None,
@@ -1319,11 +1406,16 @@ class PlayingFactory:
         include_ghosts: bool = True,
         include_analytics: bool = True,
         replay_updates: bool = True,
+        wait_for_initial: bool = True,
+        initial_timeout: float = 60.0,
     ) -> None:
-        """Load snapshot data into the database.
+        """Load snapshot data into the database (async version).
         
         High-level method that auto-creates connection, schema, and auto-detects
         snapshot directory. This is the primary way to set up the database.
+        
+        Also initializes and starts GameDataSyncService for real-time sync.
+        If wait_for_initial=True, blocks until all charted chunks reach COMPLETE state.
         
         Args:
             snapshot_dir: Path to snapshot directory. If None, auto-detects from
@@ -1337,10 +1429,87 @@ class PlayingFactory:
             include_ghosts: Load ghost tables
             include_analytics: Load analytics tables (power, agent stats)
             replay_updates: Replay operations logs (entities_updates.jsonl, etc.)
+            wait_for_initial: If True, wait for all charted chunks to reach COMPLETE state
+            initial_timeout: Maximum time to wait for initial snapshot completion (seconds)
+        """
+        # Load snapshots synchronously (files on disk)
+        snapshot_dir = self._load_snapshots_sync(
+            snapshot_dir=snapshot_dir,
+            db_path=db_path,
+            dump_file=dump_file,
+            prototype_api_file=prototype_api_file,
+            include_base=include_base,
+            include_components=include_components,
+            include_derived=include_derived,
+            include_ghosts=include_ghosts,
+            include_analytics=include_analytics,
+            replay_updates=replay_updates,
+        )
         
-        TODO: Add refresh() method for incremental updates from same directory
+        # Start GameDataSyncService
+        await self._ensure_game_data_sync()
+        
+        # Wait for bootstrap completion if requested
+        # This waits for the system to transition from INITIAL_SNAPSHOTTING to MAINTENANCE
+        # which respects the bootstrap waiting period for async charting
+        if wait_for_initial:
+            await self._wait_for_bootstrap_complete(timeout=initial_timeout)
+            
+            # CRITICAL: Reload all snapshot files from disk after bootstrap completes
+            # This ensures we have ALL data that was snapshotted during bootstrap.
+            # Without this reload, we'd have a mix of:
+            # - Old data from initial load (before bootstrap)
+            # - Some new data from UDP file_io events (if they arrived)
+            # - Missing data from chunks that completed DURING bootstrap wait
+            logger.info("🔄 Bootstrap complete. Reloading all snapshot files to ensure complete data...")
+            print("\n" + "=" * 60)
+            print("🔄 Reloading snapshot data after bootstrap...")
+            print("=" * 60)
+            
+            from src.FactoryVerse.infra.db.loader import load_all
+            load_all(
+                self._duckdb_connection,
+                snapshot_dir,
+                dump_file,
+                prototype_api_file,
+                include_base=include_base,
+                include_components=include_components,
+                include_derived=include_derived,
+                include_ghosts=include_ghosts,
+                include_analytics=include_analytics,
+                replay_updates=replay_updates,
+            )
+            
+            logger.info("✅ Post-bootstrap reload complete. DB now contains all snapshotted data.")
+            print("✅ Post-bootstrap reload complete!")
+    
+    def _load_snapshots_sync(
+        self,
+        snapshot_dir: Optional[Path] = None,
+        db_path: Optional[Union[str, Path]] = None,
+        dump_file: str = "factorio-data-dump.json",
+        prototype_api_file: Optional[str] = None,
+        include_base: bool = True,
+        include_components: bool = True,
+        include_derived: bool = True,
+        include_ghosts: bool = True,
+        include_analytics: bool = True,
+        replay_updates: bool = True,
+    ) -> Path:
+        """Load snapshot data synchronously (doesn't wait for COMPLETE state).
+        
+        This is the internal synchronous version that:
+        1. Creates DB connection
+        2. Auto-detects snapshot directory
+        3. Waits for snapshot files to exist on disk
+        4. Loads files into DB
+        5. Initializes GameDataSyncService (but doesn't start it)
+        
+        Returns:
+            Path: The resolved snapshot_dir path
         """
         import duckdb
+        import time
         
         # Auto-create connection if not already loaded
         if self._duckdb_connection is None:
@@ -1364,6 +1533,59 @@ class PlayingFactory:
         
         snapshot_dir = Path(snapshot_dir)
         
+        # Wait for initial snapshot files if they don't exist
+        # Check if any snapshot files exist
+        snapshot_base = snapshot_dir / "factoryverse" / "snapshots"
+        has_snapshots = False
+        if snapshot_base.exists():
+            # Check if any chunk directories exist
+            chunk_dirs = [d for d in snapshot_base.iterdir() if d.is_dir()]
+            for chunk_x_dir in chunk_dirs:
+                if chunk_x_dir.is_dir():
+                    chunk_y_dirs = [d for d in chunk_x_dir.iterdir() if d.is_dir()]
+                    for chunk_y_dir in chunk_y_dirs:
+                        # Check if any init files exist
+                        if any(chunk_y_dir.glob("*_init.jsonl")):
+                            has_snapshots = True
+                            break
+                    if has_snapshots:
+                        break
+        
+        if not has_snapshots:
+            # Try to trigger snapshot via RCON if available
+            if self._rcon:
+                try:
+                    print("No snapshot files found. Triggering map snapshot via RCON...")
+                    result = self._rcon.send_command("take_map_snapshot")
+                    if result and "error" not in result.lower():
+                        print("✅ Map snapshot triggered successfully")
+                    else:
+                        print(f"⚠️  RCON command may have failed: {result}")
+                except Exception as e:
+                    print(f"⚠️  Could not trigger map snapshot via RCON: {e}")
+            
+            # Wait for snapshot files to be created
+            max_wait = 30  # 30 seconds timeout
+            print(f"Waiting for snapshot files to be created (max {max_wait}s)...")
+            for i in range(max_wait):
+                if snapshot_base.exists():
+                    chunk_dirs = [d for d in snapshot_base.iterdir() if d.is_dir()]
+                    for chunk_x_dir in chunk_dirs:
+                        if chunk_x_dir.is_dir():
+                            chunk_y_dirs = [d for d in chunk_x_dir.iterdir() if d.is_dir()]
+                            for chunk_y_dir in chunk_y_dirs:
+                                if any(chunk_y_dir.glob("*_init.jsonl")):
+                                    has_snapshots = True
+                                    break
+                            if has_snapshots:
+                                break
+                    if has_snapshots:
+                        print(f"✅ Snapshot files found after {i+1} seconds")
+                        break
+                time.sleep(1)
+            else:
+                print(f"⚠️  Warning: No snapshot files found after {max_wait} seconds. Loading whatever exists...")
+        
         # Load data (this will auto-create schema if needed)
         from src.FactoryVerse.infra.db.loader import load_all
         load_all(
@@ -1378,6 +1600,141 @@ class PlayingFactory:
             include_analytics=include_analytics,
             replay_updates=replay_updates,
         )
+        
+        # Initialize GameDataSyncService for real-time sync (but don't start it yet)
+        if self._game_data_sync is None:
+            udp_dispatcher = get_udp_dispatcher()
+            self._game_data_sync = GameDataSyncService(
+                agent_id=self._agent_id,
+                db_connection=self._duckdb_connection,
+                snapshot_dir=snapshot_dir,
+                udp_dispatcher=udp_dispatcher,
+                rcon_client=self._rcon,
+            )
+        
+        return snapshot_dir
+    
+    def _get_charted_chunks(self) -> List[tuple[int, int]]:
+        """Query game for list of charted chunks via RCON.
+        
+        Returns:
+            List of (chunk_x, chunk_y) tuples for all charted chunks
+        """
+        if not self._rcon:
+            logger.warning("No RCON client available, cannot query charted chunks")
+            return []
+        
+        try:
+            # Query game for charted chunks
+            cmd = '/c local chunks = {}; for chunk in game.surfaces[1].get_chunks() do if game.forces.player.is_chunk_charted(1, chunk) then table.insert(chunks, {x=chunk.x, y=chunk.y}) end end; rcon.print(helpers.table_to_json(chunks))'
+            result = self._rcon.send_command(cmd)
+            chunks_data = json.loads(result)
+            
+            # Convert to list of tuples
+            charted = [(int(c["x"]), int(c["y"])) for c in chunks_data]
+            logger.info(f"Found {len(charted)} charted chunks")
+            return charted
+        except Exception as e:
+            logger.error(f"Failed to query charted chunks: {e}", exc_info=True)
+            return []
+    
+    async def _wait_for_bootstrap_complete(self, timeout: float = 120.0) -> None:
+        """Wait for bootstrap phase to complete (INITIAL_SNAPSHOTTING → MAINTENANCE).
+        
+        Polls the snapshot system's phase status and waits for transition to MAINTENANCE.
+        This is more reliable than waiting for individual chunks since it respects
+        the bootstrap waiting period (300 ticks) that allows async charting to complete.
+        
+        Args:
+            timeout: Maximum time to wait for bootstrap (seconds, default 120s = 2 minutes)
+            
+        Raises:
+            asyncio.TimeoutError: If bootstrap doesn't complete within timeout
+        """
+        import asyncio
+        import time
+        
+        start_time = time.time()
+        check_interval = 1.0  # Check every second
+        
+        logger.info("⏳ Waiting for snapshot system bootstrap to complete...")
+        print("⏳ Waiting for snapshot system bootstrap to complete...")
+        
+        while True:
+            # Check if timeout exceeded
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                raise asyncio.TimeoutError(
+                    f"Bootstrap did not complete within {timeout}s. "
+                    "System may still be in INITIAL_SNAPSHOTTING phase."
+                )
+            
+            # Query snapshot system status via RCON
+            try:
+                cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
+                result = self._rcon.send_command(cmd)
+                
+                # Handle None result (happens when command fails)
+                if result is None or result.strip() == "":
+                    logger.debug("Empty or None result from RCON, retrying...")
+                    await asyncio.sleep(check_interval)
+                    continue
+                    
+                status = json.loads(result)
+                
+                system_phase = status.get("system_phase")
+                
+                if system_phase == "MAINTENANCE":
+                    # Bootstrap complete!
+                    stats = status.get("bootstrap_wait", {})
+                    completed = status.get("completed_chunks", 0)
+                    logger.info(f"✅ Bootstrap complete! Transitioned to MAINTENANCE mode.")
+                    logger.info(f"✅ {completed} chunks snapshotted during bootstrap.")
+                    print(f"✅ Bootstrap complete! {completed} chunks snapshotted.")
+                    return
+                
+                elif system_phase == "INITIAL_SNAPSHOTTING":
+                    # Still bootstrapping
+                    pending = status.get("pending_chunks", 0)
+                    completed = status.get("completed_chunks", 0)
+                    bootstrap_wait = status.get("bootstrap_wait", {})
+                    current_tick = bootstrap_wait.get("current_tick", 0)
+                    total_ticks = bootstrap_wait.get("total_ticks", 300)
+                    waiting = bootstrap_wait.get("waiting", False)
+                    
+                    if waiting:
+                        logger.debug(
+                            f"Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
+                            f"{pending} pending chunks, {completed} completed"
+                        )
+                        if int(elapsed) % 5 == 0:  # Log every 5 seconds
+                            print(
+                                f"  ⏱️  Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
+                                f"{pending} pending, {completed} completed"
+                            )
+                    else:
+                        logger.debug(
+                            f"Processing chunks: {pending} pending, {completed} completed"
+                        )
+                        if int(elapsed) % 5 == 0:
+                            print(f"  📦 Processing: {pending} pending, {completed} completed")
+                
+            except Exception as e:
+                logger.warning(f"Error checking bootstrap status: {e}")
+                # Continue waiting, don't fail on transient errors
+            
+            # Wait before next check
+            await asyncio.sleep(check_interval)
+    
+    async def _ensure_game_data_sync(self):
+        """Ensure game data sync service is started."""
+        if self._game_data_sync and not self._game_data_sync.is_running:
+            await self._game_data_sync.start()
+    
+    async def _stop_game_data_sync(self):
+        """Stop game data sync service."""
+        if self._game_data_sync and self._game_data_sync.is_running:
+            await self._game_data_sync.stop()
     
     @property
     def duckdb_connection(self):
@@ -1387,6 +1744,15 @@ class PlayingFactory:
             DuckDB connection object, or None if not loaded
         """
         return self._duckdb_connection
+    
+    @property
+    def game_data_sync(self) -> Optional["GameDataSyncService"]:
+        """Get the game data sync service.
+        
+        Returns:
+            GameDataSyncService instance, or None if not initialized
+        """
+        return self._game_data_sync
 
     # ========================================================================
     # DEBUG
@@ -1400,7 +1766,7 @@ class PlayingFactory:
 
 @contextmanager
 def playing_factorio(rcon_client: "RconClient", agent_id: str, recipes: Optional[Recipes] = None,
-                     udp_dispatcher: Optional[UDPDispatcher] = None):
+                     agent_udp_port: Optional[int] = None):
     """Context manager for agent gameplay operations.
 
     This context enables entities to perform remote operations via RCON.
@@ -1410,22 +1776,22 @@ def playing_factorio(rcon_client: "RconClient", agent_id: str, recipes: Optional
         rcon_client: RCON client for remote interface calls
         agent_id: Agent ID (e.g., 'agent_1')
         recipes: Optional Recipes instance (will be fetched if None)
-        udp_dispatcher: Optional UDP dispatcher for async actions
+        agent_udp_port: Optional UDP port for agent-specific async actions
 
     Example:
-        with playing_factorio(rcon, 'agent_1'):
+        with playing_factorio(rcon, 'agent_1', agent_udp_port=34203):
             await factory.walking.to(MapPosition(x=10, y=20))
             factory.crafting.enqueue('iron-plate', count=10)
     """
     # Fetch recipes if not provided
     if recipes is None:
         # Create a temporary factory to fetch recipes
-        temp_factory = PlayingFactory(rcon_client, agent_id, Recipes([]), udp_dispatcher)
+        temp_factory = PlayingFactory(rcon_client, agent_id, Recipes([]), agent_udp_port=None)
         recipes_json = temp_factory.get_recipes()
         recipes_data = json.loads(recipes_json)
         recipes = Recipes(recipes_data.get("recipes", []))
     
-    factory = PlayingFactory(rcon_client, agent_id, recipes, udp_dispatcher)
+    factory = PlayingFactory(rcon_client, agent_id, recipes, agent_udp_port=agent_udp_port)
     token = _playing_factory.set(factory)
     try:
         yield factory

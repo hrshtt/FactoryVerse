@@ -2,6 +2,7 @@ from typing import Tuple, List, Dict, Any, Optional
 from src.FactoryVerse.dsl.types import MapPosition, Direction, BoundingBox
 from dataclasses import dataclass
 import json
+import math
 
 
 def apply_cardinal_vector(
@@ -25,6 +26,23 @@ def apply_cardinal_vector(
     return MapPosition(x=map_position.x + vx, y=map_position.y + vy)
 
 
+def get_width_height(bbox: List[List[float]]) -> Tuple[float, float]:
+    """Calculate width and height from a bounding box.
+    
+    Args:
+        bbox: A list of two points, e.g., [[x1, y1], [x2, y2]],
+              representing opposite corners of the bounding box.
+    
+    Returns:
+        Tuple of (width, height).
+    """
+    (x1, y1) = bbox[0]
+    (x2, y2) = bbox[1]
+    width = abs(x1 - x2)
+    height = abs(y1 - y2)
+    return width, height
+
+
 @dataclass(frozen=True, slots=True)
 class BasePrototype:
     """Base class for prototype property accessors."""
@@ -36,6 +54,50 @@ class BasePrototype:
 
     def get_raw(self) -> Dict[str, Any]:
         return self._data
+
+    @property
+    def tile_width(self) -> int:
+        """Get the tile width of this entity.
+        
+        Uses explicit tile_width if available, otherwise calculates from collision_box.
+        """
+        # Tiny value to prevent 2.000001 rounding up to 3
+        EPSILON = 0.001
+        
+        # 1. Check for explicit tile_width
+        final_w = self._data.get('tile_width')
+        if final_w is not None:
+            return int(final_w)
+        
+        # 2. Calculate from collision_box
+        if 'collision_box' in self._data:
+            c_w, _ = get_width_height(self._data['collision_box'])
+            return int(math.ceil(c_w - EPSILON))
+        
+        # 3. Entities with no collision box (e.g. smoke, ghosts)
+        return 0
+
+    @property
+    def tile_height(self) -> int:
+        """Get the tile height of this entity.
+        
+        Uses explicit tile_height if available, otherwise calculates from collision_box.
+        """
+        # Tiny value to prevent 2.000001 rounding up to 3
+        EPSILON = 0.001
+        
+        # 1. Check for explicit tile_height
+        final_h = self._data.get('tile_height')
+        if final_h is not None:
+            return int(final_h)
+        
+        # 2. Calculate from collision_box
+        if 'collision_box' in self._data:
+            _, c_h = get_width_height(self._data['collision_box'])
+            return int(math.ceil(c_h - EPSILON))
+        
+        # 3. Entities with no collision box (e.g. smoke, ghosts)
+        return 0
 
 
 @dataclass(frozen=True)
@@ -270,10 +332,91 @@ class EntityPrototypes:
                 if not hasattr(self, 'electric_poles'):
                     self.electric_poles = {}
                 self.electric_poles[pole_name] = ElectricPolePrototype.from_data(pole_data)
+        
+        # Cache tile dimensions for all placeable entities
+        self._tile_dimensions_cache: Dict[str, Tuple[int, int]] = {}
+        self._build_tile_dimensions_cache()
+
+    def _build_tile_dimensions_cache(self):
+        """Pre-compute tile dimensions for all placeable entities."""
+        EPSILON = 0.001
+        
+        for category, entities in self.data.items():
+            if category in {
+                "item", "recipe", "technology", "fluid", "tile", "virtual-signal", 
+                "achievement", "item-group", "item-subgroup", "recipe-category",
+                "fuel-category", "resource-category", "module-category", "equipment-category",
+                "ammo-category", "autoplace-control", "custom-input", "font", "gui-style",
+                "mouse-cursor", "noise-layer", "particle", "sound", "sprite", "tile-effect",
+                "tips-and-tricks-item-category", "tips-and-tricks-item", "trivial-smoke",
+                "utility-constants", "utility-sounds", "utility-sprites"
+            }:
+                continue
+            
+            if isinstance(entities, dict):
+                for entity_name, entity_data in entities.items():
+                    if "collision_box" not in entity_data:
+                        continue
+                    
+                    # Calculate tile dimensions
+                    final_w = entity_data.get('tile_width')
+                    final_h = entity_data.get('tile_height')
+                    
+                    if final_w is None or final_h is None:
+                        if 'collision_box' in entity_data:
+                            c_w, c_h = get_width_height(entity_data['collision_box'])
+                            if final_w is None:
+                                final_w = int(math.ceil(c_w - EPSILON))
+                            if final_h is None:
+                                final_h = int(math.ceil(c_h - EPSILON))
+                        else:
+                            final_w, final_h = 0, 0
+                    
+                    self._tile_dimensions_cache[entity_name] = (int(final_w), int(final_h))
 
     def get_entity_type(self, entity_name: str) -> Optional[str]:
         """Get the prototype category (type) for an entity name."""
         return self.entity_type_map.get(entity_name)
+
+    def get_tile_dimensions(self, entity_name: str) -> Tuple[int, int]:
+        """Get tile dimensions (width, height) for an entity by name.
+        
+        Args:
+            entity_name: Name of the entity (e.g., "stone-furnace", "electric-mining-drill")
+        
+        Returns:
+            Tuple of (tile_width, tile_height)
+        
+        Raises:
+            KeyError: If entity_name is not found in the cache
+        """
+        if entity_name not in self._tile_dimensions_cache:
+            # Try to compute on the fly if not in cache
+            entity_type = self.get_entity_type(entity_name)
+            if entity_type and entity_type in self.data:
+                entities = self.data[entity_type]
+                if isinstance(entities, dict) and entity_name in entities:
+                    entity_data = entities[entity_name]
+                    if "collision_box" in entity_data:
+                        EPSILON = 0.001
+                        final_w = entity_data.get('tile_width')
+                        final_h = entity_data.get('tile_height')
+                        
+                        if final_w is None or final_h is None:
+                            if 'collision_box' in entity_data:
+                                c_w, c_h = get_width_height(entity_data['collision_box'])
+                                if final_w is None:
+                                    final_w = int(math.ceil(c_w - EPSILON))
+                                if final_h is None:
+                                    final_h = int(math.ceil(c_h - EPSILON))
+                            else:
+                                final_w, final_h = 0, 0
+                        
+                        dims = (int(final_w), int(final_h))
+                        self._tile_dimensions_cache[entity_name] = dims
+                        return dims
+        
+        return self._tile_dimensions_cache[entity_name]
 
 class ItemPrototypes:
     """Prototype accessor for items."""
