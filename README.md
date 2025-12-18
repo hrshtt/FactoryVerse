@@ -2,15 +2,280 @@
 
 This repository explores the intersection of Large Language Models and complex systems optimization through the lens of Factorio gameplay. FactoryVerse treats Factorio not as a collection of objects to manipulate, but as a rich, spatial dataset to be analyzed, queried, and optimized at scale.
 
-## Research Directions
+## Research Motivation
 
-FactoryVerse investigates two primary research questions:
+FactoryVerse investigates three core research questions that form the foundation for scalable, data-driven AI agents in complex simulation environments:
 
-1. **Game State as Spatial Dataset**: How can we model complex game environments as queryable, spatial databases that enable sophisticated analytical reasoning rather than purely reactive gameplay?
+### 1. Scalable Mod Architecture for Embodied Agents
 
-2. **Lua Mod Architecture for AI Research**: What mod design patterns best support systematic ablation studies, controlled experiments, and reproducible AI agent evaluation in complex simulation environments?
+**How can we design a mod architecture that scales for multiple embodied agents in Factorio-based gameplay?**
 
-## The Factorio Game Loop
+Inspired by the agent ecosystems of Minecraft, FactoryVerse implements an extensive design for multi-agent gameplay that serves as the core basis for building diverse environments on top of Factorio's sandbox mechanics. The **FV Embodied Agent** mod provides:
+
+- **Agent Class System**: Each agent is a fully-featured entity with its own character, force, inventory, and state machines
+- **Multi-Agent Coordination**: Agents can operate independently or collaboratively, with configurable force relationships
+- **Action System**: Comprehensive action interface covering walking, mining, crafting, placement, research, and entity operations
+- **State Machine Processing**: Tick-based processing for concurrent agent activities (walking, mining, crafting)
+- **UDP Notification System**: Real-time event notifications for research completion, action results, and game state changes
+- **Remote Interface**: Python-accessible RCON interface for external agent control
+
+This architecture enables researchers to build complex multi-agent scenarios, test coordination strategies, and evaluate agent performance in a rich, dynamic environment.
+
+### 2. Optimal LLM Context Provision
+
+**What is the best way to provide context to LLMs for embodied gameplay?**
+
+FactoryVerse takes an opinionated approach: **materialize the entire game state to disk and provide LLMs with SQL query access to a real-time updated spatial database**. The **FV Snapshot** mod implements this vision:
+
+- **Comprehensive State Serialization**: Writes all game entities, resources, map data, power networks, and research state to disk as structured CSV files
+- **Snapshot Categories**: Modular snapshot system for Resources, Entities, Map chunks, Power networks, and Research state
+- **Incremental Updates**: Efficient upsert-friendly output format for streaming updates as the game evolves
+- **DuckDB Integration**: Python agents load snapshots into DuckDB with spatial extensions (PostGIS) for sophisticated queries
+- **Real-Time Synchronization**: Continuous snapshot updates provide agents with current map state without polling the game engine
+
+This approach transforms implicit visual information (sprite animations, coverage indicators, flow rates) into explicit, queryable data. Instead of asking "what do I see?", agents ask "what resources are within 50 tiles?" or "which drills lack power coverage?"
+
+### 3. DSL for State Representation
+
+**What DSL best enables LLMs to interface with stateful game entities?**
+
+Factorio entities are inherently stateful—furnaces have fuel levels, assemblers have recipes, inserters have pickup/drop positions. Human players understand this through visual cues: animated sprites, colored overlays, range indicators. LLMs need a different interface.
+
+FactoryVerse provides an **object-oriented Python DSL** that instantiates entities with all their affordances explicitly represented:
+
+- **Type-Safe Entity Classes**: `Furnace`, `AssemblingMachine`, `Inserter`, `MiningDrill`—each with domain-specific methods
+- **Explicit Affordances**: Methods like `furnace.add_fuel()`, `drill.output_position()`, `inserter.get_drop_position()` make implicit game mechanics explicit
+- **Composable Operations**: LLMs write Python code combining spatial queries (DuckDB) with entity operations (DSL)
+- **Context-Aware Execution**: All operations execute within a `playing_factorio()` context that manages RCON connections and game state
+- **Prototype-Driven Behavior**: Static entity properties (output positions, search areas) derived from Factorio's prototype data ensure accuracy
+
+This DSL bridges the gap between human visual understanding and LLM code generation, enabling agents to reason about and manipulate complex factory systems through composable Python code.
+
+---
+
+## Working with This Repository
+
+FactoryVerse provides two primary entry points for different use cases:
+
+### CLI Entry Point
+
+The CLI (`src/FactoryVerse/cli.py`) manages Factorio servers, Jupyter notebooks, and client setup:
+
+```bash
+# Launch Factorio client with FactoryVerse mods
+uv run python -m FactoryVerse.cli client launch --as-mod --scenario test_scenario
+
+# Start Factorio server(s) with Jupyter notebook
+uv run python -m FactoryVerse.cli server start --num 1 --scenario test_scenario --as-mod
+
+# View server logs
+uv run python -m FactoryVerse.cli server logs factorio_0 --follow
+
+# Stop all services
+uv run python -m FactoryVerse.cli server stop
+```
+
+**Key Features:**
+- Docker-based server orchestration with Jupyter integration
+- Hot-reload support for rapid development (scenario mode only)
+- Multi-server support for parallel experiments
+- Client setup automation (mod installation, scenario configuration)
+
+### Agent Runtime Entry Point
+
+The agent runtime (`scripts/run_agent.py`) provides an LLM-powered agent that plays Factorio:
+
+```bash
+# Interactive mode with model selection
+uv run python scripts/run_agent.py
+
+# Specify model directly
+uv run python scripts/run_agent.py --model intellect-3
+
+# List available models
+uv run python scripts/run_agent.py --list-models
+
+# List existing sessions
+uv run python scripts/run_agent.py --list-sessions
+```
+
+**Key Features:**
+- **Session Management**: Automatic session tracking with chat logs, notebooks, and initial state snapshots
+- **LLM Integration**: Currently supports Prime Intellect credits inference API
+- **Real-Time Console Output**: Displays agent reasoning, function calls, and results as they happen
+- **Jupyter Notebook Logging**: All DSL and SQL executions logged to persistent notebook for review
+- **Initial State Generation**: Comprehensive map summary provided to agent at startup
+- **Interactive Mode**: Chat with the agent, provide guidance, view statistics
+
+**Configuration:**
+Set `PRIME_API_KEY` in your `.env` file to use the Prime Intellect API.
+
+---
+
+## Technical Deep Dive
+
+### FV Embodied Agent Mod
+
+The **FV Embodied Agent** mod (`src/fv_embodied_agent/`) implements the core agent infrastructure:
+
+**Agent Class (`Agent.lua`):**
+- **Lifecycle Management**: `Agent:new()`, `Agent:destroy()`, force creation/merging
+- **State Machines**: Consolidated state for walking, mining, and crafting activities
+- **Action Methods**: Mixed in from modular action files:
+  - `walking.lua`: Pathfinding, waypoint navigation, goal adjustment for entity collision
+  - `mining.lua`: Incremental and deplete modes, stochastic product handling
+  - `crafting.lua`: Queue management, progress tracking, completion notifications
+  - `placement.lua`: Entity placement with validation, ghost placement, placement cues
+  - `entity_ops.lua`: Recipe setting, inventory management, entity pickup
+  - `researching.lua`: Technology queue management, research status
+  - `reachability.lua`: Entity and resource queries within reach distance
+
+**Remote Interface:**
+Each agent registers a per-agent remote interface (`agent_{agent_id}`) accessible via RCON, enabling Python DSL to invoke actions like:
+- `remote.call("agent_1", "walk_to", {x=100, y=200})`
+- `remote.call("agent_1", "mine_resource", {resource_name="iron-ore", max_count=25})`
+- `remote.call("agent_1", "craft_enqueue", {recipe_name="iron-plate", count=10})`
+
+**UDP Notifications:**
+Agents enqueue messages for important events (research complete, action completion) which are sent via UDP to Python listeners. This enables reactive agent behavior without polling.
+
+**Multi-Agent Support:**
+- Each agent has its own force with configurable relationships
+- Agents can share technology trees or research independently
+- Rendering labels (name tags, map markers) for visual identification
+
+### FV Snapshot Mod
+
+The **FV Snapshot** mod (`src/fv_snapshot/`) materializes game state to disk for database loading:
+
+**Snapshot System (`game_state/` modules):**
+- **Entities.lua**: Serializes all placed entities with components (belts, inserters, drills, assemblers, inventories, recipes)
+- **Resource.lua**: Streams resource tiles (ores) and entities (trees, rocks) with clustering into patches
+- **Map.lua**: Tracks charted chunks, manages snapshot phases (initialization vs maintenance)
+- **Power.lua**: Captures electric network topology and coverage areas
+- **Research.lua**: Exports technology tree state, research progress, unlocked recipes
+
+**Output Format:**
+- CSV files with headers for efficient bulk loading into DuckDB
+- Compression support for large datasets
+- Incremental updates with entity keys for upsert operations
+- JSON columns for complex nested data (inventories, connection points)
+
+**Event Dispatcher (`control.lua`):**
+- Aggregates event handlers from all game state modules
+- Registers nth-tick handlers for periodic status tracking
+- Manages system phases to avoid performance overhead during initialization
+
+**Integration with Python:**
+Python loaders (`src/FactoryVerse/infra/db/loader/`) read snapshot CSVs and populate DuckDB tables, enabling agents to query game state via SQL.
+
+### Python DSL (Broad Strokes)
+
+The Python DSL (`src/FactoryVerse/dsl/`) provides a type-safe interface to Factorio:
+
+**Core Concepts:**
+- **Context Manager**: `playing_factorio()` establishes RCON connection and agent context
+- **Accessor Modules**: `walking`, `mining`, `crafting`, `research`, `inventory`, `reachable`, `ghost_manager`, `map_db`
+- **Entity Types**: `Furnace`, `AssemblingMachine`, `Inserter`, `MiningDrill`, `TransportBelt`, `ElectricPole`, `Container`
+- **Item Types**: `Item`, `ItemStack`, `PlaceableItem`, `MiningDrillItem` (with placement cues)
+- **Type Classes**: `MapPosition`, `Direction`, `BoundingBox`
+
+**Accessor Patterns:**
+```python
+with playing_factorio():
+    # Walking
+    await walking.to(MapPosition(100, 200))
+    
+    # Mining (max 25 items per operation)
+    resources = reachable.get_resources("iron-ore")
+    await resources[0].mine(max_count=25)
+    
+    # Crafting
+    await crafting.craft("iron-plate", count=10)
+    crafting.enqueue("copper-plate", count=50)
+    
+    # Inventory
+    iron_count = inventory.get_total("iron-plate")
+    
+    # Entity operations
+    furnace = reachable.get_entity("stone-furnace")
+    furnace.add_fuel(coal_stack)
+    furnace.add_input_items(ore_stack)
+    
+    # Database queries
+    result = map_db.connection.execute("SELECT * FROM resource_patch").fetchall()
+```
+
+**Entity Methods:**
+Each entity type has domain-specific methods reflecting its gameplay role:
+- `Furnace`: `add_fuel()`, `add_input_items()`, `take_output_items()`
+- `AssemblingMachine`: `set_recipe()`, `get_recipe()`
+- `Inserter`: `get_pickup_position()`, `get_drop_position()`
+- `MiningDrill`: `output_position()`, `get_search_area()`, `place_adjacent()`
+- `TransportBelt`: `extend(turn=None)`
+- `ElectricPole`: `extend(direction, distance=None)`
+
+### DuckDB Schemas (Broad Strokes)
+
+The DuckDB schema (`src/FactoryVerse/infra/db/duckdb_schema.py`) provides a spatial database for map queries:
+
+**Core Tables:**
+- `resource_tile`: Individual ore tiles with position and amount
+- `resource_entity`: Trees, rocks with bounding boxes
+- `map_entity`: All placed entities (drills, furnaces, belts, etc.) with spatial geometry
+- `entity_status`: Current operational status (working, no_power, no_fuel)
+
+**Component Tables:**
+- `inserter`: Direction, input/output positions and connected entities
+- `transport_belt`: Direction, input/output connections for belt networks
+- `electric_pole`: Supply area geometry, connected poles
+- `mining_drill`: Mining area geometry, output position
+- `assemblers`: Current recipe
+
+**Patch Tables:**
+- `resource_patch`: Clustered ore patches with total amount, centroid, geometry
+- `water_patch`: Water tile clusters with coastline length
+- `belt_line`: Belt network topology with line segments
+
+**Spatial Types:**
+- Uses DuckDB spatial extension (PostGIS-compatible)
+- `GEOMETRY` columns for bounding boxes, areas, lines
+- `POINT_2D` for centroids
+- RTREE indexes for efficient spatial queries
+
+**ENUM Types:**
+Dynamically generated from Factorio prototype data:
+- `recipe`: All craftable recipes
+- `resource_tile`: Ore types (iron-ore, copper-ore, coal, stone, crude-oil)
+- `placeable_entity`: All placeable entity names
+- `direction`: North, East, South, West, etc.
+- `status`: working, no_power, no_fuel, etc.
+
+**Example Queries:**
+```sql
+-- Find nearest iron ore patches
+SELECT patch_id, total_amount, 
+       ST_Distance(centroid, ST_Point(0, 0)) AS distance
+FROM resource_patch 
+WHERE resource_name = 'iron-ore'
+ORDER BY distance ASC;
+
+-- Find drills without power coverage
+SELECT d.entity_key, m.position
+FROM mining_drill d
+JOIN map_entity m ON d.entity_key = m.entity_key
+WHERE m.electric_network_id IS NULL;
+
+-- Find water sources for offshore pumps
+SELECT patch_id, coast_length, total_area
+FROM water_patch
+WHERE coast_length > 20
+ORDER BY coast_length DESC;
+```
+
+---
+
+## How Factorio Gameplay Works
 
 Understanding Factorio's core progression is essential for designing effective AI agents. The gameplay follows a tightening flywheel pattern:
 
@@ -31,25 +296,13 @@ Understanding Factorio's core progression is essential for designing effective A
 
 The loop forms an accelerating flywheel: **Extract → Automate → Research → Scale → Repeat → Launch** — with steady-state infinite research sustaining long-horizon optimization.
 
-## The Visual Context Challenge
-
-Human players rely heavily on visual information that provides crucial gameplay context:
-
-- **Spatial Validity**: Visual indicators for valid entity placement locations
-- **Operational Range**: Highlighted coverage areas for drills, inserters, and other range-limited entities  
-- **System Dynamics**: Animated sprites indicating flow rates, operational status, and bottlenecks
-- **Multi-Scale Views**: Zoom levels that reveal different abstractions (individual machines vs. factory zones vs. global logistics)
-- **Resource Flows**: Belt animations, pipe contents, and inventory states
-- **Threat Assessment**: Pollution clouds, enemy base locations, and defensive coverage
-
-These visual cues are difficult to capture for text-based LLMs without enabling direct screen observation across multiple frames to understand dynamics.
+---
 
 ## Context on the Table
 
 <p align="center">
   <img src="docs/fv.svg" width="100%" alt="FactoryVerse Overview"/>
 </p>
-
 
 Rather than relying on visual interpretation or reactive object access, FactoryVerse makes implicit game context explicit through a queryable spatial database approach:
 
@@ -63,7 +316,7 @@ Rather than relying on visual interpretation or reactive object access, FactoryV
 - **Evolution Tracking**: Monitor pollution spread, enemy base expansion, and defensive coverage over time
 - **Performance Metrics**: Sustained science-per-minute, resource efficiency, and factory growth patterns
 
-This is attempting an opinionated equivelence between the game state mapped onto sql tables.
+This is attempting an opinionated equivalence between the game state mapped onto SQL tables.
 
 ### Context Materialization
 Instead of requiring LLMs to infer context from visual cues, FactoryVerse materializes this information as queryable data:
@@ -74,23 +327,23 @@ SELECT
   resource_name,
   total_amount,
   ST_Distance(centroid, ST_Point(0, 0)) AS distance_from_spawn
-FROM sp_resource_patches 
+FROM resource_patch 
 WHERE resource_name = 'iron-ore'
 ORDER BY total_amount DESC, distance_from_spawn ASC;
 
 -- Check which resources aren't being mined yet
 SELECT resource_name, COUNT(*) as uncovered_patches
-FROM sp_resource_patches rp
+FROM resource_patch rp
 WHERE NOT EXISTS (
-  SELECT 1 FROM raw_entities e 
-  WHERE e.name LIKE '%mining-drill%' 
-    AND ST_DWithin(rp.centroid, ST_Point(e.pos_x, e.pos_y), 2)
+  SELECT 1 FROM map_entity e 
+  JOIN mining_drill d ON e.entity_key = d.entity_key
+  WHERE ST_DWithin(rp.centroid, ST_Point(e.position.x, e.position.y), 2)
 )
 GROUP BY resource_name;
 
 -- Find water sources for offshore pumps
 SELECT patch_id, coast_length, total_area
-FROM get_water_coast(NULL)
+FROM water_patch
 WHERE coast_length > 20
 ORDER BY coast_length DESC;
 ```
@@ -101,227 +354,13 @@ ORDER BY coast_length DESC;
 2. **Scalable Observation**: Query exactly what's needed rather than loading entire game state
 3. **Flexible Abstraction**: Create novel views and analyses
 
-## Mod Design: Game State, Snapshots, and the Action Interface
-
-FactoryVerse’s mod treats Factorio as an explicit, serializable game state with a small, principled interface for mutation. The design makes the world easy to dump, transmit, validate, and change predictably—so agents can reason over data and apply actions safely.
-
-### Game State and Snapshots
-- **First-class game state**: The world is modeled as a relatively stable state (outside autonomous agents like biters). It can be materialized, compressed, and shipped.
-- **Snapshot base**: `core/Snapshot.lua` defines a standard envelope (schema_version, surface, timestamp, data) plus a component schema that flattens nested structures and pushes complex fields into JSON-like columns for efficient ingestion.
-- **Categories**: Multiple snapshot categories with dedicated implementations:
-  - **Resources** (`snapshots/ResourceSnapshot.lua`): What exists on a fresh map (ores, oil, rocks). High-throughput, chunked CSV streaming with optional UDP, flush thresholds, and compression for bulk ingestion.
-  - **Entities** (`snapshots/EntitiesSnapshot.lua`): Everything that appears through play—placed from saves or by players/agents. Includes derived components (belts, pipes, inventories, crafting state) flattened into a stable, query-ready shape.
-  ... etc.
-- **Upsert-friendly**: Standardized, columnar-oriented output enables efficient storage and straightforward upserts when incrementally updating downstream state.
-
-### Actions: Parameters, Validation, and Context
-- **Action base**: `core/action/Action.lua` provides lifecycle and a uniform contract: a `name`, a typed `params` spec, shared validators, and `run`.
-- **Parameter spec**: `core/action/ParamSpec.lua` declares required/optional fields, types, and defaults. Params normalize from raw tables or JSON, then validate before any mutation.
-- **Context**: Actions execute with an expectation of the current game state plus their own invocation parameters—mirroring how players “intend” sensible operations.
-
-### Validators and Reuse
-- **Nested validators**: Validators live alongside actions and categories (e.g., `actions/validator.lua`, `actions/entity/validator.lua`, `actions/entity/place/validator.lua`) and are shared/composed.
-- **Registry with patterns**: `core/action/ValidatorRegistry.lua` supports wildcards (e.g., `*`, `entity.*`) and exact names, so common constraints apply broadly while specific checks attach to individual actions.
-- **Automatic wiring**: `core/action/ActionRegistry.lua` loads actions, attaches validators, aggregates any event handlers, and exposes a single remote interface.
-
-### Execution Lifecycle and Hooks
-- **Pre-run**: `_pre_run` coerces JSON → params, applies `ParamSpec` checks, then runs logical validators. Any failure surfaces early.
-- **Run**: The action performs a meaningful, game-valid change and returns a small result describing what changed.
-- **Post-run**: `_post_run` funnels results into centralized mutation logging. This yields clean pre/post hooks for cross-cutting behaviors without action-local boilerplate.
-
-### Mutation Logging
-- **Central logger**: `core/mutation/MutationLogger.lua` records incremental changes as JSONL, reusing snapshot serializers where helpful (e.g., entity serialization). Output lands in `script-output/factoryverse/mutations`.
-- **Result contract**: Actions return lightweight hints (e.g., `affected_unit_numbers`, optional `affected_resources`, optional `affected_inventories`) that the logger resolves into rich records. See `docs/action-postrun-logging-plan.md` for the phased plan.
-- **Runtime control**: `core/mutation/MutationConfig.lua` enables minimal/full/disabled profiles. `control.lua` sets a conservative default and can enable future tick-based logging.
-
-### Remote Interface, Invocation, and Queues
-- **Direct remote calls**: `ActionRegistry` registers all actions on a single remote interface (`actions`) so external clients can invoke them individually via `remote.call("actions", "category.action", params)`.
-- **Queue-based batching (experimental)**: `core/action/ActionQueue.lua` exposes an `action_queue` remote interface that lets clients enqueue many actions and process them together (by key or all at once). This reduces per-call overhead (e.g., over rcon) and improves stability for multi-agent coordination by validating and sequencing batches. Convenience methods (`queue_category.action`) exist alongside generic `enqueue`, with controls for immediate mode, priorities, sizes, and per-key processing.
-
-Together, these pieces form a compact environment interface: snapshots make context explicit and cheap to move; actions apply validated, sensible changes; mutation logs capture what happened for downstream analytics and learning.
-
-## Python DSL: Type-Safe Entity Operations
-
-
-
-<p align="center">
-  <img src="docs/FactoryVerse.svg" width="100%" alt="FactoryVerse Overview"/>
-</p>
-
-FactoryVerse provides a Python Domain-Specific Language (DSL) that enables type-safe, context-aware operations on Factorio entities. The DSL bridges the gap between the Lua mod's remote interface and Python agent code, providing a clean, Pythonic API that reflects Factorio's gameplay semantics.
-
-### Design Philosophy
-
-The DSL is built around three core principles:
-
-1. **Type Safety**: Entity types are represented as Python classes with type-specific methods, preventing invalid operations (e.g., you can't set a recipe on a mining drill)
-2. **Context Awareness**: Operations automatically access the active gameplay session through context variables, eliminating the need for explicit factory passing
-3. **Prototype-Driven Behavior**: Static entity properties (output positions, search areas, connection points) are derived from Factorio's prototype data, ensuring accuracy and consistency
-
-### Context Management
-
-All entity operations require an active gameplay context, provided by the `playing_factory` context manager:
-
-```python
-from src.FactoryVerse.dsl.agent import playing_factory
-from src.FactoryVerse.dsl.types import MapPosition
-
-with playing_factory(rcon_client, agent_id):
-    # All entity operations here
-    drill = ElectricMiningDrill(...)
-    output_pos = drill.output_position()
-```
-
-The context manager sets up a thread-local context variable that entities and top-level functions automatically access, ensuring operations only execute within a valid gameplay session.
-
-### Entity Types and Operations
-
-Entities are represented as typed Python classes, each with domain-specific methods:
-
-```python
-# Mining drills - extract resources
-drill = ElectricMiningDrill(name="electric-mining-drill", position=MapPosition(10, 20), ...)
-output_pos = drill.output_position()  # Get output tile position
-search_area = drill.get_search_area()  # Get resource search bounding box
-
-# Inserters - move items between entities
-inserter = Inserter(...)
-pickup_pos = inserter.get_pickup_position()  # Where inserter picks up items
-drop_pos = inserter.get_drop_position()  # Where inserter drops items
-
-# Furnaces - smelt ores into plates
-furnace = Furnace(...)
-furnace.add_fuel(coal_stack)  # Add fuel (accepts Item or ItemStack)
-furnace.put_input_items(iron_ore_stack, count=50)  # Add ore to smelt
-plates = furnace.take_output_items(iron_plate_stack)  # Extract smelted plates
-
-# Assembling machines - craft items
-assembler = AssemblingMachine(...)
-assembler.set_recipe("iron-gear-wheel")  # Set what to craft
-input_type = assembler.get_input_type()  # Query recipe requirements
-output_type = assembler.get_output_type()  # Query recipe outputs
-```
-
-### Prototype System
-
-Static entity properties are accessed through a singleton prototype system that loads data from Factorio's prototype definitions:
-
-```python
-# Prototypes provide spatial calculations based on entity definitions
-drill.prototype.output_position(centroid, direction)  # Calculate output tile
-drill.prototype.get_resource_search_area(centroid)  # Calculate mining area
-inserter.prototype.pickup_position(centroid, direction)  # Calculate pickup tile
-```
-
-Prototypes are instantiated once and shared globally, ensuring efficient memory usage and consistent behavior across all entity instances.
-
-### Items and Placement
-
-Items in inventory are represented as `Item` and `ItemStack` objects. Placeable items can be placed as entities:
-
-```python
-# Regular placeable items
-chest_item = PlaceableItem(name="wooden-chest", ...)
-chest_entity = chest_item.place(MapPosition(10, 20))
-
-# Special items requiring placement cues (mining drills, pumpjacks, offshore pumps)
-drill_item = MiningDrillItem(name="electric-mining-drill", ...)
-cues = drill_item.get_placement_cues()  # Get valid placement positions
-if cues:
-    entity = drill_item.place(
-        MapPosition(cues[0]["position"]["x"], cues[0]["position"]["y"]),
-        Direction(cues[0].get("direction", 0))
-    )
-```
-
-### Top-Level Functions
-
-The DSL provides convenient top-level functions for common operations, automatically accessing the gameplay context:
-
-```python
-from src.FactoryVerse.dsl.dsl import walk_to, craft_enqueue, get_reachable_entities
-
-with playing_factory(rcon, agent_id):
-    # Movement
-    walk_to(MapPosition(10, 20))
-    cancel_walking()
-    
-    # Crafting
-    craft_enqueue("iron-plate", count=5)
-    craft_dequeue("iron-plate", count=2)
-    
-    # Research
-    research_enqueue("automation")
-    research_dequeue()
-    
-    # Observation
-    entities = get_reachable_entities()
-    inventory = get_inventory_items()
-```
-
-### Type System Benefits
-
-The typed DSL provides several advantages over string-based APIs:
-
-1. **IDE Support**: Autocomplete and type checking catch errors before runtime
-2. **Semantic Clarity**: Method names reflect gameplay actions (`add_fuel` vs `put_inventory_item`)
-3. **Invalid Operation Prevention**: Type system prevents impossible operations (e.g., setting recipes on non-crafting entities)
-4. **Refactoring Safety**: Type information enables safe code changes and better tooling support
-
-### Integration with Spatial Queries
-
-The DSL integrates seamlessly with FactoryVerse's spatial database approach. Entities can be created from query results:
-
-```python
-# Query entities from DuckDB
-entities_data = map_view.query("""
-    SELECT name, pos_x, pos_y, direction, bounding_box
-    FROM raw_entities
-    WHERE name = 'electric-mining-drill'
-""")
-
-# Convert to typed entities
-from src.FactoryVerse.dsl.entity.base import ElectricMiningDrill
-from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction
-
-drills = [
-    ElectricMiningDrill(
-        name=row["name"],
-        position=MapPosition(row["pos_x"], row["pos_y"]),
-        bounding_box=BoundingBox.from_tuple(row["bounding_box"]),
-        direction=Direction(row["direction"])
-    )
-    for row in entities_data
-]
-
-# Now use typed methods
-with playing_factory(rcon, agent_id):
-    for drill in drills:
-        output_pos = drill.output_position()
-        search_area = drill.get_search_area()
-```
-
-This combination of spatial queries for observation and typed DSL for action provides a powerful interface for AI agents to reason about and interact with the Factorio world.
-
-## Getting Started
-
-[Installation and usage instructions would follow here, for sure]
-
-## Research Applications
-
-FactoryVerse enables investigation of several research questions in AI systems:
-
-- **Multi-Scale Planning**: How do agents balance local optimization vs. global factory efficiency?
-- **Spatial Reasoning**: Can LLMs effectively perform complex geometric and logistical reasoning through SQL interfaces?
-- **System Dynamics**: How well can text-based models understand and optimize complex feedback loops?
-- **Long-Horizon Optimization**: What strategies emerge for infinite research and continuous improvement scenarios?
+---
 
 ## Appendix
 
 ### Spatial Types
 
-Factorio is a 2d grid based world, the relavant game world precision is integer level, IFF you ignore real player position, vehicle position and mine placement.
-In other words everything else on the map snaps on an integer coordinate grid, with the smallest 1x1 size of this world called a tile.
+Factorio is a 2D grid-based world. The relevant game world precision is integer level, if you ignore real player position, vehicle position, and mine placement. In other words, everything else on the map snaps to an integer coordinate grid, with the smallest 1×1 size of this world called a tile.
 
 While entities have centers that can be at half-tile coordinates (e.g., x + 0.5), we can represent them using their bottom-left corner coordinates and dimensions instead. This transformation converts all spatial data to integer coordinates, enabling fast spatial indexing and efficient database queries.
 
