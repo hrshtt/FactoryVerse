@@ -644,7 +644,7 @@ local function transition_to_maintenance()
     state.stats.initial_snapshot_duration_ticks = game.tick - state.stats.phase_start_tick
     
     -- Log transition with performance summary
-    if game and game.print then
+    if DEBUG and game and game.print then
         local duration_seconds = state.stats.initial_snapshot_duration_ticks / 60
         game.print("═══════════════════════════════════════════════════════════")
         game.print(string.format("[Snapshot System] ✅ Initial snapshotting COMPLETE after %.1f seconds (%d ticks).", 
@@ -1017,7 +1017,7 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     }
     send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.SERIALIZE, chunk, progress)
     
-    if snapshot.DEBUG and game and game.print then
+    if DEBUG and game and game.print then
         local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
         game.print(string.format("[snapshot] FIND_ENTITIES complete for chunk (%d, %d): %d items to serialize (%d ghosts)",
             chunk_x, chunk_y, total, #ghosts))
@@ -1318,7 +1318,7 @@ local function phase_write(state)
                 -- For ghosts, send file_appended payload
                 local file_payload = udp_payloads.file_appended(item.file_type, chunk, item.path, game.tick, item.ghost_count)
                 udp_payloads.send_file_io(file_payload)
-                if snapshot.DEBUG and game and game.print then
+                if DEBUG and game and game.print then
                     game.print(string.format("[snapshot] Appended %d ghosts to top-level file from chunk (%d, %d)",
                         item.ghost_count or 0, chunk_x, chunk_y))
                 end
@@ -1327,7 +1327,7 @@ local function phase_write(state)
                 local file_payload = udp_payloads.file_written(item.file_type, chunk, item.path, game.tick)
                 udp_payloads.send_file_io(file_payload)
             end
-        elseif snapshot.DEBUG and game and game.print then
+        elseif DEBUG and game and game.print then
             game.print(string.format("[snapshot] WARNING: Failed to write file: %s", item.path))
         end
         
@@ -1367,7 +1367,7 @@ local function phase_write(state)
         }
         send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.COMPLETE, chunk, progress)
         
-        if snapshot.DEBUG and game and game.print then
+        if DEBUG and game and game.print then
             game.print(string.format("[snapshot] WRITE complete for chunk (%d, %d)", chunk_x, chunk_y))
         end
     end
@@ -1426,7 +1426,7 @@ local function phase_complete(state)
     local sys_state = get_system_state()
     sys_state.stats.chunks_snapshotted = sys_state.stats.chunks_snapshotted + 1
     
-    if snapshot.DEBUG and game and game.print then
+    if DEBUG and game and game.print then
         game.print(string.format("[snapshot] COMPLETE: Chunk (%d, %d) fully snapshotted (total: %d, pending: %d)", 
             chunk_x, chunk_y, sys_state.stats.chunks_snapshotted, sys_state.stats.chunks_pending))
     end
@@ -1443,6 +1443,14 @@ function M._on_tick_snapshot_chunks(event)
     local tick_start = game.tick
     local state = get_snapshot_state()
     local sys_state = get_system_state()
+    
+    -- Early exit optimization: If we're in IDLE phase with no pending chunks and not in bootstrap wait
+    if state.phase == SnapshotPhase.IDLE then
+        -- Early exit: No pending chunks and not in bootstrap wait
+        if #sys_state.pending_chunks == 0 and sys_state.phase ~= SystemPhase.INITIAL_SNAPSHOTTING then
+            return
+        end
+    end
     
     -- IDLE: Find next chunk to process from queue
     if state.phase == SnapshotPhase.IDLE then
@@ -1480,7 +1488,7 @@ function M._on_tick_snapshot_chunks(event)
                 
                 if sys_state.current_wait_tick >= sys_state.bootstrap_wait_ticks then
                     -- Waited long enough, transition to MAINTENANCE
-                    if DEBUG or true then  -- Always log this important transition
+                    if DEBUG then
                         game.print(string.format("[Snapshot System] Bootstrap wait complete (%d ticks). Pending chunks: %d. Transitioning to MAINTENANCE.",
                             sys_state.current_wait_tick, #sys_state.pending_chunks))
                     end

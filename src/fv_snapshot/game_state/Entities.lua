@@ -358,12 +358,12 @@ end
 --- Must be called during on_init/on_load
 --- Note: EntityInterface owns the entity_configuration_changed event
 function M.init()
-    if game and game.print then
+    if M.DEBUG and game and game.print then
         game.print(string.format("[DEBUG Entities.init] Tick %d: Initializing Entities module", game.tick))
     end
     -- Build disk_write_snapshot table after events are initialized
     M.disk_write_snapshot = M._build_disk_write_snapshot()
-    if game and game.print then
+    if M.DEBUG and game and game.print then
         game.print(string.format("[DEBUG Entities.init] Tick %d: Finished initializing Entities module", game.tick))
     end
 end
@@ -636,9 +636,11 @@ end
 --- Handles both resource entities (trees/rocks) and player-built entities
 --- @param event table Event data with entity, entity_name, entity_type, position fields
 local function _on_agent_entity_destroyed(event)
-    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Event received! entity_name=%s, entity_type=%s, position=%s", 
-        game.tick, event.entity_name or "nil", event.entity_type or "nil",
-        event.position and string.format("{%f,%f}", event.position.x, event.position.y) or "nil"))
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Event received! entity_name=%s, entity_type=%s, position=%s", 
+            game.tick, event.entity_name or "nil", event.entity_type or "nil",
+            event.position and string.format("{%f,%f}", event.position.x, event.position.y) or "nil"))
+    end
     
     -- Entity may be nil if already destroyed (common for mining)
     local entity = event.entity
@@ -647,39 +649,55 @@ local function _on_agent_entity_destroyed(event)
     local position = event.position
     
     -- If we have entity info but no entity object, create a minimal entity-like object
-    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Checking conditions - entity=%s, entity_name=%s, position=%s", 
-        game.tick, entity and "valid" or "nil", tostring(entity_name), position and "valid" or "nil"))
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Checking conditions - entity=%s, entity_name=%s, position=%s", 
+            game.tick, entity and "valid" or "nil", tostring(entity_name), position and "valid" or "nil"))
+    end
     
     if not entity and entity_name and position then
         -- Check if it's a resource entity (tree or rock)
         local is_resource_entity = false
         if entity_type == "tree" then
             is_resource_entity = true
-            game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Detected tree entity", game.tick))
+            if M.DEBUG then
+                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Detected tree entity", game.tick))
+            end
         elseif entity_type == "simple-entity" and entity_name then
             if entity_name:match("rock") or entity_name:match("stone") then
                 is_resource_entity = true
-                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Detected rock entity: %s", game.tick, entity_name))
+                if M.DEBUG then
+                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Detected rock entity: %s", game.tick, entity_name))
+                end
             end
         end
         
-        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: is_resource_entity=%s", game.tick, tostring(is_resource_entity)))
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: is_resource_entity=%s", game.tick, tostring(is_resource_entity)))
+        end
         
         if is_resource_entity then
             -- Handle resource entities (trees/rocks) - rewrite resource files and create update entry
             local chunk_coords = utils.to_chunk_coordinates(position)
-            game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: chunk_coords=%s", 
-                game.tick, chunk_coords and string.format("{%d,%d}", chunk_coords.x, chunk_coords.y) or "nil"))
+            if M.DEBUG then
+                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: chunk_coords=%s", 
+                    game.tick, chunk_coords and string.format("{%d,%d}", chunk_coords.x, chunk_coords.y) or "nil"))
+            end
             
             if chunk_coords then
-                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Resource entity %s mined by agent, rewriting chunk (%d,%d) resources", 
-                    game.tick, entity_name or "unknown", chunk_coords.x, chunk_coords.y))
+                if M.DEBUG then
+                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Resource entity %s mined by agent, rewriting chunk (%d,%d) resources", 
+                        game.tick, entity_name or "unknown", chunk_coords.x, chunk_coords.y))
+                end
                 -- 1. Rewrite resource files (trees_rocks_init.jsonl)
                 if Resource and Resource._rewrite_chunk_resources then
-                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Calling Resource._rewrite_chunk_resources", game.tick))
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Calling Resource._rewrite_chunk_resources", game.tick))
+                    end
                     Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y)
                 else
-                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: WARNING - Resource or _rewrite_chunk_resources not available", game.tick))
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: WARNING - Resource or _rewrite_chunk_resources not available", game.tick))
+                    end
                 end
                 -- 2. Create trees/rocks update entry (trees_rocks-update.jsonl)
                 -- Create a minimal entity-like object for Resource.create_trees_rocks_update_entry
@@ -694,15 +712,21 @@ local function _on_agent_entity_destroyed(event)
                     Resource.create_trees_rocks_update_entry(fake_entity, chunk_coords.x, chunk_coords.y)
                 end
             else
-                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: WARNING - chunk_coords is nil, cannot create update entry", game.tick))
+                if M.DEBUG then
+                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: WARNING - chunk_coords is nil, cannot create update entry", game.tick))
+                end
             end
             return
         else
-            game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: NOT a resource entity, skipping resource handling", game.tick))
+            if M.DEBUG then
+                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: NOT a resource entity, skipping resource handling", game.tick))
+            end
         end
     else
-        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Condition not met - entity=%s, entity_name=%s, position=%s", 
-            game.tick, entity and "valid" or "nil", tostring(entity_name), position and "valid" or "nil"))
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Condition not met - entity=%s, entity_name=%s, position=%s", 
+                game.tick, entity and "valid" or "nil", tostring(entity_name), position and "valid" or "nil"))
+        end
     end
     
     -- Handle player-built entities (entity should be valid or we have entity info)

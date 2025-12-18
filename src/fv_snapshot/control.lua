@@ -3,6 +3,7 @@
 -- Note: This mod depends on fv_embodied_agent (for Agent class)
 
 local utils = require("utils.utils")
+local snapshot = require("utils.snapshot")
 
 -- Require game state modules at module level (required by Factorio)
 local Entities = require("game_state.Entities")
@@ -180,11 +181,37 @@ end
 register_all_remote_interfaces()
 
 -- ============================================================================
+-- SNAPSHOT DIRECTORY CLEANUP
+-- ============================================================================
+
+--- Clear the snapshot directory to ensure a clean state for new maps
+--- This prevents stale data from previous map sessions from being loaded
+local function clear_snapshot_directory()
+    local snapshot_base_dir = snapshot.SNAPSHOT_BASE_DIR
+    
+    -- Attempt to remove the entire snapshot directory tree
+    local ok, err = pcall(function()
+        helpers.remove_path(snapshot_base_dir)
+    end)
+    
+    if ok then
+        log("🧹 Cleared snapshot directory: " .. snapshot_base_dir)
+    else
+        log("⚠️  Failed to clear snapshot directory: " .. tostring(err))
+        -- Continue anyway - the directory might not exist yet
+    end
+end
+
+-- ============================================================================
 -- LIFECYCLE CALLBACKS
 -- ============================================================================
 
 script.on_init(function()
     log("hello from fv_snapshot on_init")
+
+    -- Clear snapshot directory FIRST to ensure clean state for new map
+    -- This is critical when starting a new map with a fresh seed
+    clear_snapshot_directory()
 
     -- Initialize game state modules (must happen before event registration)
     -- This generates custom event IDs that will be used in event handlers

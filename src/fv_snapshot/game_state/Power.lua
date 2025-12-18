@@ -25,6 +25,12 @@ function M.get_global_power_statistics()
 end
 
 function M._on_nth_tick_global_power_snapshot()
+    -- Early exit: Check if surface exists before processing
+    local surface = game.surfaces[1]
+    if not surface then
+        return
+    end
+    
     local stats = M.get_global_power_statistics()
     if not stats then return end
 

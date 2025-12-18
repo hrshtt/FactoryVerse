@@ -15,7 +15,7 @@ local M = {}
 -- ============================================================================
 -- DEBUG FLAG
 -- ============================================================================
-M.DEBUG = true  -- Enable for performance analysis
+M.DEBUG = false  -- Enable for performance analysis
 
 --- Serialize a single resource tile
 --- @param entity LuaEntity - the resource entity

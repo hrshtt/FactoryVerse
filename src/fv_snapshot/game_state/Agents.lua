@@ -16,6 +16,17 @@ local M = {}
 --- Writes to {agent_id}/production_statistics.jsonl
 function M._on_nth_tick_agent_production_snapshot()
     local agents = Agents.list_agent_forces()
+    
+    -- Early exit: No agents to process
+    local has_agents = false
+    for _ in pairs(agents) do
+        has_agents = true
+        break
+    end
+    if not has_agents then
+        return
+    end
+    
     for agent_id, force_name in pairs(agents) do
         local agent = Agents.get_agent(agent_id)
         if agent and agent.character.valid then
