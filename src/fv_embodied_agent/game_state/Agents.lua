@@ -106,8 +106,9 @@ end
 --- @param destroy_existing boolean|nil If true, destroy existing agents
 --- @param set_unique_forces boolean|nil Default false - use player force; if true, agent gets unique force
 --- @param default_common_force string|nil Force name to use if set_unique_forces=false (default: "player")
+--- @param initial_inventory table|nil Initial inventory items {item_name = count, ...}
 --- @return table Created agent info {agent_id, force_name, interface_name}
-function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_common_force)
+function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_common_force, initial_inventory)
     if not storage.agents then
         storage.agents = {}
     end
@@ -164,6 +165,18 @@ function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_c
     
     local color = generate_agent_color(1, 1)
     local agent = M._create_agent_instance(agent_id, color, force_name, position, udp_port)
+    
+    -- Add initial inventory items if provided
+    if initial_inventory and type(initial_inventory) == "table" and next(initial_inventory) ~= nil then
+        if agent.character and agent.character.valid then
+            local inventory = agent.character.get_main_inventory()
+            if inventory then
+                for item_name, count in pairs(initial_inventory) do
+                    inventory.insert({name = item_name, count = count})
+                end
+            end
+        end
+    end
     
     return {
         agent_id = agent.agent_id,
@@ -481,11 +494,12 @@ end
 --- Specifications for admin API methods
 M.AdminApiSpecs = {
     create_agent = {
-        _param_order = {"udp_port", "destroy_existing", "set_unique_forces", "default_common_force"},
+        _param_order = {"udp_port", "destroy_existing", "set_unique_forces", "default_common_force", "initial_inventory"},
         udp_port = {type = "number", required = false},
         destroy_existing = {type = "boolean", required = false},
         set_unique_forces = {type = "boolean", required = false},
         default_common_force = {type = "string", required = false},
+        initial_inventory = {type = "table", required = false},
     },
     destroy_agents = {
         _param_order = {"agent_ids", "destroy_forces"},

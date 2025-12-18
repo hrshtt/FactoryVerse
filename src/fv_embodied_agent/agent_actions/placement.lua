@@ -132,210 +132,152 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
     }
 end
 
---- Map entity names to required chunk resource categories
---- Structure: {category = "resource"|"water", name = resource_name|nil}
---- name is the ChunkTracker resource name (underscore format)
-local entity_name_to_chunk_categories = {
-    ["electric-mining-drill"] = {
-        {category = "resource", name = "copper_ore"},
-        {category = "resource", name = "iron_ore"},
-        {category = "resource", name = "uranium_ore"},
-        {category = "resource", name = "coal"},
-        {category = "resource", name = "stone"},
-    },
-    ["pumpjack"] = {
-        {category = "resource", name = "crude_oil"},
-    },
-    ["offshore-pump"] = {
-        {category = "water", name = nil},
-    },
-}
-
---- Map Factorio resource entity names to ChunkTracker resource names
---- Converts hyphenated names to underscore names (e.g., "copper-ore" -> "copper_ore")
-local function map_resource_name(factorio_name)
-    local resource_map = {
-        ["copper-ore"] = "copper_ore",
-        ["iron-ore"] = "iron_ore",
-        ["uranium-ore"] = "uranium_ore",
-        ["coal"] = "coal",
-        ["stone"] = "stone",
-        ["crude-oil"] = "crude_oil"
-    }
-    return resource_map[factorio_name]
+--- Determine if an entity requires resources for placement
+--- @param entity_name string Entity prototype name
+--- @return boolean True if entity needs resources (mining drills, pumpjacks)
+local function entity_requires_resources(entity_name)
+    -- Mining drills need ore/coal/stone resources
+    if string.find(entity_name, "mining%-drill") then
+        return true
+    end
+    -- Pumpjacks need crude oil
+    if entity_name == "pumpjack" then
+        return true
+    end
+    return false
 end
 
---- Get all tile positions in a chunk (for offshore-pump water scanning)
+--- Determine if an entity requires water for placement
+--- @param entity_name string Entity prototype name
+--- @return boolean True if entity needs water (offshore pumps)
+local function entity_requires_water(entity_name)
+    return entity_name == "offshore-pump"
+end
+
+--- Get all tile positions in a chunk
 --- Chunk (x, y) covers tiles from (x*32, y*32) to ((x+1)*32 - 1, (y+1)*32 - 1) inclusive
---- @param chunk_key string Chunk key in format "x,y"
+--- @param chunk_x number Chunk X coordinate
+--- @param chunk_y number Chunk Y coordinate
 --- @return table Array of positions {x, y}
-local function get_all_chunk_coordinates(chunk_key)
-    local xstr, ystr = string.match(chunk_key, "([^,]+),([^,]+)")
-    local chunk_x = tonumber(xstr)
-    local chunk_y = tonumber(ystr)
-    
-    local coordinates = {}
+local function get_chunk_tile_positions(chunk_x, chunk_y)
+    local positions = {}
     local x0 = chunk_x * 32
     local y0 = chunk_y * 32
     -- Chunk covers 32x32 tiles: from (x0, y0) to (x0+31, y0+31) inclusive
     for dx = 0, 31 do
         for dy = 0, 31 do
-            table.insert(coordinates, { x = x0 + dx, y = y0 + dy })
+            table.insert(positions, { x = x0 + dx, y = y0 + dy })
         end
     end
-    return coordinates
+    return positions
 end
 
 --- Get placement cues for an entity type
---- Returns valid positions where the entity can be placed based on chunk resource tracking
+--- Scans chunks in view and returns valid placement positions
 --- @param entity_name string Entity prototype name
---- @return table Array of {position = {x, y}, can_place = true}
+--- @return table {positions: array, reachable_positions: array}
 function PlacementActions.get_placement_cues(self, entity_name)
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
     
-    local required_categories = entity_name_to_chunk_categories[entity_name]
-    if not required_categories then
-        if DEBUG then
-            game.print(string.format("[get_placement_cues] Unknown entity type: %s", entity_name))
-        end
-        return {}  -- Unknown entity type, return empty
+    -- Validate entity prototype exists
+    local proto = prototypes and prototypes.entity and prototypes.entity[entity_name]
+    if not proto then
+        error("Agent: Unknown entity prototype: " .. entity_name)
     end
 
     -- Get chunks in view (5x5 chunks around agent)
-    -- Note: get_chunks_in_view is mixed into Agent from ChartingActions
     local chunks_in_view = self:get_chunks_in_view()
     if DEBUG then
-        game.print(string.format("[get_placement_cues] Chunks in view: %d", #chunks_in_view))
+        game.print(string.format("[get_placement_cues] Entity: %s, Chunks in view: %d", entity_name, #chunks_in_view))
     end
     
-    local chunks_to_scan = {}
+    local all_positions = {}
+    local requires_resources = entity_requires_resources(entity_name)
+    local requires_water = entity_requires_water(entity_name)
     
-    -- Filter chunks that contain required resources
+    -- For each chunk in view, collect all valid positions
     for _, chunk in pairs(chunks_in_view) do
-        local chunk_has_resource = false
+        local should_scan_chunk = false
         
-        -- Check if chunk has ANY of the required resources (OR logic)
-        for _, req in pairs(required_categories) do
-            if storage.chunk_tracker and storage.chunk_tracker:chunk_has(req.category, req.name, chunk.x, chunk.y) then
-                chunk_has_resource = true
-                if DEBUG then
-                    game.print(string.format("[get_placement_cues] Chunk (%d, %d) has %s/%s", chunk.x, chunk.y, req.category, req.name or "nil"))
-                end
-                break
-            end
-        end
-        
-        if chunk_has_resource then
-            table.insert(chunks_to_scan, {
-                x = chunk.x,
-                y = chunk.y,
-                area = {
-                    left_top = { x = chunk.x * 32, y = chunk.y * 32 },
-                    -- Full chunk bounding box (avoid dropping border tiles)
-                    right_bottom = { x = (chunk.x + 1) * 32, y = (chunk.y + 1) * 32 }
-                }
-            })
-        end
-    end
-    
-    if DEBUG then
-        game.print(string.format("[get_placement_cues] Chunks to scan: %d", #chunks_to_scan))
-        for _, chunk in pairs(chunks_to_scan) do
-            game.print(string.format("[get_placement_cues]   - Chunk (%d, %d): area TL=(%d, %d) BR=(%d, %d)", 
-                chunk.x, chunk.y, 
-                chunk.area.left_top.x, chunk.area.left_top.y,
-                chunk.area.right_bottom.x, chunk.area.right_bottom.y))
-        end
-    end
-
-    local response = {}
-    
-    -- For offshore-pump: scan all positions in chunks with water
-    -- Test 4 cardinal directions since offshore-pump must face water
-    if entity_name == "offshore-pump" then
-        local total_positions_checked = 0
-        local total_positions_valid = 0
-        -- Test only cardinal directions (north, east, south, west)
-        local directions = {
-            {enum = defines.direction.north, name = "north"},
-            {enum = defines.direction.east, name = "east"},
-            {enum = defines.direction.south, name = "south"},
-            {enum = defines.direction.west, name = "west"}
-        }
-        for _, chunk in pairs(chunks_to_scan) do
-            local chunk_key = chunk.x .. "," .. chunk.y
-            local chunk_positions_checked = 0
-            local chunk_positions_valid = 0
-            for _, position in pairs(get_all_chunk_coordinates(chunk_key)) do
-                total_positions_checked = total_positions_checked + 1
-                chunk_positions_checked = chunk_positions_checked + 1
-                
-                -- Test each direction
-                local found_valid = false
-                for _, dir_info in pairs(directions) do
-                    local params = {
-                        name = entity_name,
-                        position = position,
-                        direction = dir_info.enum,
-                        force = self.character.force,
-                        build_check_type = defines.build_check_type.manual,
-                    }
-                    local can_place = game.surfaces[1].can_place_entity(params)
-                    if can_place then
-                        if not found_valid then
-                            -- Only add position once (first valid direction found)
-                            total_positions_valid = total_positions_valid + 1
-                            chunk_positions_valid = chunk_positions_valid + 1
-                            table.insert(response, {position = position, can_place = can_place, direction = dir_info.name})
-                            found_valid = true
-                        end
-                    end
-                end
-            end
-            if DEBUG then
-                game.print(string.format("[get_placement_cues] Chunk (%d, %d): checked %d positions, %d valid", 
-                    chunk.x, chunk.y, chunk_positions_checked, chunk_positions_valid))
-            end
-        end
-        if DEBUG then
-            game.print(string.format("[get_placement_cues] Total: checked %d positions, %d valid placements", 
-                total_positions_checked, total_positions_valid))
-        end
-    else
-        -- For mining drills and pumpjacks: find resource entities and check placement at those positions
-        local total_resources_found = 0
-        local total_resources_matched = 0
-        local total_positions_valid = 0
-        for _, chunk in pairs(chunks_to_scan) do
-            -- Find resource entities in chunk
-            local resource_entities = game.surfaces[1].find_entities_filtered({
-                area = chunk.area,
+        -- Determine if we should scan this chunk
+        if requires_resources then
+            -- Check if chunk has ANY resource entities
+            local chunk_area = {
+                left_top = { x = chunk.x * 32, y = chunk.y * 32 },
+                right_bottom = { x = (chunk.x + 1) * 32, y = (chunk.y + 1) * 32 }
+            }
+            local resource_count = game.surfaces[1].count_entities_filtered({
+                area = chunk_area,
                 type = "resource"
             })
-            if DEBUG then
-                game.print(string.format("[get_placement_cues] Chunk (%d, %d): found %d resource entities", 
-                    chunk.x, chunk.y, #resource_entities))
-            end
-            total_resources_found = total_resources_found + #resource_entities
+            should_scan_chunk = resource_count > 0
             
-            for _, resource_entity in pairs(resource_entities) do
-                if resource_entity and resource_entity.valid then
-                    -- Map Factorio resource entity name to ChunkTracker resource name
-                    local tracker_resource_name = map_resource_name(resource_entity.name)
-                    
-                    -- Check if this resource type matches any of the required resources
-                    local matches_requirement = false
-                    for _, req in pairs(required_categories) do
-                        if req.category == "resource" and req.name == tracker_resource_name then
-                            matches_requirement = true
-                            break
+            if DEBUG and should_scan_chunk then
+                game.print(string.format("[get_placement_cues] Chunk (%d, %d) has %d resources", 
+                    chunk.x, chunk.y, resource_count))
+            end
+        elseif requires_water then
+            -- Check if chunk has water (using chunk tracker)
+            if storage.chunk_tracker and storage.chunk_tracker:chunk_has("water", nil, chunk.x, chunk.y) then
+                should_scan_chunk = true
+                if DEBUG then
+                    game.print(string.format("[get_placement_cues] Chunk (%d, %d) has water", chunk.x, chunk.y))
+                end
+            end
+        else
+            -- For other entities, scan all chunks
+            should_scan_chunk = true
+        end
+        
+        -- Scan chunk if it meets requirements
+        if should_scan_chunk then
+            local chunk_valid_positions = 0
+            
+            if requires_water then
+                -- For offshore pumps: test cardinal directions
+                local directions = {
+                    {enum = defines.direction.north, name = "north"},
+                    {enum = defines.direction.east, name = "east"},
+                    {enum = defines.direction.south, name = "south"},
+                    {enum = defines.direction.west, name = "west"}
+                }
+                
+                for _, position in pairs(get_chunk_tile_positions(chunk.x, chunk.y)) do
+                    -- Test each direction
+                    for _, dir_info in pairs(directions) do
+                        local params = {
+                            name = entity_name,
+                            position = position,
+                            direction = dir_info.enum,
+                            force = self.character.force,
+                            build_check_type = defines.build_check_type.manual,
+                        }
+                        if game.surfaces[1].can_place_entity(params) then
+                            chunk_valid_positions = chunk_valid_positions + 1
+                            table.insert(all_positions, {
+                                position = position,
+                                can_place = true,
+                                direction = dir_info.name
+                            })
+                            break  -- Only add position once (first valid direction)
                         end
                     end
-                    
-                    if matches_requirement then
-                        total_resources_matched = total_resources_matched + 1
+                end
+            elseif requires_resources then
+                -- For mining drills/pumpjacks: scan resource entity positions
+                local chunk_area = {
+                    left_top = { x = chunk.x * 32, y = chunk.y * 32 },
+                    right_bottom = { x = (chunk.x + 1) * 32, y = (chunk.y + 1) * 32 }
+                }
+                local resource_entities = game.surfaces[1].find_entities_filtered({
+                    area = chunk_area,
+                    type = "resource"
+                })
+                
+                for _, resource_entity in pairs(resource_entities) do
+                    if resource_entity and resource_entity.valid then
                         local position = { x = resource_entity.position.x, y = resource_entity.position.y }
                         local params = {
                             name = entity_name,
@@ -343,30 +285,152 @@ function PlacementActions.get_placement_cues(self, entity_name)
                             force = self.character.force,
                             build_check_type = defines.build_check_type.manual,
                         }
-                        local can_place = game.surfaces[1].can_place_entity(params)
-                        if can_place then
-                            total_positions_valid = total_positions_valid + 1
-                            -- Reuse resource_entity.name from find_entities_filtered response
-                            table.insert(response, {
-                                position = position, 
-                                can_place = can_place,
+                        if game.surfaces[1].can_place_entity(params) then
+                            chunk_valid_positions = chunk_valid_positions + 1
+                            table.insert(all_positions, {
+                                position = position,
+                                can_place = true,
                                 resource_name = resource_entity.name
                             })
                         end
                     end
                 end
+            else
+                -- For other entities: scan all tile positions
+                for _, position in pairs(get_chunk_tile_positions(chunk.x, chunk.y)) do
+                    local params = {
+                        name = entity_name,
+                        position = position,
+                        force = self.character.force,
+                        build_check_type = defines.build_check_type.manual,
+                    }
+                    if game.surfaces[1].can_place_entity(params) then
+                        chunk_valid_positions = chunk_valid_positions + 1
+                        table.insert(all_positions, {
+                            position = position,
+                            can_place = true
+                        })
+                    end
+                end
+            end
+            
+            if DEBUG and chunk_valid_positions > 0 then
+                game.print(string.format("[get_placement_cues] Chunk (%d, %d): %d valid positions", 
+                    chunk.x, chunk.y, chunk_valid_positions))
             end
         end
-        if DEBUG then
-            game.print(string.format("[get_placement_cues] Total: found %d resources, %d matched requirements, %d valid placements", 
-                total_resources_found, total_resources_matched, total_positions_valid))
+    end
+    
+    -- Now scan reachable area separately
+    local reachable_positions = {}
+    local agent_pos = self.character.position
+    local build_distance = self.character.build_distance or 10
+    
+    -- Define reachable bounding box
+    local reachable_area = {
+        left_top = { x = agent_pos.x - build_distance, y = agent_pos.y - build_distance },
+        right_bottom = { x = agent_pos.x + build_distance, y = agent_pos.y + build_distance }
+    }
+    
+    if DEBUG then
+        game.print(string.format("[get_placement_cues] Scanning reachable area: build_distance=%d", build_distance))
+    end
+    
+    -- Scan reachable area
+    if requires_water then
+        -- For offshore pumps: test cardinal directions in reachable area
+        local directions = {
+            {enum = defines.direction.north, name = "north"},
+            {enum = defines.direction.east, name = "east"},
+            {enum = defines.direction.south, name = "south"},
+            {enum = defines.direction.west, name = "west"}
+        }
+        
+        -- Scan tiles in reachable area
+        for x = math.floor(reachable_area.left_top.x), math.floor(reachable_area.right_bottom.x) do
+            for y = math.floor(reachable_area.left_top.y), math.floor(reachable_area.right_bottom.y) do
+                local position = { x = x, y = y }
+                -- Check if within reach
+                if self:can_reach_position(position) then
+                    for _, dir_info in pairs(directions) do
+                        local params = {
+                            name = entity_name,
+                            position = position,
+                            direction = dir_info.enum,
+                            force = self.character.force,
+                            build_check_type = defines.build_check_type.manual,
+                        }
+                        if game.surfaces[1].can_place_entity(params) then
+                            table.insert(reachable_positions, {
+                                position = position,
+                                can_place = true,
+                                direction = dir_info.name
+                            })
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    elseif requires_resources then
+        -- For mining drills/pumpjacks: find resources in reachable area
+        local resource_entities = game.surfaces[1].find_entities_filtered({
+            area = reachable_area,
+            type = "resource"
+        })
+        
+        for _, resource_entity in pairs(resource_entities) do
+            if resource_entity and resource_entity.valid then
+                local position = { x = resource_entity.position.x, y = resource_entity.position.y }
+                if self:can_reach_position(position) then
+                    local params = {
+                        name = entity_name,
+                        position = position,
+                        force = self.character.force,
+                        build_check_type = defines.build_check_type.manual,
+                    }
+                    if game.surfaces[1].can_place_entity(params) then
+                        table.insert(reachable_positions, {
+                            position = position,
+                            can_place = true,
+                            resource_name = resource_entity.name
+                        })
+                    end
+                end
+            end
+        end
+    else
+        -- For other entities: scan all tiles in reachable area
+        for x = math.floor(reachable_area.left_top.x), math.floor(reachable_area.right_bottom.x) do
+            for y = math.floor(reachable_area.left_top.y), math.floor(reachable_area.right_bottom.y) do
+                local position = { x = x, y = y }
+                if self:can_reach_position(position) then
+                    local params = {
+                        name = entity_name,
+                        position = position,
+                        force = self.character.force,
+                        build_check_type = defines.build_check_type.manual,
+                    }
+                    if game.surfaces[1].can_place_entity(params) then
+                        table.insert(reachable_positions, {
+                            position = position,
+                            can_place = true
+                        })
+                    end
+                end
+            end
         end
     end
     
     if DEBUG then
-        game.print(string.format("[get_placement_cues] Returning %d placement cues for %s", #response, entity_name))
+        game.print(string.format("[get_placement_cues] Returning %d total positions, %d reachable", 
+            #all_positions, #reachable_positions))
     end
-    return response
+    
+    return {
+        positions = all_positions,
+        reachable_positions = reachable_positions
+    }
 end
 
 return PlacementActions

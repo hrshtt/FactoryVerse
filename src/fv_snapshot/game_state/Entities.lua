@@ -202,9 +202,8 @@ function M.track_all_charted_chunk_entity_status(charted_chunks)
     --         game.tick, processed_chunks, record_count))
     -- end
 
-    if next(all_status_records) ~= nil then
-        snapshot.send_status_snapshot_udp(all_status_records)
-    end
+    -- Status records are written to disk via dump_status_to_disk() - no UDP needed
+    -- External systems read status files on-demand from disk
 end
 
 -- ============================================================================

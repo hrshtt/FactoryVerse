@@ -504,23 +504,6 @@ function M.send_file_event_udp(event_type, file_type, chunk_x, chunk_y, position
     return M.send_udp_notification(payload)
 end
 
---- Send status snapshot UDP notification
---- @param status_records table - Map of entity_key -> status record
---- @return boolean - Success status
-function M.send_status_snapshot_udp(status_records)
-    if not status_records or next(status_records) == nil then
-        return false
-    end
-
-    local payload = {
-        event_type = "status_snapshot",
-        tick = game.tick,
-        status_records = status_records
-    }
-
-    return M.send_udp_notification(payload)
-end
-
 -- ============================================================================
 -- STATUS DUMP FILE MANAGEMENT
 -- ============================================================================
