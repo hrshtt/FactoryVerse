@@ -1,14 +1,13 @@
-"""Runtime boilerplate code strings for agent sessions."""
+"""Runtime boilerplate code for agent sessions.
 
-# Boilerplate code to inject into kernel
-# This runs in the 'fv' kernel which has FactoryVerse already installed
-BOILERPLATE_CODE = """
+This script is intended to be read as a file and executed directly 
+within the agent's Jupyter kernel.
+"""
 import os
 import json
 from factorio_rcon import RCONClient
 from FactoryVerse.dsl.dsl import (
     walking,
-    mining,
     crafting,
     research,
     inventory,
@@ -28,7 +27,9 @@ rcon_pwd = os.getenv("RCON_PWD", "factorio")
 agent_udp_port = int(os.getenv("AGENT_UDP_PORT", "24389"))
 
 # Connect to RCON
-rcon_client = RCONClient(rcon_host, rcon_port, rcon_pwd)
+from FactoryVerse.utils.rcon_utils import create_rcon_client
+
+rcon_client = create_rcon_client(rcon_host, rcon_port, rcon_pwd, initialize=True)
 print(f"✅ RCON connected to {rcon_host}:{rcon_port}")
 
 # Check for existing agents
@@ -54,14 +55,14 @@ else:
 # Configure DSL
 configure(rcon_client, agent_name, agent_udp_port=udp_port)
 print("✅ DSL configured")
-"""
 
-# Map database loading code
-# Uses ipykernel's autoawait - can use 'await' directly at top level
-MAP_DB_CODE = """
+# Map database loading code (Uses ipykernel's autoawait)
 with playing_factorio():
     await map_db.load_snapshots()
     con = map_db.connection
     print(f"✅ Map database loaded. Connection: {con}")
-"""
+
+print("\n💡 Tech/recipe info available in initial_state.md")
+print("   Use research.enqueue('tech-name') to start researching!\n")
+
 

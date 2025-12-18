@@ -2,8 +2,8 @@ import asyncio
 import json
 import logging
 from unittest.mock import MagicMock
-from src.FactoryVerse.dsl import dsl
-from src.FactoryVerse.dsl.factoriopedia import Factoriopedia
+from FactoryVerse.dsl import dsl
+from FactoryVerse.dsl.factoriopedia import Factoriopedia
 
 # Mock RCON Client
 class MockRcon:

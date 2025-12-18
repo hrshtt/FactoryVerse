@@ -1,13 +1,13 @@
 from __future__ import annotations
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
-from src.FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.dsl.types import MapPosition
 import asyncio
 
 if TYPE_CHECKING:
-    from src.FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.dsl.agent import PlayingFactory
 
 # Import _playing_factory safely
-from src.FactoryVerse.dsl.agent import _playing_factory
+from FactoryVerse.dsl.agent import _playing_factory
 
 
 def _get_factory() -> "PlayingFactory":
@@ -96,18 +96,30 @@ class ResourceOrePatch:
         Mines the first tile in the patch without requiring position.
         
         Args:
-            max_count: Max items to mine (None = deplete resource)
+            max_count: Max items to mine (None = mine up to 25, max 25)
             timeout: Optional timeout in seconds
             
         Returns:
             List of ItemStack objects obtained from mining
+            
+        Raises:
+            ValueError: If max_count exceeds 25
         """
+        # Enforce 25-item limit per operation
+        if max_count is not None and max_count > 25:
+            raise ValueError(
+                f"Cannot mine more than 25 items in a single operation. "
+                f"Requested: {max_count}. Please mine in smaller batches."
+            )
+        # Cap at 25 even if None (to enforce hard limit)
+        effective_max_count = min(max_count, 25) if max_count is not None else 25
+        
         # Mine the first tile in the patch
         if not self._resource_data_list:
             raise RuntimeError("Cannot mine from empty patch")
         
         first_tile = self[0]
-        return await first_tile.mine(max_count, timeout)
+        return await first_tile.mine(effective_max_count, timeout)
     
     def __repr__(self) -> str:
         """Clean summary of the resource patch."""
@@ -163,17 +175,29 @@ class BaseResource:
         """Mine this resource (async/await).
         
         Args:
-            max_count: Max items to mine (None = deplete resource)
+            max_count: Max items to mine (None = mine up to 25, max 25)
             timeout: Optional timeout in seconds
             
         Returns:
             List of ItemStack objects obtained from mining
+            
+        Raises:
+            ValueError: If max_count exceeds 25
         """
-        from src.FactoryVerse.dsl.item.base import ItemStack
+        # Enforce 25-item limit per operation
+        if max_count is not None and max_count > 25:
+            raise ValueError(
+                f"Cannot mine more than 25 items in a single operation. "
+                f"Requested: {max_count}. Please mine in smaller batches."
+            )
+        # Cap at 25 even if None (to enforce hard limit)
+        effective_max_count = min(max_count, 25) if max_count is not None else 25
+        
+        from FactoryVerse.dsl.item.base import ItemStack
         
         # Use the factory's mine_resource method with this resource's position
         # We need to find the resource by name and position
-        response = self._factory.mine_resource(self.name, max_count)
+        response = self._factory.mine_resource(self.name, effective_max_count)
         result_payload = await self._factory._await_action(response, timeout=timeout)
         
         # Parse result for items

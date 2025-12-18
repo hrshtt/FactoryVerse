@@ -8,7 +8,7 @@ from jupyter_client import BlockingKernelClient
 from jupyter_client.manager import KernelManager
 
 from FactoryVerse.llm.output_compressor import OutputCompressor
-from FactoryVerse.llm.boilerplate import BOILERPLATE_CODE, MAP_DB_CODE
+from FactoryVerse.llm.factorio_error_parser import FactorioErrorParser, ErrorVerbosity
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,9 @@ class FactoryVerseRuntime:
     def __init__(
         self,
         notebook_path: str,
-        kernel_name: str = "fv"
+        kernel_name: str = "fv",
+        error_verbosity: ErrorVerbosity = ErrorVerbosity.MODERATE,
+        max_traceback_frames: int = 2
     ):
         """
         Initialize runtime and start kernel.
@@ -27,10 +29,16 @@ class FactoryVerseRuntime:
         Args:
             notebook_path: Path to notebook file for logging
             kernel_name: Kernel name to use
+            error_verbosity: Verbosity level for error messages (MINIMAL, MODERATE, FULL)
+            max_traceback_frames: Maximum traceback frames to show (for MODERATE verbosity)
         """
         self.notebook_path = Path(notebook_path)
         self.kernel_name = kernel_name
         self.output_compressor = OutputCompressor()
+        self.error_parser = FactorioErrorParser(
+            verbosity=error_verbosity,
+            max_traceback_frames=max_traceback_frames
+        )
         
         # Create notebook
         self._init_notebook()
@@ -76,6 +84,9 @@ class FactoryVerseRuntime:
         Returns:
             Execution result
         """
+        # Log to notebook BEFORE execution (with empty outputs)
+        cell_id = self._append_to_notebook_before_execution(code, metadata or {})
+        
         # Collect outputs using execute_interactive
         outputs = []
         text_parts = []
@@ -94,15 +105,32 @@ class FactoryVerseRuntime:
             elif msg_type == 'execute_result':
                 text_parts.append(content.get('data', {}).get('text/plain', ''))
             elif msg_type == 'error':
-                text_parts.append(f"Error: {content.get('evalue', '')}\n{''.join(content.get('traceback', []))}")
+                # Parse and format error using error parser
+                raw_error = f"Error: {content.get('evalue', '')}\n{''.join(content.get('traceback', []))}"
+                parsed_error = self.error_parser.parse_and_format(raw_error)
+                text_parts.append(parsed_error)
         
         # Execute with interactive hook - much simpler!
-        self.kc.execute_interactive(code, output_hook=output_hook, timeout=60)
+        try:
+            self.kc.execute_interactive(code, output_hook=output_hook, timeout=60)
+        except Exception as e:
+            # If execution fails, still update notebook with error
+            outputs.append({
+                'msg_type': 'error',
+                'content': {
+                    'ename': type(e).__name__,
+                    'evalue': str(e),
+                    'traceback': [str(e)]
+                }
+            })
+            # Parse and format error
+            parsed_error = self.error_parser.parse_and_format(f"Error: {str(e)}")
+            text_parts.append(parsed_error)
         
         raw_output = "".join(text_parts).strip()
         
-        # Log to notebook
-        self._append_to_notebook(code, outputs, metadata or {})
+        # Update notebook with outputs AFTER execution
+        self._update_notebook_cell_outputs(cell_id, outputs)
         
         # Compress if needed
         if compress_output and raw_output:
@@ -114,18 +142,47 @@ class FactoryVerseRuntime:
         
         return raw_output
     
-    def _append_to_notebook(
+    
+    def _append_to_notebook_before_execution(
         self,
         code: str,
-        outputs: List[Dict],
         metadata: Dict[str, Any]
-    ):
-        """Append code cell to notebook."""
+    ) -> str:
+        """
+        Append code cell to notebook BEFORE execution.
+        Returns cell ID for later updating with outputs.
+        """
         with open(self.notebook_path, 'r') as f:
             nb = nbformat.read(f, as_version=4)
         
         cell = nbformat.v4.new_code_cell(source=code)
         cell.metadata.update(metadata)
+        cell.outputs = []  # Empty outputs initially
+        
+        # Use cell index as ID
+        cell_id = len(nb.cells)
+        nb.cells.append(cell)
+        
+        with open(self.notebook_path, 'w') as f:
+            nbformat.write(nb, f)
+        
+        return str(cell_id)
+    
+    def _update_notebook_cell_outputs(
+        self,
+        cell_id: str,
+        outputs: List[Dict]
+    ):
+        """Update a cell's outputs after execution."""
+        with open(self.notebook_path, 'r') as f:
+            nb = nbformat.read(f, as_version=4)
+        
+        cell_index = int(cell_id)
+        if cell_index >= len(nb.cells):
+            logger.warning(f"Cell index {cell_index} out of range")
+            return
+        
+        cell = nb.cells[cell_index]
         
         # Convert outputs to nbformat outputs
         cell_outputs = []
@@ -154,24 +211,35 @@ class FactoryVerseRuntime:
                 ))
         
         cell.outputs = cell_outputs
-        nb.cells.append(cell)
         
         with open(self.notebook_path, 'w') as f:
             nbformat.write(nb, f)
     
+    def _append_to_notebook(
+        self,
+        code: str,
+        outputs: List[Dict],
+        metadata: Dict[str, Any]
+    ):
+        """Append code cell to notebook (legacy method for backward compatibility)."""
+        cell_id = self._append_to_notebook_before_execution(code, metadata)
+        self._update_notebook_cell_outputs(cell_id, outputs)
+    
     def setup_boilerplate(self):
-        """Execute boilerplate setup code."""
+        """Execute boilerplate setup code from boilerplate.py."""
         logger.info("Executing boilerplate...")
-        result = self.execute_code(BOILERPLATE_CODE, compress_output=False)
+        boilerplate_path = Path(__file__).parent / "llm" / "boilerplate.py"
+        with open(boilerplate_path, "r") as f:
+            code = f.read()
+        
+        result = self.execute_code(code, compress_output=False)
         logger.info(f"Boilerplate complete")
         return result
     
     def load_map_database(self):
-        """Load map database snapshots."""
-        logger.info("Loading map database...")
-        result = self.execute_code(MAP_DB_CODE, compress_output=False)
-        logger.info(f"Map DB loaded")
-        return result
+        """Map database is now loaded as part of setup_boilerplate."""
+        logger.info("Map database loaded via boilerplate")
+        return ""
     
     def execute_dsl(
         self,

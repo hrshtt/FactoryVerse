@@ -1,10 +1,10 @@
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal, TYPE_CHECKING
-from src.FactoryVerse.dsl.types import MapPosition, Direction
-from src.FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes, BasePrototype
+from FactoryVerse.dsl.types import MapPosition, Direction
+from FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes, BasePrototype
 
 if TYPE_CHECKING:
-    from src.FactoryVerse.dsl.agent import PlayingFactory
-    from src.FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
+    from FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
 
 
 ItemSubgroup = Literal[
@@ -238,7 +238,7 @@ class PlaceableItem(Item):
     @property
     def _factory(self) -> "PlayingFactory":
         """Get the current playing factory context."""
-        from src.FactoryVerse.dsl.agent import _playing_factory
+        from FactoryVerse.dsl.agent import _playing_factory
         factory = _playing_factory.get()
         if factory is None:
             raise RuntimeError(
@@ -285,7 +285,7 @@ class PlaceableItem(Item):
 
         Returns the created BaseEntity instance.
         """
-        from src.FactoryVerse.dsl.entity.base import (
+        from FactoryVerse.dsl.entity.base import (
             BaseEntity,
             ElectricMiningDrill,
             BurnerMiningDrill,
@@ -345,7 +345,7 @@ class PlaceableItem(Item):
         
         # For Container subclasses, we need inventory_size from prototypes
         if entity_class in (WoodenChest, IronChest, Container):
-            from src.FactoryVerse.dsl.prototypes import get_entity_prototypes
+            from FactoryVerse.dsl.prototypes import get_entity_prototypes
             entity_protos = get_entity_prototypes()
             entity_type = entity_protos.get_entity_type(entity_name)
             
@@ -389,7 +389,7 @@ class PlaceableItem(Item):
         Returns:
             The created GhostEntity instance.
         """
-        from src.FactoryVerse.dsl.entity.base import GhostEntity
+        from FactoryVerse.dsl.entity.base import GhostEntity
         result = self._factory.place_entity(self.name, position, direction, ghost=True, label=label)
         if not result.get("success"):
             error_msg = result.get("error", "Unknown error")
@@ -409,7 +409,7 @@ class PlacementCueMixin:
     @property
     def _factory(self) -> "PlayingFactory":
         """Get the current playing factory context."""
-        from src.FactoryVerse.dsl.agent import _playing_factory
+        from FactoryVerse.dsl.agent import _playing_factory
         factory = _playing_factory.get()
         if factory is None:
             raise RuntimeError(
@@ -529,7 +529,7 @@ class BeltLine(ItemStack):
     @property
     def _factory(self) -> "PlayingFactory":
         """Get the current playing factory context."""
-        from src.FactoryVerse.dsl.agent import _playing_factory
+        from FactoryVerse.dsl.agent import _playing_factory
         factory = _playing_factory.get()
         if factory is None:
             raise RuntimeError(
@@ -556,7 +556,7 @@ def get_item(name: str) -> Item:
     # Note: We relax the strict input type hint to str to allow dynamic lookup, 
     # but we should ideally validate against known names if possible.
     
-    from src.FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes
+    from FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes
 
     item_protos = get_item_prototypes()
     place_result = item_protos.get_place_result(name)

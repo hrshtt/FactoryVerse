@@ -12,8 +12,8 @@ import duckdb
 from pathlib import Path
 from factorio_rcon import RCONClient
 
-from src.FactoryVerse.infra.game_data_sync import GameDataSyncService
-from src.FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
+from FactoryVerse.infra.game_data_sync import GameDataSyncService
+from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
 
 
 async def agent_runtime_example():

@@ -1,8 +1,9 @@
 from __future__ import annotations
+from abc import ABC, abstractmethod
 from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
-from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
-from src.FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack, PlaceableItem
-from src.FactoryVerse.dsl.prototypes import (
+from FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
+from FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack, PlaceableItem
+from FactoryVerse.dsl.prototypes import (
     get_entity_prototypes,
     ElectricMiningDrillPrototype,
     PumpjackPrototype,
@@ -15,10 +16,10 @@ from src.FactoryVerse.dsl.prototypes import (
 )
 
 if TYPE_CHECKING:
-    from src.FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.dsl.agent import PlayingFactory
 
 # Import _playing_factory safely
-from src.FactoryVerse.dsl.agent import _playing_factory
+from FactoryVerse.dsl.agent import _playing_factory
 
 
 class EntityPosition(MapPosition):
@@ -112,7 +113,7 @@ class EntityPosition(MapPosition):
         return EntityPosition(x=new_x, y=new_y)
 
 
-class BaseEntity:
+class BaseEntity(ABC):
     """Base class for all entities.
     
     Entities are things placed in the world with position and direction.
@@ -195,6 +196,50 @@ class BaseEntity:
         else:
             return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}))"
 
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of entity state.
+        
+        This is a read-only inspection that provides comprehensive information
+        about the entity's current volatile state (inventories, progress, status, etc.).
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation of entity state
+            If as_string=False: Dictionary with entity inspection data including:
+                - entity_name (str): Entity prototype name
+                - entity_type (str): Entity type
+                - position (dict): Entity position {x, y}
+                - tick (int): Game tick when inspection was taken
+                - status (str, optional): Entity status (working, no-power, etc.)
+                - recipe (str, optional): Current recipe name (if applicable)
+                - crafting_progress (float, optional): Crafting progress 0.0-1.0
+                - mining_progress (float, optional): Mining progress 0.0-1.0
+                - burner (dict, optional): Burner state with heat, fuel, etc.
+                - productivity_bonus (float, optional): Productivity bonus
+                - energy (dict, optional): Energy state {current, capacity}
+                - inventories (dict, optional): Inventories by type {fuel, input, output, chest, burnt_result}
+                - held_item (dict, optional): Held item {name, count} (inserters only)
+        
+        Note: Subclasses should override this method to provide entity-specific
+        inspection details. This default implementation provides basic information.
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"{self.__class__.__name__}({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        return "\n".join(lines)
+
     def pickup(self) -> List[ItemStack]:
         """Pick up the entity and return items added to inventory.
         
@@ -214,6 +259,21 @@ class GhostEntity(BaseEntity):
         """Build the ghost entity."""
         return self._factory.place_entity(self.name, self.position)
 
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of ghost entity state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        if not as_string:
+            return self._factory.inspect_entity(self.name, self.position)
+        return f"GhostEntity(name='{self.name}', position=({self.position.x:.1f}, {self.position.y:.1f}))"
+
 class Container(BaseEntity):
     """A container entity with inventory."""
 
@@ -230,11 +290,58 @@ class Container(BaseEntity):
 
     def store_items(self, items: List[ItemStack]):
         """Store items in the container."""
-        return self._factory.put_inventory_items(self.name, self.position, items)
+        results = []
+        for item_stack in items:
+            result = self._factory.put_inventory_item(
+                self.name, self.position, "chest", item_stack.name, item_stack.count
+            )
+            results.append(result)
+        return results
 
     def take_items(self, items: List[ItemStack]):
         """Take items from the container."""
-        return self._factory.take_inventory_items(self.name, self.position, items)
+        results = []
+        for item_stack in items:
+            result = self._factory.take_inventory_item(
+                self.name, self.position, "chest", item_stack.name, item_stack.count
+            )
+            results.append(result)
+        return results
+
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of container state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"Container({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        # Status
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Contents
+        inventories = data.get("inventories", {})
+        contents = inventories.get("chest", {})
+        if contents:
+            contents_str = ", ".join([f"{name}: {count}" for name, count in contents.items()])
+            lines.append(f"  Contents: {contents_str}")
+        else:
+            lines.append("  Contents: (empty)")
+        
+        return "\n".join(lines)
 
 class WoodenChest(Container): ...
 
@@ -248,6 +355,11 @@ class ShipWreck(Container):
 
 class Furnace(BaseEntity):
     """A furnace entity."""
+
+    # CANDO: Consider accepting List[Item] and List[ItemStack] for add_fuel and add_input_items
+    # to work seamlessly with inventory.get_item_stacks() which returns List[ItemStack].
+    # Would loop in Python and make multiple remote calls (one per item/stack), similar to
+    # Container.store_items() pattern. Only implement if agents frequently fail on this use case.
 
     def add_fuel(self, item: Union[Item, ItemStack], count: Optional[int] = None):
         """Add fuel to the furnace.
@@ -269,12 +381,16 @@ class Furnace(BaseEntity):
             self.name, self.position, "fuel", item_name, fuel_count
         )
 
-    def put_input_items(self, item: Union[Item, ItemStack], count: Optional[int] = None):
+    def add_input_items(self, item: Union[Item, ItemStack], count: Optional[int] = None):
         """Add an item to the furnace's input inventory.
         
         Args:
             item: Item or ItemStack to add
             count: Count to add (required if Item, optional if ItemStack - uses stack count)
+        
+        Note: Currently accepts single Item or ItemStack. If agents frequently need to pass
+        lists from inventory.get_item_stacks(), consider adding List[Item] and List[ItemStack]
+        support (see CANDO comment above).
         """
         if isinstance(item, ItemStack):
             item_name = item.name
@@ -285,7 +401,7 @@ class Furnace(BaseEntity):
                 raise ValueError("count is required when using Item (not ItemStack)")
             input_count = count
 
-        return self._factory.set_entity_inventory_item(
+        return self._factory.put_inventory_item(
             self.name, self.position, "input", item_name, input_count
         )
 
@@ -312,6 +428,104 @@ class Furnace(BaseEntity):
             self.name, self.position, "output", item_name, take_count
         )
 
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of furnace state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"Furnace({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        # Status
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Recipe (if applicable)
+        recipe = data.get("recipe")
+        if recipe:
+            lines.append(f"  Recipe: {recipe}")
+        
+        # Burner information (furnaces use burners)
+        burner = data.get("burner")
+        if burner:
+            currently_burning = burner.get("currently_burning")
+            remaining_fuel = burner.get("remaining_burning_fuel", 0)
+            heat = burner.get("heat", 0)
+            
+            # Show currently burning if explicitly set, or if there's remaining fuel/heat
+            # (indicates active burning even if currently_burning property is nil)
+            if currently_burning:
+                lines.append(f"  Currently Burning: {currently_burning}")
+                burning_progress = burner.get("burning_progress")
+                if burning_progress is not None:
+                    lines.append(f"  Burning Progress: {burning_progress * 100:.1f}%")
+                if remaining_fuel > 0:
+                    lines.append(f"  Remaining Fuel Energy: {remaining_fuel:.0f} J")
+            elif remaining_fuel > 0 or (heat > 0 and status == "working"):
+                # Infer burning from remaining fuel or working status with heat
+                # Try to get fuel name from fuel inventory
+                inventories = data.get("inventories", {})
+                fuel_inv = inventories.get("fuel", {})
+                if fuel_inv:
+                    # Use the first fuel item found
+                    fuel_name = next(iter(fuel_inv.keys()), None)
+                    if fuel_name:
+                        lines.append(f"  Currently Burning: {fuel_name}")
+                        if remaining_fuel > 0:
+                            lines.append(f"  Remaining Fuel Energy: {remaining_fuel:.0f} J")
+                    else:
+                        lines.append("  Currently Burning: (active)")
+                else:
+                    lines.append("  Currently Burning: (active)")
+            else:
+                lines.append("  Currently Burning: (none)")
+            
+            heat_capacity = burner.get("heat_capacity", 0)
+            if heat_capacity > 0:
+                heat_pct = (heat / heat_capacity) * 100
+                lines.append(f"  Heat: {heat:.0f}/{heat_capacity:.0f} ({heat_pct:.1f}%)")
+        
+        # Inventories
+        inventories = data.get("inventories", {})
+        
+        # Fuel
+        fuel = inventories.get("fuel", {})
+        if fuel:
+            fuel_str = ", ".join([f"{name}: {count}" for name, count in fuel.items()])
+            lines.append(f"  Fuel: {fuel_str}")
+        else:
+            lines.append("  Fuel: (empty)")
+        
+        # Input
+        input_inv = inventories.get("input", {})
+        if input_inv:
+            input_str = ", ".join([f"{name}: {count}" for name, count in input_inv.items()])
+            lines.append(f"  Input: {input_str}")
+        else:
+            lines.append("  Input: (empty)")
+        
+        # Output
+        output_inv = inventories.get("output", {})
+        if output_inv:
+            output_str = ", ".join([f"{name}: {count}" for name, count in output_inv.items()])
+            lines.append(f"  Output: {output_str}")
+        else:
+            lines.append("  Output: (empty)")
+        
+        return "\n".join(lines)
+
 
 class ElectricPole(BaseEntity):
     """An electric pole entity."""
@@ -319,7 +533,45 @@ class ElectricPole(BaseEntity):
     def extend(self, direction: Direction, distance: Optional[float] = None):
         """Extend the electric pole to the given direction and distance.
         No distance = MAX possible for the entity"""
-        return self._factory.extend_electric_pole(self.name, self.position, direction, distance)
+        raise NotImplementedError(
+            "ElectricPole.extend() is not yet implemented. "
+            "This method requires implementation in the Lua mod's RemoteInterface."
+        )
+
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of electric pole state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"ElectricPole({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        # Status
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Energy (if applicable)
+        energy = data.get("energy")
+        if energy:
+            current = energy.get("current", 0)
+            capacity = energy.get("capacity", 0)
+            if capacity > 0:
+                energy_pct = (current / capacity) * 100
+                lines.append(f"  Energy: {current:.0f}/{capacity:.0f} ({energy_pct:.1f}%)")
+        
+        return "\n".join(lines)
 
 
 class Inserter(BaseEntity):
@@ -342,6 +594,38 @@ class Inserter(BaseEntity):
             raise ValueError("Inserter direction must be set to calculate pickup position")
         return self.prototype.pickup_position(self.position, self.direction)
 
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of inserter state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"Inserter({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        # Status
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Held item
+        held_item = data.get("held_item")
+        if held_item:
+            lines.append(f"  Held Item: {held_item['name']} x{held_item['count']}")
+        else:
+            lines.append("  Held Item: (none)")
+        
+        return "\n".join(lines)
 
 
 class FastInserter(Inserter):
@@ -364,13 +648,104 @@ class LongHandInserter(Inserter):
 class AssemblingMachine(BaseEntity):
     """An assembling machine entity."""
 
-    def set_recipe(self, recipe: "Recipe") -> bool: # TODO: Implement Recipe literal
-        """Set the recipe of the assembling machine."""
-        return self._factory.set_assembling_machine_recipe(self.name, self.position, recipe)
+    def set_recipe(self, recipe: Union[str, "Recipe"]) -> str:
+        """Set the recipe of the assembling machine.
+        
+        Args:
+            recipe: Recipe name (string) or Recipe object with .name attribute
+        """
+        # Handle both string and Recipe object
+        if isinstance(recipe, str):
+            recipe_name = recipe
+        elif hasattr(recipe, 'name'):
+            recipe_name = recipe.name
+        else:
+            raise ValueError(f"recipe must be a string or Recipe object, got {type(recipe)}")
+        
+        return self._factory.set_entity_recipe(self.name, self.position, recipe_name)
 
-    def get_recipe(self) -> Optional["Recipe"]:
-        """Get the input type of the assembling machine."""
-        return self._factory.get_assembling_machine_input_type(self.name, self.position)
+    def get_recipe(self) -> Optional[str]:
+        """Get the current recipe of the assembling machine.
+        
+        Note: This method is not yet fully implemented. It will raise NotImplementedError.
+        To get recipe information, use get_reachable() and inspect the entity data.
+        """
+        raise NotImplementedError(
+            "AssemblingMachine.get_recipe() is not yet implemented. "
+            "This method requires a query method in the Lua mod's RemoteInterface. "
+            "To get recipe information, use get_reachable() and inspect the entity data."
+        )
+
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of assembling machine state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"AssemblingMachine({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        # Status
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Recipe
+        recipe = data.get("recipe")
+        if recipe:
+            lines.append(f"  Recipe: {recipe}")
+        else:
+            lines.append("  Recipe: (none)")
+        
+        # Crafting progress
+        crafting_progress = data.get("crafting_progress")
+        if crafting_progress is not None:
+            lines.append(f"  Crafting Progress: {crafting_progress * 100:.1f}%")
+        
+        # Productivity bonus
+        productivity_bonus = data.get("productivity_bonus")
+        if productivity_bonus and productivity_bonus > 0:
+            lines.append(f"  Productivity Bonus: {productivity_bonus * 100:.1f}%")
+        
+        # Inventories
+        inventories = data.get("inventories", {})
+        
+        # Input
+        input_inv = inventories.get("input", {})
+        if input_inv:
+            input_str = ", ".join([f"{name}: {count}" for name, count in input_inv.items()])
+            lines.append(f"  Input: {input_str}")
+        else:
+            lines.append("  Input: (empty)")
+        
+        # Output
+        output_inv = inventories.get("output", {})
+        if output_inv:
+            output_str = ", ".join([f"{name}: {count}" for name, count in output_inv.items()])
+            lines.append(f"  Output: {output_str}")
+        else:
+            lines.append("  Output: (empty)")
+        
+        # Energy (if applicable)
+        energy = data.get("energy")
+        if energy:
+            current = energy.get("current", 0)
+            capacity = energy.get("capacity", 0)
+            if capacity > 0:
+                energy_pct = (current / capacity) * 100
+                lines.append(f"  Energy: {current:.0f}/{capacity:.0f} ({energy_pct:.1f}%)")
+        
+        return "\n".join(lines)
     
     def get_output_items(self) -> ItemStack:
         return ItemStack.from_result
@@ -401,10 +776,59 @@ class TransportBelt(BaseEntity):
         position = self.position.offset(offset=(1, 1), direction=direction) # TODO: get offset from prototypes
         return self._factory.place_entity(self.name, position, direction)
 
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of transport belt state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"TransportBelt({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        return "\n".join(lines)
+
 
 class Splitter(BaseEntity):
     """A splitter entity."""
-    ...
+    
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of splitter state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"Splitter({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        return "\n".join(lines)
 
 class ElectricMiningDrill(BaseEntity):
     """An electric mining drill entity."""
@@ -429,10 +853,99 @@ class ElectricMiningDrill(BaseEntity):
         """Get the search area of the mining drill."""
         return self.prototype.get_resource_search_area(self.position)
 
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of electric mining drill state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"ElectricMiningDrill({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Mining progress
+        mining_progress = data.get("mining_progress")
+        if mining_progress is not None:
+            lines.append(f"  Mining Progress: {mining_progress:.1f}")
+        
+        # Energy (if applicable)
+        energy = data.get("energy")
+        if energy:
+            current = energy.get("current", 0)
+            capacity = energy.get("capacity", 0)
+            if capacity > 0:
+                energy_pct = (current / capacity) * 100
+                lines.append(f"  Energy: {current:.0f}/{capacity:.0f} ({energy_pct:.1f}%)")
+        
+        return "\n".join(lines)
+
 
 class BurnerMiningDrill(BaseEntity):
     """A burner mining drill entity."""
-    ...
+    
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of burner mining drill state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"BurnerMiningDrill({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Mining progress
+        mining_progress = data.get("mining_progress")
+        if mining_progress is not None:
+            lines.append(f"  Mining Progress: {mining_progress:.1f}")
+        
+        # Burner information
+        burner = data.get("burner")
+        if burner:
+            currently_burning = burner.get("currently_burning")
+            if currently_burning:
+                lines.append(f"  Currently Burning: {currently_burning}")
+            heat = burner.get("heat", 0)
+            heat_capacity = burner.get("heat_capacity", 0)
+            if heat_capacity > 0:
+                heat_pct = (heat / heat_capacity) * 100
+                lines.append(f"  Heat: {heat:.0f}/{heat_capacity:.0f} ({heat_pct:.1f}%)")
+        
+        # Fuel inventory
+        inventories = data.get("inventories", {})
+        fuel = inventories.get("fuel", {})
+        if fuel:
+            fuel_str = ", ".join([f"{name}: {count}" for name, count in fuel.items()])
+            lines.append(f"  Fuel Inventory: {fuel_str}")
+        else:
+            lines.append("  Fuel Inventory: (empty)")
+        
+        return "\n".join(lines)
 
 
 class Pumpjack(BaseEntity):
@@ -446,6 +959,40 @@ class Pumpjack(BaseEntity):
     def get_output_pipe_connections(self) -> List[MapPosition]:
         """Get the output pipe connections of the pumpjack."""
         return self.prototype.output_pipe_connections(self.position)
+
+    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+        """Return a representation of pumpjack state.
+        
+        Args:
+            as_string: If True (default), returns a formatted string representation.
+                      If False, returns the raw dictionary data.
+        
+        Returns:
+            If as_string=True: Formatted string representation
+            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+        """
+        data = self._factory.inspect_entity(self.name, self.position)
+        
+        if not as_string:
+            return data
+        
+        lines = [
+            f"Pumpjack({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        status = data.get("status", "unknown")
+        lines.append(f"  Status: {status}")
+        
+        # Energy (if applicable)
+        energy = data.get("energy")
+        if energy:
+            current = energy.get("current", 0)
+            capacity = energy.get("capacity", 0)
+            if capacity > 0:
+                energy_pct = (current / capacity) * 100
+                lines.append(f"  Energy: {current:.0f}/{capacity:.0f} ({energy_pct:.1f}%)")
+        
+        return "\n".join(lines)
 
 
 def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:

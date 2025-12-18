@@ -1,5 +1,5 @@
 from typing import Tuple, List, Dict, Any, Optional
-from src.FactoryVerse.dsl.types import MapPosition, Direction, BoundingBox
+from FactoryVerse.dsl.types import MapPosition, Direction, BoundingBox
 from dataclasses import dataclass
 import json
 import math

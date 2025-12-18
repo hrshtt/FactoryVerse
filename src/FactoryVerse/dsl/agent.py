@@ -5,28 +5,29 @@ import time
 import logging
 import socket
 import threading
+import queue
 from pathlib import Path
-from typing import Any, Dict, Optional, Union, List, Literal, TYPE_CHECKING
+from typing import Any, Dict, Optional, Union, List, Literal, TYPE_CHECKING, Callable
 
 logger = logging.getLogger(__name__)
 
-from src.FactoryVerse.dsl.types import MapPosition
-from src.FactoryVerse.dsl.item.base import ItemStack
-from src.FactoryVerse.dsl.recipe.base import Recipes, BaseRecipe, BasicRecipeName
+from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.dsl.item.base import ItemStack
+from FactoryVerse.dsl.recipe.base import Recipes, BaseRecipe, BasicRecipeName
 from factorio_rcon import RCONClient as RconClient
 from contextvars import ContextVar
 from contextlib import contextmanager
-from src.FactoryVerse.dsl.types import Direction, MapPosition, BoundingBox
-from src.FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
-from src.FactoryVerse.dsl.ghosts import GhostManager
-from src.FactoryVerse.infra.game_data_sync import GameDataSyncService
+from FactoryVerse.dsl.types import Direction, MapPosition, BoundingBox
+from FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
+from FactoryVerse.dsl.ghosts import GhostManager
+from FactoryVerse.infra.game_data_sync import GameDataSyncService
 
 if TYPE_CHECKING:
     import duckdb
 
 if TYPE_CHECKING:
-    from src.FactoryVerse.dsl.item.base import Item, PlaceableItem
-    from src.FactoryVerse.dsl.entity.base import BaseEntity
+    from FactoryVerse.dsl.item.base import Item, PlaceableItem
+    from FactoryVerse.dsl.entity.base import BaseEntity
     import duckdb
 
 
@@ -66,6 +67,8 @@ class AsyncActionListener:
         self.event_loops: Dict[str, asyncio.AbstractEventLoop] = {}
         self.action_timeouts: Dict[str, float] = {}  # Track timeout deadlines for progress extension
         self.action_progress: Dict[str, Dict[str, Any]] = {}  # Track progress for actions
+        self.notification_queue: queue.Queue = queue.Queue()  # Thread-safe queue for notifications
+        self.notification_callbacks: Dict[str, Callable] = {}  # Callbacks for specific notification types
         self.running = False
         self.sock: Optional[socket.socket] = None
         self.listener_thread: Optional[threading.Thread] = None
@@ -113,9 +116,15 @@ class AsyncActionListener:
                 data, addr = self.sock.recvfrom(65535)
                 try:
                     payload = json.loads(data.decode('utf-8'))
-                    # Only process action events (agent-specific)
-                    if payload.get('event_type') == 'action':
+                    event_type = payload.get('event_type')
+                    
+                    if event_type == 'action':
                         self._handle_udp_message(payload)
+                    elif event_type == 'notification':
+                        self._handle_notification(payload)
+                    else:
+                        logger.warning(f"Unknown event_type: {event_type}")
+                        
                 except json.JSONDecodeError as e:
                     logger.warning(f"⚠️  Failed to decode UDP JSON from {addr}: {e}")
                 except Exception as e:
@@ -126,6 +135,16 @@ class AsyncActionListener:
                 if self.running:
                     logger.error(f"❌ Error in direct UDP listener: {e}")
     
+    def _handle_notification(self, payload: Dict[str, Any]):
+        """Process received UDP notification message."""
+        logger.info(f"UDP Notification RX: {payload}")
+        self.notification_queue.put(payload)
+        notification_type = payload.get('notification_type')
+        if notification_type and notification_type in self.notification_callbacks:
+            try:
+                self.notification_callbacks[notification_type](payload)
+            except Exception as e:
+                logger.error(f"Error in notification callback for type '{notification_type}': {e}")
     
     def _handle_udp_message(self, payload: Dict[str, Any]):
         """Process received UDP message from dispatcher (called by dispatcher thread).
@@ -323,7 +342,7 @@ class AgentInventory:
         if self.get_total(item_name) == 0:
             return None
         
-        from src.FactoryVerse.dsl.item.base import get_item
+        from FactoryVerse.dsl.item.base import get_item
         return get_item(item_name)
 
     def get_item_stacks(
@@ -469,7 +488,7 @@ class ReachableEntities:
         data = self._factory.get_reachable(attach_ghosts=False)
         entities_data = data.get("entities", [])
         # Convert to entity instances
-        from src.FactoryVerse.dsl.entity.base import create_entity_from_data
+        from FactoryVerse.dsl.entity.base import create_entity_from_data
         entities_instances = [
             create_entity_from_data(entity_data)
             for entity_data in entities_data
@@ -612,7 +631,7 @@ class ReachableResources:
         Returns:
             BaseResource instance (or appropriate subclass), or None if not found
         """
-        from src.FactoryVerse.dsl.resource.base import _create_resource_from_data
+        from FactoryVerse.dsl.resource.base import _create_resource_from_data
         
         # Always fetch fresh data
         resources_data = self._fetch_fresh_data()
@@ -659,7 +678,7 @@ class ReachableResources:
             - ResourceOrePatch: Multiple ore patches of same type (consolidated)
             - BaseResource: Single ore patch or entity (trees/rocks)
         """
-        from src.FactoryVerse.dsl.resource.base import ResourceOrePatch, BaseResource, _create_resource_from_data
+        from FactoryVerse.dsl.resource.base import ResourceOrePatch, BaseResource, _create_resource_from_data
         
         # Always fetch fresh data
         resources_data = self._fetch_fresh_data()
@@ -893,6 +912,14 @@ class ResearchAction:
             if tech.get("researching", False):
                 return tech
         return {}
+    
+    def get_queue(self) -> Dict[str, Any]:
+        """Get current research queue with progress information.
+        
+        Returns:
+            Dict with queue, queue_length, current_research, and tick
+        """
+        return self._factory.get_research_queue()
 
 
 class PlayingFactory:
@@ -1355,7 +1382,7 @@ class PlayingFactory:
         Returns:
             List of ItemStack objects representing items added to inventory
         """
-        from src.FactoryVerse.dsl.item.base import ItemStack
+        from FactoryVerse.dsl.item.base import ItemStack
         
         cmd = self._build_command("pickup_entity", entity_name, position)
         result = self._execute_and_parse_json(cmd)
@@ -1419,6 +1446,35 @@ class PlayingFactory:
         """
         cmd = self._build_command("inspect", attach_state)
         return self.execute(cmd)
+
+    def inspect_entity(self, entity_name: str, position: MapPosition) -> Dict[str, Any]:
+        """Get comprehensive volatile state for a specific entity.
+
+        Args:
+            entity_name: Entity prototype name
+            position: Entity position
+
+        Returns:
+            Dictionary with entity inspection data including status, recipe, progress,
+            inventories, energy, etc.
+            
+        Raises:
+            RuntimeError: If the remote call fails or returns an error
+        """
+        cmd = self._build_command("inspect_entity", entity_name, {"x": position.x, "y": position.y})
+        result_str = self.execute(cmd)
+        
+        # Check if result is an error message (not JSON)
+        result_str = result_str.strip()
+        if not result_str or result_str[0] != '{':
+            # Likely an error message, raise it
+            raise RuntimeError(f"inspect_entity failed: {result_str}")
+        
+        try:
+            return json.loads(result_str)
+        except json.JSONDecodeError as e:
+            # If JSON parsing fails, the result might be an error message
+            raise RuntimeError(f"inspect_entity returned invalid JSON: {result_str[:200]}") from e
 
     def get_inventory_items(self) -> str:
         """Get agent's main inventory contents.
@@ -1490,6 +1546,90 @@ class PlayingFactory:
         """Cancel the currently active research."""
         cmd = self._build_command("cancel_current_research")
         return self.execute(cmd)
+    
+    def get_research_queue(self) -> Dict[str, Any]:
+        """Get current research queue with progress information.
+        
+        Returns:
+            Dict with queue, queue_length, current_research, and tick
+        """
+        cmd = self._build_command("get_research_queue")
+        result = self.execute(cmd)
+        return json.loads(result)
+    
+    # ========================================================================
+    # NOTIFICATIONS
+    # ========================================================================
+    
+    async def get_notifications(self, timeout: Optional[float] = 0.1) -> List[Dict[str, Any]]:
+        """Get all pending notifications (non-blocking).
+        
+        Retrieves notifications from the UDP notification queue. This includes
+        research events, crafting completions, and other asynchronous game events.
+        
+        Args:
+            timeout: Max time to wait for first notification (seconds). 
+                    Use 0 for immediate return, None to wait indefinitely.
+            
+        Returns:
+            List of notification payloads. Each notification has:
+                - event_type: "notification"
+                - notification_type: Type of notification (e.g., "research_finished")
+                - agent_id: Agent ID
+                - tick: Game tick
+                - data: Notification-specific data
+        
+        Example:
+            >>> notifications = await factory.get_notifications(timeout=0.1)
+            >>> for notif in notifications:
+            ...     if notif['notification_type'] == 'research_finished':
+            ...         print(f"Research complete: {notif['data']['technology']}")
+        """
+        await self._ensure_async_listener()
+        notifications = []
+        
+        try:
+            # Wait for first notification with timeout
+            if timeout is not None and timeout > 0:
+                # Use asyncio to wait with timeout
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    try:
+                        notif = self._async_listener.notification_queue.get_nowait()
+                        notifications.append(notif)
+                        break
+                    except queue.Empty:
+                        await asyncio.sleep(0.01)  # Small sleep to avoid busy loop
+            
+            # Drain remaining notifications (non-blocking)
+            while True:
+                try:
+                    notif = self._async_listener.notification_queue.get_nowait()
+                    notifications.append(notif)
+                except queue.Empty:
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error getting notifications: {e}")
+        
+        return notifications
+    
+    def register_notification_callback(self, notification_type: str, callback: Callable[[Dict[str, Any]], None]):
+        """Register callback for specific notification type.
+        
+        The callback will be called immediately when a notification of the specified
+        type is received, from the UDP listener thread. Keep callbacks lightweight.
+        
+        Args:
+            notification_type: Type of notification (e.g., "research_finished")
+            callback: Function to call with notification payload
+        
+        Example:
+            >>> def on_research_done(notif):
+            ...     print(f"Research complete: {notif['data']['technology']}")
+            >>> factory.register_notification_callback("research_finished", on_research_done)
+        """
+        self._async_listener.notification_callbacks[notification_type] = callback
 
     # ========================================================================
     # REACHABILITY
@@ -1591,7 +1731,7 @@ class PlayingFactory:
             print("🔄 Reloading snapshot data after bootstrap...")
             print("=" * 60)
             
-            from src.FactoryVerse.infra.db.loader import load_all
+            from FactoryVerse.infra.db.loader import load_all
             load_all(
                 self._duckdb_connection,
                 snapshot_dir,
@@ -1641,7 +1781,7 @@ class PlayingFactory:
             if db_path is None:
                 con = duckdb.connect(':memory:')
             else:
-                from src.FactoryVerse.infra.db.duckdb_schema import connect
+                from FactoryVerse.infra.db.duckdb_schema import connect
                 con = connect(db_path)
             self._duckdb_connection = con
         
@@ -1649,7 +1789,7 @@ class PlayingFactory:
         # Uses Factorio client script-output directory as default
         if snapshot_dir is None:
             try:
-                from src.FactoryVerse.infra.factorio_client_setup import get_client_script_output_dir
+                from FactoryVerse.infra.factorio_client_setup import get_client_script_output_dir
                 snapshot_dir = get_client_script_output_dir()
             except Exception as e:
                 raise ValueError(
@@ -1712,7 +1852,7 @@ class PlayingFactory:
                 print(f"⚠️  Warning: No snapshot files found after {max_wait} seconds. Loading whatever exists...")
         
         # Load data (this will auto-create schema if needed)
-        from src.FactoryVerse.infra.db.loader import load_all
+        from FactoryVerse.infra.db.loader import load_all
         load_all(
             self._duckdb_connection,
             snapshot_dir,

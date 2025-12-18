@@ -2,11 +2,11 @@ from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 import json
 import math
 from pathlib import Path
-from src.FactoryVerse.dsl.types import MapPosition
-from src.FactoryVerse.dsl.item.base import ItemStack
+from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.dsl.item.base import ItemStack
 
 if TYPE_CHECKING:
-    from src.FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.dsl.agent import PlayingFactory
 
 
 class GhostManager:

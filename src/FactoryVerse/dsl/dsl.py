@@ -1,8 +1,8 @@
-from src.FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
-from src.FactoryVerse.dsl.item.base import ItemStack
-from src.FactoryVerse.dsl.types import MapPosition, BoundingBox, Position, Direction
-from src.FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
-from src.FactoryVerse.dsl.recipe.base import Recipes
+from FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
+from FactoryVerse.dsl.item.base import ItemStack
+from FactoryVerse.dsl.types import MapPosition, BoundingBox, Position, Direction
+from FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
+from FactoryVerse.dsl.recipe.base import Recipes
 
 from typing import List, Optional, Dict, Any, Union, Literal
 from pathlib import Path

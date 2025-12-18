@@ -30,7 +30,7 @@ def _get_direction_enum(prototype_api_file: Optional[str] = None) -> List[str]:
             pass
     
     # Fallback to Direction enum
-    from src.FactoryVerse.dsl.types import Direction
+    from FactoryVerse.dsl.types import Direction
     return [d.name for d in Direction]
 
 

@@ -1,5 +1,6 @@
 """Tool call validation for LLM agent."""
 
+import duckdb
 import ast
 import re
 from dataclasses import dataclass
@@ -179,7 +180,7 @@ class ToolValidator:
         1. Query is SELECT only (no mutations)
         2. No multiple statements
         3. Query length limits
-        4. Basic SQL syntax validation
+        4. Valid SQL syntax using DuckDB's native parser
         
         Args:
             query: SQL query string
@@ -198,44 +199,57 @@ class ToolValidator:
                 warnings=[]
             )
         
-        # Normalize query for checking
-        query_upper = query.upper().strip()
-        
-        # Remove trailing semicolon if present
-        if query_upper.endswith(';'):
-            query_upper = query_upper[:-1].strip()
-        
-        # Check for multiple statements (semicolons in the middle)
-        if ';' in query_upper:
-            return ValidationResult(
-                valid=False,
-                parsed_arguments=None,
-                error="Multiple statements detected. Only single SELECT queries are allowed.",
-                warnings=[]
-            )
-        
-        # Check for mutation keywords
-        for keyword in self.MUTATION_KEYWORDS:
-            # Use word boundaries to avoid false positives
-            pattern = r'\b' + keyword + r'\b'
-            if re.search(pattern, query_upper):
+        # Use DuckDB's native parser to validate the query
+        try:
+            # We use an in-memory connection just for parsing
+            con = duckdb.connect(':memory:')
+            statements = con.extract_statements(query)
+            
+            if len(statements) == 0:
                 return ValidationResult(
                     valid=False,
                     parsed_arguments=None,
-                    error=f"Mutation operation detected: {keyword}. Only SELECT queries are allowed.",
+                    error="No SQL statement found in query",
                     warnings=[]
                 )
-        
-        # Check that query starts with SELECT (or WITH for CTEs)
-        if not (query_upper.startswith('SELECT') or query_upper.startswith('WITH')):
+            
+            if len(statements) > 1:
+                return ValidationResult(
+                    valid=False,
+                    parsed_arguments=None,
+                    error="Multiple statements detected. Only single SELECT queries are allowed.",
+                    warnings=[]
+                )
+            
+            stmt = statements[0]
+            # DuckDB StatementType enum: SELECT, WITH, EXPLAIN, etc.
+            # We allow SELECT, WITH (for CTEs), and EXPLAIN (for debugging)
+            # We also allow PRAGMA/DESCRIBE/SHOW which DuckDB often maps to SELECT or specific types
+            
+            allowed_types = [
+                duckdb.StatementType.SELECT,
+                duckdb.StatementType.EXPLAIN,
+            ]
+            
+            if stmt.type not in allowed_types:
+                return ValidationResult(
+                    valid=False,
+                    parsed_arguments=None,
+                    error=f"Unsupported operation: {stmt.type.name}. Only SELECT queries are allowed.",
+                    warnings=[]
+                )
+                
+        except Exception as e:
             return ValidationResult(
                 valid=False,
                 parsed_arguments=None,
-                error="Query must start with SELECT or WITH (for CTEs)",
+                error=f"SQL parsing error: {str(e)}",
                 warnings=[]
             )
         
-        # Warn about potentially expensive operations
+        # Check for potentially expensive operations (still using string check on the original query 
+        # or normalized one if needed, but for warnings it's fine)
+        query_upper = query.upper()
         if 'CROSS JOIN' in query_upper:
             warnings.append("CROSS JOIN detected - may be expensive")
         

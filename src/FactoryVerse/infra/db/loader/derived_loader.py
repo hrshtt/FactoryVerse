@@ -21,7 +21,7 @@ except ImportError:
     DBSCAN = None
     np = None
 
-from src.FactoryVerse.dsl.prototypes import get_entity_prototypes
+from FactoryVerse.dsl.prototypes import get_entity_prototypes
 
 
 def derive_electric_poles(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-data-dump.json") -> None:

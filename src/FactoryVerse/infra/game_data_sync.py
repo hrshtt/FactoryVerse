@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     import duckdb
     from factorio_rcon import RCONClient
 
-from src.FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
+from FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class GameDataSyncService:
         
         # Action listener for action completion handling
         # Import here to avoid circular import (agent.py imports GameDataSyncService)
-        from src.FactoryVerse.dsl.agent import AsyncActionListener
+        from FactoryVerse.dsl.agent import AsyncActionListener
         self._action_listener = AsyncActionListener(udp_dispatcher=self.udp_dispatcher)
         
         # Snapshot state tracking (chunk -> state)
@@ -1151,7 +1151,7 @@ class GameDataSyncService:
         Reloads the entire file into the appropriate table.
         """
         import json
-        from src.FactoryVerse.infra.db.loader.utils import load_jsonl_file
+        from FactoryVerse.infra.db.loader.utils import load_jsonl_file
         
         file_path_obj = Path(file_path)
         if not file_path_obj.exists():
@@ -1190,7 +1190,7 @@ class GameDataSyncService:
         Appends new entries to the appropriate table.
         """
         import json
-        from src.FactoryVerse.infra.db.loader.utils import load_jsonl_file
+        from FactoryVerse.infra.db.loader.utils import load_jsonl_file
         
         file_path_obj = Path(file_path)
         if not file_path_obj.exists():
