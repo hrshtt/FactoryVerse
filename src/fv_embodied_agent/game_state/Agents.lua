@@ -287,6 +287,16 @@ function M.on_tick(event)
         return
     end
     
+    -- Early exit: Check if there are any agents at all
+    local has_agents = false
+    for _ in pairs(storage.agents) do
+        has_agents = true
+        break
+    end
+    if not has_agents then
+        return
+    end
+    
     local agent_count = 0
     local message_count = 0
     
@@ -558,6 +568,147 @@ function M.inspect_research(force_name)
     }
 end
 
+-- ============================================================================
+-- TESTING API (only exposed when admin API is enabled)
+-- ============================================================================
+
+--- Add items to agent inventory
+--- @param agent_id number
+--- @param items table {item_name = count, ...}
+--- @return table {success, items_added}
+function M.add_items(agent_id, items)
+    local agent = M.get_agent(agent_id)
+    if not agent or not agent.character or not agent.character.valid then
+        error("Agent not found or invalid")
+    end
+    
+    local inventory = agent.character.get_main_inventory()
+    if not inventory then
+        error("Agent has no inventory")
+    end
+    
+    local items_added = {}
+    for item_name, count in pairs(items) do
+        local inserted = inventory.insert({name = item_name, count = count})
+        items_added[item_name] = inserted
+    end
+    
+    return {
+        success = true,
+        items_added = items_added,
+        tick = game.tick
+    }
+end
+
+--- Clear agent inventory
+--- @param agent_id number
+--- @return table {success, items_removed}
+function M.clear_inventory(agent_id)
+    local agent = M.get_agent(agent_id)
+    if not agent or not agent.character or not agent.character.valid then
+        error("Agent not found or invalid")
+    end
+    
+    local inventory = agent.character.get_main_inventory()
+    if not inventory then
+        error("Agent has no inventory")
+    end
+    
+    local items_removed = inventory.get_contents()
+    inventory.clear()
+    
+    return {
+        success = true,
+        items_removed = items_removed,
+        tick = game.tick
+    }
+end
+
+--- Unlock technology for agent's force
+--- @param agent_id number
+--- @param tech_name string
+--- @return table {success, technology, unlocked_recipes}
+function M.unlock_technology(agent_id, tech_name)
+    local agent = M.get_agent(agent_id)
+    if not agent then
+        error("Agent not found")
+    end
+    
+    local force = game.forces[agent.force_name]
+    if not force then
+        error("Agent force not found")
+    end
+    
+    local tech = force.technologies[tech_name]
+    if not tech then
+        error("Technology '" .. tech_name .. "' not found")
+    end
+    
+    tech.researched = true
+    
+    -- Get unlocked recipes
+    local unlocked_recipes = {}
+    if tech.prototype.effects then
+        for _, effect in pairs(tech.prototype.effects) do
+            if effect.type == "unlock-recipe" then
+                table.insert(unlocked_recipes, effect.recipe)
+            end
+        end
+    end
+    
+    return {
+        success = true,
+        technology = tech_name,
+        unlocked_recipes = unlocked_recipes,
+        tick = game.tick
+    }
+end
+
+--- Set agent crafting speed multiplier
+--- @param agent_id number
+--- @param multiplier number Speed multiplier (1.0 = normal, 2.0 = 2x speed)
+--- @return table {success, speed}
+function M.set_crafting_speed(agent_id, multiplier)
+    local agent = M.get_agent(agent_id)
+    if not agent or not agent.character or not agent.character.valid then
+        error("Agent not found or invalid")
+    end
+    
+    -- character_crafting_speed_modifier is a bonus, so 1.0 = normal speed
+    -- To get 2x speed, we need modifier = 1.0 (100% bonus)
+    agent.character.character_crafting_speed_modifier = multiplier - 1.0
+    
+    return {
+        success = true,
+        speed = multiplier,
+        modifier = multiplier - 1.0,
+        tick = game.tick
+    }
+end
+
+--- Get comprehensive agent state for testing assertions
+--- @param agent_id number
+--- @return table Agent state
+function M.get_agent_state(agent_id)
+    local agent = M.get_agent(agent_id)
+    if not agent or not agent.character or not agent.character.valid then
+        error("Agent not found or invalid")
+    end
+    
+    local inventory = agent.character.get_main_inventory()
+    local force = game.forces[agent.force_name]
+    
+    return {
+        agent_id = agent_id,
+        position = {x = agent.character.position.x, y = agent.character.position.y},
+        force = agent.force_name,
+        inventory = inventory and inventory.get_contents() or {},
+        crafting_speed_modifier = agent.character.character_crafting_speed_modifier,
+        current_research = force.current_research and force.current_research.name or nil,
+        tick = game.tick
+    }
+end
+
 M.admin_api = {
     create_agent = M.create_agent,
     destroy_agents = M.destroy_agents,
@@ -567,6 +718,14 @@ M.admin_api = {
     list_agents = M.list_agents,
     reset_research = M.reset_research,
     inspect_research = M.inspect_research,
+}
+
+M.testing_api = {
+    add_items = M.add_items,
+    clear_inventory = M.clear_inventory,
+    unlock_technology = M.unlock_technology,
+    set_crafting_speed = M.set_crafting_speed,
+    get_agent_state = M.get_agent_state,
 }
 
 -- ============================================================================
@@ -580,7 +739,9 @@ function M.get_events()
         defined_events = {
             [defines.events.on_script_path_request_finished] = function(event)
                 if not event.path then
-                    game.print("path request for " .. event.id .. " failed")
+                    if M.DEBUG then
+                        game.print("path request for " .. event.id .. " failed")
+                    end
                 end
                 if not (storage.agents and event.id) then return end
 
@@ -588,7 +749,9 @@ function M.get_events()
                 for _, agent in pairs(storage.agents) do
                     if agent.walking.path_id == path_id then
                         if not event.path then
-                            game.print("path request for " .. event.id .. " failed")
+                            if M.DEBUG then
+                                game.print("path request for " .. event.id .. " failed")
+                            end
                             return
                         end
                         agent.walking.path = event.path

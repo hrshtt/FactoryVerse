@@ -6,6 +6,9 @@ local custom_events = require("utils.custom_events")
 
 local PlacementActions = {}
 
+-- DEBUG FLAG
+local DEBUG = false
+
 --- Place an entity (sync)
 --- @param self Agent
 --- @param entity_name string Entity prototype name
@@ -194,14 +197,18 @@ function PlacementActions.get_placement_cues(self, entity_name)
     
     local required_categories = entity_name_to_chunk_categories[entity_name]
     if not required_categories then
-        game.print(string.format("[get_placement_cues] Unknown entity type: %s", entity_name))
+        if DEBUG then
+            game.print(string.format("[get_placement_cues] Unknown entity type: %s", entity_name))
+        end
         return {}  -- Unknown entity type, return empty
     end
 
     -- Get chunks in view (5x5 chunks around agent)
     -- Note: get_chunks_in_view is mixed into Agent from ChartingActions
     local chunks_in_view = self:get_chunks_in_view()
-    game.print(string.format("[get_placement_cues] Chunks in view: %d", #chunks_in_view))
+    if DEBUG then
+        game.print(string.format("[get_placement_cues] Chunks in view: %d", #chunks_in_view))
+    end
     
     local chunks_to_scan = {}
     
@@ -213,7 +220,9 @@ function PlacementActions.get_placement_cues(self, entity_name)
         for _, req in pairs(required_categories) do
             if storage.chunk_tracker and storage.chunk_tracker:chunk_has(req.category, req.name, chunk.x, chunk.y) then
                 chunk_has_resource = true
-                game.print(string.format("[get_placement_cues] Chunk (%d, %d) has %s/%s", chunk.x, chunk.y, req.category, req.name or "nil"))
+                if DEBUG then
+                    game.print(string.format("[get_placement_cues] Chunk (%d, %d) has %s/%s", chunk.x, chunk.y, req.category, req.name or "nil"))
+                end
                 break
             end
         end
@@ -231,12 +240,14 @@ function PlacementActions.get_placement_cues(self, entity_name)
         end
     end
     
-    game.print(string.format("[get_placement_cues] Chunks to scan: %d", #chunks_to_scan))
-    for _, chunk in pairs(chunks_to_scan) do
-        game.print(string.format("[get_placement_cues]   - Chunk (%d, %d): area TL=(%d, %d) BR=(%d, %d)", 
-            chunk.x, chunk.y, 
-            chunk.area.left_top.x, chunk.area.left_top.y,
-            chunk.area.right_bottom.x, chunk.area.right_bottom.y))
+    if DEBUG then
+        game.print(string.format("[get_placement_cues] Chunks to scan: %d", #chunks_to_scan))
+        for _, chunk in pairs(chunks_to_scan) do
+            game.print(string.format("[get_placement_cues]   - Chunk (%d, %d): area TL=(%d, %d) BR=(%d, %d)", 
+                chunk.x, chunk.y, 
+                chunk.area.left_top.x, chunk.area.left_top.y,
+                chunk.area.right_bottom.x, chunk.area.right_bottom.y))
+        end
     end
 
     local response = {}
@@ -283,11 +294,15 @@ function PlacementActions.get_placement_cues(self, entity_name)
                     end
                 end
             end
-            game.print(string.format("[get_placement_cues] Chunk (%d, %d): checked %d positions, %d valid", 
-                chunk.x, chunk.y, chunk_positions_checked, chunk_positions_valid))
+            if DEBUG then
+                game.print(string.format("[get_placement_cues] Chunk (%d, %d): checked %d positions, %d valid", 
+                    chunk.x, chunk.y, chunk_positions_checked, chunk_positions_valid))
+            end
         end
-        game.print(string.format("[get_placement_cues] Total: checked %d positions, %d valid placements", 
-            total_positions_checked, total_positions_valid))
+        if DEBUG then
+            game.print(string.format("[get_placement_cues] Total: checked %d positions, %d valid placements", 
+                total_positions_checked, total_positions_valid))
+        end
     else
         -- For mining drills and pumpjacks: find resource entities and check placement at those positions
         local total_resources_found = 0
@@ -299,8 +314,10 @@ function PlacementActions.get_placement_cues(self, entity_name)
                 area = chunk.area,
                 type = "resource"
             })
-            game.print(string.format("[get_placement_cues] Chunk (%d, %d): found %d resource entities", 
-                chunk.x, chunk.y, #resource_entities))
+            if DEBUG then
+                game.print(string.format("[get_placement_cues] Chunk (%d, %d): found %d resource entities", 
+                    chunk.x, chunk.y, #resource_entities))
+            end
             total_resources_found = total_resources_found + #resource_entities
             
             for _, resource_entity in pairs(resource_entities) do
@@ -340,11 +357,15 @@ function PlacementActions.get_placement_cues(self, entity_name)
                 end
             end
         end
-        game.print(string.format("[get_placement_cues] Total: found %d resources, %d matched requirements, %d valid placements", 
-            total_resources_found, total_resources_matched, total_positions_valid))
+        if DEBUG then
+            game.print(string.format("[get_placement_cues] Total: found %d resources, %d matched requirements, %d valid placements", 
+                total_resources_found, total_resources_matched, total_positions_valid))
+        end
     end
     
-    game.print(string.format("[get_placement_cues] Returning %d placement cues for %s", #response, entity_name))
+    if DEBUG then
+        game.print(string.format("[get_placement_cues] Returning %d placement cues for %s", #response, entity_name))
+    end
     return response
 end
 

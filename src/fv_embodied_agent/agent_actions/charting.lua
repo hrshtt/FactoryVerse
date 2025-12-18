@@ -1,5 +1,8 @@
 local ChartingHelpers = {}
 
+-- DEBUG FLAG
+local DEBUG = false
+
 --- Helper function: Convert map/world coordinates to chunk coordinates
 --- Factorio chunks are 32x32 tiles; chunk coord = floor(pos / 32)
 --- @param position table {x:number, y:number}
@@ -33,7 +36,9 @@ function ChartingHelpers._chart_chunk(self, chunk_x, chunk_y, rechart)
 
     local was_already_charted = force.is_chunk_charted(surface, {x = chunk_x, y = chunk_y})
 
-    game.print(string.format("Chunk (%d, %d) was already charted: %s", chunk_x, chunk_y, tostring(was_already_charted)))
+    if DEBUG then
+        game.print(string.format("Chunk (%d, %d) was already charted: %s", chunk_x, chunk_y, tostring(was_already_charted)))
+    end
     
     -- Skip charting if already charted (unless rechart is true)
     if was_already_charted and not rechart then
@@ -58,10 +63,14 @@ function ChartingHelpers._chart_chunk(self, chunk_x, chunk_y, rechart)
     -- ChunkTracker is stored in storage.chunk_tracker and initialized by Map.init()
     if storage.chunk_tracker then
         storage.chunk_tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
-        game.print(string.format("Marked chunk (%d, %d) as needing snapshot", chunk_x, chunk_y))
+        if DEBUG then
+            game.print(string.format("Marked chunk (%d, %d) as needing snapshot", chunk_x, chunk_y))
+        end
         -- game.print(helpers.table_to_json(storage.chunk_tracker.chunk_lookup))
     else
-        game.print(string.format("Chunk (%d, %d) was not already charted: %s", chunk_x, chunk_y, tostring(was_already_charted)))
+        if DEBUG then
+            game.print(string.format("Chunk (%d, %d) was not already charted: %s", chunk_x, chunk_y, tostring(was_already_charted)))
+        end
     end
     
     -- Raise custom event (for any other listeners)

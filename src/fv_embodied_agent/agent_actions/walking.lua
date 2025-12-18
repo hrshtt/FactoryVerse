@@ -5,7 +5,7 @@
 
 local WalkingActions = {}
 
-DEBUG = true
+DEBUG = false
 
 --- Calculate a perimeter goal point outside an entity's collision box
 --- Returns a point on the edge of the entity closest to the start position

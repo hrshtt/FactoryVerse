@@ -5,6 +5,8 @@ local utils = require("utils.utils")
 
 -- Require game state modules at module level (required by Factorio)
 local Agents = require("game_state.Agents")
+local Spectator = require("game_state.Spectator")
+local Notifications = require("game_state.Notifications")
 local Agent = require("Agent")
 local custom_events = require("utils.custom_events")
 
@@ -42,7 +44,7 @@ local function aggregate_all_events()
     end
 
     -- Collect all modules
-    local modules = { Agents }
+    local modules = { Agents, Spectator, Notifications }
 
     -- 1. Aggregate on_tick handlers from all modules
     for _, module in ipairs(modules) do
@@ -125,6 +127,46 @@ end
 -- REGISTER REMOTE INTERFACES
 -- ============================================================================
 
+--- Register admin interface if enabled in settings
+local function register_admin_interface()
+    -- Check if admin API is enabled
+    local enable_admin = settings.global["fv-embodied-agent-enable-admin-api"]
+    
+    if not enable_admin or not enable_admin.value then
+        -- Admin API disabled, remove interface if it exists
+        if remote.interfaces["admin"] then
+            log("[Admin API] Disabled - removing interface")
+            remote.remove_interface("admin")
+        end
+        return
+    end
+    
+    -- Admin API enabled, register interface
+    if not Agents or not Agents.testing_api then
+        log("[Admin API] ERROR: Agents.testing_api not available")
+        return
+    end
+    
+    -- Remove existing interface if present
+    if remote.interfaces["admin"] then
+        remote.remove_interface("admin")
+    end
+    
+    -- Register admin interface
+    local admin_interface = {}
+    for method_name, method_func in pairs(Agents.testing_api) do
+        admin_interface[method_name] = method_func
+    end
+    
+    remote.add_interface("admin", admin_interface)
+    
+    local method_count = 0
+    for _ in pairs(admin_interface) do method_count = method_count + 1 end
+    log("[Admin API] Enabled - registered " .. method_count .. " methods")
+    -- Note: Cannot use game.print here as this may be called during on_load (before game is available)
+    -- The log message is sufficient for debugging
+end
+
 local function register_all_remote_interfaces()
     if not remote or not remote.add_interface then
         return
@@ -164,6 +206,22 @@ local function register_all_remote_interfaces()
             for _ in pairs(custom_events_interface) do method_count = method_count + 1 end
             log("Registering '" .. interface_name .. "' interface with " .. method_count .. " method(s)")
             remote.add_interface(interface_name, custom_events_interface)
+        end
+    end
+
+    -- Register spectator interface
+    if Spectator and Spectator.register_remote_interface then
+        local spectator_interface = Spectator.register_remote_interface()
+        if spectator_interface and next(spectator_interface) ~= nil then
+            local interface_name = "spectator"
+            if remote.interfaces[interface_name] then
+                log("Removing existing '" .. interface_name .. "' interface")
+                remote.remove_interface(interface_name)
+            end
+            local method_count = 0
+            for _ in pairs(spectator_interface) do method_count = method_count + 1 end
+            log("Registering '" .. interface_name .. "' interface with " .. method_count .. " method(s)")
+            remote.add_interface(interface_name, spectator_interface)
         end
     end
 
@@ -207,6 +265,9 @@ local function register_all_remote_interfaces()
     end
     log("Registering 'factorio_verse_docs' interface")
     remote.add_interface("factorio_verse_docs", docs_interface)
+    
+    -- Register admin interface (conditional on settings)
+    register_admin_interface()
 end
 
 register_all_remote_interfaces()
@@ -263,6 +324,11 @@ script.on_init(function()
         custom_events.initialize_storage()
     end
 
+    -- Initialize spectator storage
+    if Spectator and Spectator.initialize_storage then
+        Spectator.initialize_storage()
+    end
+
     log("Initialized fv_embodied_agent game state modules")
 
     -- Register remote interfaces (required for mods, also works for scenarios)
@@ -295,6 +361,14 @@ script.on_load(function()
     -- Re-register agent interfaces for existing agents (critical for hot reload)
     -- Remote interfaces are cleared on reload, but agent instances persist in storage
     register_existing_agent_interfaces()
+end)
+
+script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
+    if event.setting == "fv-embodied-agent-enable-admin-api" then
+        -- Setting changed, re-register admin interface
+        log("[Admin API] Setting changed, re-registering interface")
+        register_admin_interface()
+    end
 end)
 
 script.on_configuration_changed(function()

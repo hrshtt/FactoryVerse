@@ -576,6 +576,27 @@ The agent's force must have labs with science packs available.]],
             return self:cancel_current_research()
         end,
     },
+    get_research_queue = {
+        category = "research",
+        is_async = false,
+        doc = [[Get current research queue with progress information.
+Returns the queue of technologies being researched, including current progress.]],
+        paramspec = {
+            _param_order = {},
+        },
+        returns = {
+            type = "research_queue",
+            schema = {
+                queue = { type = "array", doc = "Array of queued technologies with progress" },
+                queue_length = { type = "number", doc = "Total number of queued technologies" },
+                current_research = { type = "string", doc = "Name of currently researching technology (nil if none)" },
+                tick = { type = "number", doc = "Game tick when queue was retrieved" },
+            },
+        },
+        func = function(self)
+            return self:get_research_queue()
+        end,
+    },
 
     -- ========================================================================
     -- REACHABILITY
@@ -640,6 +661,38 @@ Includes ghosts by default (set attach_ghosts=false to exclude).]],
         },
         func = function(self, attach_ghosts)
             return self:get_reachable(attach_ghosts)
+        end,
+    },
+    inspect_entity = {
+        category = "query",
+        is_async = false,
+        doc = [[Get comprehensive volatile state for a specific entity.
+Returns detailed information including status, recipe, progress, inventories, energy, etc.
+This is a read-only query that provides a complete snapshot of entity state.]],
+        paramspec = {
+            _param_order = { "entity_name", "position" },
+            entity_name = { type = "string", required = true, doc = "Entity prototype name" },
+            position = { type = "position", required = true, doc = "Entity position {x, y}" },
+        },
+        returns = {
+            type = "entity_inspection",
+            schema = {
+                entity_name = { type = "string", doc = "Entity prototype name" },
+                entity_type = { type = "string", doc = "Entity type" },
+                position = { type = "position", doc = "Entity position" },
+                tick = { type = "number", doc = "Game tick when inspection was taken" },
+                status = { type = "string", doc = "Entity status (working, no-power, etc.)" },
+                recipe = { type = "string", doc = "Current recipe name (if applicable)" },
+                crafting_progress = { type = "number", doc = "Crafting progress 0.0-1.0 (assemblers)" },
+                burning_progress = { type = "number", doc = "Burning progress 0.0-1.0 (furnaces)" },
+                productivity_bonus = { type = "number", doc = "Productivity bonus (if applicable)" },
+                energy = { type = "table", doc = "Energy state {current, capacity} (if applicable)" },
+                inventories = { type = "table", doc = "Inventories by type: {fuel, input, output, chest, burnt_result}" },
+                held_item = { type = "table", doc = "Held item {name, count} (inserters only)" },
+            },
+        },
+        func = function(self, entity_name, position)
+            return self:inspect_entity(entity_name, position)
         end,
     },
 

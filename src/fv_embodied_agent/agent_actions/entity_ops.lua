@@ -5,6 +5,7 @@
 
 local EntityInterface = require("game_state.EntityInterface")
 local custom_events = require("utils.custom_events")
+local utils = require("utils.utils")
 
 local EntityOpsActions = {}
 
@@ -265,6 +266,86 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
     local entity_inventory = entity.get_inventory(inv_index)
     if not entity_inventory then
         error("Agent: Entity inventory is invalid")
+    end
+    
+    -- Handle empty item_name: take all items
+    if item_name == "" or item_name == nil then
+        local contents_raw = entity_inventory.get_contents()
+        if not contents_raw or next(contents_raw) == nil then
+            error("Agent: No items found in entity inventory")
+        end
+        
+        -- get_contents() returns an array of {name, count, quality} objects
+        -- Convert to {item_name = count} format
+        local contents = {}
+        for _, item in pairs(contents_raw) do
+            local item_name_in_inv = item.name or item[1]
+            local item_count = item.count or item[2]
+            if item_name_in_inv and item_count and item_count > 0 then
+                contents[item_name_in_inv] = (contents[item_name_in_inv] or 0) + item_count
+            end
+        end
+        
+        if next(contents) == nil then
+            error("Agent: No items found in entity inventory")
+        end
+        
+        local results = {}
+        local total_transferred = 0
+        
+        -- Iterate through all items in inventory
+        for item_name_in_inv, item_count in pairs(contents) do
+            local transfer_count = count or item_count
+            if transfer_count > item_count then
+                transfer_count = item_count
+            end
+            
+            -- Check agent inventory space
+            local can_insert = agent_inventory.can_insert({ name = item_name_in_inv, count = transfer_count })
+            if can_insert then
+                -- Transfer items
+                local removed = entity_inventory.remove({ name = item_name_in_inv, count = transfer_count })
+                if removed > 0 then
+                    local inserted = agent_inventory.insert({ name = item_name_in_inv, count = removed })
+                    if inserted < removed then
+                        -- Rollback: put remaining items back
+                        entity_inventory.insert({ name = item_name_in_inv, count = removed - inserted })
+                        error("Agent: Partial transfer failed for " .. item_name_in_inv .. " - only " .. inserted .. " of " .. removed .. " items inserted")
+                    end
+                    total_transferred = total_transferred + inserted
+                    table.insert(results, {
+                        item_name = item_name_in_inv,
+                        count = inserted
+                    })
+                end
+            end
+        end
+        
+        if total_transferred == 0 then
+            error("Agent: Could not transfer any items (insufficient space or no items)")
+        end
+        
+        -- Enqueue completion message (sync action)
+        self:enqueue_message({
+            action = "get_inventory_item",
+            agent_id = self.agent_id,
+            entity_name = entity_name,
+            position = { x = entity.position.x, y = entity.position.y },
+            inventory_type = inventory_type,
+            item_name = "",  -- Empty indicates "all items"
+            count = total_transferred,
+            tick = game.tick or 0,
+        }, "entity_ops")
+        
+        return {
+            success = true,
+            entity_name = entity_name,
+            position = { x = entity.position.x, y = entity.position.y },
+            inventory_type = inventory_type,
+            item_name = "",  -- Empty indicates "all items"
+            count = total_transferred,
+            items = results,  -- List of items transferred
+        }
     end
     
     -- Get available count
@@ -554,6 +635,249 @@ function EntityOpsActions.remove_ghost(self, entity_name, position)
         entity_name = entity_name,
         position = position,
     }
+end
+
+--- Helper to get inventory contents as simple table
+--- @param entity LuaEntity
+--- @param inventory_type defines.inventory
+--- @return table|nil Contents {item_name = count, ...}
+local function get_inventory_contents(entity, inventory_type)
+    local inventory = entity.get_inventory(inventory_type)
+    if not inventory then
+        return nil
+    end
+    local contents = inventory.get_contents()
+    -- Convert to simple table (contents is LuaItemStack[])
+    local result = {}
+    if contents then
+        for _, item in pairs(contents) do
+            local item_name = item.name or item[1]
+            local count = item.count or item[2]
+            if item_name and count then
+                result[item_name] = (result[item_name] or 0) + count
+            end
+        end
+    end
+    return result
+end
+
+--- Inspect entity and return comprehensive volatile state
+--- @param entity_name string Entity prototype name
+--- @param position table Position {x, y}
+--- @return table Entity inspection data
+function EntityOpsActions.inspect_entity(self, entity_name, position)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- Resolve entity position (exact lookup)
+    local entity_interface = EntityInterface:new(entity_name, position, nil, true)
+    local entity = entity_interface.entity
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Build inspection data
+    local data = {
+        entity_name = entity.name,
+        entity_type = entity.type,
+        position = { x = entity.position.x, y = entity.position.y },
+        tick = game.tick or 0,
+    }
+    
+    -- Add status if available (convert enum to name)
+    if entity.status then
+        -- Try to convert status enum to name
+        local status_name = nil
+        if utils and utils.status_to_name then
+            local status_ok, result = pcall(function() return utils.status_to_name(entity.status) end)
+            if status_ok and result then
+                status_name = result
+            end
+        end
+        
+        -- If conversion failed, try direct enum lookup
+        if not status_name and defines.entity_status then
+            local enum_ok, result = pcall(function()
+                for k, v in pairs(defines.entity_status) do
+                    if v == entity.status then
+                        return string.lower(string.gsub(k, "_", "-"))
+                    end
+                end
+                return nil
+            end)
+            if enum_ok and result then
+                status_name = result
+            end
+        end
+        
+        -- Use converted name or fallback to string
+        data.status = status_name or tostring(entity.status)
+    end
+    
+    -- Add recipe if applicable (assemblers, furnaces, chemical plants)
+    if entity.get_recipe then
+        local success, recipe = pcall(function() return entity.get_recipe() end)
+        if success and recipe then
+            data.recipe = recipe.name
+        end
+    end
+    
+    -- Add crafting progress for crafting machines (assemblers, furnaces, chemical plants)
+    if entity.crafting_progress then
+        data.crafting_progress = entity.crafting_progress
+    end
+    
+    -- Add mining progress for mining drills
+    if entity.mining_progress then
+        data.mining_progress = entity.mining_progress
+    end
+    
+    -- Add burner information (furnaces, burner mining drills, etc.)
+    -- Use pcall to safely access burner properties
+    local burner_success, burner_result = pcall(function()
+        if not entity.burner or not entity.burner.valid then
+            return nil
+        end
+        
+        local burner = entity.burner
+        local burner_data = {}
+        
+        -- Heat information (use pcall for each property access)
+        local heat_ok, heat = pcall(function() return burner.heat end)
+        if heat_ok and heat ~= nil then
+            burner_data.heat = heat
+        end
+        
+        local heat_cap_ok, heat_capacity = pcall(function() return burner.heat_capacity end)
+        if heat_cap_ok and heat_capacity ~= nil then
+            burner_data.heat_capacity = heat_capacity
+        end
+        
+        local remaining_ok, remaining_burning_fuel = pcall(function() return burner.remaining_burning_fuel end)
+        if remaining_ok and remaining_burning_fuel ~= nil then
+            burner_data.remaining_burning_fuel = remaining_burning_fuel
+        end
+        
+        -- Currently burning item (use pcall)
+        local burning_ok, currently_burning = pcall(function() return burner.currently_burning end)
+        local item_name = nil
+        if burning_ok and currently_burning then
+            local name_ok, name = pcall(function() return currently_burning.name end)
+            if name_ok and name then
+                item_name = name
+                burner_data.currently_burning = item_name
+            end
+        end
+        
+        -- If currently_burning is nil but there's remaining_burning_fuel, infer from fuel inventory
+        -- This handles cases where currently_burning isn't set but fuel is actively burning
+        if not item_name and burner_data.remaining_burning_fuel and burner_data.remaining_burning_fuel > 0 then
+            -- Check fuel inventory to see what fuel is available
+            local fuel_inv_ok, fuel_inv = pcall(function() return entity.get_inventory(defines.inventory.fuel) end)
+            if fuel_inv_ok and fuel_inv then
+                -- Get the first fuel item in the inventory
+                for i = 1, #fuel_inv do
+                    local stack = fuel_inv[i]
+                    if stack and stack.valid_for_read and stack.count > 0 then
+                        item_name = stack.name
+                        burner_data.currently_burning = item_name
+                        break
+                    end
+                end
+            end
+        end
+        
+        -- Calculate burning progress if we have item_name and remaining_burning_fuel
+        if item_name and burner_data.remaining_burning_fuel and burner_data.remaining_burning_fuel > 0 then
+            -- Try to get fuel energy from prototype if available (wrap in pcall)
+            local proto_ok, fuel_proto = pcall(function() return game.item_prototypes[item_name] end)
+            if proto_ok and fuel_proto then
+                local fuel_value_ok, fuel_energy = pcall(function() return fuel_proto.fuel_value end)
+                if fuel_value_ok and fuel_energy and fuel_energy > 0 then
+                    local progress = 1.0 - (burner_data.remaining_burning_fuel / fuel_energy)
+                    -- Clamp to [0, 1]
+                    if progress < 0 then progress = 0 end
+                    if progress > 1 then progress = 1 end
+                    burner_data.burning_progress = progress
+                end
+            end
+        end
+        
+        return burner_data
+    end)
+    
+    if burner_success and burner_result then
+        data.burner = burner_result
+    end
+    
+    -- Add productivity bonus if available
+    if entity.productivity_bonus then
+        data.productivity_bonus = entity.productivity_bonus
+    end
+    
+    -- Add energy state if applicable
+    if entity.energy ~= nil then
+        data.energy = {
+            current = entity.energy,
+            capacity = entity.electric_buffer_size or 0,
+        }
+    end
+    
+    -- Collect all inventories
+    local inventories = {}
+    
+    -- Fuel inventory (furnaces, burner entities)
+    local fuel_inv = get_inventory_contents(entity, defines.inventory.fuel)
+    if fuel_inv and next(fuel_inv) ~= nil then
+        inventories.fuel = fuel_inv
+    end
+    
+    -- Input inventory (assemblers, furnaces)
+    local input_inv = get_inventory_contents(entity, defines.inventory.assembling_machine_input)
+        or get_inventory_contents(entity, defines.inventory.furnace_source)
+    if input_inv and next(input_inv) ~= nil then
+        inventories.input = input_inv
+    end
+    
+    -- Output inventory (assemblers, furnaces)
+    local output_inv = get_inventory_contents(entity, defines.inventory.assembling_machine_output)
+        or get_inventory_contents(entity, defines.inventory.furnace_result)
+    if output_inv and next(output_inv) ~= nil then
+        inventories.output = output_inv
+    end
+    
+    -- Chest inventory (containers)
+    local chest_inv = get_inventory_contents(entity, defines.inventory.chest)
+    if chest_inv and next(chest_inv) ~= nil then
+        inventories.chest = chest_inv
+    end
+    
+    -- Burnt result inventory (furnaces)
+    local burnt_inv = get_inventory_contents(entity, defines.inventory.burnt_result)
+    if burnt_inv and next(burnt_inv) ~= nil then
+        inventories.burnt_result = burnt_inv
+    end
+    
+    -- Add inventories if any exist
+    if next(inventories) ~= nil then
+        data.inventories = inventories
+    end
+    
+    -- Add inserter held item
+    if entity.type == "inserter" then
+        local held = entity.held_stack
+        if held and held.valid_for_read then
+            data.held_item = {
+                name = held.name,
+                count = held.count
+            }
+        end
+    end
+    
+    return data
 end
 
 return EntityOpsActions

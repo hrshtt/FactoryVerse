@@ -186,5 +186,41 @@ function ResearchActions.cancel_current_research(self)
     }
 end
 
+--- Get current research queue with progress information
+--- @return table Queue information with current research and queued technologies
+function ResearchActions.get_research_queue(self)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    local force = self.character.force
+    if not force then
+        error("Agent: Agent force is invalid")
+    end
+    
+    local queue = {}
+    local research_queue = force.research_queue or {}
+    
+    -- Build queue array with progress information
+    for i, tech in ipairs(research_queue) do
+        table.insert(queue, {
+            position = i,
+            name = tech.name,
+            progress = tech.saved_progress or 0.0,  -- 0.0-1.0
+            is_current = (i == 1),
+            research_unit_count = tech.research_unit_count,
+            research_unit_energy = tech.research_unit_energy,
+            research_unit_ingredients = tech.research_unit_ingredients,
+        })
+    end
+    
+    return {
+        queue = queue,
+        queue_length = #queue,
+        current_research = force.current_research and force.current_research.name or nil,
+        tick = game.tick,
+    }
+end
+
 return ResearchActions
 
