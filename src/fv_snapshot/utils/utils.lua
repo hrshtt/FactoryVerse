@@ -424,14 +424,14 @@ function M.table_to_blueprint(blueprint_table)
     end
 
     -- Encode table to JSON string (Factorio supports pretty-printed and minified)
-    local ok, json_str = pcall(helpers.table_to_json, blueprint_table)
-    if not ok or not json_str then
+    local json_str = helpers.table_to_json(blueprint_table)
+    if not json_str then
         return nil
     end
 
     -- Base64 encode (Factorio expects a URL-safe base64 (A-Za-z0-9-_) with no padding, standard output is usually fine)
-    local ok2, encoded = pcall(helpers.encode_string, json_str)
-    if not ok2 or not encoded then
+    local encoded = helpers.encode_string(json_str)
+    if not encoded then
         return nil
     end
 

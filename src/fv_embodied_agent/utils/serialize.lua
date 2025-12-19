@@ -53,17 +53,22 @@ end
 --- @param out table Output table to populate
 local function _serialize_base_properties(entity, out)
     local proto = entity.prototype
+    
+    -- Cache frequently accessed properties for performance
+    local pos = entity.position
+    local dir = entity.direction
+    local orient = entity.orientation
 
     -- Base identity and spatial properties
-    out.key = entity_key(entity.name, entity.position.x, entity.position.y)
+    out.key = entity_key(entity.name, pos.x, pos.y)
     out.name = entity.name
     out.type = entity.type
     out.force = (entity.force and entity.force.name) or nil
-    out.position = entity.position
-    out.direction = entity.direction
-    out.direction_name = utils.direction_to_name(entity.direction and tonumber(tostring(entity.direction)) or nil)
-    out.orientation = entity.orientation
-    out.orientation_name = utils.orientation_to_name(entity.orientation)
+    out.position = pos
+    out.direction = dir
+    out.direction_name = utils.direction_to_name(dir and tonumber(tostring(dir)) or nil)
+    out.orientation = orient
+    out.orientation_name = utils.orientation_to_name(orient)
 
     -- Electric network id
     if entity.electric_network_id ~= nil then
@@ -84,9 +89,8 @@ local function _serialize_base_properties(entity, out)
                         entity.type == "rocket-silo")
 
     if is_crafter then
-        -- Use pcall to safely call get_recipe() in case of edge cases
-        local ok, r = pcall(function() return entity.get_recipe() end)
-        if ok and r then
+        local r = entity.get_recipe()
+        if r then
             out.recipe = r.name
         end
     end
@@ -300,11 +304,9 @@ function M.serialize_entity_inventories(entity)
     }
 
     for inventory_name, inventory_type in pairs(inventory_types) do
-        local success, inventory = pcall(function()
-            return entity.get_inventory(inventory_type)
-        end)
+        local inventory = entity.get_inventory(inventory_type)
 
-        if success and inventory and inventory.valid then
+        if inventory and inventory.valid then
             local contents = inventory.get_contents()
             if contents and next(contents) ~= nil then
                 inventories[inventory_name] = contents

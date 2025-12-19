@@ -39,7 +39,7 @@ function M._on_nth_tick_agent_production_snapshot()
             }
             local json_line = helpers.table_to_json(entry) .. "\n"
             local file_path = snapshot.SNAPSHOT_BASE_DIR .. "/" .. agent_id .. "/production_statistics.jsonl"
-            local success = pcall(helpers.write_file, file_path, json_line, true) -- append
+            local success = helpers.write_file(file_path, json_line, true) -- append
             
             -- Send UDP notification for file append
             if success then

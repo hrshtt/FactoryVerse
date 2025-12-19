@@ -208,9 +208,7 @@ function M.destroy_agents(agent_ids, remove_forces)
     local errors = {}
     
     for _, agent_id in ipairs(agent_ids or {}) do
-        local ok, err = pcall(function()
-            M.destroy_agent(agent_id, remove_forces)
-        end)
+        local ok = M.destroy_agent(agent_id, remove_forces)
         if ok then
             table.insert(destroyed, agent_id)
         else

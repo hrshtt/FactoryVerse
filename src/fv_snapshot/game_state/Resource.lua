@@ -161,20 +161,8 @@ function M.gather_resources_for_chunk(chunk)
     end
 
     -- Water tiles - check count first
-    -- Detect water tile names via prototypes for mod compatibility
-    local water_tile_names = {}
-    local ok_proto, tiles_or_err = pcall(function()
-        return prototypes.get_tile_filtered({ { filter = "collision-mask", mask = "water-tile" } })
-    end)
-
-    if ok_proto and tiles_or_err then
-        for _, t in pairs(tiles_or_err) do
-            table.insert(water_tile_names, t.name)
-        end
-    else
-        -- fallback to vanilla names
-        water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
-    end
+    -- Use vanilla water tile names (works for all standard Factorio tiles)
+    local water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
 
     local water_count = surface.count_tiles_filtered {
         area = chunk.area,

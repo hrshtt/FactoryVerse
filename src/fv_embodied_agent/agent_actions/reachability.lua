@@ -77,10 +77,16 @@ local function serialize_entity_full(entity)
         data.status = entity.status
     end
     
-    -- Add recipe if applicable (assemblers, furnaces, chemical plants)
-    if entity.get_recipe then
-        local success, recipe = pcall(entity.get_recipe, entity)
-        if success and recipe then
+    -- Add recipe if applicable (assemblers, furnaces, rocket silos)
+    -- Only call get_recipe() on entity types that actually support it
+    -- According to Factorio API: assembling-machine, furnace, rocket-silo
+    local is_crafter = (entity.type == "assembling-machine" or 
+                        entity.type == "furnace" or 
+                        entity.type == "rocket-silo")
+    
+    if is_crafter then
+        local recipe = entity.get_recipe()
+        if recipe then
             data.recipe = recipe.name
         end
     end

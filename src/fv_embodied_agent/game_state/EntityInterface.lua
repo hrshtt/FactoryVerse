@@ -505,11 +505,9 @@ function EntityInterface:extract_inventory_items()
     local inventory_types = INVENTORY_TYPE_MAP
     
     for inventory_name, inventory_type in pairs(inventory_types) do
-        local success, inventory = pcall(function()
-            return self.entity.get_inventory(inventory_type)
-        end)
+        local inventory = self.entity.get_inventory(inventory_type)
         
-        if success and inventory and inventory.valid then
+        if inventory and inventory.valid then
             local contents = inventory.get_contents()
             if contents and next(contents) ~= nil then
                 -- get_contents() returns an array of {name, count, quality} objects

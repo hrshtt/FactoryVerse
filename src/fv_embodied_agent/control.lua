@@ -5,7 +5,7 @@ local utils = require("utils.utils")
 
 -- Require game state modules at module level (required by Factorio)
 local Agents = require("game_state.Agents")
-local Spectator = require("game_state.Spectator")
+-- local Spectator = require("game_state.Spectator")  -- DISABLED: Spectator logic disabled
 local Notifications = require("game_state.Notifications")
 local Agent = require("Agent")
 local custom_events = require("utils.custom_events")
@@ -44,7 +44,7 @@ local function aggregate_all_events()
     end
 
     -- Collect all modules
-    local modules = { Agents, Spectator, Notifications }
+    local modules = { Agents, Notifications }  -- Spectator removed - spectator logic disabled
 
     -- 1. Aggregate on_tick handlers from all modules
     for _, module in ipairs(modules) do
@@ -209,21 +209,21 @@ local function register_all_remote_interfaces()
         end
     end
 
-    -- Register spectator interface
-    if Spectator and Spectator.register_remote_interface then
-        local spectator_interface = Spectator.register_remote_interface()
-        if spectator_interface and next(spectator_interface) ~= nil then
-            local interface_name = "spectator"
-            if remote.interfaces[interface_name] then
-                log("Removing existing '" .. interface_name .. "' interface")
-                remote.remove_interface(interface_name)
-            end
-            local method_count = 0
-            for _ in pairs(spectator_interface) do method_count = method_count + 1 end
-            log("Registering '" .. interface_name .. "' interface with " .. method_count .. " method(s)")
-            remote.add_interface(interface_name, spectator_interface)
-        end
-    end
+    -- Register spectator interface - DISABLED: Spectator logic disabled
+    -- if Spectator and Spectator.register_remote_interface then
+    --     local spectator_interface = Spectator.register_remote_interface()
+    --     if spectator_interface and next(spectator_interface) ~= nil then
+    --         local interface_name = "spectator"
+    --         if remote.interfaces[interface_name] then
+    --             log("Removing existing '" .. interface_name .. "' interface")
+    --             remote.remove_interface(interface_name)
+    --         end
+    --         local method_count = 0
+    --         for _ in pairs(spectator_interface) do method_count = method_count + 1 end
+    --         log("Registering '" .. interface_name .. "' interface with " .. method_count .. " method(s)")
+    --         remote.add_interface(interface_name, spectator_interface)
+    --     end
+    -- end
 
     -- Register global documentation API
     -- Returns paramspec for each method (the only runtime-relevant metadata)
@@ -324,10 +324,10 @@ script.on_init(function()
         custom_events.initialize_storage()
     end
 
-    -- Initialize spectator storage
-    if Spectator and Spectator.initialize_storage then
-        Spectator.initialize_storage()
-    end
+    -- Initialize spectator storage - DISABLED: Spectator logic disabled
+    -- if Spectator and Spectator.initialize_storage then
+    --     Spectator.initialize_storage()
+    -- end
 
     log("Initialized fv_embodied_agent game state modules")
 

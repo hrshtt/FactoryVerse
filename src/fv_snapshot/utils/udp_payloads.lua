@@ -53,14 +53,15 @@ M.FILE_OP = {
 --- @param rcon_tick number|nil RCON tick (default: game.tick)
 --- @return table Payload
 function M.action_start(action_id, agent_id, action_type, rcon_tick)
+    local current_tick = game.tick
     return {
         event_type = "action",
         action_id = action_id,
         agent_id = agent_id,
         action_type = action_type,
         status = M.ACTION_STATUS.STARTED,
-        rcon_tick = rcon_tick or game.tick,
-        tick = game.tick,
+        rcon_tick = rcon_tick or current_tick,
+        tick = current_tick,
     }
 end
 
@@ -72,14 +73,15 @@ end
 --- @param rcon_tick number|nil RCON tick
 --- @return table Payload
 function M.action_progress(action_id, agent_id, action_type, progress_data, rcon_tick)
+    local current_tick = game.tick
     return {
         event_type = "action",
         action_id = action_id,
         agent_id = agent_id,
         action_type = action_type,
         status = M.ACTION_STATUS.PROGRESS,
-        rcon_tick = rcon_tick or game.tick,
-        tick = game.tick,
+        rcon_tick = rcon_tick or current_tick,
+        tick = current_tick,
         progress = progress_data or {},
     }
 end
@@ -93,14 +95,15 @@ end
 --- @param success boolean|nil Success flag (default: true)
 --- @return table Payload
 function M.action_completed(action_id, agent_id, action_type, result, rcon_tick, success)
+    local current_tick = game.tick
     return {
         event_type = "action",
         action_id = action_id,
         agent_id = agent_id,
         action_type = action_type,
         status = M.ACTION_STATUS.COMPLETED,
-        rcon_tick = rcon_tick or game.tick,
-        completion_tick = game.tick,
+        rcon_tick = rcon_tick or current_tick,
+        completion_tick = current_tick,
         success = success ~= false,
         result = result or {},
     }

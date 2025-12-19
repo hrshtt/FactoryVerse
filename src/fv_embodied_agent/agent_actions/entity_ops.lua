@@ -692,24 +692,16 @@ function EntityOpsActions.inspect_entity(self, entity_name, position)
         -- Try to convert status enum to name
         local status_name = nil
         if utils and utils.status_to_name then
-            local status_ok, result = pcall(function() return utils.status_to_name(entity.status) end)
-            if status_ok and result then
-                status_name = result
-            end
+            status_name = utils.status_to_name(entity.status)
         end
         
         -- If conversion failed, try direct enum lookup
         if not status_name and defines.entity_status then
-            local enum_ok, result = pcall(function()
                 for k, v in pairs(defines.entity_status) do
                     if v == entity.status then
-                        return string.lower(string.gsub(k, "_", "-"))
+                    status_name = string.lower(string.gsub(k, "_", "-"))
+                    break
                     end
-                end
-                return nil
-            end)
-            if enum_ok and result then
-                status_name = result
             end
         end
         
@@ -719,8 +711,8 @@ function EntityOpsActions.inspect_entity(self, entity_name, position)
     
     -- Add recipe if applicable (assemblers, furnaces, chemical plants)
     if entity.get_recipe then
-        local success, recipe = pcall(function() return entity.get_recipe() end)
-        if success and recipe then
+        local recipe = entity.get_recipe()
+        if recipe then
             data.recipe = recipe.name
         end
     end
@@ -736,38 +728,30 @@ function EntityOpsActions.inspect_entity(self, entity_name, position)
     end
     
     -- Add burner information (furnaces, burner mining drills, etc.)
-    -- Use pcall to safely access burner properties
-    local burner_success, burner_result = pcall(function()
-        if not entity.burner or not entity.burner.valid then
-            return nil
-        end
-        
+    local burner_result = nil
+    if entity.burner and entity.burner.valid then
         local burner = entity.burner
         local burner_data = {}
         
-        -- Heat information (use pcall for each property access)
-        local heat_ok, heat = pcall(function() return burner.heat end)
-        if heat_ok and heat ~= nil then
-            burner_data.heat = heat
+        -- Heat information
+        if burner.heat ~= nil then
+            burner_data.heat = burner.heat
         end
         
-        local heat_cap_ok, heat_capacity = pcall(function() return burner.heat_capacity end)
-        if heat_cap_ok and heat_capacity ~= nil then
-            burner_data.heat_capacity = heat_capacity
+        if burner.heat_capacity ~= nil then
+            burner_data.heat_capacity = burner.heat_capacity
         end
         
-        local remaining_ok, remaining_burning_fuel = pcall(function() return burner.remaining_burning_fuel end)
-        if remaining_ok and remaining_burning_fuel ~= nil then
-            burner_data.remaining_burning_fuel = remaining_burning_fuel
+        if burner.remaining_burning_fuel ~= nil then
+            burner_data.remaining_burning_fuel = burner.remaining_burning_fuel
         end
         
-        -- Currently burning item (use pcall)
-        local burning_ok, currently_burning = pcall(function() return burner.currently_burning end)
+        -- Currently burning item
+        local currently_burning = burner.currently_burning
         local item_name = nil
-        if burning_ok and currently_burning then
-            local name_ok, name = pcall(function() return currently_burning.name end)
-            if name_ok and name then
-                item_name = name
+        if currently_burning then
+            item_name = currently_burning.name
+            if item_name then
                 burner_data.currently_burning = item_name
             end
         end
@@ -776,8 +760,8 @@ function EntityOpsActions.inspect_entity(self, entity_name, position)
         -- This handles cases where currently_burning isn't set but fuel is actively burning
         if not item_name and burner_data.remaining_burning_fuel and burner_data.remaining_burning_fuel > 0 then
             -- Check fuel inventory to see what fuel is available
-            local fuel_inv_ok, fuel_inv = pcall(function() return entity.get_inventory(defines.inventory.fuel) end)
-            if fuel_inv_ok and fuel_inv then
+            local fuel_inv = entity.get_inventory(defines.inventory.fuel)
+            if fuel_inv then
                 -- Get the first fuel item in the inventory
                 for i = 1, #fuel_inv do
                     local stack = fuel_inv[i]
@@ -792,11 +776,11 @@ function EntityOpsActions.inspect_entity(self, entity_name, position)
         
         -- Calculate burning progress if we have item_name and remaining_burning_fuel
         if item_name and burner_data.remaining_burning_fuel and burner_data.remaining_burning_fuel > 0 then
-            -- Try to get fuel energy from prototype if available (wrap in pcall)
-            local proto_ok, fuel_proto = pcall(function() return game.item_prototypes[item_name] end)
-            if proto_ok and fuel_proto then
-                local fuel_value_ok, fuel_energy = pcall(function() return fuel_proto.fuel_value end)
-                if fuel_value_ok and fuel_energy and fuel_energy > 0 then
+            -- Try to get fuel energy from prototype if available
+            local fuel_proto = game.item_prototypes[item_name]
+            if fuel_proto then
+                local fuel_energy = fuel_proto.fuel_value
+                if fuel_energy and fuel_energy > 0 then
                     local progress = 1.0 - (burner_data.remaining_burning_fuel / fuel_energy)
                     -- Clamp to [0, 1]
                     if progress < 0 then progress = 0 end
@@ -806,8 +790,8 @@ function EntityOpsActions.inspect_entity(self, entity_name, position)
             end
         end
         
-        return burner_data
-    end)
+        burner_result = burner_data
+    end
     
     if burner_success and burner_result then
         data.burner = burner_result

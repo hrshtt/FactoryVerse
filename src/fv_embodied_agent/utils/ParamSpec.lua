@@ -303,8 +303,8 @@ function ParamSpec:normalize_varargs(spec, ...)
     -- Handle JSON string decoding
     if #args == 1 and type(args[1]) == "string" then
         if helpers and helpers.json_to_table then
-            local ok, decoded = pcall(helpers.json_to_table, args[1])
-            if ok and type(decoded) == "table" then
+            local decoded = helpers.json_to_table(args[1])
+            if decoded and type(decoded) == "table" then
                 args[1] = decoded
             end
         end

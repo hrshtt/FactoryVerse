@@ -17,6 +17,10 @@ local utils = require("utils.utils")
 
 local M = {}
 
+-- Cache helpers functions for performance (called frequently in UDP notifications)
+local table_to_json = helpers.table_to_json
+local send_udp = helpers.send_udp
+
 -- Base directory for snapshots (relative to script-output)
 M.SNAPSHOT_BASE_DIR = "factoryverse/snapshots"
 
@@ -144,7 +148,7 @@ function M.write_jsonl_init(file_path, json_lines)
     end
     
     local content = table.concat(json_lines, "\n") .. "\n"
-    local ok_write = pcall(helpers.write_file, file_path, content, false)
+    local ok_write = helpers.write_file(file_path, content, false)
     if not ok_write then
         log("Failed to write JSONL init file: " .. tostring(file_path))
         return false
@@ -172,8 +176,8 @@ function M.write_jsonl_init_from_tables(file_path, entries)
     
     local lines = {}
     for _, entry in ipairs(entries) do
-        local ok, json_str = pcall(helpers.table_to_json, entry)
-        if ok and json_str then
+        local json_str = helpers.table_to_json(entry)
+        if json_str then
             table.insert(lines, json_str)
         else
             log("Failed to serialize entry for: " .. tostring(file_path))
@@ -214,14 +218,14 @@ function M.append_entity_operation(chunk_x, chunk_y, operation)
     
     local file_path = M.entities_updates_path(chunk_x, chunk_y)
     
-    local ok, json_str = pcall(helpers.table_to_json, operation)
-    if not ok or not json_str then
+    local json_str = helpers.table_to_json(operation)
+    if not json_str then
         log("Failed to serialize operation for append: " .. tostring(file_path))
         return false
     end
     
     -- CRITICAL: Use append=true for the third parameter
-    local ok_write = pcall(helpers.write_file, file_path, json_str .. "\n", true)
+    local ok_write = helpers.write_file(file_path, json_str .. "\n", true)
     if not ok_write then
         log("Failed to append operation to: " .. tostring(file_path))
         return false
@@ -283,11 +287,11 @@ function M.append_trees_rocks_operation(chunk_x, chunk_y, operation)
             game.tick, file_path, chunk_x, chunk_y))
     end
     
-    local ok, json_str = pcall(helpers.table_to_json, operation)
-    if not ok or not json_str then
+    local json_str = helpers.table_to_json(operation)
+    if not json_str then
         if M.DEBUG and game and game.print then
-            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Serialization failed - ok=%s, json_str=%s", 
-                game.tick, tostring(ok), tostring(json_str)))
+            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Serialization failed", 
+                game.tick))
         end
         log("Failed to serialize trees/rocks operation for append: " .. tostring(file_path))
         return false
@@ -299,11 +303,11 @@ function M.append_trees_rocks_operation(chunk_x, chunk_y, operation)
     end
     
     -- CRITICAL: Use append=true for the third parameter
-    local ok_write, write_err = pcall(helpers.write_file, file_path, json_str .. "\n", true)
+    local ok_write = helpers.write_file(file_path, json_str .. "\n", true)
     if not ok_write then
         if M.DEBUG and game and game.print then
-            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Write failed - ok=%s, err=%s, file_path=%s", 
-                game.tick, tostring(ok_write), tostring(write_err), file_path))
+            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Write failed - file_path=%s", 
+                game.tick, file_path))
         end
         log("Failed to append trees/rocks operation to: " .. tostring(file_path))
         return false
@@ -328,14 +332,14 @@ function M.append_ghost_operation(operation)
     
     local file_path = M.ghosts_updates_path()
     
-    local ok, json_str = pcall(helpers.table_to_json, operation)
-    if not ok or not json_str then
+    local json_str = helpers.table_to_json(operation)
+    if not json_str then
         log("Failed to serialize ghost operation for append: " .. tostring(file_path))
         return false
     end
     
     -- CRITICAL: Use append=true for the third parameter
-    local ok_write = pcall(helpers.write_file, file_path, json_str .. "\n", true)
+    local ok_write = helpers.write_file(file_path, json_str .. "\n", true)
     if not ok_write then
         log("Failed to append ghost operation to: " .. tostring(file_path))
         return false
@@ -386,24 +390,15 @@ function M.send_udp_notification(payload)
         return false
     end
 
-    local ok_json, json_str = pcall(helpers.table_to_json, payload)
-    if not ok_json or not json_str then
+    local json_str = table_to_json(payload)
+    if not json_str then
         log("Failed to serialize UDP payload to JSON")
         return false
     end
 
-    local ok_udp, err = pcall(function()
-        helpers.send_udp(M.UDP_PORT, json_str)
-    end)
-
-    if not ok_udp then
-        local error_msg = err or "unknown"
-        log(string.format("[UDP] ERROR sending notification: %s", error_msg))
-        if game and game.print then
-            game.print(string.format("[UDP] ERROR: %s", error_msg))
-        end
-        return false
-    end
+    -- UDP is fire-and-forget - send_udp doesn't return success/failure
+    -- Note: Requires --enable-lua-udp flag to be set when launching Factorio
+    send_udp(M.UDP_PORT, json_str)
 
     if M.DEBUG and game and game.print then
         local event_type = payload.event_type or "unknown"
@@ -531,9 +526,7 @@ function M.cleanup_old_status_dumps()
         local file_path = M.status_dump_path(oldest_tick)
         
         -- Delete the file (best-effort, ignore errors)
-        pcall(function()
-            helpers.remove_path(file_path)
-        end)
+        helpers.remove_path(file_path)
         
         if M.DEBUG and game and game.print then
             game.print(string.format("[status_dump] Deleted old status dump: %s", file_path))

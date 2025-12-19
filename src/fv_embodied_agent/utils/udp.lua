@@ -4,6 +4,10 @@
 
 local M = {}
 
+-- Cache helpers functions for performance (called frequently in UDP notifications)
+local table_to_json = helpers.table_to_json
+local send_udp = helpers.send_udp
+
 -- UDP port for agent action notifications (default for agent-specific payloads)
 -- Note: Snapshot notifications use a separate port (34400)
 M.UDP_PORT = 34202
@@ -25,42 +29,24 @@ function M.send_udp_notification(payload, port)
     end
 
     local udp_port = port or M.UDP_PORT
+    -- Cache frequently accessed values for performance
+    local current_tick = game.tick
+    local event_type = payload.event_type or "unknown"
 
     if M.DEBUG then
-        local event_type = payload.event_type or "unknown"
         game.print(string.format("[DEBUG UDP.send_udp_notification] Tick %d: Sending %s (port %d)", 
-            game.tick, event_type, udp_port))
+            current_tick, event_type, udp_port))
     end
 
-    local ok_json, json_str = pcall(helpers.table_to_json, payload)
-    if not ok_json or not json_str then
-        log("Failed to serialize UDP payload to JSON")
-        if M.DEBUG then
-            game.print(string.format("[DEBUG UDP.send_udp_notification] Tick %d: JSON serialization failed", game.tick))
-        end
-        return false
-    end
+    local json_str = table_to_json(payload)
 
-    local ok_udp, err = pcall(function()
-        helpers.send_udp(udp_port, json_str)
-    end)
-
-    if not ok_udp then
-        local error_msg = err or "unknown"
-        log(string.format("[UDP] ERROR sending notification: %s", error_msg))
-        if game and game.print then
-            game.print(string.format("[UDP] ERROR: %s", error_msg))
-        end
-        if M.DEBUG then
-            game.print(string.format("[DEBUG UDP.send_udp_notification] Tick %d: UDP send failed: %s", game.tick, error_msg))
-        end
-        return false
-    end
+    -- UDP is fire-and-forget - send_udp doesn't return success/failure
+    -- Note: Requires --enable-lua-udp flag to be set when launching Factorio
+    send_udp(udp_port, json_str)
 
     if M.DEBUG then
-        local event_type = payload.event_type or "unknown"
         game.print(string.format("[DEBUG UDP.send_udp_notification] Tick %d: Sent UDP notification: %s (port %d)", 
-            game.tick, event_type, udp_port))
+            current_tick, event_type, udp_port))
     end
 
     return true
@@ -94,24 +80,28 @@ M.ACTION_STATUS = {
 --- @param category string|nil Category (walking, mining, crafting, etc.)
 --- @return table Payload
 function M.create_action_payload(action_id, agent_id, action_type, status, rcon_tick, result, success, cancelled, category)
+    -- Cache game.tick for performance (used multiple times)
+    local current_tick = game.tick
+    local tick_value = rcon_tick or current_tick
+    
     local payload = {
         event_type = "action",
         action_id = action_id,
         agent_id = agent_id,
         action_type = action_type,
         status = status,
-        rcon_tick = rcon_tick or game.tick,
-        tick = game.tick,
+        rcon_tick = tick_value,
+        tick = current_tick,
     }
     
     if status == M.ACTION_STATUS.COMPLETED then
-        payload.completion_tick = game.tick
+        payload.completion_tick = current_tick
         payload.success = success ~= false
         if result then
             payload.result = result
         end
     elseif status == M.ACTION_STATUS.CANCELLED then
-        payload.cancellation_tick = game.tick
+        payload.cancellation_tick = current_tick
         payload.cancelled = true
         if result then
             payload.result = result

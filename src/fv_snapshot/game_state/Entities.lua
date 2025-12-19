@@ -288,8 +288,8 @@ function M.dump_status_to_disk(charted_chunks)
     -- Build JSONL content: one JSON array per line [entity_enum, status_enum, x, y]
     local jsonl_lines = {}
     for _, record in ipairs(status_records) do
-        local ok, json_str = pcall(helpers.table_to_json, record)
-        if ok and json_str then
+        local json_str = helpers.table_to_json(record)
+        if json_str then
             table.insert(jsonl_lines, json_str)
         end
     end
@@ -301,7 +301,7 @@ function M.dump_status_to_disk(charted_chunks)
     -- Write JSONL to disk
     local file_path = snapshot.status_dump_path(game.tick)
     local content = table.concat(jsonl_lines, "\n") .. "\n"
-    local ok_write = pcall(helpers.write_file, file_path, content, false)
+    local ok_write = helpers.write_file(file_path, content, false)
     if not ok_write then
         log("Failed to write status dump file: " .. tostring(file_path))
         return
@@ -808,48 +808,28 @@ function M._build_disk_write_snapshot()
     -- Storage is the source of truth for cross-mod event ID sharing
     local agent_events = nil
     
-    game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Starting to build disk_write_snapshot", game.tick))
-    
     -- Try storage first (fastest, no remote call overhead)
     if storage.custom_events then
         agent_events = storage.custom_events
-        game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Found agent_events in storage", game.tick))
     -- Fallback to remote call if storage not available
     elseif remote and remote.interfaces then
-        game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: storage.custom_events not found, checking remote interfaces", game.tick))
-        if remote.interfaces.agent then
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Found 'agent' remote interface, calling get_custom_events", game.tick))
-            local ok, result = pcall(function()
-                return remote.call("agent", "get_custom_events")
-            end)
-            if ok and result then
+        -- Check if agent interface exists and has get_custom_events function
+        if remote.interfaces.agent and remote.interfaces.agent.get_custom_events then
+            local result = remote.call("agent", "get_custom_events")
+            if result then
                 agent_events = result
-                game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Got agent_events from remote interface", game.tick))
-            else
-                game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Remote call failed - ok=%s", game.tick, tostring(ok)))
             end
-        else
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: 'agent' remote interface not found", game.tick))
         end
-        if not agent_events and remote.interfaces.custom_events then
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Found 'custom_events' remote interface, calling get_custom_events", game.tick))
-            local ok, result = pcall(function()
-                return remote.call("custom_events", "get_custom_events")
-            end)
-            if ok and result then
+        -- Check if custom_events interface exists and has get_custom_events function
+        if not agent_events and remote.interfaces.custom_events and remote.interfaces.custom_events.get_custom_events then
+            local result = remote.call("custom_events", "get_custom_events")
+            if result then
                 agent_events = result
-                game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Got agent_events from custom_events remote interface", game.tick))
-            else
-                game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Remote call to custom_events failed - ok=%s", game.tick, tostring(ok)))
             end
         end
     -- Last resort: try module require (may not work across mods reliably)
     elseif Agents and Agents.custom_events then
         agent_events = Agents.custom_events
-        game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Got agent_events from Agents module", game.tick))
-    else
-        game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: No remote interfaces available, Agents.custom_events=%s", 
-            game.tick, tostring(Agents and Agents.custom_events)))
     end
     
     local events = {
@@ -871,31 +851,18 @@ function M._build_disk_write_snapshot()
     
     -- Add Agent custom events if available (for agent-driven entity operations)
     if agent_events then
-        game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: agent_events found, checking for custom events", game.tick))
         if agent_events.on_agent_entity_built then
             events[agent_events.on_agent_entity_built] = _on_agent_entity_built
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Registered on_agent_entity_built, event_id=%s", 
-                game.tick, tostring(agent_events.on_agent_entity_built)))
         end
         if agent_events.on_agent_entity_destroyed then
             events[agent_events.on_agent_entity_destroyed] = _on_agent_entity_destroyed
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Registered handler for on_agent_entity_destroyed, event_id=%s", 
-                game.tick, tostring(agent_events.on_agent_entity_destroyed)))
-        else
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: WARNING: agent_events.on_agent_entity_destroyed is nil!", game.tick))
         end
         if agent_events.on_agent_entity_rotated then
             events[agent_events.on_agent_entity_rotated] = _on_agent_entity_rotated
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Registered on_agent_entity_rotated, event_id=%s", 
-                game.tick, tostring(agent_events.on_agent_entity_rotated)))
         end
         if agent_events.on_agent_entity_configuration_changed then
             events[agent_events.on_agent_entity_configuration_changed] = _on_agent_entity_configuration_changed
-            game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: Registered on_agent_entity_configuration_changed, event_id=%s", 
-                game.tick, tostring(agent_events.on_agent_entity_configuration_changed)))
         end
-    else
-        game.print(string.format("[DEBUG Entities._build_disk_write_snapshot] Tick %d: WARNING: agent_events is nil! Event handler will NOT be registered!", game.tick))
     end
 
     return {

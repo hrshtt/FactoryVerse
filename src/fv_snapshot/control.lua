@@ -190,9 +190,7 @@ local function clear_snapshot_directory()
     local snapshot_base_dir = snapshot.SNAPSHOT_BASE_DIR
     
     -- Attempt to remove the entire snapshot directory tree
-    local ok, err = pcall(function()
-        helpers.remove_path(snapshot_base_dir)
-    end)
+    local ok = helpers.remove_path(snapshot_base_dir)
     
     if ok then
         log("🧹 Cleared snapshot directory: " .. snapshot_base_dir)
