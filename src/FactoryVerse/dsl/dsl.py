@@ -55,6 +55,7 @@ class _CraftingAccessor:
     - enqueue(recipe, count?) - Enqueue recipe for crafting
     - dequeue(recipe, count?) - Cancel queued crafting
     - status() - Get current crafting status
+    - get_recipes(enabled_only?, category?) - Get available recipes
   Usage: await crafting.craft('iron-plate', count=10)"""
     
     async def craft(self, recipe: str, count: int = 1, timeout: Optional[int] = None):
@@ -72,6 +73,26 @@ class _CraftingAccessor:
     def status(self):
         """Get current crafting status."""
         return _get_factory().crafting.status()
+    
+    def get_recipes(self, enabled_only: bool = True, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get available recipes for the agent's force.
+        
+        Args:
+            enabled_only: If True, only return enabled recipes (default: True)
+            category: Optional filter by recipe category (e.g., "crafting", "smelting")
+        
+        Returns:
+            List of recipe dictionaries with name, category, energy, and ingredients
+        """
+        # The Lua implementation already filters to enabled recipes only
+        # So enabled_only=True is the default behavior, enabled_only=False is not supported
+        if not enabled_only:
+            # For now, we only support enabled recipes (Lua limitation)
+            # Could be extended in the future if needed
+            pass
+        
+        result = _get_factory().get_recipes(category=category)
+        return json.loads(result)
 
 
 class _ResearchAccessor:
@@ -83,6 +104,7 @@ class _ResearchAccessor:
     - enqueue(technology) - Start researching a technology
     - dequeue() - Cancel current research
     - status() - Get current research status
+    - get_technologies(researched_only?, only_available?) - Get technologies
   Usage: research.enqueue('automation')"""
     
     def enqueue(self, technology: str):
@@ -96,6 +118,26 @@ class _ResearchAccessor:
     def status(self):
         """Get current research status."""
         return _get_factory().research.status()
+    
+    def get_technologies(self, researched_only: bool = False, only_available: bool = False) -> List[Dict[str, Any]]:
+        """Get technologies for the agent's force.
+        
+        Args:
+            researched_only: If True, only return already researched technologies
+            only_available: If True, only return technologies that can be researched now (prerequisites met)
+        
+        Returns:
+            List of technology dictionaries with name, researched, enabled, prerequisites, etc.
+        """
+        # Get all or available technologies from Lua
+        result = _get_factory().get_technologies(only_available=only_available)
+        technologies = json.loads(result)
+        
+        # Apply client-side filtering for researched_only if needed
+        if researched_only:
+            technologies = [tech for tech in technologies if tech.get('researched', False)]
+        
+        return technologies
 
 
 class _InventoryAccessor:
@@ -139,7 +181,28 @@ class _InventoryAccessor:
         return _get_factory().inventory.get_item_stacks(item_name, count, number_of_stacks, strict)
     
     def check_recipe_count(self, recipe_name: str) -> int:
-        """Check how many times a recipe can be crafted."""
+        """Check how many times a recipe can be crafted.
+        
+        Raises:
+            ValueError: If the recipe is not handcraftable
+        """
+        # Check if recipe is handcraftable
+        from FactoryVerse.dsl.prototypes import get_recipe_prototypes
+        recipe_protos = get_recipe_prototypes()
+        
+        if not recipe_protos.is_handcraftable(recipe_name):
+            category = recipe_protos.get_recipe_category(recipe_name)
+            if category == 'smelting':
+                raise ValueError(
+                    f"Cannot handcraft '{recipe_name}' - it requires smelting in a furnace. "
+                    f"Smelting recipes (iron-plate, copper-plate, steel-plate, stone-brick) must be produced in stone-furnace, steel-furnace, or electric-furnace."
+                )
+            else:
+                raise ValueError(
+                    f"Cannot handcraft '{recipe_name}' - it requires category='{category}' machine. "
+                    f"Only recipes with category='crafting' can be handcrafted."
+                )
+        
         return _get_factory().inventory.check_recipe_count(recipe_name)
 
 
@@ -489,6 +552,7 @@ def configure(
             # If it's a dict (keyed by name), convert to list of values
             recipes_data = list(recipes_data.values())
         recipes = Recipes(recipes_data)
+        print(f"DEBUG: Loaded {len(recipes.recipes)} recipes into registry.")
     except Exception as e:
         print(f"Warning: Could not pre-fetch recipes: {e}")
         try:

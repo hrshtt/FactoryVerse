@@ -5,6 +5,17 @@ import json
 import math
 
 
+def snap_to_tile_center(position: MapPosition) -> MapPosition:
+    """Snaps a coordinate to the center of the grid tile it falls within.
+    
+    In Factorio, the tile at index 39 covers x=[39.0, 40.0).
+    Its center is 39.5.
+    """
+    return MapPosition(
+        x=math.floor(position.x) + 0.5,
+        y=math.floor(position.y) + 0.5
+    )
+
 def apply_cardinal_vector(
     map_position: MapPosition,
     vector: Tuple[float, float],
@@ -13,16 +24,26 @@ def apply_cardinal_vector(
     """Apply a vector transformation based on direction.
 
     Rotates a vector relative to NORTH based on the given direction.
+    Coordinate System: +X is East, +Y is South.
     """
     vx, vy = vector
     if not direction.is_cardinal():
         raise ValueError("Direction must be cardinal")
-    if direction == Direction.EAST:
-        vx, vy = vy, -vx
+
+    # Correct Rotation Logic (Clockwise from North)
+    if direction == Direction.NORTH:
+        # No change
+        pass
+    elif direction == Direction.EAST:
+        # Rotate 90 deg CW: (x, y) -> (-y, x)
+        vx, vy = -vy, vx
     elif direction == Direction.SOUTH:
+        # Rotate 180 deg: (x, y) -> (-x, -y)
         vx, vy = -vx, -vy
     elif direction == Direction.WEST:
-        vx, vy = -vy, vx
+        # Rotate 270 deg CW (or 90 CCW): (x, y) -> (y, -x)
+        vx, vy = vy, -vx
+
     return MapPosition(x=map_position.x + vx, y=map_position.y + vy)
 
 
@@ -140,22 +161,64 @@ class ElectricMiningDrillPrototype(BasePrototype):
         return BoundingBox.from_tuple((left_top, right_bottom))
 
     def output_position(
-        self, centroid: MapPosition, direction: Direction
-    ) -> MapPosition:
-        """
-        Given a centroid (MapPosition) and a direction (Direction.{NORTH, EAST, SOUTH, WEST}),
-        return the actual MapPosition of the drill's output.
-        The vector_to_place_result is always for NORTH; just map 0/4/8/12 to rotation.
-        """
-        return apply_cardinal_vector(centroid, self._output_vector, direction)
+            self, centroid: MapPosition, direction: Direction
+        ) -> MapPosition:
+            """
+            Calculates the exact drop position for the mining drill.
+            1. Rotates the offset vector.
+            2. Adds to centroid.
+            3. Snaps to the center of the target tile.
+            """
+            raw_pos = apply_cardinal_vector(centroid, self._output_vector, direction)
+            return snap_to_tile_center(raw_pos)
 
 
 @dataclass(frozen=True)
 class BurnerMiningDrillPrototype(BasePrototype):
     """Prototype accessor for burner-mining-drill."""
 
+    _output_vector: Tuple[float, float]
+    _search_radius: float
+
+    @classmethod
+    def from_data(cls, data: Dict[str, Any]) -> "BurnerMiningDrillPrototype":
+        """Create instance from raw prototype data."""
+        return cls(
+            _data=data,
+            _output_vector=tuple(data["vector_to_place_result"]),
+            _search_radius=data["resource_searching_radius"],
+        )
+
     def get_fuel_type(self) -> str:
         return self._data.get("energy_source", {}).get("fuel_category")
+
+    def get_resource_search_area(self, centroid: MapPosition) -> BoundingBox:
+        """
+        Return a BoundingBox for the resource search area,
+        centering the box at the centroid and with a half-width of resource_searching_radius.
+        """
+        r = self._search_radius
+        if r is None:
+            raise ValueError(
+                "resource_searching_radius not found in burner-mining-drill prototype"
+            )
+        x = centroid.x
+        y = centroid.y
+        left_top = (x - r, y - r)
+        right_bottom = (x + r, y + r)
+        return BoundingBox.from_tuple((left_top, right_bottom))
+
+    def output_position(
+            self, centroid: MapPosition, direction: Direction
+        ) -> MapPosition:
+            """
+            Calculates the exact drop position for the mining drill.
+            1. Rotates the offset vector.
+            2. Adds to centroid.
+            3. Snaps to the center of the target tile.
+            """
+            raw_pos = apply_cardinal_vector(centroid, self._output_vector, direction)
+            return snap_to_tile_center(raw_pos)
 
 
 @dataclass(frozen=True)
@@ -307,8 +370,8 @@ class EntityPrototypes:
                     self.data["mining-drill"]["electric-mining-drill"]
                 )
             if "burner-mining-drill" in self.data["mining-drill"]:
-                self.burner_mining_drill = BurnerMiningDrillPrototype(
-                    _data=self.data["mining-drill"]["burner-mining-drill"]
+                self.burner_mining_drill = BurnerMiningDrillPrototype.from_data(
+                    self.data["mining-drill"]["burner-mining-drill"]
                 )
             if "pumpjack" in self.data["mining-drill"]:
                 self.pumpjack = PumpjackPrototype.from_data(
@@ -427,7 +490,62 @@ class ItemPrototypes:
         
         # item data is usually under data['item']
         self.items = self.data.get("item", {})
+        
+        # Build fuel items cache
+        self._fuel_items_cache: Dict[str, List[str]] = {}
+        self._build_fuel_cache()
+    
+    def _build_fuel_cache(self):
+        """Build cache of fuel items by category."""
+        for item_name, item_data in self.items.items():
+            if 'fuel_value' in item_data:
+                fuel_cat = item_data.get('fuel_category', 'chemical')
+                if fuel_cat not in self._fuel_items_cache:
+                    self._fuel_items_cache[fuel_cat] = []
+                self._fuel_items_cache[fuel_cat].append(item_name)
 
+    def get_fuel_items(self, category: Optional[str] = None) -> List[str]:
+        """Get list of fuel items, optionally filtered by category.
+        
+        Args:
+            category: Optional fuel category ('chemical', 'nuclear')
+        
+        Returns:
+            List of fuel item names
+        """
+        if category:
+            return self._fuel_items_cache.get(category, [])
+        # Return all fuel items
+        all_fuel = []
+        for items in self._fuel_items_cache.values():
+            all_fuel.extend(items)
+        return all_fuel
+    
+    def is_fuel(self, item_name: str) -> bool:
+        """Check if an item is fuel.
+        
+        Args:
+            item_name: Name of the item to check
+        
+        Returns:
+            True if the item can be used as fuel
+        """
+        return any(item_name in items for items in self._fuel_items_cache.values())
+    
+    def get_fuel_category(self, item_name: str) -> Optional[str]:
+        """Get fuel category for an item.
+        
+        Args:
+            item_name: Name of the item
+        
+        Returns:
+            Fuel category ('chemical', 'nuclear') or None if not fuel
+        """
+        for category, items in self._fuel_items_cache.items():
+            if item_name in items:
+                return category
+        return None
+    
     def get_place_result(self, item_name: str) -> Optional[str]:
         """Get the entity name that this item places, if any."""
         item_data = self.items.get(item_name)
@@ -436,9 +554,72 @@ class ItemPrototypes:
         return item_data.get("place_result")
 
 
+class RecipePrototypes:
+    """Prototype accessor for recipes."""
+    
+    def __init__(self, dump_file: str):
+        with open(dump_file, 'r') as f:
+            self.data = json.load(f)
+        
+        # recipe data is usually under data['recipe']
+        self.recipes = self.data.get("recipe", {})
+        
+        # Build recipe category cache
+        self._by_category_cache: Dict[str, List[str]] = {}
+        self._build_category_cache()
+    
+    def _build_category_cache(self):
+        """Build cache of recipes by category."""
+        for recipe_name, recipe_data in self.recipes.items():
+            category = recipe_data.get('category', 'crafting')
+            if category not in self._by_category_cache:
+                self._by_category_cache[category] = []
+            self._by_category_cache[category].append(recipe_name)
+    
+    def get_recipes_by_category(self, category: str) -> List[str]:
+        """Get recipes in a specific category.
+        
+        Args:
+            category: Recipe category (e.g., 'crafting', 'smelting', 'chemistry')
+        
+        Returns:
+            List of recipe names in that category
+        """
+        return self._by_category_cache.get(category, [])
+    
+    def is_handcraftable(self, recipe_name: str) -> bool:
+        """Check if a recipe can be handcrafted.
+        
+        Args:
+            recipe_name: Name of the recipe
+        
+        Returns:
+            True if recipe has category='crafting' (handcraftable)
+        """
+        recipe_data = self.recipes.get(recipe_name)
+        if not recipe_data:
+            return False
+        return recipe_data.get('category', 'crafting') == 'crafting'
+    
+    def get_recipe_category(self, recipe_name: str) -> Optional[str]:
+        """Get the category of a recipe.
+        
+        Args:
+            recipe_name: Name of the recipe
+        
+        Returns:
+            Recipe category or None if recipe not found
+        """
+        recipe_data = self.recipes.get(recipe_name)
+        if not recipe_data:
+            return None
+        return recipe_data.get('category', 'crafting')
+
+
 # Singleton instance - owned by this module
 _prototypes: Optional[EntityPrototypes] = None
 _item_prototypes: Optional[ItemPrototypes] = None
+_recipe_prototypes: Optional[RecipePrototypes] = None
 
 # Default dump file path (can be overridden in get_prototypes)
 DEFAULT_DUMP_FILE = "factorio-data-dump.json"
@@ -480,8 +661,10 @@ def reset_prototypes():
     """
     global _prototypes
     global _item_prototypes
+    global _recipe_prototypes
     _prototypes = None
     _item_prototypes = None
+    _recipe_prototypes = None
 
 def get_item_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> ItemPrototypes:
     """Get the global item prototypes singleton instance."""
@@ -489,3 +672,18 @@ def get_item_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> ItemPrototypes:
     if _item_prototypes is None:
         _item_prototypes = ItemPrototypes(dump_file)
     return _item_prototypes
+
+def get_recipe_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> RecipePrototypes:
+    """Get the global recipe prototypes singleton instance.
+    
+    Args:
+        dump_file: Path to the Factorio prototype data dump JSON file.
+                  Only used on first call; subsequent calls ignore this parameter.
+    
+    Returns:
+        RecipePrototypes instance (singleton, instantiated on first call)
+    """
+    global _recipe_prototypes
+    if _recipe_prototypes is None:
+        _recipe_prototypes = RecipePrototypes(dump_file)
+    return _recipe_prototypes

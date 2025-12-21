@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Any, Literal, ClassVar, Optional, get_args
+from typing import List, Dict, Any, Literal, Optional, get_args
 
 
 BasicRecipeName = Literal[
@@ -153,8 +153,7 @@ class BaseRecipe:
 @dataclass
 class Recipes:
     recipes: List[BaseRecipe]
-    
-    _registry: ClassVar[Optional[Dict[str, BaseRecipe]]] = None  # Class-level registry
+    _registry: Dict[str, BaseRecipe]  # Instance-level registry
 
     def __init__(self, data: List[Dict[str, Any]]):
         # self.recipes = [BaseRecipe(**recipe) for recipe in data]
@@ -192,25 +191,36 @@ class Recipes:
                 category=recipe.get("category", "crafting"),
                 enabled=recipe.get("enabled", True),
             )
-            if recipe.name not in get_args(BasicRecipeName):
-                print(f"[WARNING] Recipe {recipe.name} is not implemented in FactoryVerse. Skipping...")
-                continue
+            # if recipe.name not in get_args(BasicRecipeName):
+            #     print(f"[WARNING] Recipe {recipe.name} is not implemented in FactoryVerse. Skipping...")
+            #     continue
             assert recipe.category in get_args(RecipeCategory), f"Invalid recipe category: {recipe.category}"
             recipes.append(recipe)
         
         self.recipes = recipes
         
-        # Build registry
-        if Recipes._registry is None:
-            Recipes._registry = {}
+        # Build instance-level registry
+        self._registry = {}
         for recipe in self.recipes:
-            Recipes._registry[recipe.name] = recipe
+            self._registry[recipe.name] = recipe
 
-    @classmethod
-    def __getitem__(cls, recipe_name: BasicRecipeName) -> BaseRecipe:
-        """Get recipe by name with type safety."""
-        if cls._registry is None:
-            raise ValueError("Recipes registry not initialized. Create a Recipes instance first.")
-        if recipe_name not in cls._registry:
-            raise KeyError(f"Recipe '{recipe_name}' not found in registry")
-        return cls._registry[recipe_name]
+    def __getitem__(self, recipe_name: str) -> BaseRecipe:
+        """Get recipe by name.
+        
+        Args:
+            recipe_name: Name of the recipe to retrieve
+            
+        Returns:
+            BaseRecipe object
+            
+        Raises:
+            KeyError: If recipe not found in registry
+        """
+        if recipe_name not in self._registry:
+            available = list(self._registry.keys())[:10]  # Show first 10 for debugging
+            raise KeyError(
+                f"Recipe '{recipe_name}' not found in registry. "
+                f"Registry has {len(self._registry)} recipes. "
+                f"First few: {available}"
+            )
+        return self._registry[recipe_name]

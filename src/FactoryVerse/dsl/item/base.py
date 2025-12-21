@@ -279,7 +279,7 @@ class PlaceableItem(Item):
         return self.prototype.tile_height
 
     def place(
-        self, position: MapPosition, direction: Optional[Direction] = None
+        self, position: MapPosition, direction: Optional[Direction] = Direction.NORTH
     ) -> "BaseEntity":
         """Place this item as an entity on the map.
 
@@ -376,7 +376,7 @@ class PlaceableItem(Item):
     def place_ghost(
         self, 
         position: MapPosition, 
-        direction: Optional[Direction] = None,
+        direction: Optional[Direction] = Direction.NORTH,
         label: Optional[str] = None
     ) -> "GhostEntity":
         """Place this item as a ghost entity on the map.
@@ -403,6 +403,119 @@ class PlaceableItem(Item):
         return GhostEntity(name=self.name, position=position, direction=direction)
 
 
+
+class PlacementCues:
+    """Wrapper for placement cues that provides smart repr to avoid context spam.
+    
+    Placement cues contain two separate lists:
+    - positions: All valid positions in scanned chunks (5x5 chunks around agent)
+    - reachable_positions: Valid positions within agent's build distance
+    """
+    
+    def __init__(self, data: Dict[str, Any], entity_name: str):
+        self.entity_name = entity_name
+        self._data = data
+        
+        # Extract positions and reachable_positions
+        self._all_cues = data.get("positions", [])
+        self._reachable_cues = data.get("reachable_positions", [])
+        
+        # Cache for MapPosition conversions
+        self._positions_cache: Optional[List[MapPosition]] = None
+        self._reachable_positions_cache: Optional[List[MapPosition]] = None
+    
+    @property
+    def positions(self) -> List[MapPosition]:
+        """Get all valid positions as MapPosition objects (from scanned chunks)."""
+        if self._positions_cache is None:
+            self._positions_cache = [
+                MapPosition(x=cue["position"]["x"], y=cue["position"]["y"])
+                for cue in self._all_cues
+            ]
+        return self._positions_cache
+    
+    @property
+    def reachable_positions(self) -> List[MapPosition]:
+        """Get reachable positions as MapPosition objects (within build distance)."""
+        if self._reachable_positions_cache is None:
+            self._reachable_positions_cache = [
+                MapPosition(x=cue["position"]["x"], y=cue["position"]["y"])
+                for cue in self._reachable_cues
+            ]
+        return self._reachable_positions_cache
+    
+    @property
+    def count(self) -> int:
+        """Total number of placement cues (all positions)."""
+        return len(self._all_cues)
+    
+    @property
+    def reachable_count(self) -> int:
+        """Number of reachable placement cues."""
+        return len(self._reachable_cues)
+    
+    def by_resource(self) -> Dict[str, List[MapPosition]]:
+        """Group all positions by resource name (for mining drills/pumpjacks)."""
+        groups: Dict[str, List[MapPosition]] = {}
+        for cue in self._all_cues:
+            resource = cue.get("resource_name", "any")
+            if resource not in groups:
+                groups[resource] = []
+            groups[resource].append(MapPosition(x=cue["position"]["x"], y=cue["position"]["y"]))
+        return groups
+    
+    def reachable_by_resource(self) -> Dict[str, List[MapPosition]]:
+        """Group reachable positions by resource name."""
+        groups: Dict[str, List[MapPosition]] = {}
+        for cue in self._reachable_cues:
+            resource = cue.get("resource_name", "any")
+            if resource not in groups:
+                groups[resource] = []
+            groups[resource].append(MapPosition(x=cue["position"]["x"], y=cue["position"]["y"]))
+        return groups
+    
+    def __len__(self) -> int:
+        return len(self._all_cues)
+    
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        return self._all_cues[index]
+    
+    def __iter__(self):
+        return iter(self._all_cues)
+    
+    def __repr__(self) -> str:
+        """Smart repr that shows preview without spamming context."""
+        if not self._all_cues:
+            return f"PlacementCues(entity='{self.entity_name}', count=0, reachable=0)"
+        
+        # Group by resource if available
+        by_resource = self.by_resource()
+        
+        # Check if we have resource information (not just "any")
+        has_resources = len(by_resource) > 0 and "any" not in by_resource
+        
+        if has_resources and len(by_resource) > 1:
+            # Multiple resources - show summary with resource breakdown
+            resource_summary = ", ".join([f"{k}: {len(v)}" for k, v in by_resource.items()])
+            return (
+                f"PlacementCues(entity='{self.entity_name}', count={self.count}, reachable={self.reachable_count}, "
+                f"by_resource={{{resource_summary}}})"
+            )
+        elif has_resources and len(by_resource) == 1:
+            # Single resource - show resource name in summary
+            resource_name = list(by_resource.keys())[0]
+            return (
+                f"PlacementCues(entity='{self.entity_name}', resource='{resource_name}', "
+                f"count={self.count}, reachable={self.reachable_count})"
+            )
+        else:
+            # No resource grouping (water, or generic entities)
+            return (
+                f"PlacementCues(entity='{self.entity_name}', count={self.count}, reachable={self.reachable_count})"
+            )
+
+
+
 class PlacementCueMixin:
     """Mixin for items that require placement cues (mining drills, pumpjack, offshore-pump)."""
 
@@ -414,17 +527,27 @@ class PlacementCueMixin:
         if factory is None:
             raise RuntimeError(
                 "No active gameplay session. "
-                "Use 'with playing_factory(rcon, agent_id):' to enable item operations."
+                "Use 'with playing_factorio():' to enable item operations."
             )
         return factory
 
-    def get_placement_cues(self) -> List[Dict[str, Any]]:
+    def get_placement_cues(self, resource_name: Optional[str] = None) -> PlacementCues:
         """Get valid placement positions for this item type.
 
-        Returns list of {position: MapPosition, can_place: bool, direction?: Direction}
-        Scans 5x5 chunks (160x160 tiles) around agent.
+        Args:
+            resource_name: Optional resource name to filter by (e.g., "copper-ore", "iron-ore", "coal")
+
+        Returns PlacementCues object with:
+        - positions: All valid positions in scanned chunks
+        - reachable_positions: Valid positions within build distance
+        
+        **IMPORTANT**: Placement cues are extremely granular and can contain thousands of positions.
+        Do not randomly pick positions - use them to verify planned positions are valid.
+        Always ensure you are in vicinity of the scanned area before using these cues.
         """
-        return self._factory.get_placement_cues(self.name)
+        data = self._factory.get_placement_cues(self.name, resource_name=resource_name)
+        return PlacementCues(data, self.name)
+
 
 
 class MiningDrillItem(PlaceableItem, PlacementCueMixin):

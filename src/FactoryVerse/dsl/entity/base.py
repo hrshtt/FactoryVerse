@@ -1,4 +1,5 @@
-from __future__ import annotations
+# from __future__ import annotations
+import math
 from abc import ABC, abstractmethod
 from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
 from FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
@@ -6,13 +7,13 @@ from FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemSt
 from FactoryVerse.dsl.prototypes import (
     get_entity_prototypes,
     ElectricMiningDrillPrototype,
+    BurnerMiningDrillPrototype,
     PumpjackPrototype,
     InserterPrototype,
     LongHandedInserterPrototype,
     FastInserterPrototype,
     TransportBeltPrototype,
     BasePrototype,
-    apply_cardinal_vector,
 )
 
 if TYPE_CHECKING:
@@ -196,19 +197,19 @@ class BaseEntity(ABC):
         else:
             return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}))"
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of entity state.
         
         This is a read-only inspection that provides comprehensive information
         about the entity's current volatile state (inventories, progress, status, etc.).
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation of entity state
-            If as_string=False: Dictionary with entity inspection data including:
+            If raw_data=False: Formatted string representation of entity state
+            If raw_data=True: Dictionary with entity inspection data including:
                 - entity_name (str): Entity prototype name
                 - entity_type (str): Entity type
                 - position (dict): Entity position {x, y}
@@ -228,7 +229,7 @@ class BaseEntity(ABC):
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -259,18 +260,18 @@ class GhostEntity(BaseEntity):
         """Build the ghost entity."""
         return self._factory.place_entity(self.name, self.position)
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of ghost entity state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
-        if not as_string:
+        if raw_data:
             return self._factory.inspect_entity(self.name, self.position)
         return f"GhostEntity(name='{self.name}', position=({self.position.x:.1f}, {self.position.y:.1f}))"
 
@@ -308,20 +309,20 @@ class Container(BaseEntity):
             results.append(result)
         return results
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of container state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -356,7 +357,7 @@ class ShipWreck(Container):
 class Furnace(BaseEntity):
     """A furnace entity."""
 
-    # CANDO: Consider accepting List[Item] and List[ItemStack] for add_fuel and add_input_items
+    # CANDO: Consider accepting List[Item] and List[ItemStack] for add_fuel and add_ingredients
     # to work seamlessly with inventory.get_item_stacks() which returns List[ItemStack].
     # Would loop in Python and make multiple remote calls (one per item/stack), similar to
     # Container.store_items() pattern. Only implement if agents frequently fail on this use case.
@@ -381,8 +382,8 @@ class Furnace(BaseEntity):
             self.name, self.position, "fuel", item_name, fuel_count
         )
 
-    def add_input_items(self, item: Union[Item, ItemStack], count: Optional[int] = None):
-        """Add an item to the furnace's input inventory.
+    def add_ingredients(self, item: Union[Item, ItemStack], count: Optional[int] = None):
+        """Add ingredients to the furnace's input inventory.
         
         Args:
             item: Item or ItemStack to add
@@ -405,10 +406,10 @@ class Furnace(BaseEntity):
             self.name, self.position, "input", item_name, input_count
         )
 
-    def take_output_items(
+    def take_products(
         self, item: Optional[Union[Item, ItemStack]] = None, count: Optional[int] = None
     ):
-        """Get the item from the furnace's output inventory.
+        """Get the products from the furnace's output inventory.
         
         Args:
             item: Optional Item or ItemStack to take (if None, takes any item)
@@ -428,20 +429,20 @@ class Furnace(BaseEntity):
             self.name, self.position, "output", item_name, take_count
         )
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of furnace state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -538,20 +539,20 @@ class ElectricPole(BaseEntity):
             "This method requires implementation in the Lua mod's RemoteInterface."
         )
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of electric pole state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -594,20 +595,20 @@ class Inserter(BaseEntity):
             raise ValueError("Inserter direction must be set to calculate pickup position")
         return self.prototype.pickup_position(self.position, self.direction)
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of inserter state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -676,20 +677,20 @@ class AssemblingMachine(BaseEntity):
             "To get recipe information, use get_reachable() and inspect the entity data."
         )
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of assembling machine state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -776,20 +777,20 @@ class TransportBelt(BaseEntity):
         position = self.position.offset(offset=(1, 1), direction=direction) # TODO: get offset from prototypes
         return self._factory.place_entity(self.name, position, direction)
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of transport belt state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -805,20 +806,20 @@ class TransportBelt(BaseEntity):
 class Splitter(BaseEntity):
     """A splitter entity."""
     
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of splitter state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -831,7 +832,19 @@ class Splitter(BaseEntity):
         return "\n".join(lines)
 
 class ElectricMiningDrill(BaseEntity):
-    """An electric mining drill entity."""
+    """An electric mining drill entity.
+    
+    Direction is REQUIRED for mining drills as they have directional output positions.
+    """
+    
+    def __init__(self, name: str, position: MapPosition, direction: Optional[Direction] = None, **kwargs):
+        super().__init__(name, position, direction, **kwargs)
+        if self.direction is None:
+            raise ValueError(
+                f"ElectricMiningDrill requires direction to be set. "
+                f"Entity at ({position.x}, {position.y}) is missing direction data. "
+                f"This is likely a data serialization issue - direction should be provided by the mod."
+            )
 
     @property
     def prototype(self) -> ElectricMiningDrillPrototype:
@@ -845,28 +858,27 @@ class ElectricMiningDrill(BaseEntity):
 
     def output_position(self) -> MapPosition:
         """Get the output position of the mining drill."""
-        if self.direction is None:
-            raise ValueError("Mining drill direction must be set to calculate output position")
+        # Direction is guaranteed to exist due to __init__ assertion
         return self.prototype.output_position(self.position, self.direction)
 
     def get_search_area(self) -> BoundingBox:
         """Get the search area of the mining drill."""
         return self.prototype.get_resource_search_area(self.position)
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of electric mining drill state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -894,22 +906,130 @@ class ElectricMiningDrill(BaseEntity):
 
 
 class BurnerMiningDrill(BaseEntity):
-    """A burner mining drill entity."""
+    """A burner mining drill entity.
     
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    Direction is REQUIRED for mining drills as they have directional output positions.
+    """
+    
+    def __init__(self, name: str, position: MapPosition, direction: Optional[Direction] = None, **kwargs):
+        super().__init__(name, position, direction, **kwargs)
+        if self.direction is None:
+            raise ValueError(
+                f"BurnerMiningDrill requires direction to be set. "
+                f"Entity at ({position.x}, {position.y}) is missing direction data. "
+                f"This is likely a data serialization issue - direction should be provided by the mod."
+            )
+    
+    @property
+    def prototype(self) -> BurnerMiningDrillPrototype:
+        """Get the prototype for this burner mining drill type."""
+        return get_entity_prototypes().burner_mining_drill
+    
+    @property
+    def output_position(self) -> MapPosition:
+        """Get the output position of the mining drill."""
+        # Direction is guaranteed to exist due to __init__ assertion
+        return self.prototype.output_position(self.position, self.direction)
+
+    def get_valid_output_positions(self, target: Union['BaseEntity', 'PlaceableItem']) -> List[MapPosition]:
+        """
+        Returns valid center positions for a target entity to pick up items from this drill.
+        Enforces strict grid exclusivity (no tile overlap).
+        """
+        candidates = []
+        
+        # 1. Determine Source (Self) Tile Footprint
+        # Factorio centers even-sized entities on integer coordinates.
+        # A 2x2 at x=42 occupies x=[41, 43].
+        s_half_w = self.tile_width / 2.0
+        s_half_h = self.tile_height / 2.0
+        
+        src_left = self.position.x - s_half_w
+        src_right = self.position.x + s_half_w
+        src_top = self.position.y - s_half_h
+        src_bottom = self.position.y + s_half_h
+
+        # 2. Determine Target Geometry
+        t_width = target.tile_width
+        t_height = target.tile_height
+        t_half_w = t_width / 2.0
+        t_half_h = t_height / 2.0
+
+        # 3. Identify Drop Tile
+        # Use the exact output position
+        drop_pos = self.output_position
+        drop_tile_x = math.floor(drop_pos.x)
+        drop_tile_y = math.floor(drop_pos.y)
+
+        # 4. Generate Candidates
+        # Iterate over every relative tile offset the target could have
+        for dx in range(t_width):
+            for dy in range(t_height):
+                # Calculate Candidate Footprint
+                # If target's (dx, dy) tile is the drop tile:
+                target_left = drop_tile_x - dx
+                target_top = drop_tile_y - dy
+                
+                target_right = target_left + t_width
+                target_bottom = target_top + t_height
+                
+                # 5. Strict Grid Overlap Check (AABB)
+                # Logic: If max_x < min_x, they are disjoint.
+                # Since we are using exact tile boundaries (integers), 
+                # we use strictly less/greater to allow touching edges.
+                # E.g. Src Right (41) can touch Target Left (41).
+                
+                is_disjoint = (
+                    target_right <= src_left or  # Target is fully to the left
+                    target_left >= src_right or  # Target is fully to the right
+                    target_bottom <= src_top or  # Target is fully above
+                    target_top >= src_bottom     # Target is fully below
+                )
+                
+                if not is_disjoint:
+                    continue # They overlap on the grid
+                
+                # If valid, calculate center
+                center_x = target_left + t_half_w
+                center_y = target_top + t_half_h
+                candidates.append(MapPosition(center_x, center_y))
+                
+        def alignment_deviation(pos: MapPosition) -> float:
+            # Calculate how far 'pos' is off-center relative to 'self.position'
+            # perpendicular to the direction of flow.
+            
+            if self.direction in (Direction.NORTH, Direction.SOUTH):
+                # Vertical Flow: Minimize Horizontal (X) Deviation
+                return abs(pos.x - self.position.x)
+            
+            elif self.direction in (Direction.EAST, Direction.WEST):
+                # Horizontal Flow: Minimize Vertical (Y) Deviation
+                return abs(pos.y - self.position.y)
+            
+            return 0.0 # Should not happen for cardinal directions
+
+        # Sort in place: Smallest deviation (0.0) comes first
+        candidates.sort(key=alignment_deviation)
+        return candidates
+    
+    def get_search_area(self) -> BoundingBox:
+        """Get the search area of the mining drill."""
+        return self.prototype.get_resource_search_area(self.position)
+    
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of burner mining drill state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -945,7 +1065,92 @@ class BurnerMiningDrill(BaseEntity):
         else:
             lines.append("  Fuel Inventory: (empty)")
         
+        # Output inventory
+        output = inventories.get("output", {})
+        if output:
+            output_str = ", ".join([f"{name}: {count}" for name, count in output.items()])
+            lines.append(f"  Output: {output_str}")
+        else:
+            lines.append("  Output: (empty)")
+        
         return "\n".join(lines)
+    
+    def add_fuel(self, item: Union[Item, ItemStack, List[Item], List[ItemStack]], count: Optional[int] = None):
+        """Add fuel to the burner mining drill.
+        
+        Args:
+            item: Item, ItemStack, or list of Items/ItemStacks to add as fuel
+            count: Count to add (required if Item, optional if ItemStack - uses stack count)
+                  Ignored if item is a list (uses each stack's count)
+        
+        Raises:
+            ValueError: If the item is not a valid chemical fuel type
+        """
+        # Handle lists (from inventory.get_item_stacks())
+        if isinstance(item, list):
+            results = []
+            for stack in item:
+                results.append(self.add_fuel(stack))
+            return results
+        
+        # Handle single ItemStack
+        if isinstance(item, ItemStack):
+            item_name = item.name
+            fuel_count = count if count is not None else item.count
+        # Handle single Item
+        else:
+            item_name = item.name
+            if count is None:
+                raise ValueError("count is required when using Item (not ItemStack)")
+            fuel_count = count
+
+        # Validate fuel type
+        from FactoryVerse.dsl.prototypes import get_item_prototypes
+        item_protos = get_item_prototypes()
+        
+        if not item_protos.is_fuel(item_name):
+            valid_fuels = item_protos.get_fuel_items()
+            raise ValueError(
+                f"Cannot add '{item_name}' as fuel to {self.name}. "
+                f"Valid fuel items: {', '.join(sorted(valid_fuels))}"
+            )
+        
+        # Check if this burner mining drill accepts this fuel category
+        fuel_category = item_protos.get_fuel_category(item_name)
+        
+        # Burner mining drills only accept chemical fuel
+        if fuel_category != 'chemical':
+            raise ValueError(
+                f"Cannot add '{item_name}' (fuel_category={fuel_category}) to {self.name}. "
+                f"Burner mining drills only accept chemical fuels: wood, coal, solid-fuel, rocket-fuel, nuclear-fuel"
+            )
+
+        return self._factory.put_inventory_item(
+            self.name, self.position, "fuel", item_name, fuel_count
+        )
+
+    def take_products(
+        self, item: Optional[Union[Item, ItemStack]] = None, count: Optional[int] = None
+    ):
+        """Get the products from the burner mining drill's output inventory.
+        
+        Args:
+            item: Optional Item or ItemStack to take (if None, takes any item)
+            count: Count to take (required if Item, optional if ItemStack - uses stack count)
+        """
+        if item is None:
+            item_name = ""
+            take_count = count
+        elif isinstance(item, ItemStack):
+            item_name = item.name
+            take_count = count if count is not None else item.count
+        else:
+            item_name = item.name
+            take_count = count
+
+        return self._factory.take_inventory_item(
+            self.name, self.position, "output", item_name, take_count
+        )
 
 
 class Pumpjack(BaseEntity):
@@ -960,20 +1165,20 @@ class Pumpjack(BaseEntity):
         """Get the output pipe connections of the pumpjack."""
         return self.prototype.output_pipe_connections(self.position)
 
-    def inspect(self, as_string: bool = True) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
         """Return a representation of pumpjack state.
         
         Args:
-            as_string: If True (default), returns a formatted string representation.
-                      If False, returns the raw dictionary data.
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
         
         Returns:
-            If as_string=True: Formatted string representation
-            If as_string=False: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
-        if not as_string:
+        if raw_data:
             return data
         
         lines = [
@@ -1035,9 +1240,26 @@ def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:
     direction = None
     if "direction" in entity_data:
         try:
-            direction = Direction(entity_data["direction"])
+            dir_value = entity_data["direction"]
+            # Handle both int and string representations
+            if isinstance(dir_value, (int, float)):
+                direction = Direction(int(dir_value))
+            elif isinstance(dir_value, str):
+                # Try to parse string representation of number
+                direction = Direction(int(float(dir_value)))
         except (ValueError, KeyError, TypeError):
             pass
+    
+    # Fallback to direction_name if direction parsing failed
+    if direction is None and "direction_name" in entity_data:
+        direction_name = entity_data["direction_name"].upper()
+        direction_map = {
+            "NORTH": Direction.NORTH,
+            "EAST": Direction.EAST,
+            "SOUTH": Direction.SOUTH,
+            "WEST": Direction.WEST,
+        }
+        direction = direction_map.get(direction_name)
     
     # Map entity names to specific classes
     entity_map = {

@@ -47,7 +47,7 @@ class AsyncActionListener:
     
     def __init__(self, udp_dispatcher: Optional[UDPDispatcher] = None, 
                  agent_port: Optional[int] = None, 
-                 host: str = "127.0.0.1",
+                 host: str = "0.0.0.0",
                  timeout: int = 30):
         """
         Initialize the UDP listener.
@@ -158,13 +158,13 @@ class AsyncActionListener:
         logger.info(f"UDP RX: {payload}")
         try:
             action_id = payload.get('action_id')
+            # TODO: make this categorically associated with the action type
             if not action_id:
                 return
             
             # Require status field (no backwards compatibility)
             status = payload.get('status')
             if not status:
-                logger.warning(f"UDP message missing required 'status' field: {payload}")
                 return
             
             if action_id not in self.pending_actions:
@@ -798,6 +798,11 @@ class MiningAction:
         Returns:
             List of ItemStack objects obtained from mining
         """
+        if max_count and max_count > 25:
+            # Enforce 25 limit mentioned by user
+            logger.warning(f"Capping mining count from {max_count} to 25")
+            max_count = 25
+            
         response = self._factory.mine_resource(resource_name, max_count)
         result_payload = await self._factory._await_action(response, timeout=timeout)
         
@@ -996,10 +1001,10 @@ class PlayingFactory:
             estimated_ticks = response.get('estimated_ticks')
             if estimated_ticks:
                 # Convert ticks to seconds: 1 tick = 1/60 seconds at game.speed = 1.0
-                # Add 0.5x buffer for safety
+                # Add 1.5x buffer for safety (total 2.5x)
                 base_seconds = (estimated_ticks / 60.0)
-                calculated_timeout = base_seconds * 1.5
-                logger.debug(f"Calculated timeout for {action_id}: {calculated_timeout:.2f}s (from {estimated_ticks} ticks)")
+                calculated_timeout = max(5.0, base_seconds * 2.5)
+                logger.debug(f"Calculated timeout for {action_id}: {calculated_timeout:.3f}s (from {estimated_ticks} ticks)")
             else:
                 calculated_timeout = self._async_listener.timeout
         
@@ -1133,10 +1138,10 @@ class PlayingFactory:
         cmd = self._build_command("walk_to", goal, strict_goal, options)
         return self._execute_and_parse_json(cmd)
 
-    def stop_walking(self) -> str:
+    def stop_walking(self) -> Dict[str, Any]:
         """Immediately stop the agent's current walking action."""
         cmd = self._build_command("stop_walking")
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     # ========================================================================
     # ASYNC: Mining
@@ -1155,10 +1160,10 @@ class PlayingFactory:
         cmd = self._build_command("mine_resource", resource_name, max_count)
         return self._execute_and_parse_json(cmd)
 
-    def stop_mining(self) -> str:
+    def stop_mining(self) -> Dict[str, Any]:
         """Immediately stop the agent's current mining action."""
         cmd = self._build_command("stop_mining")
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     # ========================================================================
     # ASYNC: Crafting
@@ -1345,11 +1350,14 @@ class PlayingFactory:
         if hasattr(position, 'x') and hasattr(position, 'y'):
             position = {"x": position.x, "y": position.y}
         
+        # Convert Direction enum to int if needed
+        if direction is not None and isinstance(direction, Direction):
+            direction = direction.value
+        
         cmd = self._build_command(
             "place_entity", entity_name, position, direction, ghost
         )
-        result_str = self.execute(cmd)
-        result = json.loads(result_str)
+        result = self._execute_and_parse_json(cmd)
         
         # Track ghost if placed
         if ghost and result.get("success"):
@@ -1412,8 +1420,7 @@ class PlayingFactory:
             pos_dict = position
         
         cmd = self._build_command("remove_ghost", entity_name, pos_dict)
-        result_str = self.execute(cmd)
-        result = json.loads(result_str)
+        result = self._execute_and_parse_json(cmd)
         
         # Remove from tracking if successful
         if result.get("success"):
@@ -1462,19 +1469,7 @@ class PlayingFactory:
             RuntimeError: If the remote call fails or returns an error
         """
         cmd = self._build_command("inspect_entity", entity_name, {"x": position.x, "y": position.y})
-        result_str = self.execute(cmd)
-        
-        # Check if result is an error message (not JSON)
-        result_str = result_str.strip()
-        if not result_str or result_str[0] != '{':
-            # Likely an error message, raise it
-            raise RuntimeError(f"inspect_entity failed: {result_str}")
-        
-        try:
-            return json.loads(result_str)
-        except json.JSONDecodeError as e:
-            # If JSON parsing fails, the result might be an error message
-            raise RuntimeError(f"inspect_entity returned invalid JSON: {result_str[:200]}") from e
+        return self._execute_and_parse_json(cmd)
 
     def get_inventory_items(self) -> str:
         """Get agent's main inventory contents.
@@ -1492,18 +1487,28 @@ class PlayingFactory:
             MapPosition of the agent
         """
         cmd = self._build_command("get_position")
-        result_str = self.execute(cmd)
-        result = json.loads(result_str)
+        result = self._execute_and_parse_json(cmd)
         return MapPosition(x=result["x"], y=result["y"])
 
-    def get_placement_cues(self, entity_name: str) -> str:
+    def get_placement_cues(self, entity_name: str, resource_name: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
         """Get placement information for an entity type.
 
         Args:
             entity_name: Entity prototype name
+            resource_name: Optional resource name to filter by (e.g., "copper-ore", "iron-ore")
+            
+        Returns:
+            Dict with 'positions' (all valid) and 'reachable_positions' (within build distance)
         """
         cmd = self._build_command("get_placement_cues", entity_name)
-        return self.execute(cmd)
+        data = self._execute_and_parse_json(cmd)
+        
+        # Filter by resource_name if specified
+        if resource_name:
+            data["positions"] = [cue for cue in data.get("positions", []) if cue.get("resource_name") == resource_name]
+            data["reachable_positions"] = [cue for cue in data.get("reachable_positions", []) if cue.get("resource_name") == resource_name]
+        
+        return data
 
     def get_chunks_in_view(self) -> str:
         """Get list of map chunks currently visible/charted by the agent."""
@@ -1554,8 +1559,7 @@ class PlayingFactory:
             Dict with queue, queue_length, current_research, and tick
         """
         cmd = self._build_command("get_research_queue")
-        result = self.execute(cmd)
-        return json.loads(result)
+        return self._execute_and_parse_json(cmd)
     
     # ========================================================================
     # NOTIFICATIONS

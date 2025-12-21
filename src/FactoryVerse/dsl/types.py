@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import enum
+import math
 from typing import Self, Tuple
 
 
@@ -45,6 +46,12 @@ class Direction(enum.Enum):
         if not self.is_cardinal():
             raise ValueError(f"Cannot turn non-cardinal direction: {self.name}")
         return Direction((self.value + 4) % 16)
+
+    def flip(self) -> "Direction":
+        """Flip the direction 180 degrees."""
+        if not self.is_cardinal():
+            raise ValueError(f"Cannot flip non-cardinal direction: {self.name}")
+        return Direction((self.value + 8) % 16)
 
 
 @dataclass
@@ -113,8 +120,42 @@ class MapPosition(Position):
     """Coordinates of a tile in a map.
     
     Pure position data - just x, y coordinates.
+    Can be used as a set key or dictionary key via tuple (x, y).
     """
-    pass
+    
+    def __hash__(self) -> int:
+        """Make MapPosition hashable using tuple (x, y)."""
+        return hash((self.x, self.y))
+    
+    def __eq__(self, other) -> bool:
+        """Compare MapPosition instances by their (x, y) coordinates."""
+        if not isinstance(other, MapPosition):
+            return False
+        return (self.x, self.y) == (other.x, other.y)
+    
+    def distance(self, other: "MapPosition") -> float:
+        """Calculate Euclidean distance to another MapPosition.
+        
+        Args:
+            other: Another MapPosition to calculate distance to.
+            
+        Returns:
+            The Euclidean distance between this position and other.
+        """
+        dx = self.x - other.x
+        dy = self.y - other.y
+        return math.sqrt(dx * dx + dy * dy)
+    
+    def manhattan_distance(self, other: "MapPosition") -> float:
+        """Calculate Manhattan distance to another MapPosition.
+        
+        Args:
+            other: Another MapPosition to calculate distance to.
+            
+        Returns:
+            The Manhattan distance (sum of absolute differences) between this position and other.
+        """
+        return abs(self.x - other.x) + abs(self.y - other.y)
 
 
 class RealOrientation(float):
