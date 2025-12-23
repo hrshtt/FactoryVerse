@@ -78,6 +78,7 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
         name = entity_name,
         position = { x = position.x, y = position.y },
         force = self.character.force,
+        direction = direction,
         source = self.character,
         fast_replace = true,
         raise_built = true,

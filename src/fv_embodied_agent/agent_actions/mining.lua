@@ -277,7 +277,6 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     
     -- Start mining
     self.character.update_selected_entity(entity.position)
-    self.character.selected = entity
     self.character.mining_state = { mining = true, position = entity.position }
     
     -- Calculate estimated time

@@ -34,72 +34,22 @@ M.DEBUG = false
 -- ============================================================================
 
 -- Entity name enum mapping (for status dumps only)
-local ENTITY_NAME_ENUM = {
-    ["accumulator"] = 0,
-    ["assembling-machine-1"] = 1,
-    ["assembling-machine-2"] = 2,
-    ["assembling-machine-3"] = 3,
-    ["beacon"] = 4,
-    ["big-electric-pole"] = 5,
-    ["blue-chest"] = 6,
-    ["boiler"] = 7,
-    ["bulk-inserter"] = 8,
-    ["burner-generator"] = 9,
-    ["burner-inserter"] = 10,
-    ["burner-mining-drill"] = 11,
-    ["centrifuge"] = 12,
-    ["chemical-plant"] = 13,
-    ["electric-furnace"] = 14,
-    ["electric-mining-drill"] = 15,
-    ["express-splitter"] = 16,
-    ["express-transport-belt"] = 17,
-    ["express-underground-belt"] = 18,
-    ["fast-inserter"] = 19,
-    ["fast-splitter"] = 20,
-    ["fast-transport-belt"] = 21,
-    ["fast-underground-belt"] = 22,
-    ["gate"] = 23,
-    ["heat-exchanger"] = 24,
-    ["heat-interface"] = 25,
-    ["heat-pipe"] = 26,
-    ["inserter"] = 27,
-    ["iron-chest"] = 28,
-    ["lab"] = 29,
-    ["lane-splitter"] = 30,
-    ["long-handed-inserter"] = 31,
-    ["medium-electric-pole"] = 32,
-    ["nuclear-reactor"] = 33,
-    ["offshore-pump"] = 34,
-    ["oil-refinery"] = 35,
-    ["pipe"] = 36,
-    ["pipe-to-ground"] = 37,
-    ["pump"] = 38,
-    ["pumpjack"] = 39,
-    ["radar"] = 40,
-    ["red-chest"] = 41,
-    ["rocket-silo"] = 42,
-    ["small-electric-pole"] = 43,
-    ["solar-panel"] = 44,
-    ["splitter"] = 45,
-    ["steam-engine"] = 46,
-    ["steam-turbine"] = 47,
-    ["steel-chest"] = 48,
-    ["steel-furnace"] = 49,
-    ["stone-furnace"] = 50,
-    ["stone-wall"] = 51,
-    ["substation"] = 52,
-    ["transport-belt"] = 53,
-    ["underground-belt"] = 54,
-    ["wooden-chest"] = 55,
-    ["crash-site-chest-1"] = 56,
-    ["crash-site-chest-2"] = 57,
-    ["crash-site-spaceship"] = 58,
-    ["crash-site-spaceship-wreck-big-1"] = 59,
-    ["crash-site-spaceship-wreck-big-2"] = 60,
-    ["crash-site-spaceship-wreck-medium-1"] = 61,
-    ["crash-site-spaceship-wreck-medium-2"] = 62,
-    ["crash-site-spaceship-wreck-medium-3"] = 63,
-}
+-- Default empty - will be populated via remote call from Python during setup
+local ENTITY_NAME_ENUM = {}
+
+--- Set the entity name enum from Python
+--- @param entity_list table Array of entity names
+function M.set_entity_filter(entity_list)
+    -- Rebuild enum from list
+    ENTITY_NAME_ENUM = {}
+    for i, entity_name in ipairs(entity_list) do
+        ENTITY_NAME_ENUM[entity_name] = i - 1  -- 0-indexed
+    end
+    
+    if M.DEBUG then
+        game.print(string.format("[Entities.set_entity_filter] Updated entity filter with %d entities", #entity_list))
+    end
+end
 
 --- Check if entity name is in the status tracking enum
 --- @param entity_name string
@@ -949,6 +899,12 @@ function M.register_remote_interface()
         rotate = function(entity_name, position, direction, radius)
             local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:rotate(direction)
+        end,
+        
+        -- Configuration
+        set_entity_filter = function(entity_list)
+            M.set_entity_filter(entity_list)
+            return true
         end,
         
     }

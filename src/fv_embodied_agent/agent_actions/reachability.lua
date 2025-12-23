@@ -6,6 +6,7 @@
 --- Used by Python reachable_snapshot() context manager.
 
 local serialize = require("utils.serialize")
+local utils = require("utils.utils")
 
 local ReachabilityActions = {}
 
@@ -71,6 +72,12 @@ local function serialize_entity_full(entity)
         position = { x = entity.position.x, y = entity.position.y },
         position_key = position_key(entity.position.x, entity.position.y),
     }
+    
+    -- Add direction if available (required for entities with directional outputs like mining drills, inserters)
+    if entity.direction ~= nil then
+        data.direction = entity.direction
+        data.direction_name = utils.direction_to_name(entity.direction)
+    end
     
     -- Add status if available
     if entity.status then

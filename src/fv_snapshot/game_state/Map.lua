@@ -855,6 +855,7 @@ M.admin_api = {
     get_snapshot_status = M.get_snapshot_status,
     set_snapshot_config = M.set_snapshot_config,
     get_system_phase = M.get_system_phase,
+    enqueue_chunk_for_snapshot = M.enqueue_chunk_for_snapshot,  -- For test-driven forced re-snapshotting
 }
 
 M.event_based_snapshot = {}
