@@ -87,43 +87,25 @@ class Factoriopedia:
     _instance = None
     _data = None # The raw loaded JSON
 
-    def __new__(cls, data_path: str = "factorio-data-dump.json"):
+    def __new__(cls):
         if cls._instance is None:
             cls._instance = super(Factoriopedia, cls).__new__(cls)
-            cls._instance.data_path = data_path
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, data_path: str = "factorio-data-dump.json"):
+    def __init__(self):
         if self._initialized:
             return
         
-        # Try to find the file
-        import os
-        possible_paths = [
-            data_path,
-            os.path.join(os.getcwd(), data_path),
-            os.path.join(os.path.dirname(__file__), "../../../", data_path)
-        ]
-        
-        final_path = data_path
-        for p in possible_paths:
-            if os.path.exists(p):
-                final_path = p
-                break
-
-        self.data_path = final_path
         self._load_data()
         self._initialized = True
 
     def _load_data(self):
-        try:
-            with open(self.data_path, "r") as f:
-                self._raw = json.load(f)
-            logger.info(f"Loaded Factorio data from {self.data_path}")
-        except FileNotFoundError:
-            logger.error(f"Could not find {self.data_path}. Factoriopedia will be empty.")
-            self._raw = {}
+        from FactoryVerse.prototype_data import get_prototype_manager
+        
+        manager = get_prototype_manager()
+        self._raw = manager.get_raw_data()
+        logger.info(f"Loaded Factorio data from PrototypeDataManager")
         
         self.recipes: Dict[str, KnowledgeRecipe] = {}
         self.entities: Dict[str, KnowledgeEntity] = {}

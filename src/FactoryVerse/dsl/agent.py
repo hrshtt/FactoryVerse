@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.item.base import Item, PlaceableItem
-    from FactoryVerse.dsl.entity.base import BaseEntity
+    from FactoryVerse.dsl.entity.base import ReachableEntity
     import duckdb
 
 
@@ -500,7 +500,7 @@ class ReachableEntities:
         entity_name: str,
         position: Optional[MapPosition] = None,
         options: Optional[Dict[str, Any]] = None
-    ) -> Optional[BaseEntity]:
+    ) -> Optional[ReachableEntity]:
         """Get a single entity matching criteria.
         
         Always fetches fresh data from the game - no caching.
@@ -515,7 +515,7 @@ class ReachableEntities:
                 - status: str - filter by status (e.g., "working", "no-power")
         
         Returns:
-            First matching BaseEntity instance, or None if not found
+            First matching ReachableEntity instance, or None if not found
         """
         # Always fetch fresh data
         entities_instances, entities_data = self._fetch_fresh_data()
@@ -554,7 +554,7 @@ class ReachableEntities:
         self,
         entity_name: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None
-    ) -> List[BaseEntity]:
+    ) -> List[ReachableEntity]:
         """Get entities matching criteria.
         
         Always fetches fresh data from the game - no caching.
@@ -564,7 +564,7 @@ class ReachableEntities:
             options: Optional dict with filters (same as get_entity)
         
         Returns:
-            List of matching BaseEntity instances (may be empty)
+            List of matching ReachableEntity instances (may be empty)
         """
         # Always fetch fresh data
         entities_instances, entities_data = self._fetch_fresh_data()
@@ -742,6 +742,150 @@ class ReachableResources:
                     result.append(_create_resource_from_data(data))
         
         return result
+
+
+class _DuckDBAccessor:
+    """Accessor for DuckDB map database operations.
+    
+    Provides read-only access to entities across the entire map via SQL queries.
+    Returns RemoteViewEntity instances that can be inspected and used for planning,
+    but cannot be mutated (no pickup, add_fuel, etc.).
+    """
+    
+    def __init__(self, connection):
+        """Initialize accessor with DuckDB connection.
+        
+        Args:
+            connection: DuckDB connection instance
+        """
+        self.connection = connection
+    
+    def get_entity(self, query: str) -> Optional["RemoteViewEntity"]:
+        """Get single read-only entity from DuckDB query.
+        
+        Args:
+            query: SQL SELECT query with LIMIT 1 (enforced)
+        
+        Returns:
+            RemoteViewEntity instance or None if no results
+        
+        Raises:
+            ValueError: If query is invalid, unsafe, or missing LIMIT 1
+        
+        Example:
+            >>> entity = map_db.get_entity('''
+            ...     SELECT * FROM map_entity me
+            ...     JOIN mining_drill md ON me.entity_key = md.entity_key
+            ...     WHERE entity_name = 'burner-mining-drill'
+            ...     LIMIT 1
+            ... ''')
+            >>> entity.output_position  # Planning capability
+            >>> entity.inspect()  # Requires context manager
+        """
+        from FactoryVerse.dsl.entity.base import create_entity_from_db
+        
+        # Validate query
+        self._validate_query(query)
+        
+        # Enforce LIMIT 1
+        query_upper = query.upper()
+        if 'LIMIT 1' not in query_upper:
+            raise ValueError("get_entity() requires LIMIT 1 in query")
+        
+        # Execute query
+        cursor = self.connection.execute(query)
+        result = cursor.fetchone()
+        
+        if result is None:
+            return None
+        
+        # Convert to RemoteViewEntity
+        entity_data = self._row_to_dict(result, cursor)
+        return create_entity_from_db(entity_data)
+    
+    def get_entities(self, query: str) -> List["RemoteViewEntity"]:
+        """Get read-only entities from DuckDB query.
+        
+        Args:
+            query: SQL SELECT query (validated for safety)
+        
+        Returns:
+            List of RemoteViewEntity instances (read-only)
+        
+        Raises:
+            ValueError: If query is invalid or unsafe
+        
+        Example:
+            >>> drills = map_db.get_entities('''
+            ...     SELECT * FROM map_entity me
+            ...     JOIN mining_drill md ON me.entity_key = md.entity_key
+            ...     WHERE entity_name = 'burner-mining-drill'
+            ... ''')
+            >>> for drill in drills:
+            ...     print(drill.output_position)  # Planning capability
+        """
+        from FactoryVerse.dsl.entity.base import create_entity_from_db
+        
+        # Validate query
+        self._validate_query(query)
+        
+        # Execute query
+        cursor = self.connection.execute(query)
+        results = cursor.fetchall()
+        
+        # Convert to RemoteViewEntity instances
+        entities = []
+        for row in results:
+            entity_data = self._row_to_dict(row, cursor)
+            entity = create_entity_from_db(entity_data)
+            entities.append(entity)
+        
+        return entities
+    
+    def _validate_query(self, query: str) -> None:
+        """Validate that query is safe and read-only.
+        
+        Raises:
+            ValueError: If query contains forbidden operations
+        """
+        query_upper = query.upper().strip()
+        
+        # Must be SELECT
+        if not query_upper.startswith('SELECT'):
+            raise ValueError("Only SELECT queries allowed")
+        
+        # No aggregations (agents should query raw data)
+        forbidden_keywords = [
+            'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP',
+            'GROUP BY', 'HAVING', 'DISTINCT'
+        ]
+        
+        for keyword in forbidden_keywords:
+            if keyword in query_upper:
+                raise ValueError(f"Query operation not allowed: {keyword}")
+    
+    def _row_to_dict(self, row, cursor) -> Dict[str, Any]:
+        """Convert DuckDB row to entity data dict.
+        
+        Args:
+            row: DuckDB query result row (tuple-like)
+            cursor: DuckDB cursor with description
+        
+        Returns:
+            Entity data dictionary compatible with create_entity_from_db
+        """
+        # DuckDB rows are tuples, get column names from cursor description
+        if not cursor.description:
+            raise ValueError("Cursor has no description - cannot determine column names")
+        
+        # Extract column names from cursor description
+        # cursor.description is a list of tuples: [(name, type_code, ...), ...]
+        column_names = [desc[0] for desc in cursor.description]
+        
+        # Convert row tuple to dict
+        entity_data = dict(zip(column_names, row))
+        
+        return entity_data
 
 
 class WalkingAction:
@@ -1053,6 +1197,35 @@ class PlayingFactory:
         if not hasattr(self, '_reachable_resources'):
             self._reachable_resources = ReachableResources(self)
         return self._reachable_resources
+    
+    @property
+    def map_db(self) -> "_DuckDBAccessor":
+        """Get DuckDB map database accessor for read-only entity queries.
+        
+        Returns RemoteViewEntity instances that can be inspected and used for
+        planning, but cannot be mutated (no pickup, add_fuel, etc.).
+        
+        Requires DuckDB to be loaded first.
+        
+        Example:
+            >>> drills = map_db.get_entities('''
+            ...     SELECT * FROM map_entity me
+            ...     JOIN mining_drill md ON me.entity_key = md.entity_key
+            ...     WHERE entity_name = 'burner-mining-drill'
+            ... ''')
+            >>> for drill in drills:
+            ...     print(drill.output_position)
+        
+        Raises:
+            RuntimeError: If DuckDB connection not initialized
+        """
+        if not hasattr(self, '_map_db_accessor'):
+            if self._duckdb_connection is None:
+                raise RuntimeError(
+                    "DuckDB not loaded. Load snapshots first to enable map_db queries."
+                )
+            self._map_db_accessor = _DuckDBAccessor(self._duckdb_connection)
+        return self._map_db_accessor
     
     def update_recipes(self) -> None:
         cmd = self._build_command("get_recipes")
@@ -1666,7 +1839,6 @@ class PlayingFactory:
         self,
         snapshot_dir: Optional[Path] = None,
         db_path: Optional[Union[str, Path]] = None,
-        dump_file: str = "factorio-data-dump.json",
         prototype_api_file: Optional[str] = None,
         *,
         include_base: bool = True,
@@ -1690,7 +1862,6 @@ class PlayingFactory:
             snapshot_dir: Path to snapshot directory. If None, auto-detects from
                          Factorio client script-output directory.
             db_path: Optional path to DuckDB database file. If None, uses in-memory.
-            dump_file: Path to Factorio prototype data dump JSON file
             prototype_api_file: Optional path to prototype-api.json file
             include_base: Load base tables (water, resources, entities)
             include_components: Load component tables (inserters, belts, etc.)
@@ -1705,7 +1876,6 @@ class PlayingFactory:
         snapshot_dir = self._load_snapshots_sync(
             snapshot_dir=snapshot_dir,
             db_path=db_path,
-            dump_file=dump_file,
             prototype_api_file=prototype_api_file,
             include_base=include_base,
             include_components=include_components,
@@ -1739,7 +1909,6 @@ class PlayingFactory:
             load_all(
                 self._duckdb_connection,
                 snapshot_dir,
-                dump_file,
                 prototype_api_file,
                 include_base=include_base,
                 include_components=include_components,
@@ -1756,7 +1925,6 @@ class PlayingFactory:
         self,
         snapshot_dir: Optional[Path] = None,
         db_path: Optional[Union[str, Path]] = None,
-        dump_file: str = "factorio-data-dump.json",
         prototype_api_file: Optional[str] = None,
         include_base: bool = True,
         include_components: bool = True,
@@ -1860,7 +2028,6 @@ class PlayingFactory:
         load_all(
             self._duckdb_connection,
             snapshot_dir,
-            dump_file,
             prototype_api_file,
             include_base=include_base,
             include_components=include_components,

@@ -284,3 +284,62 @@ def _create_resource_from_data(data: Dict[str, Any]) -> BaseResource:
         # Default to BaseResource for unknown resources
         return BaseResource(name, position, resource_type, data)
 
+
+def create_resource_from_reachable(data: Dict[str, Any]):
+    """Create resource with full ReachableResource interface.
+    
+    Returns a resource that satisfies the ReachableResource protocol:
+    - Has spatial properties (position, amount)
+    - Can be mined
+    
+    Args:
+        data: Resource data dict from get_reachable()
+    
+    Returns:
+        Resource instance satisfying ReachableResource protocol
+    
+    Example:
+        >>> ore = create_resource_from_reachable(data)
+        >>> isinstance(ore, ReachableResource)  # True
+        >>> await ore.mine(max_count=50)  # Works
+    """
+    from FactoryVerse.dsl.resource.protocols import ReachableResource
+    
+    resource = _create_resource_from_data(data)
+    # Resource has mine() method - satisfies ReachableResource protocol
+    return resource
+
+
+def create_resource_from_db(data: Dict[str, Any]):
+    """Create resource with read-only RemoteViewResource interface.
+    
+    Returns a resource that satisfies the RemoteViewResource protocol:
+    - Has spatial properties (position, amount)
+    - Does NOT have mine() method
+    
+    This is achieved by dynamically removing the mine() method.
+    
+    Args:
+        data: Resource data dict from DuckDB query
+    
+    Returns:
+        Resource instance satisfying RemoteViewResource protocol
+    
+    Example:
+        >>> db_ore = create_resource_from_db(data)
+        >>> isinstance(db_ore, RemoteViewResource)  # True
+        >>> db_ore.position  # Works
+        >>> db_ore.amount  # Works
+        >>> await db_ore.mine()  # AttributeError - no mine() method
+    """
+    from FactoryVerse.dsl.resource.protocols import RemoteViewResource
+    
+    # Create resource with full interface
+    resource = _create_resource_from_data(data)
+    
+    # Remove mine() method to satisfy RemoteViewResource protocol
+    if hasattr(resource, 'mine') and callable(getattr(resource, 'mine', None)):
+        setattr(resource, 'mine', None)
+    
+    # Resource now satisfies RemoteViewResource protocol
+    return resource

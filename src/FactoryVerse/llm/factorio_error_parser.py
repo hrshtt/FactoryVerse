@@ -211,6 +211,18 @@ class FactorioErrorParser:
         if ":" in error_message:
             error_type = error_message.split(":")[0].strip()
         
+        # Check if this is a DSL validation error (ValueError from our code)
+        if error_type == "ValueError":
+            # Check if error message contains DSL-specific patterns
+            if any(pattern in error_message for pattern in [
+                "Cannot add", "Valid fuel items", "requires furnace",
+                "not handcraftable", "fuel_category=", "only accept chemical fuels",
+                "use electricity, not fuel", "Cannot handcraft", "requires smelting",
+                "must be produced in"
+            ]):
+                # This is a DSL validation error - mark it specially
+                error_type = "DSLValidationError"
+        
         return ParsedError(
             error_type=error_type,
             error_message=error_message,

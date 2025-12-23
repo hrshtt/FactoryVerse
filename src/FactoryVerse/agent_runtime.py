@@ -262,9 +262,21 @@ with playing_factorio():
 """
         return self.execute_code(wrapped_code, compress_output=True, metadata=metadata)
     
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """Return OpenAI-compatible tool definitions."""
-        return [
+    def respond(
+        self,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Return a chat response (for assisted mode)."""
+        return message
+    
+    def get_tool_definitions(self, mode: str = "autonomous") -> List[Dict[str, Any]]:
+        """Return OpenAI-compatible tool definitions.
+        
+        Args:
+            mode: 'assisted' or 'autonomous' - determines which tools are available
+        """
+        tools = [
             {
                 "type": "function",
                 "function": {
@@ -300,13 +312,111 @@ with playing_factorio():
                 }
             }
         ]
+        
+        # Add respond tool only in assisted mode
+        if mode == "assisted":
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "respond",
+                    "description": "Respond to the user with a text message. Use this when you want to chat, ask clarifying questions, explain your reasoning, or discuss strategy without taking any game actions.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": "Your message to the user"
+                            }
+                        },
+                        "required": ["message"]
+                    }
+                }
+            })
+        
+        return tools
     
     def stop(self):
-        """Stop kernel client and shutdown kernel."""
-        if hasattr(self, 'kc'):
-            self.kc.stop_channels()
-            logger.info("Kernel client stopped")
+        """Stop kernel client and shutdown kernel with verbose state verification."""
+        print("\n🧹 Starting notebook cleanup...")
+        cleanup_success = True
         
+        # Step 1: Stop kernel client channels
+        if hasattr(self, 'kc'):
+            try:
+                # Check state before stopping
+                is_alive_before = self.kc.is_alive()
+                print(f"   Kernel client channels alive: {is_alive_before}")
+                
+                if is_alive_before:
+                    print("   Stopping kernel client channels...")
+                    self.kc.stop_channels()
+                    
+                    # Wait a moment for channels to stop
+                    import time
+                    time.sleep(0.2)
+                    
+                    # Verify channels stopped
+                    is_alive_after = self.kc.is_alive()
+                    print(f"   Kernel client channels alive after stop: {is_alive_after}")
+                    
+                    if is_alive_after:
+                        logger.warning("Kernel client channels still alive after stop_channels()")
+                        print("   ⚠️  Warning: Channels may still be stopping...")
+                        # This is not critical, kernel shutdown will handle it
+                    else:
+                        logger.info("Kernel client stopped successfully")
+                else:
+                    print("   Kernel client channels already stopped")
+                    
+            except Exception as e:
+                logger.error(f"Error stopping kernel client: {e}")
+                print(f"   ❌ Error stopping kernel client: {e}")
+                cleanup_success = False
+        else:
+            print("   No kernel client to stop")
+        
+        # Step 2: Shutdown kernel
         if hasattr(self, 'km'):
-            self.km.shutdown_kernel(now=True)
-            logger.info("Kernel shutdown")
+            try:
+                # Check state before shutdown
+                is_alive_before = self.km.is_alive()
+                print(f"   Kernel manager alive: {is_alive_before}")
+                
+                if is_alive_before:
+                    print("   Shutting down kernel (now=True)...")
+                    self.km.shutdown_kernel(now=True)
+                    
+                    # Wait a moment for shutdown to complete
+                    import time
+                    time.sleep(0.5)
+                    
+                    # Verify kernel shutdown
+                    is_alive_after = self.km.is_alive()
+                    print(f"   Kernel manager alive after shutdown: {is_alive_after}")
+                    
+                    if is_alive_after:
+                        logger.error("Kernel still alive after shutdown_kernel(now=True)")
+                        print("   ❌ CRITICAL: Kernel failed to shutdown!")
+                        print("   This will cause port conflicts on next run.")
+                        cleanup_success = False
+                    else:
+                        logger.info("Kernel shutdown successfully")
+                else:
+                    print("   Kernel already shutdown")
+                    
+            except Exception as e:
+                logger.error(f"Error shutting down kernel: {e}")
+                print(f"   ❌ Error shutting down kernel: {e}")
+                cleanup_success = False
+        else:
+            print("   No kernel manager to shutdown")
+        
+        # Final status
+        if cleanup_success:
+            print("✅ Notebook cleanup completed successfully\n")
+        else:
+            print("⚠️  Notebook cleanup completed with warnings/errors")
+            print("   You may need to manually cleanup jupyter kernels")
+            print("   Run: uv run python scripts/cleanup_jupyter_kernels.py\n")
+
+

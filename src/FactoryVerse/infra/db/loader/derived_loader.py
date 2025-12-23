@@ -24,14 +24,14 @@ except ImportError:
 from FactoryVerse.dsl.prototypes import get_entity_prototypes
 
 
-def derive_electric_poles(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-data-dump.json") -> None:
+def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
     """
     Derive electric_pole table:
     - supply_area: from prototype supply_area_distance
     - connected_poles: spatial query for poles within maximum_wire_distance
     """
-    # Get prototypes
-    prototypes = get_entity_prototypes(dump_file)
+    # Get prototypes (uses PrototypeDataManager internally)
+    prototypes = get_entity_prototypes()
     
     # Get all electric poles from map_entity
     poles = con.execute("""
@@ -134,7 +134,7 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection, dump_file: str = "fact
         )
 
 
-def derive_resource_patches(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-data-dump.json") -> None:
+def derive_resource_patches(con: duckdb.DuckDBPyConnection) -> None:
     """
     Derive resource_patch table using DBSCAN clustering.
     Uses _search_radius from ElectricMiningDrillPrototype as eps parameter.
@@ -148,8 +148,8 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection, dump_file: str = "fa
     # Clear existing patches first
     con.execute("DELETE FROM resource_patch;")
     
-    # Get search radius from prototype
-    prototypes = get_entity_prototypes(dump_file)
+    # Get search radius from prototype (uses PrototypeDataManager internally)
+    prototypes = get_entity_prototypes()
     search_radius = None
     if hasattr(prototypes, 'electric_mining_drill'):
         search_radius = prototypes.electric_mining_drill._search_radius
@@ -529,22 +529,21 @@ def derive_belt_network(con: duckdb.DuckDBPyConnection) -> None:
             segment_id += 1
 
 
-def load_derived_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, dump_file: str = "factorio-data-dump.json") -> None:
+def load_derived_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
     """
     Load all derived tables from base tables.
     
     Args:
         con: DuckDB connection
         snapshot_dir: Path to snapshot directory (unused but kept for consistency)
-        dump_file: Path to Factorio prototype data dump JSON file
     """
     # snapshot_dir is normalized by caller, but we don't use it here
     # (derived tables are computed from base tables in the database)
     print("Deriving electric poles...")
-    derive_electric_poles(con, dump_file)
+    derive_electric_poles(con)
     
     print("Deriving resource patches...")
-    derive_resource_patches(con, dump_file)
+    derive_resource_patches(con)
     
     print("Deriving water patches...")
     derive_water_patches(con)

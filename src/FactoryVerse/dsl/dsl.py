@@ -1,11 +1,14 @@
-from FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
+from FactoryVerse.dsl.entity.base import ReachableEntity, GhostEntity
 from FactoryVerse.dsl.item.base import ItemStack
 from FactoryVerse.dsl.types import MapPosition, BoundingBox, Position, Direction
 from FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
 from FactoryVerse.dsl.recipe.base import Recipes
 
-from typing import List, Optional, Dict, Any, Union, Literal
+from typing import List, Optional, Dict, Any, Union, Literal, TYPE_CHECKING
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from FactoryVerse.dsl.entity.remote_view_entity import RemoteViewEntity
 import json
 import logging
 import sys
@@ -248,7 +251,7 @@ class _ReachableAccessor:
                 - status: str - filter by status (e.g., "working", "no-power")
         
         Returns:
-            First matching BaseEntity instance, or None if not found
+            First matching ReachableEntity instance, or None if not found
         """
         return _get_factory().reachable_entities.get_entity(entity_name, position, options)
     
@@ -264,7 +267,7 @@ class _ReachableAccessor:
             options: Optional dict with filters (same as get_entity)
         
         Returns:
-            List of matching BaseEntity instances (may be empty)
+            List of matching ReachableEntity instances (may be empty)
         """
         return _get_factory().reachable_entities.get_entities(entity_name, options)
     
@@ -441,16 +444,41 @@ class _DuckDBAccessor:
         if factory._game_data_sync and factory._game_data_sync.is_running:
             await factory._game_data_sync.ensure_synced(timeout=timeout)
 
+    
+    def get_entity(self, query: str) -> Optional["RemoteViewEntity"]:
+        """Get single read-only entity from DuckDB query.
+        
+        Args:
+            query: SQL SELECT query with LIMIT 1 (enforced)
+        
+        Returns:
+            RemoteViewEntity instance or None if no results
+        """
+        factory = _get_factory()
+        return factory.map_db.get_entity(query)
+    
+    def get_entities(self, query: str) -> List["RemoteViewEntity"]:
+        """Get read-only entities from DuckDB query.
+        
+        Args:
+            query: SQL SELECT query (validated for safety)
+        
+        Returns:
+            List of RemoteViewEntity instances (read-only)
+        """
+        factory = _get_factory()
+        return factory.map_db.get_entities(query)
+
 map_db = _DuckDBAccessor()
 
 
 
 
-def get_reachable_entities() -> List[BaseEntity]:
+def get_reachable_entities() -> List[ReachableEntity]:
     """Get the reachable entities.
     
     Returns:
-        List of BaseEntity objects within reach
+        List of ReachableEntity objects within reach
     """
     factory = _get_factory()
     data = factory.get_reachable(attach_ghosts=False)  # Don't need ghosts for this function
@@ -459,7 +487,7 @@ def get_reachable_entities() -> List[BaseEntity]:
     entities_data = data.get("entities", [])
     
     for entity_data in entities_data:
-        # Parse entity data and create BaseEntity
+        # Parse entity data and create ReachableEntity
         name = entity_data.get("name", "")
         position_data = entity_data.get("position", {})
         position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
@@ -486,7 +514,7 @@ def get_reachable_entities() -> List[BaseEntity]:
             except (ValueError, KeyError):
                 pass
         
-        entity = BaseEntity(
+        entity = ReachableEntity(
             name=name,
             position=position,
             bounding_box=bounding_box,

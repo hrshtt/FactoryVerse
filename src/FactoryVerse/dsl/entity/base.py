@@ -4,6 +4,17 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
 from FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
 from FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack, PlaceableItem
+from FactoryVerse.dsl.mixins import (
+    FactoryContextMixin,
+    SpatialPropertiesMixin,
+    PrototypeMixin,
+    DirectionMixin,
+    InspectableMixin,
+    FuelableMixin,
+    InventoryMixin,
+    CrafterMixin,
+    OutputPositionMixin
+)
 from FactoryVerse.dsl.prototypes import (
     get_entity_prototypes,
     ElectricMiningDrillPrototype,
@@ -34,7 +45,7 @@ class EntityPosition(MapPosition):
         furnace.position.offset_by_entity(direction=Direction.NORTH)
     """
     
-    def __init__(self, x: float, y: float, entity: Optional[Union["BaseEntity", PlaceableItem]] = None):
+    def __init__(self, x: float, y: float, entity: Optional[Union["ReachableEntity", PlaceableItem]] = None):
         """Initialize EntityPosition, optionally bound to an entity.
         
         Args:
@@ -47,7 +58,7 @@ class EntityPosition(MapPosition):
     
     def offset_by_entity(
         self, 
-        entity: Optional[Union["BaseEntity", PlaceableItem, BasePrototype]] = None,
+        entity: Optional[Union["ReachableEntity", PlaceableItem, BasePrototype]] = None,
         direction: Direction = None,
         gap: int = 0
     ) -> "EntityPosition":
@@ -114,11 +125,14 @@ class EntityPosition(MapPosition):
         return EntityPosition(x=new_x, y=new_y)
 
 
-class BaseEntity(ABC):
-    """Base class for all entities.
+class ReachableEntity(FactoryContextMixin, SpatialPropertiesMixin, PrototypeMixin, ABC):
+    """Base class for all reachable entities.
     
     Entities are things placed in the world with position and direction.
     They have prototypes that define their properties and behavior.
+    
+    **For Agents**: Entities are objects in the game world (furnaces, drills, chests, etc.).
+    Use inspect() to check their status, and entity-specific methods to interact with them.
     """
 
     def __init__(
@@ -141,53 +155,26 @@ class BaseEntity(ABC):
     def position(self) -> EntityPosition:
         """Get the entity's position as an EntityPosition bound to this entity.
         
-        This allows ergonomic spatial operations like:
-            next_pos = entity.position.offset_by_entity(direction=Direction.NORTH)
+        **For Agents**: Use this for spatial calculations:
+        - next_pos = entity.position.offset_by_entity(direction=Direction.NORTH)
+        - distance = entity.position.distance_to(other_pos)
         """
         return EntityPosition(x=self._raw_position.x, y=self._raw_position.y, entity=self)
 
-    @property
-    def _factory(self) -> "PlayingFactory":
-        """Get the current playing factory context."""
-        factory = _playing_factory.get()
-        if factory is None:
-            raise RuntimeError(
-                "No active gameplay session. "
-                "Use 'with playing_factory(rcon, agent_id):' to enable entity operations."
-            )
-        return factory
-
-    @property
-    def agent_id(self) -> str:
-        """Get agent ID from gameplay context."""
-        return self._factory.agent_id
-
-    @property
-    def prototype(self) -> BasePrototype:
-        """Get the cached prototype for this entity.
+    def _load_prototype(self) -> BasePrototype:
+        """Load entity prototype by direct lookup.
         
-        Lazily loads and caches the prototype on first access.
+        Entities have a simpler prototype loading path than items:
+        1. Get entity type from name
+        2. Load prototype data for that type
         """
-        if self._prototype_cache is None:
-            protos = get_entity_prototypes()
-            entity_type = protos.get_entity_type(self.name)
-            if entity_type and entity_type in protos.data:
-                entity_data = protos.data[entity_type].get(self.name, {})
-                self._prototype_cache = BasePrototype(_data=entity_data)
-            else:
-                # Fallback to empty prototype
-                self._prototype_cache = BasePrototype(_data={})
-        return self._prototype_cache
-
-    @property
-    def tile_width(self) -> int:
-        """Get the tile width of this entity from its prototype."""
-        return self.prototype.tile_width
-
-    @property
-    def tile_height(self) -> int:
-        """Get the tile height of this entity from its prototype."""
-        return self.prototype.tile_height
+        protos = get_entity_prototypes()
+        entity_type = protos.get_entity_type(self.name)
+        if entity_type and entity_type in protos.data:
+            entity_data = protos.data[entity_type].get(self.name, {})
+            return BasePrototype(_data=entity_data)
+        # Fallback to empty prototype
+        return BasePrototype(_data={})
 
     def __repr__(self) -> str:
         """Simple, explicit representation of the entity."""
@@ -249,7 +236,7 @@ class BaseEntity(ABC):
         """
         return self._factory.pickup_entity(self.name, self.position)
 
-class GhostEntity(BaseEntity):
+class GhostEntity(ReachableEntity):
     """A ghost entity."""
 
     def remove(self) -> bool:
@@ -269,14 +256,17 @@ class GhostEntity(BaseEntity):
         
         Returns:
             If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=True: Dictionary with entity inspection data (see ReachableEntity.inspect for schema)
         """
         if raw_data:
             return self._factory.inspect_entity(self.name, self.position)
         return f"GhostEntity(name='{self.name}', position=({self.position.x:.1f}, {self.position.y:.1f}))"
 
-class Container(BaseEntity):
-    """A container entity with inventory."""
+class Container(InventoryMixin, InspectableMixin, ReachableEntity):
+    """A container entity with inventory.
+    
+    **For Agents**: Chests store items. Use store_items() and take_items() to move items in/out.
+    """
 
     def __init__(
         self,
@@ -289,42 +279,14 @@ class Container(BaseEntity):
         super().__init__(name, position, direction, **kwargs)
         self.inventory_size = inventory_size
 
-    def store_items(self, items: List[ItemStack]):
-        """Store items in the container."""
-        results = []
-        for item_stack in items:
-            result = self._factory.put_inventory_item(
-                self.name, self.position, "chest", item_stack.name, item_stack.count
-            )
-            results.append(result)
-        return results
+    def _get_inventory_type(self) -> str:
+        """Containers use 'chest' inventory type."""
+        return 'chest'
 
-    def take_items(self, items: List[ItemStack]):
-        """Take items from the container."""
-        results = []
-        for item_stack in items:
-            result = self._factory.take_inventory_item(
-                self.name, self.position, "chest", item_stack.name, item_stack.count
-            )
-            results.append(result)
-        return results
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of container state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
-        
+
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format container inspection data for agent readability."""
         lines = [
             f"Container({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
         ]
@@ -354,33 +316,23 @@ class ShipWreck(Container):
     ...
 
 
-class Furnace(BaseEntity):
-    """A furnace entity."""
+class Furnace(CrafterMixin, InspectableMixin, FuelableMixin, ReachableEntity):
+    """A furnace entity.
+    
+    **For Agents**: Furnaces smelt ore into plates. They accept any fuel type (chemical or nuclear).
+    Use add_fuel() and add_ingredients() to operate them.
+    """
 
-    # CANDO: Consider accepting List[Item] and List[ItemStack] for add_fuel and add_ingredients
+    # CANDO: Consider accepting List[Item] and List[ItemStack] for add_ingredients
     # to work seamlessly with inventory.get_item_stacks() which returns List[ItemStack].
     # Would loop in Python and make multiple remote calls (one per item/stack), similar to
     # Container.store_items() pattern. Only implement if agents frequently fail on this use case.
 
-    def add_fuel(self, item: Union[Item, ItemStack], count: Optional[int] = None):
-        """Add fuel to the furnace.
-        
-        Args:
-            item: Item or ItemStack to add as fuel
-            count: Count to add (required if Item, optional if ItemStack - uses stack count)
-        """
-        if isinstance(item, ItemStack):
-            item_name = item.name
-            fuel_count = count if count is not None else item.count
-        else:
-            item_name = item.name
-            if count is None:
-                raise ValueError("count is required when using Item (not ItemStack)")
-            fuel_count = count
+    def _get_accepted_fuel_categories(self) -> List[str]:
+        """Furnaces accept all fuel types."""
+        return ['chemical', 'nuclear']
 
-        return self._factory.put_inventory_item(
-            self.name, self.position, "fuel", item_name, fuel_count
-        )
+
 
     def add_ingredients(self, item: Union[Item, ItemStack], count: Optional[int] = None):
         """Add ingredients to the furnace's input inventory.
@@ -429,21 +381,8 @@ class Furnace(BaseEntity):
             self.name, self.position, "output", item_name, take_count
         )
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of furnace state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format furnace inspection data for agent readability."""
         
         lines = [
             f"Furnace({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -528,7 +467,7 @@ class Furnace(BaseEntity):
         return "\n".join(lines)
 
 
-class ElectricPole(BaseEntity):
+class ElectricPole(InspectableMixin, ReachableEntity):
     """An electric pole entity."""
 
     def extend(self, direction: Direction, distance: Optional[float] = None):
@@ -539,21 +478,8 @@ class ElectricPole(BaseEntity):
             "This method requires implementation in the Lua mod's RemoteInterface."
         )
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of electric pole state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format electric pole inspection data for agent readability."""
         
         lines = [
             f"ElectricPole({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -575,7 +501,7 @@ class ElectricPole(BaseEntity):
         return "\n".join(lines)
 
 
-class Inserter(BaseEntity):
+class Inserter(InspectableMixin, ReachableEntity):
     """Base inserter entity."""
 
     @property
@@ -595,21 +521,8 @@ class Inserter(BaseEntity):
             raise ValueError("Inserter direction must be set to calculate pickup position")
         return self.prototype.pickup_position(self.position, self.direction)
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of inserter state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format inserter inspection data for agent readability."""
         
         lines = [
             f"Inserter({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -646,7 +559,7 @@ class LongHandInserter(Inserter):
         """Get the prototype for this long-handed inserter type."""
         return get_entity_prototypes().long_handed_inserter
 
-class AssemblingMachine(BaseEntity):
+class AssemblingMachine(CrafterMixin, InspectableMixin, ReachableEntity):
     """An assembling machine entity."""
 
     def set_recipe(self, recipe: Union[str, "Recipe"]) -> str:
@@ -677,21 +590,8 @@ class AssemblingMachine(BaseEntity):
             "To get recipe information, use get_reachable() and inspect the entity data."
         )
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of assembling machine state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format assembling machine inspection data for agent readability."""
         
         lines = [
             f"AssemblingMachine({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -752,7 +652,7 @@ class AssemblingMachine(BaseEntity):
         return ItemStack.from_result
 
 
-class TransportBelt(BaseEntity):
+class TransportBelt(InspectableMixin, ReachableEntity):
     """A transport belt entity."""
 
     @property
@@ -777,21 +677,8 @@ class TransportBelt(BaseEntity):
         position = self.position.offset(offset=(1, 1), direction=direction) # TODO: get offset from prototypes
         return self._factory.place_entity(self.name, position, direction)
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of transport belt state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format transport belt inspection data for agent readability."""
         
         lines = [
             f"TransportBelt({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -803,7 +690,7 @@ class TransportBelt(BaseEntity):
         return "\n".join(lines)
 
 
-class Splitter(BaseEntity):
+class Splitter(ReachableEntity):
     """A splitter entity."""
     
     def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
@@ -815,7 +702,7 @@ class Splitter(BaseEntity):
         
         Returns:
             If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
+            If raw_data=True: Dictionary with entity inspection data (see ReachableEntity.inspect for schema)
         """
         data = self._factory.inspect_entity(self.name, self.position)
         
@@ -831,7 +718,7 @@ class Splitter(BaseEntity):
         
         return "\n".join(lines)
 
-class ElectricMiningDrill(BaseEntity):
+class ElectricMiningDrill(InspectableMixin, ReachableEntity):
     """An electric mining drill entity.
     
     Direction is REQUIRED for mining drills as they have directional output positions.
@@ -865,21 +752,8 @@ class ElectricMiningDrill(BaseEntity):
         """Get the search area of the mining drill."""
         return self.prototype.get_resource_search_area(self.position)
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of electric mining drill state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format electric mining drill inspection data for agent readability."""
         
         lines = [
             f"ElectricMiningDrill({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -905,7 +779,7 @@ class ElectricMiningDrill(BaseEntity):
         return "\n".join(lines)
 
 
-class BurnerMiningDrill(BaseEntity):
+class BurnerMiningDrill(CrafterMixin, InspectableMixin, FuelableMixin, ReachableEntity):
     """A burner mining drill entity.
     
     Direction is REQUIRED for mining drills as they have directional output positions.
@@ -931,7 +805,7 @@ class BurnerMiningDrill(BaseEntity):
         # Direction is guaranteed to exist due to __init__ assertion
         return self.prototype.output_position(self.position, self.direction)
 
-    def get_valid_output_positions(self, target: Union['BaseEntity', 'PlaceableItem']) -> List[MapPosition]:
+    def get_valid_output_positions(self, target: Union['ReachableEntity', 'PlaceableItem']) -> List[MapPosition]:
         """
         Returns valid center positions for a target entity to pick up items from this drill.
         Enforces strict grid exclusivity (no tile overlap).
@@ -1016,21 +890,8 @@ class BurnerMiningDrill(BaseEntity):
         """Get the search area of the mining drill."""
         return self.prototype.get_resource_search_area(self.position)
     
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of burner mining drill state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format burner mining drill inspection data for agent readability."""
         
         lines = [
             f"BurnerMiningDrill({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -1075,59 +936,9 @@ class BurnerMiningDrill(BaseEntity):
         
         return "\n".join(lines)
     
-    def add_fuel(self, item: Union[Item, ItemStack, List[Item], List[ItemStack]], count: Optional[int] = None):
-        """Add fuel to the burner mining drill.
-        
-        Args:
-            item: Item, ItemStack, or list of Items/ItemStacks to add as fuel
-            count: Count to add (required if Item, optional if ItemStack - uses stack count)
-                  Ignored if item is a list (uses each stack's count)
-        
-        Raises:
-            ValueError: If the item is not a valid chemical fuel type
-        """
-        # Handle lists (from inventory.get_item_stacks())
-        if isinstance(item, list):
-            results = []
-            for stack in item:
-                results.append(self.add_fuel(stack))
-            return results
-        
-        # Handle single ItemStack
-        if isinstance(item, ItemStack):
-            item_name = item.name
-            fuel_count = count if count is not None else item.count
-        # Handle single Item
-        else:
-            item_name = item.name
-            if count is None:
-                raise ValueError("count is required when using Item (not ItemStack)")
-            fuel_count = count
-
-        # Validate fuel type
-        from FactoryVerse.dsl.prototypes import get_item_prototypes
-        item_protos = get_item_prototypes()
-        
-        if not item_protos.is_fuel(item_name):
-            valid_fuels = item_protos.get_fuel_items()
-            raise ValueError(
-                f"Cannot add '{item_name}' as fuel to {self.name}. "
-                f"Valid fuel items: {', '.join(sorted(valid_fuels))}"
-            )
-        
-        # Check if this burner mining drill accepts this fuel category
-        fuel_category = item_protos.get_fuel_category(item_name)
-        
-        # Burner mining drills only accept chemical fuel
-        if fuel_category != 'chemical':
-            raise ValueError(
-                f"Cannot add '{item_name}' (fuel_category={fuel_category}) to {self.name}. "
-                f"Burner mining drills only accept chemical fuels: wood, coal, solid-fuel, rocket-fuel, nuclear-fuel"
-            )
-
-        return self._factory.put_inventory_item(
-            self.name, self.position, "fuel", item_name, fuel_count
-        )
+    def _get_accepted_fuel_categories(self) -> List[str]:
+        """Burner mining drills only accept chemical fuel."""
+        return ['chemical']
 
     def take_products(
         self, item: Optional[Union[Item, ItemStack]] = None, count: Optional[int] = None
@@ -1153,7 +964,7 @@ class BurnerMiningDrill(BaseEntity):
         )
 
 
-class Pumpjack(BaseEntity):
+class Pumpjack(InspectableMixin, ReachableEntity):
     """A pumpjack entity."""
 
     @property
@@ -1165,21 +976,8 @@ class Pumpjack(BaseEntity):
         """Get the output pipe connections of the pumpjack."""
         return self.prototype.output_pipe_connections(self.position)
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of pumpjack state.
-        
-        Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
-        
-        Returns:
-            If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with entity inspection data (see BaseEntity.inspect for schema)
-        """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
-        if raw_data:
-            return data
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format pumpjack inspection data for agent readability."""
         
         lines = [
             f"Pumpjack({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
@@ -1200,18 +998,38 @@ class Pumpjack(BaseEntity):
         return "\n".join(lines)
 
 
-def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:
+def create_entity_from_data(entity_data: Dict[str, Any]) -> ReachableEntity:
     """Factory function to create the appropriate Entity subclass from raw data.
     
     Args:
-        entity_data: Raw entity data dict from get_reachable()
+        entity_data: Raw entity data dict from get_reachable() or database
         
     Returns:
-        BaseEntity instance (or appropriate subclass)
+        ReachableEntity instance (or appropriate subclass)
     """
+    # Normalize database column names
+    # Database uses 'entity_name', we use 'name'
+    if 'entity_name' in entity_data and 'name' not in entity_data:
+        entity_data['name'] = entity_data['entity_name']
+    
     name = entity_data.get("name", "")
-    position_data = entity_data.get("position", {})
-    position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
+    
+    # Handle position as both dict and direct x/y columns
+    if 'position' in entity_data:
+        position_data = entity_data.get("position", {})
+        if isinstance(position_data, dict):
+            position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
+        elif hasattr(position_data, 'x') and hasattr(position_data, 'y'):
+            # Already a MapPosition or similar
+            position = position_data
+        else:
+            position = MapPosition(x=0, y=0)
+    else:
+        # Try direct x, y columns (from database)
+        position = MapPosition(
+            x=entity_data.get('x', 0),
+            y=entity_data.get('y', 0)
+        )
     
     # Parse bounding box if available
     bbox_data = entity_data.get("bounding_box")
@@ -1294,7 +1112,7 @@ def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:
         "crash-site-spaceship-wreck-medium-3": ShipWreck,
     }
     
-    entity_class = entity_map.get(name, BaseEntity)
+    entity_class = entity_map.get(name, ReachableEntity)
     
     return entity_class(
         name=name,
@@ -1302,3 +1120,109 @@ def create_entity_from_data(entity_data: Dict[str, Any]) -> BaseEntity:
         bounding_box=bounding_box,
         direction=direction
     )
+
+
+def create_entity_from_reachable(entity_data: Dict[str, Any]):
+    """Create entity with full ReachableEntity interface from reachable data.
+    
+    Returns an entity that satisfies the ReachableEntity protocol:
+    - Has all spatial properties and prototype data
+    - Can be inspected
+    - Can be picked up
+    - May have additional capabilities (Fuelable, HasInventory, etc.)
+    
+    Args:
+        entity_data: Raw entity data dict from get_reachable()
+    
+    Returns:
+        Entity instance satisfying ReachableEntity protocol
+    
+    Example:
+        >>> drill = create_entity_from_reachable(data)
+        >>> isinstance(drill, ReachableEntity)  # True
+        >>> drill.pickup()  # Works
+        >>> drill.add_fuel(coal)  # Works (if Fuelable)
+    """
+    from FactoryVerse.dsl.entity.protocols import ReachableEntity
+    
+    entity = create_entity_from_data(entity_data)
+    # Entity has all methods - satisfies ReachableEntity protocol
+    return entity
+
+
+def create_ghost_entity_from_data(entity_data: Dict[str, Any]):
+    """Create ghost entity with Buildable interface.
+    
+    Returns a GhostEntity that satisfies the GhostEntity protocol:
+    - Has all spatial properties and prototype data
+    - Can be inspected
+    - Can be built (convert to real entity)
+    - Can be removed (delete ghost)
+    - Does NOT have pickup, add_fuel, etc.
+    
+    Args:
+        entity_data: Raw ghost entity data
+    
+    Returns:
+        GhostEntity instance satisfying GhostEntity protocol
+    
+    Example:
+        >>> ghost = create_ghost_entity_from_data(data)
+        >>> isinstance(ghost, GhostEntity)  # True
+        >>> ghost.build()  # Works
+        >>> ghost.pickup()  # AttributeError - ghosts can't be picked up
+    """
+    from FactoryVerse.dsl.entity.protocols import GhostEntity as GhostEntityProtocol
+    
+    name = entity_data.get("name", "")
+    position_data = entity_data.get("position", {})
+    position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
+    
+    # Parse direction
+    direction = None
+    if "direction" in entity_data:
+        try:
+            dir_value = entity_data["direction"]
+            if isinstance(dir_value, (int, float)):
+                direction = Direction(int(dir_value))
+            elif isinstance(dir_value, str):
+                direction = Direction(int(float(dir_value)))
+        except (ValueError, KeyError, TypeError):
+            pass
+    
+    # GhostEntity class already has correct interface
+    return GhostEntity(name=name, position=position, direction=direction)
+
+
+def create_entity_from_db(entity_data: Dict[str, Any]):
+    """Create entity with read-only RemoteViewEntity interface from DB data.
+    
+    Returns an entity that satisfies the RemoteViewEntity protocol:
+    - Has all spatial properties and prototype data
+    - Can be inspected (requires context manager)
+    - May have planning capabilities (output_position, get_search_area)
+    - Does NOT have mutation methods (pickup, add_fuel, store_items, etc.)
+    
+    This is achieved by dynamically removing mutation methods from the entity.
+    
+    Args:
+        entity_data: Raw entity data dict from DuckDB query
+    
+    Returns:
+        Entity instance satisfying RemoteViewEntity protocol
+    
+    Example:
+        >>> db_drill = create_entity_from_db(data)
+        >>> isinstance(db_drill, RemoteViewEntity)  # True
+        >>> db_drill.output_position  # Works (planning capability)
+        >>> db_drill.inspect()  # Works (requires context manager)
+        >>> db_drill.pickup()  # AttributeError - no mutation methods
+    """
+    from FactoryVerse.dsl.entity.remote_view_entity import RemoteViewEntity
+    
+    # Create the appropriate entity type using the standard factory function
+    # This handles all the column normalization (entity_name -> name, etc.)
+    entity = create_entity_from_data(entity_data)
+    
+    # Wrap in RemoteViewEntity for read-only access
+    return RemoteViewEntity(entity)

@@ -25,7 +25,8 @@ class FactorioAgentOrchestrator:
         console_output: Optional[ConsoleOutput] = None,
         initial_state_path: Optional[str] = None,
         max_context_tokens: int = 100000,
-        keep_recent_turns: int = 10
+        keep_recent_turns: int = 10,
+        mode: str = "autonomous"
     ):
         """
         Initialize orchestrator.
@@ -39,6 +40,7 @@ class FactorioAgentOrchestrator:
             initial_state_path: Optional path to initial state markdown to inject as first message
             max_context_tokens: Maximum context window size before compression (default: 100k)
             keep_recent_turns: Number of recent turns to preserve during compression (default: 10)
+            mode: 'assisted' or 'autonomous' - determines available tools and behavior
         """
         self.llm_client = llm_client
         self.runtime = runtime
@@ -49,6 +51,7 @@ class FactorioAgentOrchestrator:
         self.console = console_output or ConsoleOutput(enabled=False)
         self.max_context_tokens = max_context_tokens
         self.keep_recent_turns = keep_recent_turns
+        self.mode = mode
 
         
         # Load system prompt
@@ -104,39 +107,6 @@ class FactorioAgentOrchestrator:
         Returns:
             Agent's text response
         """
-        # Check for notifications FIRST (before processing user input)
-        notifications = await self._check_notifications()
-        
-        if notifications:
-            logger.info(f"Found {len(notifications)} pending notification(s)")
-            
-            # Format all notifications
-            notif_messages = []
-            for notif in notifications:
-                formatted = self._format_notification(notif)
-                notif_messages.append(formatted)
-            
-            # Combine into single system message
-            combined_notif = "\n\n".join(notif_messages)
-            system_notif_msg = f"**Game Notifications:**\n\n{combined_notif}"
-            
-            # Add as user message so LLM sees it (system messages are filtered in some APIs)
-            self.messages.append({
-                "role": "user",
-                "content": system_notif_msg
-            })
-            
-            # Log to chat
-            self._log_to_chat(f"**System Notifications:**\n{combined_notif}\n\n")
-            self._log_to_chat("---\n\n")
-            
-            # Display on console
-            if hasattr(self.console, 'system_notification'):
-                self.console.system_notification(combined_notif)
-            else:
-                # Fallback if method doesn't exist yet
-                print(f"\n📢 {combined_notif}\n")
-        
         # Log user message
         self._log_to_chat(f"**User:** {user_message}\n\n")
         self.console.user_message(user_message)
@@ -158,7 +128,7 @@ class FactorioAgentOrchestrator:
             # Call LLM
             response = self.llm_client.chat_completion(
                 messages=self.messages,
-                tools=self.runtime.get_tool_definitions()
+                tools=self.runtime.get_tool_definitions(mode=self.mode)
             )
             
             # Add response to messages
@@ -180,6 +150,10 @@ class FactorioAgentOrchestrator:
                 self._log_to_chat(f"**Agent:** {response_text}\n\n")
                 self._log_to_chat("---\n\n")
                 self.console.assistant_response(response_text, self.turn_number)
+                
+                # Check for notifications after agent response (in case any arrived during LLM processing)
+                await self._add_notifications_to_messages()
+                
                 self.console.turn_complete(self.turn_number)
                 
                 self.turn_number += 1
@@ -271,9 +245,32 @@ class FactorioAgentOrchestrator:
                 })
                 
                 logger.info(f"  Result: {result[:100]}..." if len(result) > 100 else f"  Result: {result}")
+                
+                # Check for notifications right after tool execution completes
+                # This ensures notifications generated during DSL/tool execution are immediately available
+                await self._add_notifications_to_messages()
             
             # Close tool calls section in chat log
             self._log_to_chat("</details>\n\n")
+            
+            # Special handling for respond tool - if used, return immediately
+            if any(tc.function.name == "respond" for tc in response.tool_calls):
+                # Find the respond tool result
+                for tool_result in tool_results:
+                    if tool_result['tool'] == 'respond':
+                        response_text = tool_result['result']
+                        
+                        # Log agent response
+                        self._log_to_chat(f"**Agent:** {response_text}\n\n")
+                        self._log_to_chat("---\n\n")
+                        self.console.assistant_response(response_text, self.turn_number)
+                        
+                        # Check for notifications
+                        await self._add_notifications_to_messages()
+                        
+                        self.console.turn_complete(self.turn_number)
+                        self.turn_number += 1
+                        return response_text
         
         # Max iterations reached
         logger.warning(f"Turn {self.turn_number}: Reached max iterations")
@@ -323,6 +320,13 @@ class FactorioAgentOrchestrator:
                 )
                 return result, ActionStatus.SUCCESS
             
+            elif tool_name == "respond":
+                result = self.runtime.respond(
+                    arguments["message"],
+                    metadata=metadata
+                )
+                return result, ActionStatus.SUCCESS
+            
             else:
                 return f"❌ Unknown tool: {tool_name}", ActionStatus.FAILURE
         
@@ -360,6 +364,44 @@ with playing_factorio():
         except Exception as e:
             logger.warning(f"Error checking notifications: {e}")
             return []
+    
+    async def _add_notifications_to_messages(self):
+        """Check for notifications and add them to the message history.
+        
+        This is called after tool execution to ensure notifications generated
+        during DSL/tool execution are immediately available to the agent.
+        """
+        notifications = await self._check_notifications()
+        
+        if notifications:
+            logger.info(f"Found {len(notifications)} pending notification(s) after tool execution")
+            
+            # Format all notifications
+            notif_messages = []
+            for notif in notifications:
+                formatted = self._format_notification(notif)
+                notif_messages.append(formatted)
+            
+            # Combine into single system message
+            combined_notif = "\n\n".join(notif_messages)
+            system_notif_msg = f"**Game Notifications:**\n\n{combined_notif}"
+            
+            # Add as user message so LLM sees it (system messages are filtered in some APIs)
+            self.messages.append({
+                "role": "user",
+                "content": system_notif_msg
+            })
+            
+            # Log to chat
+            self._log_to_chat(f"**System Notifications:**\n{combined_notif}\n\n")
+            self._log_to_chat("---\n\n")
+            
+            # Display on console
+            if hasattr(self.console, 'system_notification'):
+                self.console.system_notification(combined_notif)
+            else:
+                # Fallback if method doesn't exist yet
+                print(f"\n📢 {combined_notif}\n")
     
     def _format_notification(self, notif: Dict[str, Any]) -> str:
         """Format notification as natural language message.

@@ -331,9 +331,10 @@ class FastInserterPrototype(InserterPrototype):
 class EntityPrototypes:
     """Aggregator for all prototype property accessors."""
 
-    def __init__(self, dump_file: str):
-        with open(dump_file, "r") as f:
-            self.data = json.load(f)
+    def __init__(self):
+        from FactoryVerse.prototype_data import get_prototype_manager
+        manager = get_prototype_manager()
+        self.data = manager.get_raw_data()
 
         # Build reverse map: entity_name -> category (type)
         # Exclude known non-entity categories to avoid collisions (e.g., technology vs entity name)
@@ -484,9 +485,10 @@ class EntityPrototypes:
 class ItemPrototypes:
     """Prototype accessor for items."""
 
-    def __init__(self, dump_file: str):
-        with open(dump_file, "r") as f:
-            self.data = json.load(f)
+    def __init__(self):
+        from FactoryVerse.prototype_data import get_prototype_manager
+        manager = get_prototype_manager()
+        self.data = manager.get_raw_data()
         
         # item data is usually under data['item']
         self.items = self.data.get("item", {})
@@ -557,9 +559,10 @@ class ItemPrototypes:
 class RecipePrototypes:
     """Prototype accessor for recipes."""
     
-    def __init__(self, dump_file: str):
-        with open(dump_file, 'r') as f:
-            self.data = json.load(f)
+    def __init__(self):
+        from FactoryVerse.prototype_data import get_prototype_manager
+        manager = get_prototype_manager()
+        self.data = manager.get_raw_data()
         
         # recipe data is usually under data['recipe']
         self.recipes = self.data.get("recipe", {})
@@ -621,31 +624,24 @@ _prototypes: Optional[EntityPrototypes] = None
 _item_prototypes: Optional[ItemPrototypes] = None
 _recipe_prototypes: Optional[RecipePrototypes] = None
 
-# Default dump file path (can be overridden in get_prototypes)
-DEFAULT_DUMP_FILE = "factorio-data-dump.json"
 
-
-def get_entity_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> EntityPrototypes:
+def get_entity_prototypes() -> EntityPrototypes:
     """Get the global prototypes singleton instance.
     
     The singleton is instantiated on first call and reused for subsequent calls.
     This ensures all entities share the same prototype instances.
     
-    Args:
-        dump_file: Path to the Factorio prototype data dump JSON file.
-                  Only used on first call; subsequent calls ignore this parameter.
-        
     Returns:
         EntityPrototypes instance (singleton, instantiated on first call)
         
     Example:
-        >>> prototypes = get_prototypes()
+        >>> prototypes = get_entity_prototypes()
         >>> drill_proto = prototypes.electric_mining_drill
         >>> output_pos = drill_proto.output_position(centroid, Direction.EAST)
     """
     global _prototypes
     if _prototypes is None:
-        _prototypes = EntityPrototypes(dump_file)
+        _prototypes = EntityPrototypes()
     return _prototypes
 
 
@@ -666,24 +662,20 @@ def reset_prototypes():
     _item_prototypes = None
     _recipe_prototypes = None
 
-def get_item_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> ItemPrototypes:
+def get_item_prototypes() -> ItemPrototypes:
     """Get the global item prototypes singleton instance."""
     global _item_prototypes
     if _item_prototypes is None:
-        _item_prototypes = ItemPrototypes(dump_file)
+        _item_prototypes = ItemPrototypes()
     return _item_prototypes
 
-def get_recipe_prototypes(dump_file: str = DEFAULT_DUMP_FILE) -> RecipePrototypes:
+def get_recipe_prototypes() -> RecipePrototypes:
     """Get the global recipe prototypes singleton instance.
-    
-    Args:
-        dump_file: Path to the Factorio prototype data dump JSON file.
-                  Only used on first call; subsequent calls ignore this parameter.
     
     Returns:
         RecipePrototypes instance (singleton, instantiated on first call)
     """
     global _recipe_prototypes
     if _recipe_prototypes is None:
-        _recipe_prototypes = RecipePrototypes(dump_file)
+        _recipe_prototypes = RecipePrototypes()
     return _recipe_prototypes

@@ -66,6 +66,57 @@ def create_rcon_client(
     return client
 
 
+def validate_rcon_connection(
+    host: str = "localhost",
+    port: int = 27100,
+    password: str = "factorio"
+) -> tuple[bool, Optional[str]]:
+    """
+    Validate that Factorio RCON is available.
+    
+    This function attempts to establish an RCON connection and send a test
+    command to verify that the Factorio server is running and accessible.
+    
+    Args:
+        host: RCON server host
+        port: RCON server port
+        password: RCON password
+        
+    Returns:
+        (success, error_message) tuple where:
+        - success is True if connection works, False otherwise
+        - error_message is None on success, error description on failure
+        
+    Example:
+        >>> success, error = validate_rcon_connection()
+        >>> if not success:
+        ...     print(f"Connection failed: {error}")
+    """
+    try:
+        # Attempt to create client
+        client = RCONClient(host, port, password)
+        
+        # Send test command (Factorio sends warning on first command)
+        client.send_command("/c rcon.print('connection_test')")
+        result = client.send_command("/c rcon.print('connection_test')")
+        
+        # Verify we got a response
+        if result is None:
+            return False, "RCON connection established but no response received"
+        
+        if "connection_test" not in result:
+            return False, f"RCON connection test failed. Expected 'connection_test', got: {result}"
+        
+        return True, None
+        
+    except ConnectionRefusedError:
+        return False, f"Connection refused. Is Factorio running on {host}:{port}?"
+    except TimeoutError:
+        return False, f"Connection timeout. Server at {host}:{port} not responding"
+    except Exception as e:
+        return False, f"Connection error: {type(e).__name__}: {e}"
+
+
 def safe_send_command(client: RCONClient, command: str) -> Optional[str]:
     """
     Send a command and handle None responses gracefully.

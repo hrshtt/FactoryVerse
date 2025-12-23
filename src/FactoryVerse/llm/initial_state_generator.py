@@ -19,6 +19,166 @@ class InitialStateGenerator:
         """
         self.runtime = runtime
     
+    def _generate_database_summary(self) -> str:
+        """
+        Generate a summary showing what data exists in the database with actual query results.
+        
+        Returns:
+            Markdown formatted database summary with query → result pairs
+        """
+        summary_code = """
+with playing_factorio():
+    import json
+    con = map_db.connection
+    
+    results = {}
+    
+    # 1. What resource types and patches exist on the map?
+    try:
+        resource_patches = con.execute('''
+            SELECT resource_name, patch_id, total_amount, tile_count,
+                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).x as x,
+                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).y as y
+            FROM resource_patch
+            ORDER BY resource_name, patch_id
+        ''').fetchall()
+        results['resource_patches'] = [
+            {'name': r[0], 'patch_id': r[1], 'amount': r[2], 
+             'tiles': r[3], 'x': r[4], 'y': r[5]} 
+            for r in resource_patches
+        ]
+    except:
+        results['resource_patches'] = []
+    
+    # 2. What natural entities exist? (trees, rocks)
+    try:
+        entity_types = con.execute('''
+            SELECT type, COUNT(*) as count
+            FROM resource_entity
+            GROUP BY type
+            ORDER BY type
+        ''').fetchall()
+        results['entity_types'] = [
+            {'type': r[0], 'count': r[1]} 
+            for r in entity_types
+        ]
+    except:
+        results['entity_types'] = []
+    
+    # 3. How much water is on the map?
+    try:
+        water_patches = con.execute('''
+            SELECT patch_id, tile_count,
+                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).x as x,
+                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).y as y
+            FROM water_patch
+            ORDER BY patch_id
+        ''').fetchall()
+        results['water_patches'] = [
+            {'patch_id': r[0], 'tiles': r[1], 'x': r[2], 'y': r[3]}
+            for r in water_patches
+        ]
+        results['water'] = {
+            'patches': len(water_patches),
+            'tiles': sum(r[1] for r in water_patches) if water_patches else 0
+        }
+    except:
+        results['water_patches'] = []
+        results['water'] = {'patches': 0, 'tiles': 0}
+    
+    # 4. What entities have been placed?
+    try:
+        placed_entities = con.execute('''
+            SELECT entity_name, COUNT(*) as count
+            FROM map_entity
+            GROUP BY entity_name
+            ORDER BY entity_name
+        ''').fetchall()
+        results['placed_entities'] = [
+            {'name': r[0], 'count': r[1]} 
+            for r in placed_entities
+        ]
+    except:
+        results['placed_entities'] = []
+    
+    print(json.dumps(results))
+"""
+        
+        try:
+            result = self.runtime.execute_code(summary_code, compress_output=False)
+            data = json.loads(result)
+            
+            lines = []
+            lines.append("## Database Summary\n\n")
+            
+            # Resource patches with coordinates
+            if data.get('resource_patches'):
+                lines.append("**Query:** What resource patches exist on the map?\n")
+                lines.append("```sql\n")
+                lines.append("SELECT resource_name, patch_id, total_amount, tile_count,\n")
+                lines.append("       centroid.x as x, centroid.y as y\n")
+                lines.append("FROM resource_patch\n")
+                lines.append("ORDER BY resource_name, patch_id\n")
+                lines.append("```\n\n")
+                lines.append("**Result:**\n\n")
+                lines.append("| Resource | Patch ID | Amount | Tiles | Coordinates |\n")
+                lines.append("|----------|----------|--------|-------|-------------|\n")
+                for r in data['resource_patches']:
+                    amount_str = f"{r['amount']:,}" if r['amount'] >= 1000 else str(r['amount'])
+                    lines.append(f"| {r['name']} | #{r['patch_id']} | {amount_str} | {r['tiles']} | ({r['x']:.0f}, {r['y']:.0f}) |\n")
+                lines.append("\n")
+            
+            # Natural entities
+            if data.get('entity_types'):
+                lines.append("**Query:** What natural entities exist? (trees, rocks)\n")
+                lines.append("```sql\n")
+                lines.append("SELECT type, COUNT(*) as count\n")
+                lines.append("FROM resource_entity\n")
+                lines.append("GROUP BY type\n")
+                lines.append("```\n\n")
+                lines.append("**Result:**\n\n")
+                lines.append("| Entity Type | Count |\n")
+                lines.append("|-------------|-------|\n")
+                for e in data['entity_types']:
+                    lines.append(f"| {e['type']} | {e['count']:,} |\n")
+                lines.append("\n")
+            
+            # Water patches with coordinates
+            if data.get('water_patches'):
+                lines.append("**Query:** What water patches exist on the map?\n")
+                lines.append("```sql\n")
+                lines.append("SELECT patch_id, tile_count, centroid.x as x, centroid.y as y\n")
+                lines.append("FROM water_patch\n")
+                lines.append("ORDER BY patch_id\n")
+                lines.append("```\n\n")
+                lines.append("**Result:**\n\n")
+                lines.append("| Patch ID | Tiles | Coordinates |\n")
+                lines.append("|----------|-------|-------------|\n")
+                for w in data['water_patches']:
+                    lines.append(f"| #{w['patch_id']} | {w['tiles']} | ({w['x']:.0f}, {w['y']:.0f}) |\n")
+                lines.append("\n")
+            
+            # Placed entities
+            if data.get('placed_entities'):
+                lines.append("**Query:** What entities have been placed?\n")
+                lines.append("```sql\n")
+                lines.append("SELECT entity_name, COUNT(*) as count\n")
+                lines.append("FROM map_entity\n")
+                lines.append("GROUP BY entity_name\n")
+                lines.append("```\n\n")
+                lines.append("**Result:**\n\n")
+                lines.append("| Entity | Count |\n")
+                lines.append("|--------|-------|\n")
+                for e in data['placed_entities']:
+                    lines.append(f"| {e['name']} | {e['count']} |\n")
+                lines.append("\n")
+            
+            return "".join(lines)
+        
+        except Exception as e:
+            # Fallback if database summary fails
+            return f"## Database Summary\n\n*Database summary unavailable: {e}*\n\n"
+    
     def generate_summary(self, session_dir: Path) -> str:
         """
         Generate markdown summary of current game state using DuckDB queries.
@@ -37,22 +197,18 @@ with playing_factorio():
     # Get agent position
     pos = reachable.get_current_position()
     
-    # Get inventory
+    # Get inventory - debug what we're actually getting
+    inv_stacks = inventory.item_stacks
     inv_items = {}
-    common_items = [
-        'iron-plate', 'copper-plate', 'coal', 'stone',
-        'iron-ore', 'copper-ore', 'stone-furnace',
-        'burner-mining-drill', 'transport-belt'
-    ]
-    for item_name in common_items:
-        count = inventory.get_total(item_name)
-        if count > 0:
-            inv_items[item_name] = count
+    if inv_stacks:
+        for stack in inv_stacks:
+            inv_items[stack.name] = stack.count
     
     # Get technology and recipe information
     researched_techs = research.get_technologies(researched_only=True)
     researched_names = [t['name'] for t in researched_techs]
     
+    # Get recipes - call without category to get all enabled recipes
     enabled_recipes_data = crafting.get_recipes(enabled_only=True)
     enabled_recipe_names = [r['name'] for r in enabled_recipes_data]
     
@@ -66,8 +222,8 @@ with playing_factorio():
             resource_name,
             total_amount,
             tile_count,
-            centroid.x as x,
-            centroid.y as y
+            CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).x as x,
+            CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).y as y
         FROM resource_patch
         ORDER BY resource_name, patch_id
     ''').fetchall()
@@ -168,10 +324,29 @@ with playing_factorio():
         # Build markdown summary
         summary_lines = [
             "# Initial Game State\n",
-            f"*Generated at session start*\n",
-            "\n## Agent Status\n",
-            f"**Position:** ({state['position']['x']:.1f}, {state['position']['y']:.1f})\n",
+            f"*Generated at session start*\n\n",
         ]
+        
+        # Add categorical references at the beginning
+        try:
+            from FactoryVerse.llm.categorical_references import CategoricalReferenceGenerator
+            
+            cat_gen = CategoricalReferenceGenerator()
+            categorical_refs = cat_gen.generate_combined_reference()
+            summary_lines.append(categorical_refs)
+            summary_lines.append("\n---\n\n")
+        except Exception as e:
+            # If categorical reference generation fails, continue without it
+            summary_lines.append(f"*Categorical references unavailable: {e}*\n\n")
+        
+        # Add database summary with query→result pairs
+        database_summary = self._generate_database_summary()
+        summary_lines.append(database_summary)
+        summary_lines.append("\n")
+        
+        # Add agent status
+        summary_lines.append("## Agent Status\n")
+        summary_lines.append(f"**Position:** ({state['position']['x']:.1f}, {state['position']['y']:.1f})\n")
         
         # Inventory section
         summary_lines.append("\n## Inventory\n")
@@ -182,57 +357,13 @@ with playing_factorio():
             summary_lines.append("*Empty*\n")
         
         # Map overview
-        if state['map_bounds']:
+        if state['map_bounds'] and state['map_bounds']['max_x'] is not None:
             bounds = state['map_bounds']
             width = bounds['max_x'] - bounds['min_x']
             height = bounds['max_y'] - bounds['min_y']
             summary_lines.append("\n## Map Overview\n")
             summary_lines.append(f"**Explored area:** {width:.0f} × {height:.0f} tiles\n")
             summary_lines.append(f"**Bounds:** X=[{bounds['min_x']:.0f}, {bounds['max_x']:.0f}], Y=[{bounds['min_y']:.0f}, {bounds['max_y']:.0f}]\n")
-        
-        # Resource summary
-        summary_lines.append("\n## Resource Summary\n")
-        if state['resource_summary']:
-            for resource in state['resource_summary']:
-                amount_str = f"{resource['amount']:,}" if resource['amount'] >= 1000 else str(resource['amount'])
-                summary_lines.append(
-                    f"- **{resource['name'].replace('-', ' ').title()}**: "
-                    f"{resource['patches']} patches, "
-                    f"{amount_str} total, "
-                    f"{resource['tiles']} tiles\n"
-                )
-        else:
-            summary_lines.append("*No resources found*\n")
-        
-        # All resource patches (verbose listing)
-        summary_lines.append("\n## All Resource Patches\n")
-        if state['all_patches']:
-            # Group by resource type
-            by_type = {}
-            for patch in state['all_patches']:
-                resource_name = patch['name']
-                if resource_name not in by_type:
-                    by_type[resource_name] = []
-                by_type[resource_name].append(patch)
-            
-            for resource_name in sorted(by_type.keys()):
-                patches = by_type[resource_name]
-                summary_lines.append(f"### {resource_name.replace('-', ' ').title()}\n")
-                for patch in patches:
-                    amount_str = f"{patch['amount']:,}" if patch['amount'] >= 1000 else str(patch['amount'])
-                    summary_lines.append(
-                        f"- **Patch #{patch['patch_id']}**: "
-                        f"{amount_str} @ ({patch['x']:.0f}, {patch['y']:.0f}), "
-                        f"{patch['tiles']} tiles\n"
-                    )
-        else:
-            summary_lines.append("*No resource patches in database*\n")
-        
-        # Water
-        if state['water']['patches'] > 0:
-            summary_lines.append("\n## Water\n")
-            summary_lines.append(f"- **Patches:** {state['water']['patches']}\n")
-            summary_lines.append(f"- **Total tiles:** {state['water']['tiles']:,}\n")
         
         # Natural entities (trees and rocks)
         if state['entities']:

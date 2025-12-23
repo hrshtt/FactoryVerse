@@ -1,10 +1,11 @@
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal, TYPE_CHECKING
 from FactoryVerse.dsl.types import MapPosition, Direction
 from FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes, BasePrototype
+from FactoryVerse.dsl.mixins import FactoryContextMixin, SpatialPropertiesMixin, PrototypeMixin
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.agent import PlayingFactory
-    from FactoryVerse.dsl.entity.base import BaseEntity, GhostEntity
+    from FactoryVerse.dsl.entity.base import ReachableEntity, GhostEntity
 
 
 ItemSubgroup = Literal[
@@ -224,69 +225,48 @@ class Fuel(Item):
         self.fuel_top_speed_multiplier = fuel_top_speed_multiplier
 
 
-class PlaceableItem(Item):
+class PlaceableItem(FactoryContextMixin, SpatialPropertiesMixin, PrototypeMixin, Item):
     """Items that can be placed as entities.
     
     These items have a place_result in their prototype, pointing to the entity they create.
     Provides spatial awareness (tile dimensions) for placement reasoning.
+    
+    **For Agents**: These are items you can place in the world (furnaces, drills, chests, etc.).
+    Use tile_width and tile_height for spatial planning before placing.
     """
 
     def __init__(self, name: PlaceableItemName):
         super().__init__(name)
         self._entity_prototype_cache: Optional[BasePrototype] = None
 
-    @property
-    def _factory(self) -> "PlayingFactory":
-        """Get the current playing factory context."""
-        from FactoryVerse.dsl.agent import _playing_factory
-        factory = _playing_factory.get()
-        if factory is None:
-            raise RuntimeError(
-                "No active gameplay session. "
-                "Use 'with playing_factory(rcon, agent_id):' to enable item operations."
-            )
-        return factory
-
-    @property
-    def prototype(self) -> BasePrototype:
-        """Get the cached entity prototype for the entity this item places.
+    def _load_prototype(self) -> BasePrototype:
+        """Load entity prototype by resolving item's place_result.
         
-        Lazily loads and caches the entity prototype on first access.
+        Items need to know what entity they become when placed, so we:
+        1. Load item prototype
+        2. Get place_result (entity name)
+        3. Load entity prototype for that entity
         """
-        if self._entity_prototype_cache is None:
-            item_protos = get_item_prototypes()
-            place_result = item_protos.get_place_result(self.name)
-            if place_result:
-                entity_protos = get_entity_prototypes()
-                entity_type = entity_protos.get_entity_type(place_result)
-                if entity_type and entity_type in entity_protos.data:
-                    entity_data = entity_protos.data[entity_type].get(place_result, {})
-                    self._entity_prototype_cache = BasePrototype(_data=entity_data)
-                else:
-                    self._entity_prototype_cache = BasePrototype(_data={})
-            else:
-                self._entity_prototype_cache = BasePrototype(_data={})
-        return self._entity_prototype_cache
-
-    @property
-    def tile_width(self) -> int:
-        """Get the tile width of the entity this item places."""
-        return self.prototype.tile_width
-
-    @property
-    def tile_height(self) -> int:
-        """Get the tile height of the entity this item places."""
-        return self.prototype.tile_height
+        item_protos = get_item_prototypes()
+        place_result = item_protos.get_place_result(self.name)
+        if place_result:
+            entity_protos = get_entity_prototypes()
+            entity_type = entity_protos.get_entity_type(place_result)
+            if entity_type and entity_type in entity_protos.data:
+                entity_data = entity_protos.data[entity_type].get(place_result, {})
+                return BasePrototype(_data=entity_data)
+        # Fallback to empty prototype if no place_result
+        return BasePrototype(_data={})
 
     def place(
         self, position: MapPosition, direction: Optional[Direction] = Direction.NORTH
-    ) -> "BaseEntity":
+    ) -> "ReachableEntity":
         """Place this item as an entity on the map.
 
-        Returns the created BaseEntity instance.
+        Returns the created ReachableEntity instance.
         """
         from FactoryVerse.dsl.entity.base import (
-            BaseEntity,
+            ReachableEntity,
             ElectricMiningDrill,
             BurnerMiningDrill,
             Pumpjack,
@@ -341,7 +321,7 @@ class PlaceableItem(Item):
             "steel-chest": Container,
         }
         
-        entity_class = entity_map.get(entity_name, BaseEntity)
+        entity_class = entity_map.get(entity_name, ReachableEntity)
         
         # For Container subclasses, we need inventory_size from prototypes
         if entity_class in (WoodenChest, IronChest, Container):
@@ -368,8 +348,8 @@ class PlaceableItem(Item):
                     inventory_size=inventory_size
                 )
             else:
-                # Fallback to BaseEntity if we can't get inventory_size
-                entity_class = BaseEntity
+                # Fallback to ReachableEntity if we can't get inventory_size
+                entity_class = ReachableEntity
         
         return entity_class(name=entity_name, position=position, direction=direction)
 
@@ -516,20 +496,11 @@ class PlacementCues:
 
 
 
-class PlacementCueMixin:
-    """Mixin for items that require placement cues (mining drills, pumpjack, offshore-pump)."""
-
-    @property
-    def _factory(self) -> "PlayingFactory":
-        """Get the current playing factory context."""
-        from FactoryVerse.dsl.agent import _playing_factory
-        factory = _playing_factory.get()
-        if factory is None:
-            raise RuntimeError(
-                "No active gameplay session. "
-                "Use 'with playing_factorio():' to enable item operations."
-            )
-        return factory
+class PlacementCueMixin(FactoryContextMixin):
+    """Mixin for items that require placement cues (mining drills, pumpjack, offshore-pump).
+    
+    **For Agents**: Use get_placement_cues() to find valid positions for resource-dependent entities.
+    """
 
     def get_placement_cues(self, resource_name: Optional[str] = None) -> PlacementCues:
         """Get valid placement positions for this item type.
@@ -646,20 +617,11 @@ class ItemStack:
         """Get the count of items in the stack."""
         return self.count
 
-class BeltLine(ItemStack):
-    """A belt line item stack with belt-specific operations."""
+class BeltLine(FactoryContextMixin, ItemStack):
+    """A belt line item stack with belt-specific operations.
     
-    @property
-    def _factory(self) -> "PlayingFactory":
-        """Get the current playing factory context."""
-        from FactoryVerse.dsl.agent import _playing_factory
-        factory = _playing_factory.get()
-        if factory is None:
-            raise RuntimeError(
-                "No active gameplay session. "
-                "Use 'with playing_factory(rcon, agent_id):' to enable belt operations."
-            )
-        return factory
+    **For Agents**: Use for placing lines of belts efficiently.
+    """
     
     def get_ghost_line(self, position: MapPosition, length: int, direction: Direction) -> "GhostEntity":
         """Get a ghost line of the belt."""

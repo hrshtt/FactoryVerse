@@ -51,141 +51,17 @@ def _get_status_enum(prototype_api_file: Optional[str] = None) -> List[str]:
     return ["active", "inactive", "disabled", "working", "no_power", "no_fuel", "no_recipe"]
 
 
-def _extract_enums_from_prototypes(dump_file: str, prototype_api_file: Optional[str] = None) -> Dict[str, List[str]]:
-    """Extract enum values from prototype data dump, matching the filtering logic from the original schema."""
-    try:
-        with open(dump_file, "r") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return {
-            "recipes": [],
-            "resource_entities": [],
-            "resource_tiles": [],
-            "placeable_entities": [],
-        }
+def _extract_enums_from_prototypes(prototype_api_file: Optional[str] = None) -> Dict[str, List[str]]:
+    """Extract enum values from prototype data using FilterConfig (single source of truth)."""
+    from FactoryVerse.prototype_data import get_prototype_manager
     
-    # Extract recipes with filtering (matching original logic)
-    skip_subgroup = [
-        'logistic-network',
-        'defensive-structure',
-        'space-related',
-        'train-transport',
-        'turret',
-        'equipment',
-        'display-panel',
-        'circuit-network',
-        'defensive-structure',
-        'military-equipment',
-        'parameters',
-        'utility-equipment',
-        'spawnables',
-        'other'
-    ]
-    
-    skip_names = [
-        "module",
-        "equipment",
-        "turret",
-        "display-panel",
-        "small-lamp",
-        "armor",
-        "gun",
-        "magazine",
-        "concrete",
-        "capsule",
-        "bomb",
-        "shell",
-        "flamethrower",
-        "robot",
-        "spidertron",
-        "roboport",
-        "tank",
-        "wagon",
-        "combinator",
-        "locomotive",
-        "rail",
-        "land-mine",
-        "grenade",
-        "train",
-        'power-switch',
-        'programmable-speaker',
-        "barrel"
-    ]
-    
-    recipes = []
-    for k, item in data.get("recipe", {}).items():
-        if isinstance(item, dict):
-            if item.get("hidden"):
-                continue
-            if item.get("subgroup") in skip_subgroup:
-                continue
-            if any(skip_name in item.get("name", k) for skip_name in skip_names):
-                continue
-            if "place_result" in item:
-                continue
-            recipes.append(item.get("name", k))
-    
-    # Extract resource entities (trees, rocks, etc.)
-    resource_entities = []
-    for category in ["tree", "simple-entity"]:
-        resource_entities.extend(data.get(category, {}).keys())
-    
-    # Extract resource tiles
-    resource_tiles = list(data.get("resource", {}).keys())
-    
-    # Extract placeable entities with filtering (matching original logic)
-    keep = {
-        'accumulator',
-        'assembling-machine',
-        'beacon',
-        'boiler',
-        'burner-generator',
-        'container',
-        'electric-pole',
-        'furnace',
-        'gate',
-        'generator',
-        'heat-interface',
-        'heat-pipe',
-        'inserter',
-        'lab',
-        'lane-splitter',
-        'mining-drill',
-        'offshore-pump',
-        'pipe',
-        'pipe-to-ground',
-        'pump',
-        'radar',
-        'reactor',
-        'rocket-silo',
-        'solar-panel',
-        'splitter',
-        'transport-belt',
-        'underground-belt',
-        'wall'
-    }
-    
-    skip_kk = ['factorio-logo-', 'bottomless-chest']  # Removed 'crash-site-' to allow crash-site entities
-    
-    flat_proto = {}
-    for k, v in data.items():
-        if k not in keep:
-            continue
-        if not isinstance(v, dict):
-            continue
-        for kk, vv in v.items():
-            if any(skip in kk for skip in skip_kk):
-                continue
-            # Use entity name as key to deduplicate
-            flat_proto[kk] = vv
-    
-    placeable_entities = sorted(set(flat_proto.keys()))  # Deduplicate using set
+    manager = get_prototype_manager()
     
     return {
-        "recipes": sorted(set(recipes)),  # Deduplicate
-        "resource_entities": sorted(set(resource_entities)),  # Deduplicate
-        "resource_tiles": sorted(set(resource_tiles)),  # Deduplicate
-        "placeable_entities": placeable_entities,  # Already deduplicated
+        "recipes": manager.get_filtered_recipes(),
+        "resource_entities": manager.get_resource_entities(),
+        "resource_tiles": manager.get_resource_tiles(),
+        "placeable_entities": manager.get_filtered_entities(),
     }
 
 
@@ -212,13 +88,12 @@ def _create_type_if_not_exists(con: duckdb.DuckDBPyConnection, type_name: str, c
             pass
 
 
-def create_schema(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-data-dump.json", prototype_api_file: Optional[str] = None) -> None:
+def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[str] = None) -> None:
     """
     Create the complete schema with ENUMs and all tables.
     
     Args:
         con: DuckDB connection
-        dump_file: Path to Factorio prototype data dump JSON file
         prototype_api_file: Optional path to prototype-api.json file
     """
     # Install and load extensions (ignore errors if already installed)
@@ -234,7 +109,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-dat
         pass
     
     # Extract enum values
-    enums = _extract_enums_from_prototypes(dump_file, prototype_api_file)
+    enums = _extract_enums_from_prototypes(prototype_api_file)
     direction_enum = _get_direction_enum(prototype_api_file)
     status_enum = _get_status_enum(prototype_api_file)
     
@@ -465,16 +340,15 @@ def connect(db_path: Optional[Path] = None) -> duckdb.DuckDBPyConnection:
     return con
 
 
-def init_schema(con: duckdb.DuckDBPyConnection, dump_file: str = "factorio-data-dump.json", prototype_api_file: Optional[str] = None) -> None:
+def init_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[str] = None) -> None:
     """
     Initialize the schema. This is a wrapper around create_schema for backward compatibility.
     
     Args:
         con: DuckDB connection
-        dump_file: Path to Factorio prototype data dump JSON file
         prototype_api_file: Optional path to prototype-api.json file for defines
     """
-    create_schema(con, dump_file, prototype_api_file)
+    create_schema(con, prototype_api_file)
 
 
 __all__ = [

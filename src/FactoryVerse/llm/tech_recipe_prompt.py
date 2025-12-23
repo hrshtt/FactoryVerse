@@ -35,24 +35,13 @@ class RecipeInfo:
 class TechRecipePromptGenerator:
     """Generate concise tech/recipe prompts for agent."""
     
-    def __init__(self, data_dump_path: Optional[Path] = None):
-        """Initialize generator.
+    def __init__(self):
+        """Initialize generator using shared prototype data."""
+        from FactoryVerse.prototype_data import get_prototype_manager
         
-        Args:
-            data_dump_path: Path to factorio-data-dump.json
-        """
-        if data_dump_path is None:
-            # Default to repo root
-            data_dump_path = Path(__file__).parent.parent.parent.parent / "factorio-data-dump.json"
-        
-        self.data_dump_path = data_dump_path
-        self.data = self._load_data()
+        manager = get_prototype_manager()
+        self.data = manager.get_raw_data()
         self._build_recipe_tech_mapping()
-    
-    def _load_data(self) -> Dict[str, Any]:
-        """Load factorio data dump."""
-        with open(self.data_dump_path, 'r') as f:
-            return json.load(f)
     
     def _build_recipe_tech_mapping(self):
         """Build mapping from recipe to unlocking technology."""
@@ -183,7 +172,7 @@ class TechRecipePromptGenerator:
             lines.append(f"### {tech.name}")
             
             if tech.has_trigger:
-                lines.append(f"- **Unlock**: {tech.trigger_desc} (automatic)")
+                lines.append(f"- **Unlocked by**: {tech.trigger_desc} (automatic, ie doesnt need to be added to research queue)")
             else:
                 lines.append(f"- **Research**: {tech.cycles} cycles")
                 if tech.science_packs:
@@ -192,11 +181,17 @@ class TechRecipePromptGenerator:
                     total_str = ", ".join([f"{amt * tech.cycles}x {name}" for name, amt in tech.science_packs])
                     lines.append(f"- **Total packs**: {total_str}")
             
+            # Show all unlocks (no truncation)
             if tech.unlocks:
-                unlocks_str = ", ".join(tech.unlocks[:3])
-                if len(tech.unlocks) > 3:
-                    unlocks_str += f" (+{len(tech.unlocks) - 3} more)"
-                lines.append(f"- **Unlocks**: {unlocks_str}")
+                if tech.has_trigger:
+                    # For triggered techs, show unlocks as a simple list
+                    lines.append(f"- **Triggers**:")
+                    for unlock in tech.unlocks:
+                        lines.append(f"  - Unlock Recipe: {unlock}")
+                else:
+                    # For research techs, show unlocks inline
+                    unlocks_str = ", ".join(tech.unlocks)
+                    lines.append(f"- **Unlocks**: {unlocks_str}")
             
             lines.append("")
         
