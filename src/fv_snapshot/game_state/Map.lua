@@ -1273,35 +1273,37 @@ local function phase_write(state)
         -- Write file (use append mode for ghosts-init.jsonl)
         -- Disk I/O is BLOCKING and expensive - each write can take 0.1-1ms depending on disk speed
         local append_mode = item.append == true
+        
+        -- Write to disk (return value logged but not used for control flow)
         local ok = helpers.write_file(item.path, item.content, append_mode)
         
         if not ok then
             write_failures = write_failures + 1
+            if DEBUG and game and game.print then
+                game.print(string.format("[snapshot] WARNING: Failed to write file: %s", item.path))
+            end
         end
         
-        -- Send UDP notification on success using payload module
+        -- Send UDP notification using payload module
+        -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
         -- Note: We only send notifications for entities_init (chunk_init_complete) and snapshot state transitions
         -- Individual init file writes (resources, water, trees_rocks) don't need notifications because:
         -- 1. Bootstrapping waits for COMPLETE state, then loads all init files at once
         -- 2. Updates use entity_operation events (append-only log), not init file writes
-        if ok then
-            local chunk = { x = chunk_x, y = chunk_y }
-            
-            -- For entities_init, send chunk_init_complete notification (useful for knowing when entity data is ready)
-            if item.file_type == "entities_init" then
-                local payload = udp_payloads.chunk_init_complete(chunk, item.entity_count or 0)
-                udp_payloads.send_event(payload)
-            elseif item.file_type == "ghosts_init" then
-                -- Ghosts are appended to top-level file - no notification needed (handled via entity_operation)
-                if DEBUG and game and game.print then
-                    game.print(string.format("[snapshot] Appended %d ghosts to top-level file from chunk (%d, %d)",
-                        item.ghost_count or 0, chunk_x, chunk_y))
-                end
+        local chunk = { x = chunk_x, y = chunk_y }
+        
+        -- For entities_init, send chunk_init_complete notification (useful for knowing when entity data is ready)
+        if item.file_type == "entities_init" then
+            local payload = udp_payloads.chunk_init_complete(chunk, item.entity_count or 0)
+            udp_payloads.send_event(payload)
+        elseif item.file_type == "ghosts_init" then
+            -- Ghosts are appended to top-level file - no notification needed (handled via entity_operation)
+            if DEBUG and game and game.print then
+                game.print(string.format("[snapshot] Appended %d ghosts to top-level file from chunk (%d, %d)",
+                    item.ghost_count or 0, chunk_x, chunk_y))
             end
-            -- Other init files (resources, water, trees_rocks) - no notification needed
-        elseif DEBUG and game and game.print then
-            game.print(string.format("[snapshot] WARNING: Failed to write file: %s", item.path))
         end
+        -- Other init files (resources, water, trees_rocks) - no notification needed
         
         state.write_index = state.write_index + 1
         processed = processed + 1
@@ -1418,8 +1420,23 @@ function M._on_tick_snapshot_chunks(event)
     
     -- Early exit optimization: If we're in IDLE phase with no pending chunks and not in bootstrap wait
     if state.phase == SnapshotPhase.IDLE then
-        -- Early exit: No pending chunks and not in bootstrap wait
-        if #sys_state.pending_chunks == 0 and sys_state.phase ~= SystemPhase.INITIAL_SNAPSHOTTING then
+        -- During INITIAL_SNAPSHOTTING, we MUST CHECK bootstrap wait even if pending chunks > 0
+        -- because we want to wait for charting to complete before *starting* processing
+        if sys_state.phase == SystemPhase.INITIAL_SNAPSHOTTING then
+             if sys_state.current_wait_tick < sys_state.bootstrap_wait_ticks then
+                 -- Still waiting for bootstrap
+                 sys_state.current_wait_tick = sys_state.current_wait_tick + 1
+                 if DEBUG and sys_state.current_wait_tick % 60 == 0 then
+                    game.print(string.format("[Snapshot System] Bootstrap waiting... %d/%d ticks",
+                        sys_state.current_wait_tick, sys_state.bootstrap_wait_ticks))
+                 end
+                 -- If wait complete, transition happens in the ELSE block below (when queue checked) or we can force it here?
+                 -- Actually, if pending_chunks > 0, we normally proceed.
+                 -- The fix is: DO NOT PROCEED if waiting, regardless of queue.
+                 return 
+             end
+        elseif #sys_state.pending_chunks == 0 then
+            -- Normal IDLE exit if no chunks
             return
         end
     end

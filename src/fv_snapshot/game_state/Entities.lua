@@ -251,11 +251,9 @@ function M.dump_status_to_disk(charted_chunks)
     -- Write JSONL to disk
     local file_path = snapshot.status_dump_path(game.tick)
     local content = table.concat(jsonl_lines, "\n") .. "\n"
-    local ok_write = helpers.write_file(file_path, content, false)
-    if not ok_write then
-        log("Failed to write status dump file: " .. tostring(file_path))
-        return
-    end
+    
+    -- Write to disk (return value ignored for determinism)
+    helpers.write_file(file_path, content, false)
     
     -- Track file and cleanup old ones
     snapshot.track_status_dump_file(game.tick)
@@ -348,21 +346,20 @@ function M.write_entity_snapshot(entity, is_update)
 
     -- Create upsert operation and append to log
     local operation = snapshot.make_upsert_operation(entity_data)
-    local success = snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+    snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
     
     if M.DEBUG then
-        game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: wrote entity %s to chunk (%d,%d), success=%s", 
-            game.tick, entity.name or "unknown", chunk_coords.x, chunk_coords.y, tostring(success)))
+        game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: wrote entity %s to chunk (%d,%d)", 
+            game.tick, entity.name or "unknown", chunk_coords.x, chunk_coords.y))
     end
     
     -- Send UDP notification using payload module (best-effort, log is the source of truth)
-    if success then
-        local chunk = { x = chunk_coords.x, y = chunk_coords.y }
-        local payload = udp_payloads.entity_created(chunk, entity_data)
-        udp_payloads.send_entity_operation(payload)
-    end
+    -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    local chunk = { x = chunk_coords.x, y = chunk_coords.y }
+    local payload = udp_payloads.entity_created(chunk, entity_data)
+    udp_payloads.send_entity_operation(payload)
     
-    return success
+    return true
 end
 
 --- Append entity destroyed operation to the updates log and send UDP notification
@@ -389,16 +386,15 @@ function M._delete_entity_snapshot(entity)
     
     -- Create remove operation and append to log
     local operation = snapshot.make_remove_operation(ent_key, position, entity.name or "unknown")
-    local success = snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+    snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
     
     -- Send UDP notification using payload module (best-effort, log is the source of truth)
-    if success then
-        local chunk = { x = chunk_coords.x, y = chunk_coords.y }
-        local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity.name or "unknown", position)
-        udp_payloads.send_entity_operation(payload)
-    end
+    -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    local chunk = { x = chunk_coords.x, y = chunk_coords.y }
+    local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity.name or "unknown", position)
+    udp_payloads.send_entity_operation(payload)
     
-    return success
+    return true
 end
 
 --- Handle entity built event (on_built_entity, script_raised_built)
@@ -787,6 +783,8 @@ function M._build_disk_write_snapshot()
         [defines.events.on_built_entity] = _on_entity_built,
         [defines.events.script_raised_built] = _on_entity_built,
         [defines.events.on_player_mined_entity] = _on_entity_destroyed,  -- Player mines entity (trees, rocks, etc.)
+        [defines.events.on_robot_mined_entity] = _on_entity_destroyed,   -- Robot mines entity
+        [defines.events.on_entity_died] = _on_entity_destroyed,          -- Entity destroyed by damage
         [defines.events.script_raised_destroy] = _on_entity_destroyed,
         [defines.events.on_entity_settings_pasted] = _on_entity_settings_pasted,
     }

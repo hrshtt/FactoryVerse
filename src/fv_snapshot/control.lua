@@ -195,8 +195,7 @@ local function clear_snapshot_directory()
     if ok then
         log("🧹 Cleared snapshot directory: " .. snapshot_base_dir)
     else
-        log("⚠️  Failed to clear snapshot directory: " .. tostring(err))
-        -- Continue anyway - the directory might not exist yet
+        log("⚠️  Failed to clear snapshot directory: " .. snapshot_base_dir) -- err is not available
     end
 end
 
@@ -248,5 +247,7 @@ end)
 
 script.on_configuration_changed(function()
     log("hello from fv_snapshot on_configuration_changed")
+    -- Also clear on configuration changed (e.g. mod update) to be safe
+    clear_snapshot_directory()
 end)
 

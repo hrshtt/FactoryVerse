@@ -34,6 +34,16 @@ function M._on_nth_tick_global_power_snapshot()
     local stats = M.get_global_power_statistics()
     if not stats then return end
 
+    -- Early exit: Don't write if all statistics are empty
+    local input = stats.input or {}
+    local output = stats.output or {}
+    local storage = stats.storage or {}
+    
+    -- Check if all three tables are empty (no keys)
+    if next(input) == nil and next(output) == nil and next(storage) == nil then
+        return
+    end
+
     -- Append a snapshot entry in JSONL format
     local entry = {
         tick = game.tick,
@@ -41,13 +51,14 @@ function M._on_nth_tick_global_power_snapshot()
     }
     local json_line = helpers.table_to_json(entry) .. "\n"
     local file_path = snapshot.SNAPSHOT_BASE_DIR .. "/global_power_statistics.jsonl"
-    local success = helpers.write_file(file_path, json_line, true) -- append
+    
+    -- Write to disk (return value ignored for determinism)
+    helpers.write_file(file_path, json_line, true) -- append
     
     -- Send UDP notification for file append
-    if success then
-        local payload = udp_payloads.file_appended("power_statistics", nil, file_path, game.tick, 1)
-        udp_payloads.send_file_io(payload)
-    end
+    -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    local payload = udp_payloads.file_appended("power_statistics", nil, file_path, game.tick, 1)
+    udp_payloads.send_file_io(payload)
 end
 
 M.power_api = {}

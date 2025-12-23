@@ -39,14 +39,15 @@ function M._on_nth_tick_agent_production_snapshot()
             }
             local json_line = helpers.table_to_json(entry) .. "\n"
             local file_path = snapshot.SNAPSHOT_BASE_DIR .. "/" .. agent_id .. "/production_statistics.jsonl"
-            local success = helpers.write_file(file_path, json_line, true) -- append
+            
+            -- Write to disk (return value ignored for determinism)
+            helpers.write_file(file_path, json_line, true) -- append
             
             -- Send UDP notification for file append
-            if success then
-                local payload = udp_payloads.file_appended("agent_production_statistics", nil, file_path, game.tick, 1)
-                payload.agent_id = agent_id  -- Include agent_id in payload
-                udp_payloads.send_file_io(payload)
-            end
+            -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+            local payload = udp_payloads.file_appended("agent_production_statistics", nil, file_path, game.tick, 1)
+            payload.agent_id = agent_id  -- Include agent_id in payload
+            udp_payloads.send_file_io(payload)
         end
         ::continue::
     end

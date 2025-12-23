@@ -202,18 +202,145 @@ function M.write_resource_file(file_path, data)
 end
 
 -- ============================================================================
+-- CHUNK WRITE TRACKING (for handling first writes without append flag)
+-- ============================================================================
+-- Factorio's helpers.write_file() with append=true fails if the directory
+-- doesn't exist. We track first writes per chunk to use append=false for
+-- directory creation, then append=true for subsequent writes.
+
+--- Check if this is the first entity update write for a chunk
+--- Uses existing ChunkTracker infrastructure from Map.lua
+--- @param chunk_x number
+--- @param chunk_y number
+--- @return boolean - true if this is the first write
+local function is_first_entity_update_write(chunk_x, chunk_y)
+    -- Access existing chunk tracker from Map module
+    if not storage.chunk_tracker or not storage.chunk_tracker.chunk_lookup then
+        return true  -- No tracker yet, definitely first write
+    end
+    
+    local chunk_key = chunk_x .. "," .. chunk_y
+    local chunk_entry = storage.chunk_tracker.chunk_lookup[chunk_key]
+    
+    if not chunk_entry then
+        return true  -- Chunk not tracked yet, first write
+    end
+    
+    -- Check if entity_updates_written flag exists
+    return chunk_entry.entity_updates_written ~= true
+end
+
+--- Mark chunk as having had its first entity update write
+--- @param chunk_x number
+--- @param chunk_y number
+local function mark_entity_update_written(chunk_x, chunk_y)
+    -- Ensure chunk tracker exists
+    if not storage.chunk_tracker then
+        storage.chunk_tracker = { chunk_lookup = {} }
+    end
+    if not storage.chunk_tracker.chunk_lookup then
+        storage.chunk_tracker.chunk_lookup = {}
+    end
+    
+    local chunk_key = chunk_x .. "," .. chunk_y
+    local chunk_entry = storage.chunk_tracker.chunk_lookup[chunk_key]
+    
+    if not chunk_entry then
+        -- Create minimal chunk entry if it doesn't exist
+        chunk_entry = {
+            resource = {},
+            entities = {},
+            water = false,
+            snapshot_tick = nil,
+            dirty = false,
+            has_player_entities = false,
+            player_entity_count = 0,
+            entity_updates_written = true,  -- NEW FLAG
+        }
+        storage.chunk_tracker.chunk_lookup[chunk_key] = chunk_entry
+    else
+        -- Mark existing entry
+        chunk_entry.entity_updates_written = true
+    end
+end
+
+--- Check if this is the first trees/rocks update write for a chunk
+--- @param chunk_x number
+--- @param chunk_y number
+--- @return boolean - true if this is the first write
+local function is_first_trees_rocks_update_write(chunk_x, chunk_y)
+    if not storage.chunk_tracker or not storage.chunk_tracker.chunk_lookup then
+        return true
+    end
+    
+    local chunk_key = chunk_x .. "," .. chunk_y
+    local chunk_entry = storage.chunk_tracker.chunk_lookup[chunk_key]
+    
+    if not chunk_entry then
+        return true
+    end
+    
+    return chunk_entry.trees_rocks_updates_written ~= true
+end
+
+--- Mark chunk as having had its first trees/rocks update write
+--- @param chunk_x number
+--- @param chunk_y number
+local function mark_trees_rocks_update_written(chunk_x, chunk_y)
+    if not storage.chunk_tracker then
+        storage.chunk_tracker = { chunk_lookup = {} }
+    end
+    if not storage.chunk_tracker.chunk_lookup then
+        storage.chunk_tracker.chunk_lookup = {}
+    end
+    
+    local chunk_key = chunk_x .. "," .. chunk_y
+    local chunk_entry = storage.chunk_tracker.chunk_lookup[chunk_key]
+    
+    if not chunk_entry then
+        chunk_entry = {
+            resource = {},
+            entities = {},
+            water = false,
+            snapshot_tick = nil,
+            dirty = false,
+            has_player_entities = false,
+            player_entity_count = 0,
+            trees_rocks_updates_written = true,  -- NEW FLAG
+        }
+        storage.chunk_tracker.chunk_lookup[chunk_key] = chunk_entry
+    else
+        chunk_entry.trees_rocks_updates_written = true
+    end
+end
+
+--- Check if this is the first ghost update write
+--- Ghosts are top-level (not chunk-wise), so use a simple storage flag
+--- @return boolean - true if this is the first write
+local function is_first_ghost_update_write()
+    storage.ghost_updates_written = storage.ghost_updates_written or false
+    return not storage.ghost_updates_written
+end
+
+--- Mark ghosts as having had their first update write
+local function mark_ghost_update_written()
+    storage.ghost_updates_written = true
+end
+
+-- ============================================================================
 -- APPEND-ONLY OPERATIONS LOG (for event-driven updates)
 -- ============================================================================
 
 --- Append an operation to the updates log
 --- This is the key function for event-driven updates - uses append mode
+--- IMPORTANT: First write uses append=false to create directory structure
+--- NOTE: Does NOT send UDP - caller is responsible for UDP notifications
 --- @param chunk_x number
 --- @param chunk_y number
 --- @param operation table - Operation record with {op, tick, ...}
---- @return boolean - Success status
 function M.append_entity_operation(chunk_x, chunk_y, operation)
     if not chunk_x or not chunk_y or not operation then
-        return false
+        return
     end
     
     local file_path = M.entities_updates_path(chunk_x, chunk_y)
@@ -221,22 +348,25 @@ function M.append_entity_operation(chunk_x, chunk_y, operation)
     local json_str = helpers.table_to_json(operation)
     if not json_str then
         log("Failed to serialize operation for append: " .. tostring(file_path))
-        return false
+        return
     end
     
-    -- CRITICAL: Use append=true for the third parameter
-    local ok_write = helpers.write_file(file_path, json_str .. "\n", true)
-    if not ok_write then
-        log("Failed to append operation to: " .. tostring(file_path))
-        return false
+    -- Check if this is the first write - if so, use append=false to create directory
+    local is_first_write = is_first_entity_update_write(chunk_x, chunk_y)
+    local append_mode = not is_first_write
+    
+    -- Write to disk (return value ignored for determinism)
+    helpers.write_file(file_path, json_str .. "\n", append_mode)
+    
+    -- Mark chunk as written
+    if is_first_write then
+        mark_entity_update_written(chunk_x, chunk_y)
     end
     
     if M.DEBUG and game and game.print then
-        game.print(string.format("[snapshot] Appended %s op to chunk (%d, %d)", 
-            operation.op or "unknown", chunk_x, chunk_y))
+        game.print(string.format("[snapshot] Wrote %s op to chunk (%d, %d) [first_write=%s, append=%s]", 
+            operation.op or "unknown", chunk_x, chunk_y, tostring(is_first_write), tostring(append_mode)))
     end
-    
-    return true
 end
 
 --- Create an upsert operation record
@@ -267,17 +397,17 @@ end
 
 --- Append a trees/rocks operation to the trees_rocks updates log
 --- This is the key function for event-driven trees/rocks updates - uses append mode
+--- IMPORTANT: First write uses append=false to create directory structure
+--- NOTE: Does NOT send UDP - caller is responsible for UDP notifications
 --- @param chunk_x number
 --- @param chunk_y number
 --- @param operation table - Operation record with {op, tick, ...}
---- @return boolean - Success status
 function M.append_trees_rocks_operation(chunk_x, chunk_y, operation)
     if not chunk_x or not chunk_y or not operation then
         if M.DEBUG and game and game.print then
-            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Missing params - chunk_x=%s, chunk_y=%s, operation=%s", 
-                game.tick, tostring(chunk_x), tostring(chunk_y), tostring(operation)))
+            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Missing params", game.tick))
         end
-        return false
+        return
     end
     
     local file_path = M.trees_rocks_updates_path(chunk_x, chunk_y)
@@ -290,11 +420,10 @@ function M.append_trees_rocks_operation(chunk_x, chunk_y, operation)
     local json_str = helpers.table_to_json(operation)
     if not json_str then
         if M.DEBUG and game and game.print then
-            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Serialization failed", 
-                game.tick))
+            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Serialization failed", game.tick))
         end
         log("Failed to serialize trees/rocks operation for append: " .. tostring(file_path))
-        return false
+        return
     end
     
     if M.DEBUG and game and game.print then
@@ -302,32 +431,32 @@ function M.append_trees_rocks_operation(chunk_x, chunk_y, operation)
             game.tick, string.len(json_str), json_str))
     end
     
-    -- CRITICAL: Use append=true for the third parameter
-    local ok_write = helpers.write_file(file_path, json_str .. "\n", true)
-    if not ok_write then
-        if M.DEBUG and game and game.print then
-            game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Write failed - file_path=%s", 
-                game.tick, file_path))
-        end
-        log("Failed to append trees/rocks operation to: " .. tostring(file_path))
-        return false
+    -- Check if this is the first write - if so, use append=false to create directory
+    local is_first_write = is_first_trees_rocks_update_write(chunk_x, chunk_y)
+    local append_mode = not is_first_write
+    
+    -- Write to disk (return value ignored for determinism)
+    helpers.write_file(file_path, json_str .. "\n", append_mode)
+    
+    -- Mark chunk as written
+    if is_first_write then
+        mark_trees_rocks_update_written(chunk_x, chunk_y)
     end
     
     if M.DEBUG and game and game.print then
-        game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Write succeeded! Appended %s op to trees_rocks-update for chunk (%d, %d), file_path=%s", 
-            game.tick, operation.op or "unknown", chunk_x, chunk_y, file_path))
+        game.print(string.format("[DEBUG snapshot.append_trees_rocks_operation] Tick %d: Wrote %s op to trees_rocks-update for chunk (%d, %d) [first_write=%s, append=%s]", 
+            game.tick, operation.op or "unknown", chunk_x, chunk_y, tostring(is_first_write), tostring(append_mode)))
     end
-    
-    return true
 end
 
 --- Append a ghost operation to the top-level ghosts updates log
 --- This is the key function for event-driven ghost updates - uses append mode
+--- IMPORTANT: First write uses append=false to create directory structure
+--- NOTE: Does NOT send UDP - caller is responsible for UDP notifications
 --- @param operation table - Operation record with {op, tick, ...}
---- @return boolean - Success status
 function M.append_ghost_operation(operation)
     if not operation then
-        return false
+        return
     end
     
     local file_path = M.ghosts_updates_path()
@@ -335,21 +464,25 @@ function M.append_ghost_operation(operation)
     local json_str = helpers.table_to_json(operation)
     if not json_str then
         log("Failed to serialize ghost operation for append: " .. tostring(file_path))
-        return false
+        return
     end
     
-    -- CRITICAL: Use append=true for the third parameter
-    local ok_write = helpers.write_file(file_path, json_str .. "\n", true)
-    if not ok_write then
-        log("Failed to append ghost operation to: " .. tostring(file_path))
-        return false
+    -- Check if this is the first write - if so, use append=false to create directory
+    local is_first_write = is_first_ghost_update_write()
+    local append_mode = not is_first_write
+    
+    -- Write to disk (return value ignored for determinism)
+    helpers.write_file(file_path, json_str .. "\n", append_mode)
+    
+    -- Mark ghosts as written
+    if is_first_write then
+        mark_ghost_update_written()
     end
     
     if M.DEBUG and game and game.print then
-        game.print(string.format("[snapshot] Appended ghost %s op", operation.op or "unknown"))
+        game.print(string.format("[snapshot] Wrote ghost %s op [first_write=%s, append=%s]", 
+            operation.op or "unknown", tostring(is_first_write), tostring(append_mode)))
     end
-    
-    return true
 end
 
 --- Create a ghost upsert operation record

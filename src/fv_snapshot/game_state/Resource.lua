@@ -239,21 +239,20 @@ function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
             game.tick, tostring(operation.op), tostring(operation.tick), tostring(operation.key)))
     end
     
-    local success = snapshot.append_trees_rocks_operation(chunk_x, chunk_y, operation)
+    snapshot.append_trees_rocks_operation(chunk_x, chunk_y, operation)
     
     if M.DEBUG then
-        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: Trees/rocks update entry created for %s at (%d,%d), success=%s", 
-            game.tick, entity_name, chunk_x, chunk_y, tostring(success)))
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: Trees/rocks update entry created for %s at (%d,%d)", 
+            game.tick, entity_name, chunk_x, chunk_y))
     end
     
     -- Send UDP notification
-    if success then
-        local chunk = { x = chunk_x, y = chunk_y }
-        local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity_name, position)
-        udp_payloads.send_entity_operation(payload)
-    end
+    -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    local chunk = { x = chunk_x, y = chunk_y }
+    local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity_name, position)
+    udp_payloads.send_entity_operation(payload)
     
-    return success
+    return true
 end
 
 --- Rewrite resource file for a chunk

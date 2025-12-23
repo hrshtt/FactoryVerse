@@ -177,7 +177,7 @@ end
 --- @param pos_y number - Y coordinate
 --- @return string - Key in format "entity_name..position.x..position.y"
 function M.entity_key(entity_name, pos_x, pos_y)
-    return string.format("%s:%s,%s", entity_name, pos_x, pos_y)
+    return string.format("(%s:%s,%s)", entity_name, pos_x, pos_y)
 end
 
 --- Check if two ranges overlap
