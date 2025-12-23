@@ -33,7 +33,7 @@ class FactoryContextMixin:
         Raises:
             RuntimeError: If no active gameplay session exists
         """
-        from FactoryVerse.dsl.agent import _playing_factory
+        from FactoryVerse.dsl.types import _playing_factory
         factory = _playing_factory.get()
         if factory is None:
             raise RuntimeError(

@@ -1,13 +1,10 @@
 from __future__ import annotations
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.dsl.types import MapPosition, _playing_factory
 import asyncio
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.agent import PlayingFactory
-
-# Import _playing_factory safely
-from FactoryVerse.dsl.agent import _playing_factory
 
 
 def _get_factory() -> "PlayingFactory":

@@ -30,8 +30,7 @@ from FactoryVerse.dsl.prototypes import (
 if TYPE_CHECKING:
     from FactoryVerse.dsl.agent import PlayingFactory
 
-# Import _playing_factory safely
-from FactoryVerse.dsl.agent import _playing_factory
+# from FactoryVerse.dsl.agent import _playing_factory
 
 
 class EntityPosition(MapPosition):
@@ -559,43 +558,41 @@ class LongHandInserter(Inserter):
         """Get the prototype for this long-handed inserter type."""
         return get_entity_prototypes().long_handed_inserter
 
-class AssemblingMachine(CrafterMixin, InspectableMixin, ReachableEntity):
-    """An assembling machine entity."""
+class ProcessingMachine(CrafterMixin, InspectableMixin, ReachableEntity):
+    """Base class for entities that process recipes (assemblers, chemical plants, etc)."""
 
     def set_recipe(self, recipe: Union[str, "Recipe"]) -> str:
-        """Set the recipe of the assembling machine.
+        """Set the recipe of the machine (synchronous).
         
         Args:
             recipe: Recipe name (string) or Recipe object with .name attribute
         """
-        # Handle both string and Recipe object
-        if isinstance(recipe, str):
+        # Handle string, Recipe object, or None
+        if recipe is None:
+            recipe_name = None
+        elif isinstance(recipe, str):
             recipe_name = recipe
         elif hasattr(recipe, 'name'):
             recipe_name = recipe.name
         else:
-            raise ValueError(f"recipe must be a string or Recipe object, got {type(recipe)}")
+            raise ValueError(f"recipe must be a string, Recipe object, or None, got {type(recipe)}")
         
         return self._factory.set_entity_recipe(self.name, self.position, recipe_name)
 
     def get_recipe(self) -> Optional[str]:
-        """Get the current recipe of the assembling machine.
+        """Get the current recipe of the machine.
         
-        Note: This method is not yet fully implemented. It will raise NotImplementedError.
-        To get recipe information, use get_reachable() and inspect the entity data.
+        Note: This method is not yet fully implemented.
+        To get recipe information, use inspect() and check the 'recipe' field.
         """
         raise NotImplementedError(
-            "AssemblingMachine.get_recipe() is not yet implemented. "
-            "This method requires a query method in the Lua mod's RemoteInterface. "
-            "To get recipe information, use get_reachable() and inspect the entity data."
+            f"{self.__class__.__name__}.get_recipe() is not yet fully implemented in the DSL. "
+            "To get recipe information, use inspect() and check the 'recipe' field."
         )
 
-    def _format_inspection(self, data: Dict[str, Any]) -> str:
-        """Format assembling machine inspection data for agent readability."""
-        
-        lines = [
-            f"AssemblingMachine({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
-        ]
+    def _format_processing_inspection(self, data: Dict[str, Any], header: str) -> str:
+        """Shared inspection formatting for all processing machines."""
+        lines = [header]
         
         # Status
         status = data.get("status", "unknown")
@@ -647,9 +644,46 @@ class AssemblingMachine(CrafterMixin, InspectableMixin, ReachableEntity):
                 lines.append(f"  Energy: {current:.0f}/{capacity:.0f} ({energy_pct:.1f}%)")
         
         return "\n".join(lines)
-    
-    def get_output_items(self) -> ItemStack:
-        return ItemStack.from_result
+
+class AssemblingMachine(ProcessingMachine):
+    """An assembling machine entity."""
+
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format assembling machine inspection data for agent readability."""
+        header = f"AssemblingMachine({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        return self._format_processing_inspection(data, header)
+
+class ChemicalPlant(ProcessingMachine):
+    """A chemical plant entity."""
+
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format chemical plant inspection data for agent readability."""
+        header = f"ChemicalPlant({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        return self._format_processing_inspection(data, header)
+
+class OilRefinery(ProcessingMachine):
+    """An oil refinery entity."""
+
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format oil refinery inspection data for agent readability."""
+        header = f"OilRefinery({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        return self._format_processing_inspection(data, header)
+
+class Centrifuge(ProcessingMachine):
+    """A centrifuge entity."""
+
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format centrifuge inspection data for agent readability."""
+        header = f"Centrifuge({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        return self._format_processing_inspection(data, header)
+
+class RocketSilo(ProcessingMachine):
+    """A rocket silo entity."""
+
+    def _format_inspection(self, data: Dict[str, Any]) -> str:
+        """Format rocket silo inspection data for agent readability."""
+        header = f"RocketSilo({self.name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
+        return self._format_processing_inspection(data, header)
 
 
 class TransportBelt(InspectableMixin, ReachableEntity):
@@ -1092,6 +1126,10 @@ def create_entity_from_data(entity_data: Dict[str, Any]) -> ReachableEntity:
         "assembling-machine-1": AssemblingMachine,
         "assembling-machine-2": AssemblingMachine,
         "assembling-machine-3": AssemblingMachine,
+        "chemical-plant": ChemicalPlant,
+        "oil-refinery": OilRefinery,
+        "centrifuge": Centrifuge,
+        "rocket-silo": RocketSilo,
         "stone-furnace": Furnace,
         "steel-furnace": Furnace,
         "electric-furnace": Furnace,

@@ -1,7 +1,11 @@
 from dataclasses import dataclass
 import enum
 import math
-from typing import Self, Tuple
+from typing import Self, Tuple, Union, Any, List, Dict, TypeVar, Optional, TYPE_CHECKING
+from contextvars import ContextVar
+
+if TYPE_CHECKING:
+    from FactoryVerse.dsl.agent import PlayingFactory
 
 
 class Direction(enum.Enum):
@@ -199,3 +203,8 @@ class BoundingBox:
             raise ValueError(
                 "BoundingBox expects (left_top, right_bottom) or (left_top, right_bottom, orientation)"
             )
+# Game context: agent is "playing" the factory game
+# Defined here to break circular dependencies between agent, entity, and mixins
+_playing_factory: ContextVar[Optional["PlayingFactory"]] = ContextVar(
+    "playing_factory", default=None
+)

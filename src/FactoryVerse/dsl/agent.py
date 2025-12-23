@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from FactoryVerse.dsl.types import MapPosition
 from FactoryVerse.dsl.item.base import ItemStack
 from FactoryVerse.dsl.recipe.base import Recipes, BaseRecipe, BasicRecipeName
+from FactoryVerse.dsl.technology.base import TechTree
 from factorio_rcon import RCONClient as RconClient
 from contextvars import ContextVar
 from contextlib import contextmanager
@@ -31,10 +32,8 @@ if TYPE_CHECKING:
     import duckdb
 
 
-# Game context: agent is "playing" the factory game
-_playing_factory: ContextVar[Optional["PlayingFactory"]] = ContextVar(
-    "playing_factory", default=None
-)
+# Import _playing_factory from types to break circular dependencies
+from FactoryVerse.dsl.types import _playing_factory
 
 
 class AsyncActionListener:
@@ -1070,20 +1069,13 @@ class ResearchAction:
         """
         return self._factory.get_research_queue()
 
-
 class PlayingFactory:
-    """Represents the agent's active gameplay session with RCON access."""
-
-    _rcon: RconClient
-    _agent_id: str
-    agent_commands: AgentCommands
-    recipes: Recipes
-    _async_listener: AsyncActionListener
-    _ghost_manager: GhostManager
-    _duckdb_connection: Optional["duckdb.DuckDBPyConnection"]
+    """Represents an active gameplay session for an agent."""
+    
     _game_data_sync: Optional["GameDataSyncService"]
 
-    def __init__(self, rcon_client: "RconClient", agent_id: str, recipes: Recipes, 
+    def __init__(self, rcon_client: "RconClient", agent_id: str, 
+                 recipes: Recipes, tech_tree: TechTree,
                  udp_dispatcher: Optional[UDPDispatcher] = None,
                  agent_udp_port: Optional[int] = None):
         """
@@ -1093,6 +1085,7 @@ class PlayingFactory:
             rcon_client: RCON client for remote interface calls
             agent_id: Agent ID (e.g., 'agent_1')
             recipes: Recipes instance
+            tech_tree: TechTree instance
             udp_dispatcher: Optional UDPDispatcher for shared port mode (deprecated, use agent_udp_port instead)
             agent_udp_port: Optional UDP port for agent-specific async actions. If provided, agent owns this port completely.
         """
@@ -1100,6 +1093,7 @@ class PlayingFactory:
         self._agent_id = agent_id
         self.agent_commands = AgentCommands(agent_id)
         self.recipes = recipes
+        self.tech_tree = tech_tree
         self._async_listener = AsyncActionListener(
             udp_dispatcher=udp_dispatcher,
             agent_port=agent_udp_port

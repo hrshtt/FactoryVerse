@@ -1,8 +1,9 @@
 from FactoryVerse.dsl.entity.base import ReachableEntity, GhostEntity
 from FactoryVerse.dsl.item.base import ItemStack
-from FactoryVerse.dsl.types import MapPosition, BoundingBox, Position, Direction
-from FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
+from FactoryVerse.dsl.agent import PlayingFactory
+from FactoryVerse.dsl.types import MapPosition, BoundingBox, Position, Direction, _playing_factory
 from FactoryVerse.dsl.recipe.base import Recipes
+from FactoryVerse.dsl.technology.base import TechTree
 
 from typing import List, Optional, Dict, Any, Union, Literal, TYPE_CHECKING
 from pathlib import Path
@@ -49,7 +50,11 @@ class _WalkingAccessor:
 
 
 class _CraftingAccessor:
-    """Top-level crafting action accessor."""
+    """Top-level crafting action accessor.
+    
+    Provides access to hand-crafting actions and recipe queries.
+    Use index access to get a specific recipe: crafting['iron-gear-wheel']
+    """
     
     def __repr__(self) -> str:
         return """CraftingAffordance
@@ -58,9 +63,19 @@ class _CraftingAccessor:
     - enqueue(recipe, count?) - Enqueue recipe for crafting
     - dequeue(recipe, count?) - Cancel queued crafting
     - status() - Get current crafting status
-    - get_recipes(enabled_only?, category?) - Get available recipes
-  Usage: await crafting.craft('iron-plate', count=10)"""
+    - get_recipes(enabled_only?, category?) - Get available Recipe objects
+  Usage: 
+    await crafting['iron-gear-wheel'].craft(10)
+    # OR legacy: await crafting.craft('iron-gear-wheel', count=10)"""
     
+    def __getitem__(self, recipe_name: str) -> "Recipe":
+        """Get a recipe object by name.
+        
+        **For Agents**: crafting['iron-gear-wheel'] returns a Recipe object.
+        If the recipe is hand-craftable, you can call .craft() on it.
+        """
+        return _get_factory().recipes[recipe_name]
+
     async def craft(self, recipe: str, count: int = 1, timeout: Optional[int] = None):
         """Craft a recipe (async/await)."""
         return await _get_factory().crafting.craft(recipe, count, timeout)
@@ -77,7 +92,7 @@ class _CraftingAccessor:
         """Get current crafting status."""
         return _get_factory().crafting.status()
     
-    def get_recipes(self, enabled_only: bool = True, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_recipes(self, enabled_only: bool = True, category: Optional[str] = None) -> List["Recipe"]:
         """Get available recipes for the agent's force.
         
         Args:
@@ -85,21 +100,26 @@ class _CraftingAccessor:
             category: Optional filter by recipe category (e.g., "crafting", "smelting")
         
         Returns:
-            List of recipe dictionaries with name, category, energy, and ingredients
+            List of Recipe objects
         """
-        # The Lua implementation already filters to enabled recipes only
-        # So enabled_only=True is the default behavior, enabled_only=False is not supported
-        if not enabled_only:
-            # For now, we only support enabled recipes (Lua limitation)
-            # Could be extended in the future if needed
-            pass
+        factory = _get_factory()
+        recipes = list(factory.recipes)
         
-        result = _get_factory().get_recipes(category=category)
-        return json.loads(result)
+        if enabled_only:
+            recipes = [r for r in recipes if r.enabled]
+        
+        if category:
+            recipes = [r for r in recipes if r.category == category]
+            
+        return recipes
 
 
 class _ResearchAccessor:
-    """Top-level research action accessor."""
+    """Top-level research action accessor.
+    
+    Provides access to technology research actions and queries.
+    Use index access to get a specific technology: research['automation']
+    """
     
     def __repr__(self) -> str:
         return """ResearchAffordance
@@ -107,9 +127,19 @@ class _ResearchAccessor:
     - enqueue(technology) - Start researching a technology
     - dequeue() - Cancel current research
     - status() - Get current research status
-    - get_technologies(researched_only?, only_available?) - Get technologies
-  Usage: research.enqueue('automation')"""
+    - get_technologies(researched_only?, only_available?) - Get Technology objects
+  Usage: 
+    research['automation'].enqueue()
+    # OR legacy: research.enqueue('automation')"""
     
+    def __getitem__(self, tech_name: str):
+        """Get a technology object by name.
+        
+        **For Agents**: research['automation'] returns a Technology object.
+        You can check .researched, .can_research, or call .enqueue().
+        """
+        return _get_factory().tech_tree[tech_name]
+
     def enqueue(self, technology: str):
         """Start researching a technology."""
         return _get_factory().research.enqueue(technology)
@@ -122,7 +152,7 @@ class _ResearchAccessor:
         """Get current research status."""
         return _get_factory().research.status()
     
-    def get_technologies(self, researched_only: bool = False, only_available: bool = False) -> List[Dict[str, Any]]:
+    def get_technologies(self, researched_only: bool = False, only_available: bool = False) -> List[Any]:
         """Get technologies for the agent's force.
         
         Args:
@@ -130,15 +160,17 @@ class _ResearchAccessor:
             only_available: If True, only return technologies that can be researched now (prerequisites met)
         
         Returns:
-            List of technology dictionaries with name, researched, enabled, prerequisites, etc.
+            List of Technology objects
         """
-        # Get all or available technologies from Lua
-        result = _get_factory().get_technologies(only_available=only_available)
-        technologies = json.loads(result)
+        factory = _get_factory()
+        # Ensure tech status is updated before returning objects
+        technologies = list(factory.tech_tree.technologies.values())
         
-        # Apply client-side filtering for researched_only if needed
         if researched_only:
-            technologies = [tech for tech in technologies if tech.get('researched', False)]
+            technologies = [tech for tech in technologies if tech.researched]
+        
+        if only_available:
+            technologies = [tech for tech in technologies if tech.can_research]
         
         return technologies
 
@@ -580,7 +612,7 @@ def configure(
             # If it's a dict (keyed by name), convert to list of values
             recipes_data = list(recipes_data.values())
         recipes = Recipes(recipes_data)
-        print(f"DEBUG: Loaded {len(recipes.recipes)} recipes into registry.")
+        print(f"DEBUG: Loaded {len(recipes)} recipes into registry.")
     except Exception as e:
         print(f"Warning: Could not pre-fetch recipes: {e}")
         try:
@@ -590,10 +622,27 @@ def configure(
             pass
         recipes = Recipes({})
 
-    # 2. Create and store factory instance
+    # 2. Fetch technologies
+    cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_technologies')))"
+    try:
+        res = rcon_client.send_command(cmd)
+        techs_res = json.loads(res)
+        if isinstance(techs_res, dict):
+            techs_data = techs_res.get('technologies', [])
+        else:
+            techs_data = techs_res
+        tech_tree = TechTree.from_rcon_data(techs_data)
+        print(f"DEBUG: Loaded {len(tech_tree.technologies)} technologies into tech_tree.")
+    except Exception as e:
+        print(f"Warning: Could not pre-fetch technologies: {e}")
+        tech_tree = TechTree()
+
+    # 3. Create and store factory instance
     # Note: RCON client is stored inside the factory but marked private
     # If agent_udp_port is provided, agent will listen directly on that port (decoupled from snapshot port)
-    _configured_factory = PlayingFactory(rcon_client, agent_id, recipes, agent_udp_port=agent_udp_port)
+    _configured_factory = PlayingFactory(
+        rcon_client, agent_id, recipes, tech_tree, agent_udp_port=agent_udp_port
+    )
     
     # 3. Auto-load snapshots if snapshot_dir or db_path provided
     # Note: Uses sync version here since configure() is not async

@@ -14,7 +14,8 @@ import sys
 import asyncio
 
 from factorio_rcon import RCONClient
-from FactoryVerse.dsl.agent import PlayingFactory, _playing_factory
+from FactoryVerse.dsl.agent import PlayingFactory
+from FactoryVerse.dsl.types import _playing_factory
 from FactoryVerse.dsl.recipe.base import Recipes
 
 
@@ -87,7 +88,7 @@ def configure(
     # 2. Create and store factory instance
     # Note: RCON client is stored inside the factory but marked private
     # If agent_udp_port is provided, agent will listen directly on that port (decoupled from snapshot port)
-    _configured_factory = PlayingFactory(rcon_client, agent_id, recipes, agent_udp_port=agent_udp_port)
+    _configured_factory = PlayingFactory(rcon_client, agent_id, recipes, agent_udp_port=agent_udp_port, tech_tree=tech_tree)
     
     # 3. Auto-load snapshots if snapshot_dir or db_path provided
     # Note: Uses sync version here since configure() is not async
