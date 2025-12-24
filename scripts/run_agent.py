@@ -1,5 +1,6 @@
 """Main entry point for running FactoryVerse agents."""
 import os
+import sys
 import asyncio
 import argparse
 import logging
@@ -13,9 +14,21 @@ from FactoryVerse.llm.agent_orchestrator import FactorioAgentOrchestrator
 from FactoryVerse.llm.session_manager import SessionManager
 from FactoryVerse.llm.initial_state_generator import InitialStateGenerator
 from FactoryVerse.llm.console_output import ConsoleOutput
+from FactoryVerse.utils.rcon_utils import validate_rcon_connection
 
 # Configure logging - will be reconfigured per session
 logger = logging.getLogger(__name__)
+
+# Global interrupt tracking
+interrupt_count = 0
+should_stop = False
+
+
+def get_rcon_config() -> tuple[str, int, str]:
+    """Load RCON configuration from environment."""
+    from FactoryVerse.config import FactoryVerseConfig
+    config = FactoryVerseConfig()
+    return config.rcon_host, config.rcon_port, config.rcon_pwd
 
 
 def list_available_models() -> list[str]:
@@ -35,44 +48,86 @@ def list_available_models() -> list[str]:
 
 async def run_assisted(agent: FactorioAgentOrchestrator):
     """Run agent in assisted mode (interactive)."""
+    global interrupt_count, should_stop
+    
     print("\n🤖 Agent Online. Type 'exit' to quit.")
     print("📊 Statistics available with 'stats' command.\n")
     
     try:
         while True:
-            user_input = input("\nUser > ")
-            
-            if user_input.lower() in ['exit', 'quit']:
-                break
-            
-            if user_input.lower() == 'stats':
-                stats = agent.get_statistics()
-                print(f"\n📊 Statistics:")
-                print(f"  Total actions: {stats['total_actions']}")
-                print(f"  Successful: {stats['success_count']}")
-                print(f"  Failed: {stats['failure_count']}")
-                if stats['total_actions'] > 0:
-                    print(f"  Success rate: {stats['success_count'] / stats['total_actions']:.1%}")
-                continue
-            
-            # Run agent turn
-            response = await agent.run_turn(user_input)
-            
-            print(f"\n✅ Turn {agent.turn_number - 1} complete")
-            print(f"   Agent: {response}")
+            try:
+                user_input = input("\nUser > ")
+                
+                if user_input.lower() in ['exit', 'quit']:
+                    break
+                
+                if user_input.lower() == 'stats':
+                    stats = agent.get_statistics()
+                    print(f"\n📊 Statistics:")
+                    print(f"  Total actions: {stats['total_actions']}")
+                    print(f"  Successful: {stats['success_count']}")
+                    print(f"  Failed: {stats['failure_count']}")
+                    if stats['total_actions'] > 0:
+                        print(f"  Success rate: {stats['success_count'] / stats['total_actions']:.1%}")
+                    continue
+                
+                # Run agent turn
+                response = await agent.run_turn(user_input)
+                
+                print(f"\n✅ Turn {agent.turn_number - 1} complete")
+                print(f"   Agent: {response}")
+                
+            except KeyboardInterrupt:
+                interrupt_count += 1
+                if interrupt_count == 1:
+                    print("\n\n⚠️  Interrupt received. Press Ctrl+C again to exit, or continue interacting.")
+                    should_stop = True
+                    continue
+                else:
+                    print("\n\n👋 Exiting...")
+                    break
     
-    except KeyboardInterrupt:
-        print("\n\n👋 Interrupted by user")
+    except Exception as e:
+        logger.exception("Error in assisted mode")
+        raise
 
 
 async def run_autonomous(agent: FactorioAgentOrchestrator, max_turns: int):
     """Run agent in autonomous mode (self-directed)."""
-    print(f"\n🤖 Agent running autonomously for up to {max_turns} turns...")
-    print("Press Ctrl+C to stop.\n")
+    global interrupt_count, should_stop
     
-    # TODO: Implement autonomous mode
-    # For now, just placeholder
-    print("⚠️  Autonomous mode not yet implemented")
+    print(f"\n🤖 Agent running autonomously for up to {max_turns} turns...")
+    print("Press Ctrl+C once to pause, twice to exit.\n")
+    
+    try:
+        for turn in range(max_turns):
+            if should_stop:
+                print("\n⏸️  Paused. Press Ctrl+C again to exit.")
+                try:
+                    # Wait for second interrupt or user input
+                    await asyncio.sleep(1000000)  # Long sleep, interrupted by Ctrl+C
+                except KeyboardInterrupt:
+                    print("\n👋 Exiting...")
+                    break
+            
+            try:
+                # TODO: Implement autonomous turn logic
+                print(f"Turn {turn + 1}/{max_turns}")
+                await asyncio.sleep(1)  # Placeholder
+                
+            except KeyboardInterrupt:
+                interrupt_count += 1
+                if interrupt_count == 1:
+                    print("\n\n⚠️  Interrupt received. Pausing...")
+                    should_stop = True
+                    continue
+                else:
+                    print("\n\n👋 Exiting...")
+                    break
+    
+    except Exception as e:
+        logger.exception("Error in autonomous mode")
+        raise
 
 
 async def main():
@@ -107,9 +162,28 @@ Examples:
     
     load_dotenv()
     
+    # Validate RCON connection first, before doing anything else
+    # Skip validation only for --list-sessions (doesn't need Factorio)
+    if not args.list_sessions:
+        print("\n🔍 Validating RCON connection...")
+        try:
+            host, port, password = get_rcon_config()
+            success, error = validate_rcon_connection(host, port, password)
+            
+            if not success:
+                print(f"\n❌ RCON connection failed: {error}")
+                print("\n💡 Make sure Factorio is running with RCON enabled.")
+                print(f"   Expected: {host}:{port}")
+                sys.exit(1)
+            
+            print(f"✅ RCON connection validated ({host}:{port})")
+        except Exception as e:
+            print(f"\n❌ Error validating RCON connection: {e}")
+            sys.exit(1)
+    
     # List models
     if args.list_models:
-        print("🔍 Fetching available models...")
+        print("\n🔍 Fetching available models...")
         try:
             models = list_available_models()
             print(f"\n✅ Available models ({len(models)}):")
@@ -163,9 +237,46 @@ Examples:
     session = session_mgr.create_session(model_name, mode)
     paths = session_mgr.get_session_paths(session)
     
+    # Set per-agent runtime config via environment variables
+    # These are read by the boilerplate to configure the agent
+    os.environ["FV_SESSION_DIR"] = str(paths['session_dir'])
+    os.environ["FV_AGENT_ID"] = "agent_1"  # For now, single agent
+    # FV_AGENT_UDP_PORT not set - will auto-allocate from default
+    
+    # Validate UDP port availability before starting
+    # This prevents runtime failures if port is already in use
+    from FactoryVerse.config import FactoryVerseConfig
+    from FactoryVerse.utils.port_utils import validate_udp_port, find_process_using_port
+    
+    config = FactoryVerseConfig()
+    udp_port = config.agent_udp_port_start  # Default port that will be used
+    
+    print(f"\n🔍 Validating UDP port {udp_port}...")
+    success, error = validate_udp_port(udp_port)
+    
+    if not success:
+        print(f"❌ UDP port validation failed: {error}")
+        
+        # Try to find what's using the port
+        process_info = find_process_using_port(udp_port)
+        if process_info:
+            print(f"\n💡 Port is being used by:")
+            print(f"   {process_info}")
+        
+        print(f"\n💡 To fix this:")
+        print(f"   1. Run cleanup utility: uv run python scripts/cleanup_jupyter_kernels.py --port {udp_port}")
+        print(f"   2. Or manually kill the process using the port")
+        print(f"   3. Or set a different port via FV_AGENT_UDP_PORT environment variable")
+        sys.exit(1)
+    
+    print(f"✅ UDP port {udp_port} is available")
+    
     print(f"\n🎮 Starting {mode} session")
+    print(f"🤖 Agent ID: agent_1")
     print(f"📁 Session: {paths['session_dir']}")
+    print(f"💾 Database: {paths['session_dir']}/map.duckdb")
     print(f"📓 Notebook: {paths['notebook']}")
+
     print(f"💬 Chat log: {paths['chat_log']}")
     
     # Configure logging for this session
@@ -214,25 +325,47 @@ Examples:
     
     llm = PrimeIntellectClient(api_key=api_key, model=model_name)
     
+    # Generate fresh system prompt from latest documentation
+    print("🔧 Generating system prompt from latest documentation...")
+    import subprocess
+    try:
+        # Generate documentation and assemble prompt version without examples
+        subprocess.run(["uv", "run", "python", "scripts/generate_llm_docs.py"], check=True, capture_output=True)
+        
+        system_prompt_path = "docs/system-prompt/factoryverse-system-prompt-v3-core.md"
+        print(f"✅ Generated fresh system prompt")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to generate system prompt: {e}")
+        if e.stderr:
+            print(f"   Error: {e.stderr.decode().strip()}")
+        print("Falling back to existing prompt if available...")
+        system_prompt_path = "docs/system-prompt/factoryverse-system-prompt-v3-core.md"
+    
     # Create orchestrator
-    print("🎯 Initializing Agent Orchestrator...")
+    print(f"🎯 Initializing Agent Orchestrator...")
+    print(f"📄 System prompt: {system_prompt_path}")
     console = ConsoleOutput(enabled=True)
     agent = FactorioAgentOrchestrator(
         llm_client=llm,
         runtime=runtime,
-        system_prompt_path="factoryverse-system-prompt.md",
+        system_prompt_path=system_prompt_path,
         chat_log_path=str(paths['chat_log']),
         console_output=console,
-        initial_state_path=str(paths['initial_state'])
+        initial_state_path=str(paths['initial_state']),
+        mode=mode
     )
 
     
     # Run
     try:
-        if mode == "assisted":
-            await run_assisted(agent)
-        else:
-            await run_autonomous(agent, args.max_turns or 100)
+        try:
+            if mode == "assisted":
+                await run_assisted(agent)
+            else:
+                await run_autonomous(agent, args.max_turns or 100)
+        except KeyboardInterrupt:
+            # Catch any remaining keyboard interrupts during initialization
+            print("\n\n⚠️  Interrupted during initialization")
     finally:
         # Save final metadata
         import datetime

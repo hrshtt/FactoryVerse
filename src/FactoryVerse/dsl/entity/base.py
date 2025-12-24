@@ -1,8 +1,11 @@
-# from __future__ import annotations
+from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition, BoundingBox, Direction, Position
+from FactoryVerse.dsl.types import (
+    MapPosition, BoundingBox, Direction, Position, AsyncActionResponse,
+    EntityInspectionData, ActionResult
+)
 from FactoryVerse.dsl.item.base import PlaceableItemName, ItemName, Item, ItemStack, PlaceableItem
 from FactoryVerse.dsl.mixins import (
     FactoryContextMixin,
@@ -29,6 +32,7 @@ from FactoryVerse.dsl.prototypes import (
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.dsl.recipe.base import BaseRecipe as Recipe
 
 # from FactoryVerse.dsl.agent import _playing_factory
 
@@ -183,38 +187,48 @@ class ReachableEntity(FactoryContextMixin, SpatialPropertiesMixin, PrototypeMixi
         else:
             return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}))"
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
-        """Return a representation of entity state.
+    def inspect(self, raw_data: bool = False) -> Union[str, EntityInspectionData]:
+        """Inspect current state of the object.
         
-        This is a read-only inspection that provides comprehensive information
-        about the entity's current volatile state (inventories, progress, status, etc.).
+        **For Agents**: This is your primary diagnostic tool. Use it to:
+        - Check if machines are working or idle
+        - See inventory contents (fuel, input, output)
+        - Monitor progress (crafting, mining, research)
+        - Diagnose problems (no-power, no-fuel, no-ingredients)
         
         Args:
-            raw_data: If False (default), returns a formatted string representation.
-                      If True, returns the raw dictionary data.
+            raw_data: If False (default), returns formatted string for reading.
+                     If True, returns raw dictionary for programmatic access.
         
         Returns:
-            If raw_data=False: Formatted string representation of entity state
-            If raw_data=True: Dictionary with entity inspection data including:
-                - entity_name (str): Entity prototype name
-                - entity_type (str): Entity type
-                - position (dict): Entity position {x, y}
-                - tick (int): Game tick when inspection was taken
-                - status (str, optional): Entity status (working, no-power, etc.)
-                - recipe (str, optional): Current recipe name (if applicable)
-                - crafting_progress (float, optional): Crafting progress 0.0-1.0
-                - mining_progress (float, optional): Mining progress 0.0-1.0
-                - burner (dict, optional): Burner state with heat, fuel, etc.
-                - productivity_bonus (float, optional): Productivity bonus
-                - energy (dict, optional): Energy state {current, capacity}
-                - inventories (dict, optional): Inventories by type {fuel, input, output, chest, burnt_result}
-                - held_item (dict, optional): Held item {name, count} (inserters only)
+            Formatted string or EntityInspectionData TypedDict
+        
+        **Formatted Output Includes**:
+        - Entity name and position
+        - Status (working, no-power, no-fuel, etc.)
+        - Progress (crafting, mining, burning)
+        - Inventories (fuel, input, output, chest)
+        - Energy state (for electric entities)
+        """
+        result = self._get_inspection_data()
+        if raw_data:
+            return result
+        return self._format_inspection(result)
+    
+    def _get_inspection_data(self) -> EntityInspectionData:
+        """Get raw inspection data from the game.
+        
+        Default implementation calls factory.inspect_entity().
+        Subclasses can override for custom inspection logic.
+        """
+        return self._factory.inspect_entity(self.name, self.position)
+    
+    def _format_inspection(self, data: EntityInspectionData, raw_data: bool = False) -> str:
+        """Format inspection data for agent readability.
         
         Note: Subclasses should override this method to provide entity-specific
         inspection details. This default implementation provides basic information.
         """
-        data = self._factory.inspect_entity(self.name, self.position)
-        
         if raw_data:
             return data
         
@@ -238,15 +252,28 @@ class ReachableEntity(FactoryContextMixin, SpatialPropertiesMixin, PrototypeMixi
 class GhostEntity(ReachableEntity):
     """A ghost entity."""
 
+    def __init__(
+        self,
+        name: str,
+        position: MapPosition,
+        direction: Optional[Direction] = None,
+        label: Optional[str] = None,
+        placed_tick: int = 0,
+        **kwargs
+    ):
+        super().__init__(name, position, direction, **kwargs)
+        self.label = label
+        self.placed_tick = placed_tick
+
     def remove(self) -> bool:
         """Remove the ghost entity."""
-        return self._factory.remove_ghost(self.name, self.position)
+        return self._factory.remove_ghost(self.name, self.position).get("success", False)
     
-    def build(self) -> bool:
+    def build(self) -> AsyncActionResponse:
         """Build the ghost entity."""
-        return self._factory.place_entity(self.name, self.position)
+        return self._factory.place_entity(self.name, self.position, ghost=False)
 
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, EntityInspectionData]:
         """Return a representation of ghost entity state.
         
         Args:
@@ -333,52 +360,6 @@ class Furnace(CrafterMixin, InspectableMixin, FuelableMixin, ReachableEntity):
 
 
 
-    def add_ingredients(self, item: Union[Item, ItemStack], count: Optional[int] = None):
-        """Add ingredients to the furnace's input inventory.
-        
-        Args:
-            item: Item or ItemStack to add
-            count: Count to add (required if Item, optional if ItemStack - uses stack count)
-        
-        Note: Currently accepts single Item or ItemStack. If agents frequently need to pass
-        lists from inventory.get_item_stacks(), consider adding List[Item] and List[ItemStack]
-        support (see CANDO comment above).
-        """
-        if isinstance(item, ItemStack):
-            item_name = item.name
-            input_count = count if count is not None else item.count
-        else:
-            item_name = item.name
-            if count is None:
-                raise ValueError("count is required when using Item (not ItemStack)")
-            input_count = count
-
-        return self._factory.put_inventory_item(
-            self.name, self.position, "input", item_name, input_count
-        )
-
-    def take_products(
-        self, item: Optional[Union[Item, ItemStack]] = None, count: Optional[int] = None
-    ):
-        """Get the products from the furnace's output inventory.
-        
-        Args:
-            item: Optional Item or ItemStack to take (if None, takes any item)
-            count: Count to take (required if Item, optional if ItemStack - uses stack count)
-        """
-        if item is None:
-            item_name = ""
-            take_count = count
-        elif isinstance(item, ItemStack):
-            item_name = item.name
-            take_count = count if count is not None else item.count
-        else:
-            item_name = item.name
-            take_count = count
-
-        return self._factory.take_inventory_item(
-            self.name, self.position, "output", item_name, take_count
-        )
 
     def _format_inspection(self, data: Dict[str, Any]) -> str:
         """Format furnace inspection data for agent readability."""
@@ -469,7 +450,7 @@ class Furnace(CrafterMixin, InspectableMixin, FuelableMixin, ReachableEntity):
 class ElectricPole(InspectableMixin, ReachableEntity):
     """An electric pole entity."""
 
-    def extend(self, direction: Direction, distance: Optional[float] = None):
+    def extend(self, direction: Direction, distance: Optional[float] = None) -> ActionResult:
         """Extend the electric pole to the given direction and distance.
         No distance = MAX possible for the entity"""
         raise NotImplementedError(
@@ -727,7 +708,7 @@ class TransportBelt(InspectableMixin, ReachableEntity):
 class Splitter(ReachableEntity):
     """A splitter entity."""
     
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, EntityInspectionData]:
         """Return a representation of splitter state.
         
         Args:
@@ -974,28 +955,6 @@ class BurnerMiningDrill(CrafterMixin, InspectableMixin, FuelableMixin, Reachable
         """Burner mining drills only accept chemical fuel."""
         return ['chemical']
 
-    def take_products(
-        self, item: Optional[Union[Item, ItemStack]] = None, count: Optional[int] = None
-    ):
-        """Get the products from the burner mining drill's output inventory.
-        
-        Args:
-            item: Optional Item or ItemStack to take (if None, takes any item)
-            count: Count to take (required if Item, optional if ItemStack - uses stack count)
-        """
-        if item is None:
-            item_name = ""
-            take_count = count
-        elif isinstance(item, ItemStack):
-            item_name = item.name
-            take_count = count if count is not None else item.count
-        else:
-            item_name = item.name
-            take_count = count
-
-        return self._factory.take_inventory_item(
-            self.name, self.position, "output", item_name, take_count
-        )
 
 
 class Pumpjack(InspectableMixin, ReachableEntity):

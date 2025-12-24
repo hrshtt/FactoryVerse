@@ -7,6 +7,9 @@ wheels/
 *.egg-info
 uv.lock
 *.zip
+.cursor/
+.agent/
+.claude/
 
 
 # Virtual environments
@@ -14,6 +17,9 @@ uv.lock
 
 # Data directory
 .fv
-
-# Factorio scenarios (not part of mod)
-src/factorio/scenarios/
+.DS_Store
+.fv-output/
+.ipynb_checkpoints
+.pytest_cache/
+.vscode/
+notebooks/

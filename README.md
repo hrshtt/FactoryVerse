@@ -200,7 +200,7 @@ with playing_factorio():
     # Entity operations
     furnace = reachable.get_entity("stone-furnace")
     furnace.add_fuel(coal_stack)
-    furnace.add_input_items(ore_stack)
+    furnace.add_ingredients(ore_stack)
     
     # Database queries
     result = map_db.connection.execute("SELECT * FROM resource_patch").fetchall()
@@ -208,7 +208,7 @@ with playing_factorio():
 
 **Entity Methods:**
 Each entity type has domain-specific methods reflecting its gameplay role:
-- `Furnace`: `add_fuel()`, `add_input_items()`, `take_output_items()`
+- `Furnace`: `add_fuel()`, `add_ingredients()`, `take_products()`
 - `AssemblingMachine`: `set_recipe()`, `get_recipe()`
 - `Inserter`: `get_pickup_position()`, `get_drop_position()`
 - `MiningDrill`: `output_position()`, `get_search_area()`, `place_adjacent()`

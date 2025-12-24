@@ -1,0 +1,228 @@
+# FactoryVerse Filtering Configuration
+# Single source of truth for all filtering across mod, DuckDB, DSL, and LLM
+
+version: "1.0"
+
+# ============================================================================
+# ENTITY FILTERS (for status tracking, DuckDB enums, DSL)
+# ============================================================================
+
+entities:
+  # Explicit inclusion list (if empty, use subgroup-based filtering)
+  include: []
+  
+  # Explicit exclusion list (always filter out, supports glob patterns)
+  exclude:
+    # Debug/editor entities
+    - "factorio-logo-*"
+    - "heat-interface"
+    - "infinity-*"
+    - "electric-energy-interface"
+    - "linked-*"
+    - "simple-entity-with-owner"
+    - "simple-entity-with-force"
+    - "bottomless-*"
+    
+    # Scenario/campaign entities (optional - users can remove these)
+    - "compilatron"
+    - "compilatron-chest"
+    
+  # Subgroup-based filtering (include all entities in these subgroups)
+  include_subgroups:
+    - "extraction-machine"        # burner-mining-drill, electric-mining-drill, pumpjack, offshore-pump
+    - "smelting-machine"           # stone-furnace, steel-furnace, electric-furnace
+    - "production-machine"         # assembling-machine-*, chemical-plant, oil-refinery, centrifuge
+    - "production-machine-fluid"   # pump, pipe, pipe-to-ground
+    - "inserter"                   # burner-inserter, inserter, long-handed-inserter, fast-inserter, bulk-inserter
+    - "belt"                       # transport-belt, underground-belt, splitter (all tiers)
+    - "energy"                     # boiler, steam-engine, solar-panel, accumulator, nuclear-reactor, heat-pipe, steam-turbine
+    - "energy-pipe-distribution"   # small-electric-pole, medium-electric-pole, big-electric-pole, substation
+    - "storage"                    # wooden-chest, iron-chest, steel-chest, crash-site chests
+    - "defensive-structure"        # wall, gate
+    - "module"                     # lab, beacon
+    - "other"                      # lane-splitter, radar
+    
+  # Subgroup-based exclusion (exclude all entities in these subgroups)
+  exclude_subgroups:
+    - "military"
+    - "combat"
+    - "turret"
+    - "capsule"
+    - "gun"
+    - "ammo"
+    - "armor"
+    - "equipment"
+    - "train-transport"
+    - "circuit-network"
+    - "logistic-network"
+    - "spidertron"
+    - "space-related"
+
+# ============================================================================
+# RECIPE FILTERS (for categorical references, DuckDB enums)
+# ============================================================================
+
+recipes:
+  # Explicit inclusion list (if empty, use category-based filtering)
+  include: []
+  
+  # Explicit exclusion list (always filter out, supports glob patterns)
+  exclude:
+    # Debug recipes
+    - "parameter-*"
+    
+    # Barrels (too many variants, not useful for agent)
+    - "*-barrel"
+    - "empty-*-barrel"
+    
+    # Military/combat
+    - "artillery-*"
+    - "atomic-*"
+    - "*-turret"
+    - "*-ammo"
+    - "*-grenade"
+    - "*-capsule"
+    - "*-shell"
+    - "tank"
+    - "car"
+    - "spidertron*"
+    - "combat-*"
+    - "defender-*"
+    - "distractor-*"
+    - "destroyer-*"
+    - "discharge-*"
+    - "poison-*"
+    - "slowdown-*"
+    - "cluster-*"
+    - "explosive-*"
+    - "uranium-rounds*"
+    - "piercing-*"
+    - "firearm-*"
+    - "shotgun*"
+    - "flamethrower*"
+    - "rocket-launcher"
+    - "land-mine"
+    
+    # Logistics/circuit network
+    - "*-combinator"
+    - "constant-combinator"
+    - "decider-combinator"
+    - "programmable-speaker"
+    - "power-switch"
+    - "*-wire"
+    - "logistic-*"
+    - "active-provider-*"
+    - "passive-provider-*"
+    - "storage-*"
+    - "buffer-*"
+    - "requester-*"
+    
+    # Train/rail
+    - "*-locomotive"
+    - "cargo-wagon"
+    - "fluid-wagon"
+    - "rail*"
+    - "train-stop"
+    
+    # Equipment/armor
+    - "*-armor"
+    - "*-equipment"
+    - "*-shield*"
+    - "night-vision*"
+    - "exoskeleton*"
+    - "personal-*"
+    - "fusion-reactor-equipment"
+    - "energy-shield*"
+    - "battery-*-equipment"
+    - "solar-panel-equipment"
+    - "belt-immunity-equipment"
+    
+    # Space/late game
+    - "satellite"
+    - "rocket-control-unit"
+    - "low-density-structure"
+    - "rocket-fuel"
+    - "rocket-part"
+    
+  # Category-based filtering (recipes use 'category' field, not 'subgroup')
+  # If include_categories is empty, include all categories except excluded ones
+  include_categories:
+    - "crafting"                   # Handcraftable recipes
+    - "smelting"                   # Furnace recipes
+    - "advanced-crafting"          # Advanced assembling machine recipes
+    - "crafting-with-fluid"        # Recipes requiring fluids
+    - "chemistry"                  # Chemical plant recipes
+    - "oil-processing"             # Oil refinery recipes
+    - "centrifuging"               # Centrifuge recipes
+    
+  exclude_categories:
+    - "rocket-building"            # Rocket silo (late game)
+
+# ============================================================================
+# ITEM FILTERS (for categorical references in initial state)
+# ============================================================================
+
+items:
+  # Explicit inclusion list (if empty, use subgroup-based filtering)
+  include: []
+  
+  # Explicit exclusion list (always filter out, supports glob patterns)
+  exclude:
+    # Debug items
+    - "parameter-*"
+    
+  # Subgroup-based filtering (same as recipes for consistency)
+  include_subgroups:
+    - "raw-resource"
+    - "raw-material"
+    - "intermediate-product"
+    - "science-pack"
+    - "extraction-machine"
+    - "production-machine"
+    - "smelting-machine"
+    - "inserter"
+    - "belt"
+    - "energy"
+    - "energy-pipe-distribution"
+    - "storage"
+    - "production-machine-fluid"
+    - "defensive-structure"
+    - "module"
+    - "fill-barrel"
+    - "empty-barrel"
+    
+  exclude_subgroups:
+    - "military"
+    - "combat"
+    - "turret"
+    - "train-transport"
+    - "circuit-network"
+    - "logistic-network"
+    - "equipment"
+    - "space-related"
+    - "parameters"
+    - "ammo-category"          # Artillery shells, etc.
+    - "gun"                    # Guns
+    - "capsule"                # Combat capsules
+
+# ============================================================================
+# RESOURCE ENTITIES (trees, rocks - for DuckDB enums)
+# ============================================================================
+
+resource_entities:
+  # Include all by default (trees, rocks are core gameplay)
+  include_all: true
+  
+  # Explicit exclusions (if any)
+  exclude: []
+
+# ============================================================================
+# RESOURCE TILES (ore patches - for DuckDB enums)
+# ============================================================================
+
+resource_tiles:
+  # Include all by default (ore patches are core gameplay)
+  include_all: true
+  
+  # Explicit exclusions (if any)
+  exclude: []

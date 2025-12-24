@@ -206,11 +206,11 @@ with playing_factorio():
     
     # Get technology and recipe information
     researched_techs = research.get_technologies(researched_only=True)
-    researched_names = [t['name'] for t in researched_techs]
+    researched_names = [t.name for t in researched_techs]
     
     # Get recipes - call without category to get all enabled recipes
     enabled_recipes_data = crafting.get_recipes(enabled_only=True)
-    enabled_recipe_names = [r['name'] for r in enabled_recipes_data]
+    enabled_recipe_names = [r.name for r in enabled_recipes_data]
     
     # Query DuckDB for comprehensive map data
     con = map_db.connection

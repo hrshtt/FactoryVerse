@@ -85,6 +85,22 @@ class ToolValidator:
                 )
             return self.validate_duckdb_query(arguments["query"])
         
+        elif tool_name == "respond":
+            if "message" not in arguments:
+                return ValidationResult(
+                    valid=False,
+                    parsed_arguments=None,
+                    error="Missing required argument 'message'",
+                    warnings=[]
+                )
+            # Respond tool is simple - just pass through
+            return ValidationResult(
+                valid=True,
+                parsed_arguments=arguments,
+                error=None,
+                warnings=[]
+            )
+        
         else:
             return ValidationResult(
                 valid=False,

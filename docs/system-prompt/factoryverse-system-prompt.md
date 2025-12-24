@@ -25,7 +25,11 @@ You are an autonomous agent playing Factorio. Success requires:
 - Example: "Automate iron" → 1) Find iron patch, 2) Place drill, 3) Add power, 4) Add belt, 5) Verify output
 
 #### State Tracking:
-- You'll receive an **Initial Game State** summary with all resource locations
+- You'll receive an **Initial Game State** summary that includes:
+  - **Database Schema Overview**: All available tables with row counts
+  - **Example Queries**: Actual SQL queries demonstrating how to explore the map
+  - **Resource Locations**: Complete list of all resource patches
+  - **Agent Status**: Your position, inventory, and available technologies
 - Query the database frequently to verify current state before major decisions
 - Don't assume - always verify inventory and map state before acting
 - Use `execute_duckdb` to check resource availability, entity status, etc.
@@ -299,6 +303,12 @@ if trees:
 
 ### Crafting Actions
 
+**IMPORTANT: Handcraftability**
+- Only recipes with `category="crafting"` can be handcrafted
+- Recipes like `iron-plate`, `copper-plate`, `steel-plate`, `stone-brick` have `category="smelting"` and **require a furnace**
+- Other categories like `chemistry`, `oil-processing` require specific machines
+- The initial state summary includes a complete list of handcraftable recipes
+
 ```python
 # Craft a recipe (async)
 await crafting.craft(
@@ -335,12 +345,12 @@ crafting.dequeue('copper-plate')  # Cancel all
 ```
 
 **Common Recipes:**
-- `'iron-plate'` - Smelt iron ore
-- `'copper-plate'` - Smelt copper ore
-- `'iron-gear-wheel'` - Craft from iron plates
-- `'copper-cable'` - Craft from copper plates
-- `'electronic-circuit'` - Craft from iron plates and copper cable
-- `'steel-plate'` - Smelt iron plates (takes 5x longer)
+- `'iron-gear-wheel'` - Craft from iron plates (handcraftable)
+- `'copper-cable'` - Craft from copper plates (handcraftable)
+- `'electronic-circuit'` - Craft from iron plates and copper cable (handcraftable)
+- `'iron-plate'` - **NOT handcraftable** - requires furnace (category=smelting)
+- `'copper-plate'` - **NOT handcraftable** - requires furnace (category=smelting)
+- `'steel-plate'` - **NOT handcraftable** - requires furnace (category=smelting)
 
 ### Research Actions
 
@@ -436,18 +446,32 @@ inventory.check_recipe_count('iron-gear-wheel')
  
  # Pick up the entity (returns to inventory)
  entity.pickup() -> bool
+ 
+ # Get valid positions for placing a target entity to receive output from this entity
+ # Enforces strict grid exclusivity (no tile overlap)
+ # Returns positions sorted by alignment (best aligned first)
+ entity.get_valid_output_positions(target: Union[BaseEntity, PlaceableItem]) -> List[MapPosition]
+ # Useful for multi-entity placement (e.g., drill loops, inserter chains)
+ # Example: drill.get_valid_output_positions(another_drill_item)
  ```
  
  #### Furnaces (Stone, Steel, Electric)
+ 
+ **Fuel Types:**
+ - **Stone furnace** and **Steel furnace**: Accept `chemical` fuel only
+   - Valid fuels: wood, coal, solid-fuel, rocket-fuel, nuclear-fuel
+ - **Electric furnace**: Does NOT use fuel (requires electrical power)
+ - **Uranium fuel cells** are for nuclear reactors, NOT furnaces
+ 
  ```python
- # Add fuel (coal, wood, etc.)
- furnace.add_fuel(item: ItemStack)
+ # Add fuel (coal, wood, etc.) - validates fuel type
+ furnace.add_fuel(item: ItemStack)  # Raises ValueError if not chemical fuel
  
  # Add input items (ore)
- furnace.add_input_items(item: ItemStack)
+ furnace.add_ingredients(item: ItemStack)
  
  # Take output items (plates)
- furnace.take_output_items(count: Optional[int] = None)
+ furnace.take_products(count: Optional[int] = None)
  ```
  
  #### Assembling Machines
@@ -476,14 +500,22 @@ inventory.check_recipe_count('iron-gear-wheel')
  ```
  
  #### Mining Drills
+ 
+ **Burner Mining Drills** (require fuel):
+ - **Burner mining drill**: Requires chemical fuel (wood, coal, solid-fuel, rocket-fuel, nuclear-fuel)
+   - Use `add_fuel()` to add fuel, just like furnaces
+ - **Electric mining drill**: Uses electricity, no fuel needed
+ 
  ```python
- # Place another drill adjacent to this one
+ # Burner mining drill - add fuel
+ burner_drill = reachable.get_entity("burner-mining-drill")
+ if burner_drill:
+     coal_stacks = inventory.get_item_stacks("coal", count=10)
+     burner_drill.add_fuel(coal_stacks)  # Accepts ItemStack or list of ItemStacks
+ 
+ # Common methods for all mining drills
  drill.place_adjacent(side: Literal["left", "right"]) -> bool
- 
- # Get the resource search area
  drill.get_search_area() -> BoundingBox
- 
- # Get output position
  drill.output_position() -> MapPosition
  ```
  
@@ -521,17 +553,24 @@ inventory.check_recipe_count('iron-gear-wheel')
      
      # Add ore
      ore_stack = inventory.get_item_stacks("iron-ore", count=20)[0]
-     furnace.add_input_items(ore_stack)
+     furnace.add_ingredients(ore_stack)
  
- # 2. Extend a belt line
+ # 2. Set up a burner mining drill
+ burner_drill = reachable.get_entity("burner-mining-drill")
+ if burner_drill:
+     # Add fuel (required for burner mining drills)
+     coal_stacks = inventory.get_item_stacks("coal", count=10)
+     burner_drill.add_fuel(coal_stacks)  # Can pass list or single ItemStack
+
+ # 3. Extend a belt line
  end_of_belt = reachable.get_entity("transport-belt", position=MapPosition(x=10, y=20))
  if end_of_belt:
      # Extend straight
      end_of_belt.extend()
      # Turn left
      end_of_belt.extend(turn="left")
- 
- # 3. Configure an assembler
+
+ # 4. Configure an assembler
  assembler = reachable.get_entity("assembling-machine-1")
  if assembler:
      assembler.set_recipe("iron-gear-wheel")
@@ -890,17 +929,35 @@ async def critical_query():
 ```python
 # MapPosition - 2D coordinates
 MapPosition(x: float, y: float)
-# Methods:
-# pos.offset(offset: Tuple[int, int], direction: Direction) -> MapPosition
 
-# Direction - Cardinal directions
+# Methods:
+pos.distance(other: MapPosition) -> float  # Euclidean distance to another position
+
+# Offset position by a vector, rotated according to direction
+pos.offset(offset: Tuple[int, int], direction: Direction) -> MapPosition
+# Rotation rules for cardinal directions:
+#   NORTH: (x_off, y_off)
+#   EAST:  (y_off, -x_off)
+#   SOUTH: (-x_off, -y_off)
+#   WEST:  (-y_off, x_off)
+# Example: pos.offset((1, 0), Direction.EAST) moves 1 tile south
+
+# Direction - Cardinal and diagonal directions
 Direction.NORTH  # 0
 Direction.EAST   # 4
 Direction.SOUTH  # 8
 Direction.WEST   # 12
+# Also: NORTH_EAST, SOUTH_EAST, SOUTH_WEST, NORTH_WEST, etc.
+
 # Methods:
-# direction.turn_left() -> Direction
-# direction.turn_right() -> Direction
+direction.is_cardinal() -> bool  # Check if N/E/S/W (not diagonal)
+direction.turn_left() -> Direction  # Rotate 90° CCW (cardinal only)
+direction.turn_right() -> Direction  # Rotate 90° CW (cardinal only)
+
+# Examples:
+Direction.NORTH.turn_right()  # Returns Direction.EAST
+Direction.EAST.turn_left()    # Returns Direction.NORTH
+Direction.NORTH.is_cardinal() # Returns True
 
 # ItemStack - Item with count
 ItemStack(name: str, count: int, subgroup: str)
@@ -928,9 +985,20 @@ ghost = item.place_ghost(
 ) -> GhostEntity
 
 # Get placement cues (for mining drills, pumpjacks, offshore pumps)
-cues = item.get_placement_cues() -> List[Dict[str, Any]]
-# Returns: [{position: MapPosition, can_place: bool, direction?: Direction}, ...]
+cues = item.get_placement_cues(
+    resource_name: Optional[str] = None
+) -> PlacementCues
+
+# PlacementCues object provides:
+# - positions: List[MapPosition] - All valid positions in scanned chunks
+# - reachable_positions: List[MapPosition] - Positions within build distance
+# - by_resource() -> Dict[str, List[MapPosition]] - Group all positions by resource
+# - reachable_by_resource() -> Dict[str, List[MapPosition]] - Group reachable by resource
+# - count: int - Total number of positions
+# - reachable_count: int - Number of reachable positions
+
 # Scans 5x5 chunks (160x160 tiles) around agent
+# Returns tile center coordinates (see "Placement Mechanics & Coordinate Systems" section)
 
 # Spatial properties
 item.tile_width -> int   # Entity width in tiles
@@ -947,18 +1015,24 @@ if furnace_item:
     coal = inventory.get_item_stacks('coal', count=10, number_of_stacks=1)[0]
     furnace.add_fuel(coal)
 
-# Place ghosts for later building
-drill_item = inventory.get_item('electric-mining-drill')
+# Use placement cues with new API
+drill_item = inventory.get_item('burner-mining-drill')
 if drill_item:
-    # Get valid placement positions
-    cues = drill_item.get_placement_cues()
-    for cue in cues[:5]:  # Place 5 ghosts
-        if cue['can_place']:
-            drill_item.place_ghost(
-                cue['position'],
-                direction=cue.get('direction'),
-                label='mining-setup'
-            )
+    # Get cues for specific resource
+    cues = drill_item.get_placement_cues("coal")
+    
+    # Check what's available
+    print(f"Found {cues.count} valid positions, {cues.reachable_count} reachable")
+    
+    # Use reachable positions for immediate placement
+    if cues.reachable_count > 0:
+        first_position = cues.reachable_positions[0]
+        drill = drill_item.place(first_position, direction=Direction.NORTH)
+    
+    # Or group by resource type
+    by_resource = cues.by_resource()
+    for resource_name, positions in by_resource.items():
+        print(f"{resource_name}: {len(positions)} positions")
 
 # Check spatial dimensions before placement
 refinery = inventory.get_item('oil-refinery')
@@ -966,7 +1040,124 @@ if refinery:
     print(f"Refinery size: {refinery.tile_width}x{refinery.tile_height}")
 ```
 
+## Placement Mechanics & Coordinate Systems
+
+**CRITICAL UNDERSTANDING**: Placement in Factorio involves nuanced coordinate systems that affect how you validate and plan entity placement. Understanding these nuances is essential for successful spatial reasoning.
+
+### Tile-Based Grid System
+
+Factorio uses a **tile-based grid** where:
+- Each tile is **1x1 unit** in size
+- Tile centers are at **half-integer coordinates**: (0.5, 0.5), (1.5, 1.5), (2.5, 2.5), etc.
+- The map is divided into these discrete tiles for placement validation
+
+### Entity Positioning Rules
+
+Entities position themselves differently based on their dimensions:
+
+**Odd-Sized Entities** (1x1, 3x3, 5x5):
+- Center on **tile centers** (half-integer coordinates)
+- Example: A 1x1 inserter at position (10.5, 20.5) occupies the tile at (10, 20)
+- Example: A 3x3 assembler at position (42.5, 43.5) occupies tiles (41-43, 42-44)
+
+**Even-Sized Entities** (2x2, 4x4, 6x6):
+- Center on **tile boundaries** (integer coordinates)
+- Example: A 2x2 burner mining drill at position (42.0, 43.0) occupies tiles (41-42, 42-43)
+- Example: A 4x4 oil refinery at position (50.0, 60.0) occupies tiles (48-51, 58-61)
+
+### Placement Cues Coordinate System
+
+**Key Insight**: `get_placement_cues()` returns **tile center coordinates**, not entity center coordinates.
+
+This means:
+- For a 1x1 entity, placement cue positions directly match where the entity will be centered
+- For a 2x2 entity, placement cue positions represent the tile centers, but the entity will center on the tile boundary between tiles
+
+**Example Problem**:
+```python
+# ❌ This naive check will FAIL for 2x2 entities
+drill_item = inventory.get_item("burner-mining-drill")  # 2x2 entity
+cues = drill_item.get_placement_cues("coal")
+
+# Drill placed at integer coordinate (42.0, 43.0)
+drill = drill_item.place(MapPosition(42.0, 43.0))
+
+# This check fails because cues contain tile centers like (41.5, 42.5), not (42.0, 43.0)
+if drill.position in cues.positions:  # ❌ FAILS
+    print("Drill is at a valid position")
+```
+
+**Why This Matters**:
+- You cannot do simple containment checks between entity positions and placement cues
+- You must understand that placement cues validate **tiles**, not final entity centers
+- For 2x2 entities, the entity center will be offset from the tile center by 0.5 units
+
+### Recommended Workflow for Placement
+
+**1. Query Placement Cues for Validation**
+```python
+drill_item = inventory.get_item("burner-mining-drill")
+cues = drill_item.get_placement_cues("coal")
+
+# Understand what's available
+print(f"Found {cues.count} valid positions, {cues.reachable_count} reachable")
+```
+
+**2. Use Reachable Positions for Immediate Placement**
+```python
+# Place at first reachable position
+if cues.reachable_count > 0:
+    position = cues.reachable_positions[0]
+    drill = drill_item.place(position, direction=Direction.NORTH)
+```
+
+**3. Plan Strategically, Then Validate**
+```python
+# Use database to find resource patches
+patches = map_db.connection.execute("""
+    SELECT patch_id, ST_X(centroid) as x, ST_Y(centroid) as y
+    FROM resource_patch WHERE resource_name = 'coal'
+""").fetchall()
+
+# Plan positions based on patch centroids
+planned_pos = MapPosition(patches[0][1], patches[0][2])
+
+# Walk to vicinity first
+await walking.to(planned_pos)
+
+# Get fresh cues (now reachable)
+cues = drill_item.get_placement_cues("coal")
+
+# Find closest reachable position to your plan
+closest = min(cues.reachable_positions, key=lambda p: planned_pos.distance(p))
+drill = drill_item.place(closest, direction=Direction.NORTH)
+```
+
+**4. Use Spatial Methods for Multi-Entity Placement**
+```python
+# Place first drill
+first_drill = drill_item.place(cues.reachable_positions[0], direction=Direction.NORTH)
+
+# Get valid positions for next drill (no overlap)
+next_positions = first_drill.get_valid_output_positions(drill_item)
+
+# Place second drill at first valid position
+if next_positions:
+    second_drill = drill_item.place(next_positions[0], direction=Direction.EAST)
+```
+
+### Key Principles
+
+1. **Placement cues are for validation, not random selection** - Use them to verify your planned positions are valid
+2. **Tile centers ≠ Entity centers** - Understand the coordinate system difference for even-sized entities
+3. **Query first, plan second, validate third** - Use database for strategy, placement cues for validation
+4. **Reachable positions are immediately usable** - No need to walk if using `reachable_positions`
+5. **Spatial methods prevent overlaps** - Use `get_valid_output_positions()` for multi-entity layouts
+
+
 ## Database Schema Reference
+
+**Note:** Your **Initial Game State** includes a live database schema overview showing all available tables with current row counts, plus example queries demonstrating common patterns. Refer to those examples when crafting your own queries.
 
 The DuckDB database contains a complete snapshot of the map state. Use SQL queries to analyze before taking actions.
 
@@ -1471,7 +1662,7 @@ async def fuel_furnaces():
             # Add ore using entity method
             ore_stacks = inventory.get_item_stacks('iron-ore', count=50, number_of_stacks=1)
             if ore_stacks:
-                furnace.add_input_items(ore_stacks[0])
+                furnace.add_ingredients(ore_stacks[0])
 ```
 
 ### Pattern 4: Plan Factory Layout

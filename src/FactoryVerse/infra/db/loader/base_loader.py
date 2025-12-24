@@ -37,7 +37,7 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
             for line in f:
                 if line.strip():
                     data = json.loads(line)
-                    entity_key = f"water:{data['x']},{data['y']}"
+                    entity_key = f"(water:{data['x']},{data['y']})"
                     water_data.append({
                         "entity_key": entity_key,
                         "type": "water-tile",
@@ -76,7 +76,7 @@ def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> N
             for line in f:
                 if line.strip():
                     data = json.loads(line)
-                    entity_key = f"{data['kind']}:{data['x']},{data['y']}"
+                    entity_key = f"({data['kind']}:{data['x']},{data['y']})"
                     resource_data.append({
                         "entity_key": entity_key,
                         "name": data["kind"],
@@ -124,7 +124,7 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, r
             for line in f:
                 if line.strip():
                     data = json.loads(line)
-                    entity_key = data.get("key") or f"{data['name']}:{data['position']['x']},{data['position']['y']}"
+                    entity_key = data.get("key") or f"({data['name']}:{data['position']['x']},{data['position']['y']})"
                     bbox = data.get("bounding_box", {})
                     
                     # Store bounding box coordinates for BOX_2D construction

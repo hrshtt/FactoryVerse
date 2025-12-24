@@ -1,10 +1,11 @@
 from __future__ import annotations
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition, _playing_factory
+from FactoryVerse.dsl.types import MapPosition, _playing_factory, ResourcePatchData, ProductData, EntityInspectionData
 import asyncio
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.dsl.item.base import ItemStack
 
 
 def _get_factory() -> "PlayingFactory":
@@ -57,6 +58,35 @@ class ResourceOrePatch:
             return self._resource_data_list[0].get("type", "resource")
         return "resource"
     
+    @property
+    def position(self) -> MapPosition:
+        """Get the average position of all resource tiles in the patch.
+        
+        Returns:
+            MapPosition with average x and y coordinates
+        """
+        if not self._resource_data_list:
+            return MapPosition(x=0, y=0)
+        
+        total_x = 0.0
+        total_y = 0.0
+        count = 0
+        
+        for data in self._resource_data_list:
+            pos_data = data.get("position", {})
+            x = pos_data.get("x", 0)
+            y = pos_data.get("y", 0)
+            total_x += x
+            total_y += y
+            count += 1
+        
+        if count == 0:
+            return MapPosition(x=0, y=0)
+        
+        avg_x = total_x / count
+        avg_y = total_y / count
+        return MapPosition(x=avg_x, y=avg_y)
+    
     def get_resource_tile(self, position: MapPosition) -> Optional["BaseResource"]:
         """Get a specific resource tile by position.
         
@@ -87,8 +117,51 @@ class ResourceOrePatch:
         data = self._resource_data_list[index]
         return _create_resource_from_data(data)
     
-    async def mine(self, max_count: Optional[int] = None, timeout: Optional[int] = None) -> List:
-        """Mine a resource tile from this patch (async/await).
+    def inspect(self, raw_data: bool = False) -> Union[str, ResourcePatchData]:
+        """Return a representation of the resource patch.
+        
+        Args:
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
+        
+        Returns:
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with patch data including:
+                - name (str): Resource name
+                - type (str): Resource type
+                - total_amount (int): Total amount across all tiles
+                - tile_count (int): Number of tiles in patch
+                - position (dict): Average position {x, y}
+                - tiles (list): List of tile data dicts
+        """
+        if raw_data:
+            return {
+                "name": self.name,
+                "type": self.resource_type,
+                "total_amount": self.total,
+                "tile_count": self.count,
+                "position": {"x": self.position.x, "y": self.position.y},
+                "tiles": self._resource_data_list
+            }
+        
+        # Format as readable string
+        lines = [
+            f"ResourceOrePatch(name='{self.name}', type='{self.resource_type}')",
+            f"  Total amount: {self.total}",
+            f"  Tile count: {self.count}",
+            f"  Average position: ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        # Show amount range if applicable
+        if self._resource_data_list:
+            amounts = [data.get("amount", 0) for data in self._resource_data_list if "amount" in data]
+            if amounts:
+                lines.append(f"  Amount range: {min(amounts)} - {max(amounts)} per tile")
+        
+        return "\n".join(lines)
+    
+    async def mine(self, max_count: Optional[int] = None, timeout: Optional[int] = None) -> List["ItemStack"]:
+        """Mine a resource tile from this patch.
         
         Mines the first tile in the patch without requiring position.
         
@@ -151,7 +224,7 @@ class BaseResource:
         self.resource_type = resource_type
         self._data = data
         self._amount = data.get("amount")
-        self._products = data.get("products", [])
+        self._products: List[ProductData] = data.get("products", [])
     
     @property
     def amount(self) -> Optional[int]:
@@ -159,8 +232,11 @@ class BaseResource:
         return self._amount
     
     @property
-    def products(self) -> List[Dict[str, Any]]:
-        """Get mineable products from this resource."""
+    def products(self) -> List[ProductData]:
+        """Get mineable products from this resource.
+        
+        **For Agents**: Check what items you will get from mining this resource.
+        """
         return self._products
     
     @property
@@ -168,8 +244,37 @@ class BaseResource:
         """Get the current playing factory context."""
         return _get_factory()
     
-    async def mine(self, max_count: Optional[int] = None, timeout: Optional[int] = None) -> List:
-        """Mine this resource (async/await).
+    def inspect(self, raw_data: bool = False) -> Union[str, EntityInspectionData]:
+        """Return a representation of the resource.
+        
+        Args:
+            raw_data: If False (default), returns a formatted string representation.
+                      If True, returns the raw dictionary data.
+        
+        Returns:
+            If raw_data=False: Formatted string representation
+            If raw_data=True: Dictionary with resource data
+        """
+        if raw_data:
+            return self._data
+        
+        # Format as readable string
+        lines = [
+            f"{self.__class__.__name__}(name='{self.name}', type='{self.resource_type}')",
+            f"  Position: ({self.position.x:.1f}, {self.position.y:.1f})"
+        ]
+        
+        if self._amount is not None:
+            lines.append(f"  Amount: {self._amount}")
+        
+        if self._products:
+            products_str = ", ".join([p.get("name", "unknown") for p in self._products])
+            lines.append(f"  Products: {products_str}")
+        
+        return "\n".join(lines)
+    
+    async def mine(self, max_count: Optional[int] = None, timeout: Optional[int] = None) -> List["ItemStack"]:
+        """Mine this resource.
         
         Args:
             max_count: Max items to mine (None = mine up to 25, max 25)
@@ -283,60 +388,60 @@ def _create_resource_from_data(data: Dict[str, Any]) -> BaseResource:
 
 
 def create_resource_from_reachable(data: Dict[str, Any]):
-    """Create resource with full ReachableResource interface.
+    """Create resource with full interface from reachable data.
     
-    Returns a resource that satisfies the ReachableResource protocol:
+    Returns a resource instance with full capabilities:
     - Has spatial properties (position, amount)
     - Can be mined
+    - Can be inspected
     
     Args:
         data: Resource data dict from get_reachable()
     
     Returns:
-        Resource instance satisfying ReachableResource protocol
+        Resource instance (BaseResource subclass or ResourceOrePatch)
     
     Example:
         >>> ore = create_resource_from_reachable(data)
-        >>> isinstance(ore, ReachableResource)  # True
-        >>> await ore.mine(max_count=50)  # Works
+        >>> type(ore)
+        <class 'IronOre'>
+        >>> await ore.mine(max_count=50)  # ✓ Works
+        >>> ore.inspect()  # ✓ Works
     """
-    from FactoryVerse.dsl.resource.protocols import ReachableResource
-    
+    # Create and return resource directly - has full interface
     resource = _create_resource_from_data(data)
-    # Resource has mine() method - satisfies ReachableResource protocol
     return resource
 
 
 def create_resource_from_db(data: Dict[str, Any]):
-    """Create resource with read-only RemoteViewResource interface.
+    """Create resource with read-only RemoteViewResource interface from DB data.
     
-    Returns a resource that satisfies the RemoteViewResource protocol:
-    - Has spatial properties (position, amount)
+    Returns a wrapped resource that provides read-only access:
+    - Has all spatial properties and prototype data
+    - Can be inspected
     - Does NOT have mine() method
     
-    This is achieved by dynamically removing the mine() method.
+    This is achieved by wrapping the resource in RemoteViewResource.
     
     Args:
         data: Resource data dict from DuckDB query
     
     Returns:
-        Resource instance satisfying RemoteViewResource protocol
+        RemoteViewResource wrapper instance
     
     Example:
         >>> db_ore = create_resource_from_db(data)
-        >>> isinstance(db_ore, RemoteViewResource)  # True
-        >>> db_ore.position  # Works
-        >>> db_ore.amount  # Works
-        >>> await db_ore.mine()  # AttributeError - no mine() method
+        >>> type(db_ore)
+        <class 'RemoteViewResource'>
+        >>> db_ore.position  # ✓ Works
+        >>> db_ore.amount  # ✓ Works
+        >>> db_ore.inspect()  # ✓ Works
+        >>> await db_ore.mine()  # ✗ AttributeError - no mine() method
     """
-    from FactoryVerse.dsl.resource.protocols import RemoteViewResource
+    from FactoryVerse.dsl.resource.remote_view_resource import RemoteViewResource
     
-    # Create resource with full interface
+    # Create the resource with full interface
     resource = _create_resource_from_data(data)
     
-    # Remove mine() method to satisfy RemoteViewResource protocol
-    if hasattr(resource, 'mine') and callable(getattr(resource, 'mine', None)):
-        setattr(resource, 'mine', None)
-    
-    # Resource now satisfies RemoteViewResource protocol
-    return resource
+    # Wrap in RemoteViewResource for read-only access
+    return RemoteViewResource(resource)

@@ -11,7 +11,13 @@ from typing import Any, Dict, Optional, Union, List, Literal, TYPE_CHECKING, Cal
 
 logger = logging.getLogger(__name__)
 
-from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.dsl.types import (
+    MapPosition, Direction, _playing_factory, 
+    AsyncActionResponse, CraftingStatus, ResearchStatus, ResearchQueueItem,
+    EntityInspectionData, ActionResult, AgentInspectionData,
+    MineAsyncResponse, CraftAsyncResponse, WalkAsyncResponse,
+    ReachableSnapshotData, PlacementCuesResponse,
+)
 from FactoryVerse.dsl.item.base import ItemStack
 from FactoryVerse.dsl.recipe.base import Recipes, BaseRecipe, BasicRecipeName
 from FactoryVerse.dsl.technology.base import TechTree
@@ -25,11 +31,9 @@ from FactoryVerse.infra.game_data_sync import GameDataSyncService
 
 if TYPE_CHECKING:
     import duckdb
-
-if TYPE_CHECKING:
     from FactoryVerse.dsl.item.base import Item, PlaceableItem
     from FactoryVerse.dsl.entity.base import ReachableEntity
-    import duckdb
+    from FactoryVerse.dsl.entity.remote_view_entity import RemoteViewEntity
 
 
 # Import _playing_factory from types to break circular dependencies
@@ -305,16 +309,13 @@ class AgentInventory:
         
         Equivalent to the old get_inventory_items() top-level function.
         """
-        result = self._factory.get_inventory_items()
-        inventory_data = json.loads(result)
+        inventory_data = self._factory.get_inventory_items()
         
+        # get_inventory_items now returns Dict[str, int] mapping item names to counts
         items = []
-        for stack_obj in inventory_data:
+        for item_name, count in inventory_data.items():
             # Default subgroup - could be enhanced to lookup from prototypes
-            item_name = stack_obj.get("name")
-            count = stack_obj.get("count")
-            subgroup = stack_obj.get("subgroup", "raw-material")
-            items.append(ItemStack(name=item_name, count=count, subgroup=subgroup))
+            items.append(ItemStack(name=item_name, count=count, subgroup="raw-material"))
         
         return items
 
@@ -841,6 +842,21 @@ class _DuckDBAccessor:
         
         return entities
     
+    async def sync(self, timeout: float = 5.0) -> None:
+        """Explicitly sync the database before queries.
+        
+        Call this before critical queries that require up-to-date data:
+            await map_db.sync()
+            entities = map_db.get_entities(...)
+        
+        Args:
+            timeout: Maximum time to wait for sync (seconds)
+        """
+        from FactoryVerse.dsl.types import _playing_factory
+        factory = _playing_factory.get()
+        if factory and factory._game_data_sync and factory._game_data_sync.is_running:
+            await factory._game_data_sync.ensure_synced(timeout=timeout)
+    
     def _validate_query(self, query: str) -> None:
         """Validate that query is safe and read-only.
         
@@ -899,8 +915,8 @@ class WalkingAction:
         strict_goal: bool = False,
         options: Optional[Dict] = None,
         timeout: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """Walk to a position (async/await).
+    ) -> ActionResult:
+        """Walk to a position.
         
         Args:
             position: Target position
@@ -931,7 +947,7 @@ class MiningAction:
         max_count: Optional[int] = None,
         timeout: Optional[int] = None
     ) -> List[ItemStack]:
-        """Mine a resource (async/await).
+        """Mine a resource.
         
         Args:
             resource_name: Resource prototype name
@@ -975,7 +991,7 @@ class CraftingAction:
         count: int = 1,
         timeout: Optional[int] = None
     ) -> List[ItemStack]:
-        """Craft a recipe (async/await).
+        """Craft a recipe.
         
         Args:
             recipe: Recipe name to craft
@@ -1024,8 +1040,7 @@ class CraftingAction:
         Returns:
             Crafting state dict with active, recipe, action_id
         """
-        result = self._factory.inspect(attach_state=True)
-        state = json.loads(result)
+        state = self._factory.inspect(attach_state=True)
         return state.get("state", {}).get("crafting", {})
 
 
@@ -1043,29 +1058,47 @@ class ResearchAction:
         """
         return self._factory.enqueue_research(technology)
     
-    def dequeue(self) -> str:
+    def dequeue(self) -> ActionResult:
         """Cancel current research."""
         return self._factory.cancel_current_research()
     
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> ResearchStatus:
         """Get current research status.
         
         Returns:
-            Research state dict
+            Research status dict
         """
-        result = self._factory.get_technologies(only_available=False)
-        techs_data = json.loads(result)
-        # Find currently researching tech
+        techs_data = self._factory.get_technologies(only_available=False)
+        
+        # Build research status
+        current_research = None
+        queue = []
+        
+        # Note: get_technologies doesn't give the full queue order, but 
+        # it gives the currently researching tech.
+        # For full queue, use get_queue()
         for tech in techs_data.get("technologies", []):
             if tech.get("researching", False):
-                return tech
-        return {}
+                current_research = tech.get("name")
+                queue.append(ResearchQueueItem(
+                    technology=tech.get("name"),
+                    progress=tech.get("progress", 0.0),
+                    level=tech.get("level", 1)
+                ))
+                break # Only one active
+        
+        return ResearchStatus(
+            queue=queue,
+            queue_length=len(queue),
+            current_research=current_research,
+            tick=techs_data.get("tick", 0)
+        )
     
-    def get_queue(self) -> Dict[str, Any]:
+    def get_queue(self) -> ResearchStatus:
         """Get current research queue with progress information.
         
         Returns:
-            Dict with queue, queue_length, current_research, and tick
+            ResearchStatus with queue, queue_length, current_research, and tick
         """
         return self._factory.get_research_queue()
 
@@ -1114,7 +1147,7 @@ class PlayingFactory:
         if not self._async_listener.running:
             await self._async_listener.start()
     
-    async def _await_action(self, response: Dict[str, Any], timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def _await_action(self, response: AsyncActionResponse, timeout: Optional[int] = None) -> Dict[str, Any]:
         """Wait for an async action to complete.
         
         Args:
@@ -1286,16 +1319,18 @@ class PlayingFactory:
         goal: Union[Dict[str, float], "MapPosition"],
         strict_goal: bool = False,
         options: Optional[Dict] = None,
-    ) -> Dict[str, Any]:
+    ) -> WalkAsyncResponse:
         """Walk the agent to a target position using pathfinding.
 
+        RCON Contract: RemoteInterface.lua walk_to
+        
         Args:
             goal: Target position {x, y} or MapPosition object
             strict_goal: If true, fail if exact position unreachable
             options: Additional pathfinding options
             
         Returns:
-            Response dict with queued status and action_id
+            WalkAsyncResponse with {queued, action_id}
         """
         if options is None:
             options = {}
@@ -1305,7 +1340,7 @@ class PlayingFactory:
         cmd = self._build_command("walk_to", goal, strict_goal, options)
         return self._execute_and_parse_json(cmd)
 
-    def stop_walking(self) -> Dict[str, Any]:
+    def stop_walking(self) -> AsyncActionResponse:
         """Immediately stop the agent's current walking action."""
         cmd = self._build_command("stop_walking")
         return self._execute_and_parse_json(cmd)
@@ -1314,20 +1349,22 @@ class PlayingFactory:
     # ASYNC: Mining
     # ========================================================================
 
-    def mine_resource(self, resource_name: str, max_count: Optional[int] = None) -> Dict[str, Any]:
+    def mine_resource(self, resource_name: str, max_count: Optional[int] = None) -> MineAsyncResponse:
         """Mine a resource within reach of the agent.
 
+        RCON Contract: RemoteInterface.lua mine_resource
+        
         Args:
             resource_name: Resource prototype name (e.g., 'iron-ore', 'coal', 'stone')
             max_count: Max items to mine (None = deplete resource)
             
         Returns:
-            Response dict with queued status and action_id
+            MineAsyncResponse with {queued, action_id, entity_name, entity_position}
         """
         cmd = self._build_command("mine_resource", resource_name, max_count)
         return self._execute_and_parse_json(cmd)
 
-    def stop_mining(self) -> Dict[str, Any]:
+    def stop_mining(self) -> AsyncActionResponse:
         """Immediately stop the agent's current mining action."""
         cmd = self._build_command("stop_mining")
         return self._execute_and_parse_json(cmd)
@@ -1336,15 +1373,17 @@ class PlayingFactory:
     # ASYNC: Crafting
     # ========================================================================
 
-    def craft_enqueue(self, recipe_name: str, count: int = 1) -> Dict[str, Any]:
+    def craft_enqueue(self, recipe_name: str, count: int = 1) -> CraftAsyncResponse:
         """Queue a recipe for hand-crafting.
 
+        RCON Contract: RemoteInterface.lua craft_enqueue
+        
         Args:
             recipe_name: Recipe name to craft
             count: Number of times to craft the recipe
             
         Returns:
-            Response dict with queued status and action_id
+            CraftAsyncResponse with {queued, action_id, recipe, count}
         """
         if not self.recipes[recipe_name].is_hand_craftable():
             raise ValueError(f"Recipe {recipe_name} is not hand-craftable")
@@ -1353,18 +1392,20 @@ class PlayingFactory:
         cmd = self._build_command("craft_enqueue", recipe_name, count)
         return self._execute_and_parse_json(cmd)
 
-    def craft_dequeue(self, recipe_name: str, count: Optional[int] = None) -> str:
+    def craft_dequeue(self, recipe_name: str, count: Optional[int] = None) -> ActionResult:
         """Cancel queued crafting for a recipe.
 
+        RCON Contract: RemoteInterface.lua craft_dequeue
+        
         Args:
             recipe_name: Recipe name to cancel
             count: Number to cancel (None = all)
+            
+        Returns:
+            ActionResult with {success, cancelled_count}
         """
-        if count is None:
-            cmd = self._build_command("craft_dequeue", recipe_name, None)
-            return self.execute(cmd)
         cmd = self._build_command("craft_dequeue", recipe_name, count)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     # ========================================================================
     # SYNC: Entity Operations
@@ -1375,18 +1416,23 @@ class PlayingFactory:
         entity_name: str,
         position: Optional[Union[Dict[str, float], "MapPosition"]] = None,
         recipe_name: Optional[str] = None,
-    ) -> str:
+    ) -> ActionResult:
         """Set the recipe for a machine (assembler, furnace, chemical plant).
 
+        RCON Contract: RemoteInterface.lua set_entity_recipe
+        
         Args:
             entity_name: Entity prototype name
             position: Entity position (None = nearest)
             recipe_name: Recipe to set (None = clear)
+            
+        Returns:
+            ActionResult with {success, entity_name, position, recipe}
         """
         cmd = self._build_command(
             "set_entity_recipe", entity_name, position, recipe_name
         )
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     def set_entity_filter(
         self,
@@ -1395,7 +1441,7 @@ class PlayingFactory:
         inventory_type: str = "input",
         filter_index: Optional[int] = None,
         filter_item: Optional[str] = None,
-    ) -> str:
+    ) -> ActionResult:
         """Set an inventory filter on an entity (inserter, container with filters).
 
         Args:
@@ -1413,7 +1459,7 @@ class PlayingFactory:
             filter_index,
             filter_item,
         )
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     def set_inventory_limit(
         self,
@@ -1421,7 +1467,7 @@ class PlayingFactory:
         position: Optional[Union[Dict[str, float], "MapPosition"]] = None,
         inventory_type: str = "chest",
         limit: Optional[int] = None,
-    ) -> str:
+    ) -> ActionResult:
         """Set the inventory bar limit on a container.
 
         Args:
@@ -1433,7 +1479,7 @@ class PlayingFactory:
         cmd = self._build_command(
             "set_inventory_limit", entity_name, position, inventory_type, limit
         )
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     def take_inventory_item(
         self,
@@ -1442,15 +1488,18 @@ class PlayingFactory:
         inventory_type: str = "chest",
         item_name: str = "",
         count: Optional[int] = None,
-    ) -> str:
+    ) -> List[ItemStack]:
         """Take items from an entity's inventory into the agent's inventory.
-
+        
         Args:
             entity_name: Entity prototype name
             position: Entity position (None = nearest)
             inventory_type: Inventory type to take from
             item_name: Item name to take
             count: Count to take (None = all available)
+            
+        Returns:
+            List of ItemStack objects representing the items actually taken
         """
         cmd = self._build_command(
             "take_inventory_item",
@@ -1460,7 +1509,8 @@ class PlayingFactory:
             item_name,
             count,
         )
-        return self.execute(cmd)
+        result = self._execute_and_parse_json(cmd)
+        return [ItemStack(name=result["name"], count=result["count"])]
 
     def put_inventory_item(
         self,
@@ -1469,15 +1519,18 @@ class PlayingFactory:
         inventory_type: str = "chest",
         item_name: str = "",
         count: int = 1,
-    ) -> str:
+    ) -> ActionResult:
         """Put items from the agent's inventory into an entity's inventory.
-
+        
         Args:
             entity_name: Entity prototype name
             position: Entity position (None = nearest)
             inventory_type: Inventory type to put into
             item_name: Item name to put
             count: Count to put
+            
+        Returns:
+            ActionResult TypedDict
         """
         cmd = self._build_command(
             "put_inventory_item",
@@ -1487,7 +1540,7 @@ class PlayingFactory:
             item_name,
             count,
         )
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     # ========================================================================
     # SYNC: Placement
@@ -1500,7 +1553,7 @@ class PlayingFactory:
         direction: Optional[Direction] = None,
         ghost=False,
         label: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> ActionResult:
         """Place an entity from the agent's inventory onto the map.
 
         Args:
@@ -1543,6 +1596,23 @@ class PlayingFactory:
         
         return result
 
+    def inspect_entity(
+        self,
+        name: str,
+        position: Optional[Union[Dict[str, float], "MapPosition"]] = None,
+    ) -> EntityInspectionData:
+        """Inspect an entity's state.
+
+        Args:
+            name: Entity prototype name
+            position: MapPosition to inspect (None = nearest)
+            
+        Returns:
+            EntityInspectionData TypedDict
+        """
+        cmd = self._build_command("inspect_entity", name, position)
+        return self._execute_and_parse_json(cmd)
+
     def pickup_entity(
         self,
         entity_name: str,
@@ -1562,15 +1632,11 @@ class PlayingFactory:
         cmd = self._build_command("pickup_entity", entity_name, position)
         result = self._execute_and_parse_json(cmd)
         
-        # Parse extracted_items into ItemStack objects
-        extracted_items = result.get("extracted_items", {})
-        item_stacks = []
-        for item_name, count in extracted_items.items():
-            item_stacks.append(ItemStack(name=item_name, count=count))
-        
-        return item_stacks
+        if result.get("success") and result.get("item_name"):
+            return [ItemStack(name=result["item_name"], count=result.get("count", 1))]
+        return []
 
-    def remove_ghost(self, entity_name: str, position: MapPosition) -> Dict[str, Any]:
+    def remove_ghost(self, entity_name: str, position: MapPosition) -> ActionResult:
         """Remove a ghost entity from the map.
 
         Args:
@@ -1599,38 +1665,50 @@ class PlayingFactory:
     # SYNC: Movement
     # ========================================================================
 
-    def teleport(self, position: Union[Dict[str, float], "MapPosition"]) -> str:
+    def teleport(self, position: Union[Dict[str, float], "MapPosition"]) -> ActionResult:
         """Instantly teleport the agent to a position.
 
+        RCON Contract: RemoteInterface.lua teleport
+        
         Args:
             position: Target position
+            
+        Returns:
+            ActionResult with {success, position}
         """
         cmd = self._build_command("teleport", position)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     # ========================================================================
     # QUERIES
     # ========================================================================
 
-    def inspect(self, attach_state: bool = False) -> str:
-        """Get current agent position.
+    def inspect(self, attach_state: bool = False) -> AgentInspectionData:
+        """Get current agent state and position.
 
+        RCON Contract: RemoteInterface.lua inspect
+        
         Args:
             attach_state: Include processed agent activity state (walking, mining, crafting)
+            
+        Returns:
+            AgentInspectionData with {agent_id, tick, position, state?}
         """
         cmd = self._build_command("inspect", attach_state)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
-    def inspect_entity(self, entity_name: str, position: MapPosition) -> Dict[str, Any]:
+    def inspect_entity(self, entity_name: str, position: MapPosition) -> EntityInspectionData:
         """Get comprehensive volatile state for a specific entity.
 
+        RCON Contract: RemoteInterface.lua inspect_entity
+        
         Args:
             entity_name: Entity prototype name
             position: Entity position
 
         Returns:
-            Dictionary with entity inspection data including status, recipe, progress,
-            inventories, energy, etc.
+            EntityInspectionData with status, recipe, progress, inventories, energy, held_item, etc.
+            Not all fields present for all entity types.
             
         Raises:
             RuntimeError: If the remote call fails or returns an error
@@ -1638,14 +1716,16 @@ class PlayingFactory:
         cmd = self._build_command("inspect_entity", entity_name, {"x": position.x, "y": position.y})
         return self._execute_and_parse_json(cmd)
 
-    def get_inventory_items(self) -> str:
+    def get_inventory_items(self) -> Dict[str, int]:
         """Get agent's main inventory contents.
 
+        RCON Contract: RemoteInterface.lua get_inventory_items
+        
         Returns:
-            JSON string with inventory contents {item_name: count, ...}
+            Dict mapping item names to counts: {"iron-ore": 50, "coal": 20, ...}
         """
         cmd = self._build_command("get_inventory_items")
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
     def get_position(self) -> MapPosition:
         """Get current agent position.
@@ -1657,15 +1737,18 @@ class PlayingFactory:
         result = self._execute_and_parse_json(cmd)
         return MapPosition(x=result["x"], y=result["y"])
 
-    def get_placement_cues(self, entity_name: str, resource_name: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+    def get_placement_cues(self, entity_name: str, resource_name: Optional[str] = None) -> PlacementCuesResponse:
         """Get placement information for an entity type.
 
+        RCON Contract: RemoteInterface.lua get_placement_cues
+        
         Args:
             entity_name: Entity prototype name
             resource_name: Optional resource name to filter by (e.g., "copper-ore", "iron-ore")
             
         Returns:
-            Dict with 'positions' (all valid) and 'reachable_positions' (within build distance)
+            PlacementCuesResponse with entity_name, collision_box, tile_width, tile_height,
+            positions (all valid), reachable_positions (within build distance)
         """
         cmd = self._build_command("get_placement_cues", entity_name)
         data = self._execute_and_parse_json(cmd)
@@ -1677,53 +1760,82 @@ class PlayingFactory:
         
         return data
 
-    def get_chunks_in_view(self) -> str:
-        """Get list of map chunks currently visible/charted by the agent."""
+    def get_chunks_in_view(self) -> Dict[str, Any]:
+        """Get list of map chunks currently visible/charted by the agent.
+        
+        RCON Contract: RemoteInterface.lua get_chunks_in_view
+        
+        Returns:
+            Dict with {chunks: [{x, y}, ...]}
+        """
         cmd = self._build_command("get_chunks_in_view")
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
-    def get_recipes(self, category: Optional[str] = None) -> str:
+    def get_recipes(self, category: Optional[str] = None) -> Dict[str, Any]:
         """Get available recipes for the agent's force.
 
+        RCON Contract: RemoteInterface.lua get_recipes
+        
         Args:
             category: Filter by category (None = all)
+            
+        Returns:
+            Dict with {recipes: [...]}
         """
         cmd = self._build_command("get_recipes", category)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
-    def get_technologies(self, only_available: bool = False) -> str:
+    def get_technologies(self, only_available: bool = False) -> Dict[str, Any]:
         """Get technologies for the agent's force.
 
+        RCON Contract: RemoteInterface.lua get_technologies
+        
         Args:
             only_available: Only show researchable techs
+            
+        Returns:
+            Dict with {technologies: [...]}
         """
         cmd = self._build_command("get_technologies", only_available)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
 
     # ========================================================================
     # RESEARCH
     # ========================================================================
 
-    def enqueue_research(self, technology_name: str) -> str:
+    def enqueue_research(self, technology_name: str) -> ActionResult:
         """Start researching a technology.
 
+        RCON Contract: RemoteInterface.lua enqueue_research
+        
         Args:
             technology_name: Technology to research
+            
+        Returns:
+            ActionResult with {success, technology}
         """
         cmd = self._build_command("enqueue_research", technology_name)
-        return self.execute(cmd)
+        return self._execute_and_parse_json(cmd)
 
-    def cancel_current_research(self) -> str:
-        """Cancel the currently active research."""
-        cmd = self._build_command("cancel_current_research")
-        return self.execute(cmd)
-    
-    def get_research_queue(self) -> Dict[str, Any]:
-        """Get current research queue with progress information.
+    def cancel_current_research(self) -> ActionResult:
+        """Cancel the currently active research.
+        
+        RCON Contract: RemoteInterface.lua cancel_current_research
         
         Returns:
-            Dict with queue, queue_length, current_research, and tick
+            ActionResult with {success}
+        """
+        cmd = self._build_command("cancel_current_research")
+        return self._execute_and_parse_json(cmd)
+    
+    def get_research_queue(self) -> ResearchStatus:
+        """Get current research queue with progress information.
+        
+        RCON Contract: RemoteInterface.lua get_research_queue
+        
+        Returns:
+            ResearchStatus with {queue, queue_length, current_research, tick}
         """
         cmd = self._build_command("get_research_queue")
         return self._execute_and_parse_json(cmd)
@@ -1806,19 +1918,22 @@ class PlayingFactory:
     # REACHABILITY
     # ========================================================================
 
-    def get_reachable(self, attach_ghosts: bool = True) -> Dict[str, Any]:
+    def get_reachable(self, attach_ghosts: bool = True) -> ReachableSnapshotData:
         """Get full reachable snapshot with complete entity data.
+        
+        RCON Contract: RemoteInterface.lua get_reachable
         
         Args:
             attach_ghosts: Whether to include ghosts in response (default: True)
             
         Returns:
-            Dict with entities, resources, ghosts (if attach_ghosts=True), agent_position, tick
+            ReachableSnapshotData with {entities, resources, ghosts?, agent_position, tick}
+            - entities: List of ReachableEntityData
+            - resources: List of ReachableResourceData  
+            - ghosts: List of ReachableGhostData (only if attach_ghosts=True)
         """
         cmd = self._build_command("get_reachable", attach_ghosts)
-        result = self._execute_and_parse_json(cmd)
-        
-        return result
+        return self._execute_and_parse_json(cmd)
     
     @property
     def ghosts(self) -> GhostManager:
@@ -2222,6 +2337,44 @@ def playing_factorio(rcon_client: "RconClient", agent_id: str, recipes: Optional
         recipes = Recipes(recipes_data.get("recipes", []))
     
     factory = PlayingFactory(rcon_client, agent_id, recipes, agent_udp_port=agent_udp_port)
+    
+    # Enable entity status tracking by setting the filter
+    try:
+        from FactoryVerse.prototype_data import get_prototype_manager
+        manager = get_prototype_manager()
+        entities = manager.get_filtered_entities()
+        if entities:
+            # We must use proper RCON serialization for the list
+            # But the method set_entity_filter takes a single entity? 
+            # WAIT. The remote interface is 'set_entity_filter' which takes a list.
+            # But PlayingFactory.set_entity_filter (line 1391) is for INVENTORY FILTERS.
+            # I need to call the remote interface "snapshot", "set_entity_filter".
+            # PlayingFactory doesn't seem to expose a direct method for global entity filter.
+            # I should add a specific method or call execute directly.
+            # Actually, line 907 in Entities.lua says: set_entity_filter = function(entity_list) ...
+            # This is under "snapshot" interface? No, it's M.register_remote_interface.
+            # I need to check where that is registered. 
+            # In control.lua?
+            # Let's assume I can call it via execute("remote.call('snapshot', 'set_entity_filter', ...)")
+            
+            # Better: PlayingFactory has _build_command.
+            # Let's insert a direct RCON call here.
+            import json
+            entities_json = json.dumps(entities)
+            # Use helpers.json_to_table or similar?
+            # Or just pass the list if the python client handles it? 
+            # The client sends strings.
+            # "remote.call('snapshot', 'set_entity_filter', " + json_to_lua_table(entities) + ")"
+            
+            # Actually, let's use the RCON client directly or add a helper in PlayingFactory.
+            # But I can't easily modify PlayingFactory class right now without potentially breaking things.
+            # Let's just do it directly here for now.
+            cmd = f"/c remote.call('snapshot', 'set_entity_filter', game.json_to_table('{entities_json}'))"
+            rcon_client.send_command(cmd)
+            # print(f"DEBUG: Set entity filter with {len(entities)} entities")
+    except Exception as e:
+        print(f"Warning: Failed to set entity filter: {e}")
+
     token = _playing_factory.set(factory)
     try:
         yield factory

@@ -2,8 +2,9 @@ from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 import json
 import math
 from pathlib import Path
-from FactoryVerse.dsl.types import MapPosition
-from FactoryVerse.dsl.item.base import ItemStack
+from FactoryVerse.dsl.types import MapPosition, AsyncActionResponse, GhostAreaFilter, ActionResult
+from FactoryVerse.dsl.item.base import ItemStack, PlaceableItemName
+from FactoryVerse.dsl.entity.base import GhostEntity
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.agent import PlayingFactory
@@ -25,7 +26,7 @@ class GhostManager:
             agent_id: Agent ID (e.g., "agent_1"). If provided, persistence is enabled.
         """
         self._factory = factory
-        self.__tracked_ghosts: Dict[str, Dict[str, Any]] = {}  # Key: f"{position.x},{position.y}:{entity_name}"
+        self.__tracked_ghosts: Dict[str, GhostEntity] = {}  # Key: f"{position.x},{position.y}:{entity_name}"
         
         # Persistence setup
         if agent_id:
@@ -39,7 +40,16 @@ class GhostManager:
         if self.filepath and self.filepath.exists():
             try:
                 with open(self.filepath, "r") as f:
-                    self.__tracked_ghosts = json.load(f)
+                    data = json.load(f)
+                    for key, ghost_data in data.items():
+                        pos = ghost_data.get("position", {})
+                        position = MapPosition(x=pos.get("x", 0), y=pos.get("y", 0))
+                        self.__tracked_ghosts[key] = GhostEntity(
+                            name=ghost_data.get("entity_name", ""),
+                            position=position,
+                            label=ghost_data.get("label"),
+                            placed_tick=ghost_data.get("placed_tick", 0)
+                        )
             except (json.JSONDecodeError, IOError) as e:
                 # Log error but don't crash, start with empty
                 print(f"Warning: Failed to load ghost file {self.filepath}: {e}")
@@ -49,30 +59,37 @@ class GhostManager:
         """Save tracked ghosts to disk."""
         if self.filepath:
             try:
-                # Ensure directory exists
-                self.filepath.parent.mkdir(parents=True, exist_ok=True)
-                # Atomic write pattern
+                # Prepare data for serialization
+                serialized = {}
+                for key, ghost in self.__tracked_ghosts.items():
+                    serialized[key] = {
+                        "position": {"x": ghost.position.x, "y": ghost.position.y},
+                        "entity_name": ghost.name,
+                        "label": ghost.label,
+                        "placed_tick": ghost.placed_tick
+                    }
+                
                 temp_path = self.filepath.with_suffix(".tmp")
                 with open(temp_path, "w") as f:
-                    json.dump(self.__tracked_ghosts, f, indent=2)
+                    json.dump(serialized, f, indent=2)
                 temp_path.replace(self.filepath)
             except IOError as e:
                 print(f"Warning: Failed to save ghost file {self.filepath}: {e}")
 
     @property
-    def _tracked_ghosts(self) -> Dict[str, Dict[str, Any]]:
+    def _tracked_ghosts(self) -> Dict[str, GhostEntity]:
         """Get tracked ghosts dictionary.
         
         Returns:
-            Dict mapping ghost_key -> {position, entity_name, placed_tick, label}
+            Dict mapping ghost_key -> GhostEntity
         """
         return self.__tracked_ghosts
     
-    def list_ghosts(self) -> List[Dict[str, Any]]:
+    def list_ghosts(self) -> List[GhostEntity]:
         """List all tracked ghosts.
         
         Returns:
-            List of ghost data dictionaries
+            List of GhostEntity objects
         """
         return list(self._tracked_ghosts.values())
     
@@ -83,17 +100,16 @@ class GhostManager:
             List of unique label strings (excluding None)
         """
         labels = set()
-        for ghost_data in self._tracked_ghosts.values():
-            label = ghost_data.get("label")
-            if label is not None:
-                labels.add(label)
+        for ghost in self._tracked_ghosts.values():
+            if ghost.label is not None:
+                labels.add(ghost.label)
         return sorted(list(labels))
     
     def get_ghosts(
         self,
-        area: Optional[Dict[str, Any]] = None,
+        area: Optional[GhostAreaFilter] = None,
         label: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> List[GhostEntity]:
         """Get ghosts filtered by area and/or label.
         
         Args:
@@ -103,25 +119,20 @@ class GhostManager:
             label: Optional label to filter by
         
         Returns:
-            List of ghost data dictionaries matching filters
+            List of GhostEntity objects matching filters
         """
         filtered = []
         
-        for ghost_data in self.__tracked_ghosts.values():
+        for ghost in self.__tracked_ghosts.values():
             # Filter by label
             if label is not None:
-                if ghost_data.get("label") != label:
+                if ghost.label != label:
                     continue
             
             # Filter by area
             if area is not None:
-                pos = ghost_data.get("position", {})
-                if isinstance(pos, dict):
-                    x = pos.get("x", 0)
-                    y = pos.get("y", 0)
-                else:
-                    x = getattr(pos, "x", 0)
-                    y = getattr(pos, "y", 0)
+                x = ghost.position.x
+                y = ghost.position.y
                 
                 # Check bounding box
                 if "min_x" in area and "min_y" in area and "max_x" in area and "max_y" in area:
@@ -139,11 +150,11 @@ class GhostManager:
                     if dx * dx + dy * dy > radius * radius:
                         continue
             
-            filtered.append(ghost_data)
+            filtered.append(ghost)
         
         return filtered
     
-    def can_build(self, agent_inventory: List[ItemStack]) -> Dict[str, Any]:
+    def can_build(self, agent_inventory: List[ItemStack]) -> ActionResult:
         """Check if agent can build all tracked ghosts based on inventory.
         
         Args:
@@ -174,20 +185,19 @@ class GhostManager:
         
         # Check what can be built
         missing_items: Dict[str, int] = {}
-        buildable_ghosts: List[Dict[str, Any]] = []
-        unbuildable_ghosts: List[Dict[str, Any]] = []
+        buildable_ghosts: List[GhostEntity] = []
+        unbuildable_ghosts: List[GhostEntity] = []
         
-        for ghost_data in self.__tracked_ghosts.values():
-            entity_name = ghost_data.get("entity_name", "")
-            available = inventory_dict.get(entity_name, 0)
+        for ghost in self.__tracked_ghosts.values():
+            available = inventory_dict.get(ghost.name, 0)
             
             if available > 0:
-                buildable_ghosts.append(ghost_data)
+                buildable_ghosts.append(ghost)
                 # Consume one item for this ghost
-                inventory_dict[entity_name] = available - 1
+                inventory_dict[ghost.name] = available - 1
             else:
-                unbuildable_ghosts.append(ghost_data)
-                missing_items[entity_name] = missing_items.get(entity_name, 0) + 1
+                unbuildable_ghosts.append(ghost)
+                missing_items[ghost.name] = missing_items.get(ghost.name, 0) + 1
         
         can_build_all = len(unbuildable_ghosts) == 0
         
@@ -203,7 +213,7 @@ class GhostManager:
     def add_ghost(
         self,
         position: Union[Dict[str, float], MapPosition],
-        entity_name: str,
+        entity_name: PlaceableItemName,
         label: Optional[str] = None,
         placed_tick: int = 0
     ) -> str:
@@ -225,50 +235,46 @@ class GhostManager:
             pos_dict = position
         
         ghost_key = f"{pos_dict['x']},{pos_dict['y']}:{entity_name}"
-        self.__tracked_ghosts[ghost_key] = {
-            "position": pos_dict,
-            "entity_name": entity_name,
-            "placed_tick": placed_tick,
-            "label": label,
-        }
+        self.__tracked_ghosts[ghost_key] = GhostEntity(
+            name=entity_name,
+            position=MapPosition(x=pos_dict['x'], y=pos_dict['y']),
+            label=label,
+            placed_tick=placed_tick
+        )
         self._save()
         return ghost_key
     
-    def remove_ghost(
-        self,
-        position: Union[Dict[str, float], MapPosition],
-        entity_name: str
-    ) -> bool:
+    def remove_ghost(self, position: Union[Dict[str, float], MapPosition], entity_name: str) -> ActionResult:
         """Remove a ghost from tracking.
         
         Args:
             position: Ghost position (dict with x,y or MapPosition)
-            entity_name: Entity name the ghost represents
-        
+            entity_name: Entity prototype name the ghost represents
+            
         Returns:
-            True if ghost was removed, False if not found
+            ActionResult dict
         """
         # Convert position to dict if needed
         if hasattr(position, 'x') and hasattr(position, 'y'):
             pos_dict = {"x": position.x, "y": position.y}
         else:
             pos_dict = position
-        
+            
         ghost_key = f"{pos_dict['x']},{pos_dict['y']}:{entity_name}"
         if ghost_key in self.__tracked_ghosts:
             del self.__tracked_ghosts[ghost_key]
             self._save()
-            return True
-        return False
+            return {"success": True}
+        return {"success": False, "reason": "Ghost not found in tracking"}
     
     async def build_ghosts(
         self,
         ghosts: Optional[List[str]] = None,
-        area: Optional[Dict[str, Any]] = None,
-        count: int = 64,
-        strict: bool = True,
+        area: Optional[GhostAreaFilter] = None,
+        count: int = 10,
+        strict: bool = False,
         label: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> ActionResult:
         """Build tracked ghost entities in bulk.
         
         This is an async method that walks to ghost locations and builds them.
@@ -286,8 +292,8 @@ class GhostManager:
                 - built_count: int (number of ghosts built)
                 - failed_count: int (number of ghosts that couldn't be built)
                 - total_processed: int (total ghosts processed)
-                - built_ghosts: List[Dict] (ghosts that were built)
-                - failed_ghosts: List[Dict] (ghosts that failed)
+                - built_ghosts: List[GhostEntity] (ghosts that were built)
+                - failed_ghosts: List[GhostEntity] (ghosts that failed)
         """
         # Step 1: Filter ghosts
         candidate_ghosts = []
@@ -305,21 +311,16 @@ class GhostManager:
         # Filter by label if provided
         if label is not None:
             candidate_ghosts = [
-                (key, data) for key, data in candidate_ghosts
-                if data.get("label") == label
+                (key, ghost) for key, ghost in candidate_ghosts
+                if ghost.label == label
             ]
         
         # Filter by area if provided
         if area is not None:
             filtered = []
-            for ghost_key, ghost_data in candidate_ghosts:
-                pos = ghost_data.get("position", {})
-                if isinstance(pos, dict):
-                    x = pos.get("x", 0)
-                    y = pos.get("y", 0)
-                else:
-                    x = getattr(pos, "x", 0)
-                    y = getattr(pos, "y", 0)
+            for ghost_key, ghost in candidate_ghosts:
+                x = ghost.position.x
+                y = ghost.position.y
                 
                 # Check bounding box
                 if "min_x" in area and "min_y" in area and "max_x" in area and "max_y" in area:
@@ -337,7 +338,7 @@ class GhostManager:
                     if dx * dx + dy * dy > radius * radius:
                         continue
                 
-                filtered.append((ghost_key, ghost_data))
+                filtered.append((ghost_key, ghost))
             candidate_ghosts = filtered
         
         # Step 2: Get agent position
@@ -345,19 +346,11 @@ class GhostManager:
         
         # Step 3: Calculate distances and sort
         ghost_distances = []
-        for ghost_key, ghost_data in candidate_ghosts:
-            pos = ghost_data.get("position", {})
-            if isinstance(pos, dict):
-                x = pos.get("x", 0)
-                y = pos.get("y", 0)
-            else:
-                x = getattr(pos, "x", 0)
-                y = getattr(pos, "y", 0)
-            
-            dx = x - agent_pos.x
-            dy = y - agent_pos.y
+        for ghost_key, ghost in candidate_ghosts:
+            dx = ghost.position.x - agent_pos.x
+            dy = ghost.position.y - agent_pos.y
             distance = math.sqrt(dx * dx + dy * dy)
-            ghost_distances.append((distance, ghost_key, ghost_data))
+            ghost_distances.append((distance, ghost_key, ghost))
         
         # Sort by distance
         ghost_distances.sort(key=lambda x: x[0])
@@ -370,8 +363,8 @@ class GhostManager:
             
             # Count required items
             required = {}
-            for _, ghost_key, ghost_data in ghost_distances[:count]:
-                entity_name = ghost_data.get("entity_name", "")
+            for _, ghost_key, ghost in ghost_distances[:count]:
+                entity_name = ghost.name
                 if entity_name:
                     required[entity_name] = required.get(entity_name, 0) + 1
             
@@ -397,41 +390,28 @@ class GhostManager:
         clusters = []
         used = set()
         
-        for distance, ghost_key, ghost_data in ghost_distances[:count]:
+        for distance, ghost_key, ghost in ghost_distances[:count]:
             if ghost_key in used:
                 continue
             
             # Start new cluster
-            cluster = [(ghost_key, ghost_data)]
+            cluster = [(ghost_key, ghost)]
             used.add(ghost_key)
             
             # Find nearby ghosts
-            pos = ghost_data.get("position", {})
-            if isinstance(pos, dict):
-                cluster_x = pos.get("x", 0)
-                cluster_y = pos.get("y", 0)
-            else:
-                cluster_x = getattr(pos, "x", 0)
-                cluster_y = getattr(pos, "y", 0)
+            cluster_x = ghost.position.x
+            cluster_y = ghost.position.y
             
-            for other_dist, other_key, other_data in ghost_distances[:count]:
+            for other_dist, other_key, other_ghost in ghost_distances[:count]:
                 if other_key in used:
                     continue
                 
-                other_pos = other_data.get("position", {})
-                if isinstance(other_pos, dict):
-                    other_x = other_pos.get("x", 0)
-                    other_y = other_pos.get("y", 0)
-                else:
-                    other_x = getattr(other_pos, "x", 0)
-                    other_y = getattr(other_pos, "y", 0)
-                
-                dx = other_x - cluster_x
-                dy = other_y - cluster_y
+                dx = other_ghost.position.x - cluster_x
+                dy = other_ghost.position.y - cluster_y
                 dist = math.sqrt(dx * dx + dy * dy)
                 
                 if dist <= REACH_DISTANCE * 2:  # Allow slightly larger clusters
-                    cluster.append((other_key, other_data))
+                    cluster.append((other_key, other_ghost))
                     used.add(other_key)
             
             clusters.append(cluster)
@@ -449,14 +429,9 @@ class GhostManager:
             # Calculate cluster center (average position)
             total_x = 0
             total_y = 0
-            for _, ghost_data in cluster:
-                pos = ghost_data.get("position", {})
-                if isinstance(pos, dict):
-                    total_x += pos.get("x", 0)
-                    total_y += pos.get("y", 0)
-                else:
-                    total_x += getattr(pos, "x", 0)
-                    total_y += getattr(pos, "y", 0)
+            for _, ghost in cluster:
+                total_x += ghost.position.x
+                total_y += ghost.position.y
             
             center_x = total_x / len(cluster)
             center_y = total_y / len(cluster)
@@ -481,48 +456,37 @@ class GhostManager:
                 reachable_positions[key] = ghost
             
             # Build ghosts in cluster
-            for ghost_key, ghost_data in cluster:
-                entity_name = ghost_data.get("entity_name", "")
-                pos = ghost_data.get("position", {})
-                
-                if isinstance(pos, dict):
-                    pos_key = f"{pos.get('x', 0)},{pos.get('y', 0)}"
-                    position = MapPosition(x=pos.get("x", 0), y=pos.get("y", 0))
-                else:
-                    pos_key = f"{getattr(pos, 'x', 0)},{getattr(pos, 'y', 0)}"
-                    position = MapPosition(x=getattr(pos, "x", 0), y=getattr(pos, "y", 0))
+            for ghost_key, ghost in cluster:
+                pos_key = f"{ghost.position.x},{ghost.position.y}"
+                position = ghost.position
                 
                 # Check if ghost is reachable
                 if pos_key not in reachable_positions:
-                    print(f"  Ghost {entity_name} at {pos_key} not reachable, skipping")
+                    print(f"  Ghost {ghost.name} at {pos_key} not reachable, skipping")
                     failed_count += 1
-                    failed_ghosts.append(ghost_data)
+                    failed_ghosts.append(ghost)
                     continue
                 
                 # Try to build
                 try:
-                    result = self._factory.place_entity(
-                        entity_name=entity_name,
-                        position=position,
-                        ghost=False
-                    )
+                    result = ghost.build()
                     
                     if result.get("success"):
                         built_count += 1
-                        built_ghosts.append(ghost_data)
-                        print(f"  ({built_count}/{total_to_build}) Built {entity_name} at {pos_key}")
+                        built_ghosts.append(ghost)
+                        print(f"  ({built_count}/{total_to_build}) Built {ghost.name} at {pos_key}")
                         
-                        # Remove from tracking (place_entity should do this, but be safe)
+                        # Remove from tracking
                         if ghost_key in self.__tracked_ghosts:
                             del self.__tracked_ghosts[ghost_key]
                     else:
                         failed_count += 1
-                        failed_ghosts.append(ghost_data)
-                        print(f"  Failed to build {entity_name} at {pos_key}: {result.get('error', 'Unknown error')}")
+                        failed_ghosts.append(ghost)
+                        print(f"  Failed to build {ghost.name} at {pos_key}: {result.get('error', 'Unknown error')}")
                 except Exception as e:
                     failed_count += 1
-                    failed_ghosts.append(ghost_data)
-                    print(f"  Error building {entity_name} at {pos_key}: {e}")
+                    failed_ghosts.append(ghost)
+                    print(f"  Error building {ghost.name} at {pos_key}: {e}")
         
         # Save updated tracking
         self._save()

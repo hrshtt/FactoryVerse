@@ -7,7 +7,7 @@ agents should use each method, not just WHAT it does.
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Optional, List, Tuple, Dict, Any, Union, Literal
-from FactoryVerse.dsl.types import MapPosition, Direction
+from FactoryVerse.dsl.types import MapPosition, EntityInspectionData, ActionResult, Direction
 from FactoryVerse.dsl.prototypes import BasePrototype
 
 if TYPE_CHECKING:
@@ -362,7 +362,7 @@ class InspectableMixin:
     name: str  # Required by subclasses
     position: MapPosition  # Required by subclasses
     
-    def inspect(self, raw_data: bool = False) -> Union[str, Dict[str, Any]]:
+    def inspect(self, raw_data: bool = False) -> Union[str, EntityInspectionData]:
         """Inspect current state of the object.
         
         **For Agents**: This is your primary diagnostic tool. Use it to:
@@ -470,64 +470,37 @@ class FuelableMixin:
     
     def add_fuel(
         self, 
-        item: Union["Item", "ItemStack", List["Item"], List["ItemStack"]], 
-        count: Optional[int] = None
-    ):
+        items: List["ItemStack"]
+    ) -> List[ActionResult]:
         """Add fuel to the entity with validation.
         
-        **For Agents**: This handles multiple input formats and validates fuel type.
-        If you try to add invalid fuel, you'll get a clear error message with valid options.
+        **For Agents**: This provides a standard interface for fueling burner entities.
+        It validates each item in the list and returns results for each stack.
         
         Args:
-            item: Item, ItemStack, or list of Items/ItemStacks to add as fuel
-            count: Count to add (required if Item, optional if ItemStack)
-                  Ignored if item is a list (uses each stack's count)
+            items: List of ItemStack objects to add as fuel
         
         Returns:
-            Result from factory.put_inventory_item() or list of results
+            List of results from factory.put_inventory_item()
         
         Raises:
-            ValueError: If item is not a valid fuel or wrong fuel category
-        
-        **Input Formats**:
-        1. Single Item: add_fuel(Item("coal"), count=10)
-        2. Single ItemStack: add_fuel(ItemStack("coal", 10))
-        3. List of ItemStacks: add_fuel([stack1, stack2, stack3])
-        
-        Example:
-            # Single stack
-            coal = inventory.get_item_stacks("coal", count=10)[0]
-            furnace.add_fuel(coal)
+            ValueError: If any item in the list is not a valid fuel or wrong fuel category
             
-            # Multiple stacks
+        Example:
             coal_stacks = inventory.get_item_stacks("coal", count=50, number_of_stacks=5)
             burner_drill.add_fuel(coal_stacks)
         """
-        # Handle lists (from inventory.get_item_stacks())
-        if isinstance(item, list):
-            results = []
-            for stack in item:
-                results.append(self.add_fuel(stack))
-            return results
-        
-        # Normalize to (item_name, fuel_count)
-        if hasattr(item, 'name') and hasattr(item, 'count'):  # ItemStack
-            item_name = item.name
-            fuel_count = count if count is not None else item.count
-        elif hasattr(item, 'name'):  # Item
-            item_name = item.name
-            if count is None:
-                raise ValueError("count is required when using Item (not ItemStack)")
-            fuel_count = count
-        else:
-            raise ValueError(f"item must be Item or ItemStack, got {type(item)}")
-        
-        # Validate fuel type
-        self._validate_fuel(item_name)
-        
-        return self._factory.put_inventory_item(
-            self.name, self.position, "fuel", item_name, fuel_count
-        )
+        results = []
+        for item in items:
+            # Validate fuel type
+            self._validate_fuel(item.name)
+            
+            results.append(
+                self._factory.put_inventory_item(
+                    self.name, self.position, "fuel", item.name, item.count
+                )
+            )
+        return results
     
     def _validate_fuel(self, item_name: str):
         """Validate that item is valid fuel for this entity.
@@ -588,7 +561,7 @@ class InventoryMixin:
         """
         pass
     
-    def store_items(self, items: List["ItemStack"]) -> List[Any]:
+    def store_items(self, items: List["ItemStack"]) -> List[ActionResult]:
         """Store items in the entity's inventory.
         
         **For Agents**: Use to move items from your inventory into a chest or machine.
@@ -612,7 +585,7 @@ class InventoryMixin:
             for item in items
         ]
     
-    def take_items(self, items: List["ItemStack"]) -> List[Any]:
+    def take_items(self, items: List["ItemStack"]) -> List["ItemStack"]:
         """Take items from the entity's inventory.
         
         **For Agents**: Use to move items from a chest or machine into your inventory.
@@ -621,20 +594,21 @@ class InventoryMixin:
             items: List of ItemStack objects to take
         
         Returns:
-            List of results from factory.take_inventory_item()
+            List of ItemStack objects successfully taken
         
         Example:
             take_stacks = [ItemStack("iron-plate", 50)]
             chest.take_items(take_stacks)
         """
-        return [
-            self._factory.take_inventory_item(
+        results = []
+        for item in items:
+            stacks = self._factory.take_inventory_item(
                 self.name, self.position, 
                 self._get_inventory_type(), 
                 item.name, item.count
             )
-            for item in items
-        ]
+            results.extend(stacks)
+        return results
 
 
 class CrafterMixin:
@@ -678,7 +652,7 @@ class CrafterMixin:
     name: str  # Required by subclasses
     position: MapPosition  # Required by subclasses
     
-    def add_ingredients(self, items: List["ItemStack"]) -> List[Any]:
+    def add_ingredients(self, items: List["ItemStack"]) -> List[ActionResult]:
         """Add ingredients to the entity's input buffer.
         
         **For Agents**: Use to feed materials into crafters.
@@ -713,7 +687,7 @@ class CrafterMixin:
             for item in items
         ]
     
-    def take_products(self, items: Optional[List["ItemStack"]] = None) -> List[Any]:
+    def take_products(self, items: Optional[List["ItemStack"]] = None) -> List["ItemStack"]:
         """Take products from the entity's output buffer.
         
         **For Agents**: Use to collect results from crafters.
@@ -725,7 +699,7 @@ class CrafterMixin:
             items: List of ItemStack objects to take. If None, takes all available.
         
         Returns:
-            List of results from factory.take_inventory_item()
+            List of ItemStack objects successfully taken
         
         Example:
             # Take plates from furnace
@@ -745,19 +719,22 @@ class CrafterMixin:
             # If no items specified, inspect and take everything
             data = self._factory.inspect_entity(self.name, self.position)
             output_inv = data.get('inventories', {}).get('output', {})
+            
+            from FactoryVerse.dsl.item.base import ItemStack
             items = [
                 ItemStack(item_name, count)
                 for item_name, count in output_inv.items()
             ]
         
-        return [
-            self._factory.take_inventory_item(
+        results = []
+        for item in items:
+            stacks = self._factory.take_inventory_item(
                 self.name, self.position,
                 "output",
                 item.name, item.count
             )
-            for item in items
-        ]
+            results.extend(stacks)
+        return results
 
 
 class OutputPositionMixin:

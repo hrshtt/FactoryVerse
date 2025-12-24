@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Any, Literal, Optional, get_args, Union, TYPE_CHECKING
 from FactoryVerse.dsl.mixins import FactoryContextMixin
+from FactoryVerse.dsl.types import ActionResult
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.agent import PlayingFactory
@@ -168,7 +169,7 @@ class BaseRecipe(FactoryContextMixin):
 class HandCraftableRecipe(BaseRecipe):
     """A recipe that can be crafted by the agent's own hands."""
     
-    async def craft(self, count: int = 1, timeout: Optional[int] = None):
+    async def craft(self, count: int = 1, timeout: Optional[int] = None) -> ActionResult:
         """Craft this recipe using the agent's hands.
         
         **For Agents**: Only works for category='crafting' recipes.

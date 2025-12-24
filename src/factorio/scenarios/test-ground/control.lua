@@ -204,11 +204,29 @@ local function place_entity(entity_name, position, direction, force)
         return {success = false, error = "No surface"}
     end
     
-    local entity = surface.create_entity{
+    -- CRITICAL: Check if entity can be placed (prevents overlaps)
+    local can_place = surface.can_place_entity{
         name = entity_name,
         position = position,
         direction = direction,
         force = force or "player"
+    }
+    
+    if not can_place then
+        return {
+            success = false, 
+            error = "Cannot place entity - collision or invalid position"
+        }
+    end
+    
+    game.print("DEBUG: place_entity called for " .. entity_name .. " with raise_built=true")
+
+    local entity = surface.create_entity{
+        name = entity_name,
+        position = position,
+        direction = direction,
+        force = force or "player",
+        raise_built = true  -- REQUIRED for fv_snapshot to detect this placement
     }
     
     if not entity then
@@ -221,7 +239,8 @@ local function place_entity(entity_name, position, direction, force)
         position = {x = entity.position.x, y = entity.position.y},
         entity_id = entity.unit_number,
         direction = direction,
-        force = force or "player"
+        force = force or "player",
+        raised_built = true -- Confirming code update
     }
     table.insert(TestState.entities, metadata)
     
@@ -237,8 +256,8 @@ end
 --- @param start_y number Starting Y position
 --- @param rows number Number of rows
 --- @param cols number Number of columns
---- @param spacing_x number Horizontal spacing
---- @param spacing_y number Vertical spacing
+--- @param spacing_x number horizontal spacing
+--- @param spacing_y number vertical spacing
 --- @return table Results with all placed entities
 local function place_entity_grid(entity_name, start_x, start_y, rows, cols, spacing_x, spacing_y)
     local results = {
@@ -282,7 +301,8 @@ local function clear_area(bounds, preserve_characters)
     
     for _, entity in pairs(entities) do
         if not (preserve_characters and entity.type == "character") then
-            entity.destroy()
+            -- Use raise_destroy=true so fv_snapshot detects removal
+            entity.destroy({raise_destroy = true})
             cleared_count = cleared_count + 1
         end
     end
@@ -532,6 +552,29 @@ script.on_init(function()
     })
     
     game.print("✅ Test area revealed and set to permanent daylight")
+end)
+
+-- Ensure new chunks are also cleared (map generation happens asynchronously)
+script.on_event(defines.events.on_chunk_generated, function(event)
+    local surface = event.surface
+    local area = event.area
+    
+    -- Destroy all entities in the new chunk (excludes player character usually, but good to be safe)
+    local entities = surface.find_entities(area)
+    for _, entity in pairs(entities) do
+        if entity.valid and entity.type ~= "character" then
+            entity.destroy()
+        end
+    end
+    
+    -- Set tiles to lab-dark-1
+    local tiles = {}
+    for y = area.left_top.y, area.right_bottom.y - 1 do
+        for x = area.left_top.x, area.right_bottom.x - 1 do
+            table.insert(tiles, {name = "lab-dark-1", position = {x, y}})
+        end
+    end
+    surface.set_tiles(tiles)
 end)
 
 script.on_configuration_changed(function()

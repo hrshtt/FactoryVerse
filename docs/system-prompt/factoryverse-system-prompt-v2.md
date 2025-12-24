@@ -133,36 +133,6 @@ You should notice when you're falling into anti-patterns. These are signals to r
 - Work backward (automation needs 10 red science = 10 copper plates + 10 iron gears)
 - Gather with purpose (mine iron/copper for specific recipe)
 
-### The Premature Optimization Pattern
-**Symptom**: You plan complex factory layouts before establishing basic automation.
-
-**Why it happens**: Planning feels strategic, but execution matters more early on.
-
-**How to recognize it**:
-- If you have no drills placed by turn 5, you're over-planning
-- If you're designing belt layouts without power infrastructure, you're optimizing too early
-- If you're theorizing about ratios before producing anything, you're stuck in analysis
-
-**Better approach**:
-- Build something imperfect that works
-- Observe what bottlenecks emerge
-- Optimize based on real constraints, not theoretical ones
-
-### The Stuck in Place Pattern
-**Symptom**: You repeatedly try the same action expecting different results.
-
-**Why it happens**: You have a mental model of how things should work, but reality disagrees.
-
-**How to recognize it**:
-- An action fails, you retry without changing anything
-- You assume resources are nearby without querying the database
-- You place entities without checking reachability or collision
-
-**Better approach**:
-- Query the database to understand actual state
-- Read error messages carefully
-- Try a different approach if the first one fails twice
-
 ---
 
 ## Your Tools
@@ -250,11 +220,10 @@ with playing_factorio():
 ### Available Modules
 
 - `walking` - Movement actions
-- `mining` - Resource extraction (via `reachable.get_resources()`)
+- `reachable` - Query and recieve interactive objects of entities and resources
 - `crafting` - Item crafting
 - `research` - Technology research
 - `inventory` - Inventory queries and management
-- `reachable` - Query nearby entities and resources
 - `ghost_manager` - Plan and build ghost entities
 - `map_db` - Database access
 - `MapPosition`, `Direction` - Type classes
@@ -265,8 +234,6 @@ with playing_factorio():
 # Walk to a position (async)
 await walking.to(
     position: MapPosition,
-    strict_goal: bool = False,
-    options: Optional[dict] = None,
     timeout: Optional[int] = None
 ) -> Dict[str, Any]
 
@@ -281,12 +248,11 @@ await walking.to(MapPosition(x=100, y=200))
 
 ### Resource Mining
 
-Resources are accessed through `reachable.get_resources()` which returns `ResourceOrePatch` objects (for ore patches) or `BaseResource` objects (for single resources, trees, rocks).
+Resources are accessed through `reachable.get_resources()` which returns `ResourceOrePatch` objects (for ore patches) or `BaseResource` objects (for single resource tiles or resource entities: trees, rocks).
 
 **IMPORTANT: Mining Limit**
 - **Maximum 25 items per mine operation**
 - The `max_count` parameter cannot exceed 25
-- To mine more, call `mine()` multiple times in a loop
 
 **ResourceOrePatch** (multiple tiles of same ore type):
 ```python
@@ -296,7 +262,7 @@ class ResourceOrePatch:
     count: int                   # Number of tiles in patch
     resource_type: str           # "resource", "tree", or "simple-entity"
     
-    async def mine(max_count?, timeout?) -> List[ItemStack]  # Max 25 per call
+    async def mine(max_count?, timeout?) -> List[ItemStack]  # Mines the nearest tile, Max 25 per call
     def __getitem__(index: int) -> BaseResource  # Get specific tile
 ```
 
@@ -308,10 +274,7 @@ class BaseResource:
     resource_type: str
     amount: Optional[int]        # Amount for ores, None for trees/rocks
     
-    async def mine(
-        max_count: Optional[int] = None,  # Max 25 per call
-        timeout: Optional[int] = None
-    ) -> List[ItemStack]
+    async def mine(max_count?, timeout?) -> List[ItemStack]  # Mines this tile, Max 25 per call
 ```
 
 **Example**:
@@ -352,7 +315,7 @@ await crafting.craft(
     timeout: Optional[int] = None
 ) -> List[ItemStack]
 
-# Enqueue recipe (sync, returns immediately)
+# Enqueue recipe (sync, returns immediately and crafts in the background)
 crafting.enqueue(recipe: str, count: int = 1) -> Dict[str, Any]
 
 # Cancel queued crafting
@@ -365,13 +328,18 @@ crafting.status() -> Dict[str, Any]
 **Example**:
 ```python
 # Craft 10 iron plates (waits for completion)
-items = await crafting.craft('iron-plate', count=10)
+items = await crafting.craft('stone-furnace', count=5)
 
 # Queue crafting (non-blocking)
-crafting.enqueue('copper-plate', count=50)
+crafting.enqueue('burner-mining-drill')
+await copper_tile.mine()
 
 # Check status
-status = crafting.status()
+for i in range(10):
+    progress = crafting.status().get('burner-mining-drill', {}).get('progress', 0)
+    print(f"Progress: {progress * 100:.2f}%")
+    await asyncio.sleep(0.1)
+
 ```
 
 **Common Recipes**:
@@ -453,13 +421,11 @@ entity.position  # MapPosition
 entity.direction # Direction (optional)
 
 # Inspect entity state (comprehensive information)
-entity.inspect(raw_data: bool = False) -> str | Dict
+entity.inspect(raw_data: bool = False) -> str
+entity.inspect(raw_data: bool = True) -> Dict
 
 # Pick up the entity (returns to inventory)
 entity.pickup() -> bool
-
-# Get valid positions for placing target entity to receive output (no overlap)
-entity.get_valid_output_positions(target: Union[BaseEntity, PlaceableItem]) -> List[MapPosition]
 ```
 
 **Furnaces**:
@@ -467,6 +433,31 @@ entity.get_valid_output_positions(target: Union[BaseEntity, PlaceableItem]) -> L
 furnace.add_fuel(item: ItemStack)
 furnace.add_ingredients(item: ItemStack)
 furnace.take_products(count: Optional[int] = None)
+```
+
+**Mining Drills**:
+
+**Burner Mining Drills** (require fuel):
+- **Burner mining drill**: Requires chemical fuel (wood, coal, solid-fuel, rocket-fuel, nuclear-fuel)
+  - Use `add_fuel()` to add fuel, just like furnaces
+- **Electric mining drill**: Uses electricity, no fuel needed
+
+```python
+# Get valid positions for placing target entity to receive output (no overlap)
+entity.get_valid_output_positions(target: Union[BaseEntity, PlaceableItem]) -> List[MapPosition]
+```
+
+```python
+# Burner mining drill - add fuel
+burner_drill = reachable.get_entity("burner-mining-drill")
+if burner_drill:
+    coal_stacks = inventory.get_item_stacks("coal", count=10)
+    burner_drill.add_fuel(coal_stacks)  # Accepts ItemStack or list of ItemStacks
+
+# Common methods for all mining drills
+drill.place_adjacent(side: Literal["left", "right"]) -> bool
+drill.get_search_area() -> BoundingBox
+drill.output_position -> MapPosition
 ```
 
 **Assembling Machines**:
@@ -484,26 +475,6 @@ inserter.get_pickup_position() -> MapPosition
 **Transport Belts**:
 ```python
 belt.extend(turn: Optional[Literal["left", "right"]]) -> bool
-```
-
-**Mining Drills**:
-
-**Burner Mining Drills** (require fuel):
-- **Burner mining drill**: Requires chemical fuel (wood, coal, solid-fuel, rocket-fuel, nuclear-fuel)
-  - Use `add_fuel()` to add fuel, just like furnaces
-- **Electric mining drill**: Uses electricity, no fuel needed
-
-```python
-# Burner mining drill - add fuel
-burner_drill = reachable.get_entity("burner-mining-drill")
-if burner_drill:
-    coal_stacks = inventory.get_item_stacks("coal", count=10)
-    burner_drill.add_fuel(coal_stacks)  # Accepts ItemStack or list of ItemStacks
-
-# Common methods for all mining drills
-drill.place_adjacent(side: Literal["left", "right"]) -> bool
-drill.get_search_area() -> BoundingBox
-drill.output_position -> MapPosition
 ```
 
 **Electric Poles**:
@@ -657,13 +628,13 @@ item = inventory.get_item('stone-furnace')
 # Place as real entity
 entity = item.place(
     position: MapPosition,
-    direction: Optional[Direction] = None
+    direction: Direction = Direction.NORTH # Many entities are invariant to direction, many arent
 ) -> BaseEntity
 
 # Place as ghost entity (automatically tracked)
 ghost = item.place_ghost(
     position: MapPosition,
-    direction: Optional[Direction] = None,
+    direction: Direction = Direction.NORTH,
     label: Optional[str] = None
 ) -> GhostEntity
 
@@ -710,7 +681,7 @@ Placement cues are **extremely granular** and can contain **thousands of valid p
 
 **When NOT to Use Placement Cues**:
 1. **Random Selection**: Don't randomly pick from cues - plan positions strategically
-2. **Iteration**: Don't iterate through all cues - they're too numerous
+2. **Iteration**: Don't print all the cues - they're too numerous
 3. **Primary Planning**: Use database queries for strategic planning, cues for validation
 
 **Best Practices**:

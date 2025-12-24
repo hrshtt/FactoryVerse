@@ -17,6 +17,7 @@ from factorio_rcon import RCONClient
 from FactoryVerse.dsl.agent import PlayingFactory
 from FactoryVerse.dsl.types import _playing_factory
 from FactoryVerse.dsl.recipe.base import Recipes
+from FactoryVerse.dsl.technology.base import TechTree
 
 
 # Global configured factory instance
@@ -85,10 +86,25 @@ def configure(
             pass
         recipes = Recipes({})
 
-    # 2. Create and store factory instance
+    # 2. Fetch technologies
+    cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_technologies')))"
+    try:
+        res = rcon_client.send_command(cmd)
+        techs_res = json.loads(res)
+        if isinstance(techs_res, dict):
+            techs_data = techs_res.get('technologies', [])
+        else:
+            techs_data = techs_res
+        tech_tree = TechTree.from_rcon_data(techs_data)
+        print(f"DEBUG: Loaded {len(tech_tree.technologies)} technologies into tech_tree.")
+    except Exception as e:
+        print(f"Warning: Could not pre-fetch technologies: {e}")
+        tech_tree = TechTree()
+
+    # 3. Create and store factory instance
     # Note: RCON client is stored inside the factory but marked private
     # If agent_udp_port is provided, agent will listen directly on that port (decoupled from snapshot port)
-    _configured_factory = PlayingFactory(rcon_client, agent_id, recipes, agent_udp_port=agent_udp_port, tech_tree=tech_tree)
+    _configured_factory = PlayingFactory(rcon_client, agent_id, recipes, tech_tree, agent_udp_port=agent_udp_port)
     
     # 3. Auto-load snapshots if snapshot_dir or db_path provided
     # Note: Uses sync version here since configure() is not async

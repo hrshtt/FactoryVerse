@@ -12,6 +12,22 @@ Output is flat, no markdown formatting, just method signatures with return types
 import inspect
 from typing import Any, Dict, List, get_type_hints, get_origin, get_args
 import sys
+import duckdb
+from FactoryVerse.dsl.item.base import ItemName, PlaceableItemName, FuelItemName
+from FactoryVerse.dsl.recipe.base import BasicRecipeName, RecipeCategory
+from FactoryVerse.dsl.technology.base import TechnologyName
+
+# Registry of literals we want to show as alias names in documentation
+# to avoid massive expanded lists that spam context.
+_ALIASED_LITERALS = {
+    ItemName: "ItemName",
+    PlaceableItemName: "PlaceableItemName",
+    FuelItemName: "FuelItemName",
+    BasicRecipeName: "RecipeName",
+    RecipeCategory: "RecipeCategory",
+    TechnologyName: "TechnologyName",
+    duckdb.DuckDBPyConnection: "DuckDBConnection",
+}
 
 
 def _format_type(typ) -> str:
@@ -33,6 +49,10 @@ def _format_type(typ) -> str:
             other = args[0] if args[1] is type(None) else args[1]
             return f"{_format_type(other)} | None"
         return " | ".join(_format_type(arg) for arg in args)
+    
+    # Handle Aliased Literals first to avoid expansion
+    if typ in _ALIASED_LITERALS:
+        return _ALIASED_LITERALS[typ]
     
     # Handle List[X], Dict[K,V], etc.
     if origin is not None:
@@ -99,8 +119,10 @@ def _get_method_signature(obj: Any, method_name: str) -> str:
         else:
             return_type = "Any"
         
+        is_async = inspect.iscoroutinefunction(method)
         params_str = ", ".join(params)
-        return f"{method_name}({params_str}) -> {return_type}"
+        prefix = "async " if is_async else ""
+        return f"{prefix}{method_name}({params_str}) -> {return_type}"
     
     except Exception as e:
         # Fallback for methods we can't introspect
@@ -681,6 +703,48 @@ def introspect_specific_items() -> str:
     return "\n".join(output)
 
 
+def introspect_resource_types() -> str:
+    """Generate documentation for resource types (ResourceOrePatch, BaseResource)."""
+    from FactoryVerse.dsl.resource import base
+    
+    output = []
+    output.append("=== RESOURCE TYPES ===\n")
+    
+    # ResourceOrePatch
+    output.append("ResourceOrePatch:")
+    methods, properties = _get_class_methods_and_properties(base.ResourceOrePatch)
+    
+    if properties:
+        for prop in properties:
+            output.append(f"  {prop['name']}: {prop['type']}")
+            if prop['description']:
+                output.append(f"    {prop['description']}")
+    
+    for method in methods:
+        output.append(f"  {method['signature']}")
+        if method['description']:
+            output.append(f"    {method['description']}")
+    output.append("")
+    
+    # BaseResource
+    output.append("BaseResource:")
+    methods, properties = _get_class_methods_and_properties(base.BaseResource)
+    
+    if properties:
+        for prop in properties:
+            output.append(f"  {prop['name']}: {prop['type']}")
+            if prop['description']:
+                output.append(f"    {prop['description']}")
+    
+    for method in methods:
+        output.append(f"  {method['signature']}")
+        if method['description']:
+            output.append(f"    {method['description']}")
+    output.append("")
+    
+    return "\n".join(output)
+
+
 def generate_complete_interface_doc(show_inherited: bool = False) -> str:
     """Generate complete DSL interface documentation.
     
@@ -702,12 +766,13 @@ def generate_complete_interface_doc(show_inherited: bool = False) -> str:
     parts = [
         introspect_affordances(),
         introspect_view_categories(),
-        # introspect_entity_protocols(),
-        # introspect_resource_protocols(),
+        introspect_resource_view_categories(),
+        introspect_types(),
         introspect_base_classes(),
         introspect_mixins(),
         introspect_specific_entities(show_inherited=show_inherited),
         introspect_specific_items(),
+        introspect_resource_types(),
         introspect_recipe_types(),
     ]
     
@@ -776,47 +841,25 @@ def introspect_entity_protocols() -> str:
     return "\n".join(output)
 
 
-def introspect_resource_protocols() -> str:
-    """Generate documentation for resource capability protocols."""
-    from FactoryVerse.dsl.resource import protocols
-    import inspect
-    
+def introspect_resource_view_categories() -> str:
+    """Generate documentation for resource view categories."""
     output = []
-    output.append("=== RESOURCE CAPABILITY PROTOCOLS ===\n")
+    output.append("=== RESOURCE VIEW CATEGORIES ===\n")
+    output.append("Two view categories enforce access control based on resource source:\n")
     
-    # Discover all protocol classes
-    protocol_classes = []
-    for name, obj in inspect.getmembers(protocols, inspect.isclass):
-        if name.startswith('_'):
-            continue
-        if hasattr(obj, '__protocol_attrs__') or 'Protocol' in str(obj.__bases__):
-            protocol_classes.append((name, obj))
+    output.append("RemoteViewResource (Read-Only):")
+    output.append("  Returned by: map_db.get_resources() (when implemented)")
+    output.append("  Allows: spatial properties (position, amount, total, count), inspect()")
+    output.append("  Blocks: mine()")
+    output.append("  Usage: Navigate to resource, then use reachable_resources.get_resource() for full access")
+    output.append("")
     
-    protocol_classes.sort(key=lambda x: x[0])
-    
-    for class_name, cls in protocol_classes:
-        output.append(f"{class_name}:")
-        
-        # Get docstring
-        doc = inspect.getdoc(cls) or ""
-        if doc:
-            # Show first paragraph
-            first_para = doc.split('\n\n')[0]
-            for line in first_para.split('\n'):
-                output.append(f"  {line}")
-        
-        methods, properties = _get_class_methods_and_properties(cls)
-        
-        # Show properties
-        if properties:
-            for prop in properties:
-                output.append(f"  {prop['name']}: {prop['type']}")
-        
-        # Show methods
-        for method in methods:
-            output.append(f"  {method['signature']}")
-        
-        output.append("")
+    output.append("ReachableResource (Full Access):")
+    output.append("  Returned by: reachable_resources.get_resource(), reachable_resources.get_resources()")
+    output.append("  Allows: Everything - spatial properties, inspect(), AND mine()")
+    output.append("  Types: BaseResource subclasses (IronOre, CopperOre, TreeEntity, RockEntity, etc.)")
+    output.append("  Also: ResourceOrePatch for consolidated ore patches")
+    output.append("")
     
     return "\n".join(output)
 
@@ -844,4 +887,55 @@ def introspect_view_categories() -> str:
     output.append("  Blocks: pickup(), add_fuel(), add_ingredients(), store/take_items()")
     output.append("")
     
+    return "\n".join(output)
+
+
+def introspect_types() -> str:
+    """Generate documentation for important TypedDict structures."""
+    from FactoryVerse.dsl import types
+    from typing import get_type_hints
+    import inspect
+    
+    output = []
+    output.append("=== DATA TYPES ===\n")
+    
+    target_types = [
+        'ActionResult',
+        'EntityInspectionData',
+        'ResourcePatchData',
+        'ProductData',
+        'EntityFilterOptions',
+        'GhostAreaFilter'
+    ]
+    
+    for type_name in target_types:
+        typ = getattr(types, type_name, None)
+        if not typ:
+            continue
+            
+        output.append(f"{type_name}:")
+        
+        # Get docstring
+        doc = inspect.getdoc(typ) or ""
+        if doc:
+            # Show first paragraph
+            first_para = doc.split('\n\n')[0]
+            for line in first_para.split('\n'):
+                if line.strip():
+                    output.append(f"  {line.strip()}")
+        
+        # Get fields via type hints
+        try:
+            # Use local dict for forward refs if needed
+            hints = get_type_hints(typ, globalns=vars(types))
+            for field_name, field_type in hints.items():
+                output.append(f"  {field_name}: {_format_type(field_type)}")
+        except Exception as e:
+            # Fallback to simple iteration if get_type_hints fails
+            if hasattr(typ, '__annotations__'):
+                for field_name, field_type in typ.__annotations__.items():
+                    output.append(f"  {field_name}: {field_type}")
+            
+        output.append("")
+        
     return "\n".join(output)
