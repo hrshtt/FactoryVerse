@@ -900,12 +900,26 @@ def introspect_types() -> str:
     output.append("=== DATA TYPES ===\n")
     
     target_types = [
+        # Core action results
         'ActionResult',
+        
+        # Agent/entity inspection
+        'AgentInspectionData',
         'EntityInspectionData',
+        
+        # Reachability data
+        'ReachableSnapshotData',
+        
+        # Placement
+        'PlacementCuesResponse',
+        
+        # Resources
         'ResourcePatchData',
         'ProductData',
+        
+        # Filtering
         'EntityFilterOptions',
-        'GhostAreaFilter'
+        'GhostAreaFilter',
     ]
     
     for type_name in target_types:

@@ -255,7 +255,7 @@ ReachableResource (Full Access):
 === DATA TYPES ===
 
 ActionResult:
-  Consolidated result for actions that return validation data and metadata.
+  Consolidated result for sync actions that return validation data and metadata.
   success: bool
   item_name: str
   count: int
@@ -266,22 +266,54 @@ ActionResult:
   recipe: str
   technology: str
   position: dict[str, float]
+  entity_name: str
+  entity_type: str
   reason: str
   message: str
   actual_products: dict[str, int]
 
+AgentInspectionData:
+  Response from inspect() query.
+  agent_id: int
+  tick: int
+  position: dict[str, float]
+  state: AgentActivityState
+
 EntityInspectionData:
-  Raw inspection data for an entity.
+  Comprehensive volatile state for a specific entity.
   entity_name: str
   entity_type: str
   position: dict[str, float]
+  tick: int
   status: str
   direction: int
   health: float
-  inventory: dict[str, int]
-  fuel: dict[str, float]
   recipe: Union[str, None]
   crafting_progress: float
+  burning_progress: float
+  productivity_bonus: float
+  energy: EntityEnergyData
+  inventories: EntityInventoriesData
+  held_item: HeldItemData
+  inventory: dict[str, int]
+  fuel: dict[str, float]
+
+ReachableSnapshotData:
+  Full reachable snapshot response.
+  entities: list[ReachableEntityData]
+  resources: list[ReachableResourceData]
+  ghosts: list[ReachableGhostData]
+  agent_position: dict[str, float]
+  tick: int
+
+PlacementCuesResponse:
+  Response from get_placement_cues query.
+  entity_name: str
+  collision_box: dict[str, Any]
+  tile_width: int
+  tile_height: int
+  positions: list[PlacementCueData]
+  reachable_positions: list[PlacementCueData]
 
 ResourcePatchData:
   Structured data for a resource patch inspection.
