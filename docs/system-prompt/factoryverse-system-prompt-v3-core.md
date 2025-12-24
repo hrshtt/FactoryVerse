@@ -349,17 +349,9 @@ GhostAreaFilter:
   center_x: float
   center_y: float
   radius: float
-  tick: int
-  status: str
-  recipe: Union[str, None]
-  crafting_progress: Union[float, None]
-  mining_progress: Union[float, None]
-  burner: Union[dict[str, Any], None]
-  energy: Union[dict[str, Any], None]
-  inventories: Union[dict[str, Any], None]
-  held_item: Union[dict[str, Any], None]
   label: Union[str, None]
   placed_tick: Union[int, None]
+  entity_name: Union[str, None]
 
 === BASE CLASSES ===
 

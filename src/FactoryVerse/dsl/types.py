@@ -487,26 +487,30 @@ class EntityFilterOptions(TypedDict, total=False):
 
 
 class GhostAreaFilter(TypedDict, total=False):
-    """Area filter for get_ghosts."""
+    """Area filter for get_ghosts.
+    
+    Used to filter ghosts by spatial area and/or metadata.
+    All fields are optional - omit to not filter on that criteria.
+    
+    Area can be specified as:
+    - Bounding box: min_x, min_y, max_x, max_y
+    - Circle: center_x, center_y, radius
+    """
+    # Bounding box filter
     min_x: float
     min_y: float
     max_x: float
     max_y: float
+    
+    # Circle filter (alternative to bounding box)
     center_x: float
     center_y: float
     radius: float
-    tick: int
-    status: str
-    recipe: Optional[str]
-    crafting_progress: Optional[float]
-    mining_progress: Optional[float]
-    burner: Optional[Dict[str, Any]]
-    energy: Optional[Dict[str, Any]]
-    inventories: Optional[Dict[str, Any]]
-    held_item: Optional[Dict[str, Any]]
-    # For Ghosts
-    label: Optional[str]
-    placed_tick: Optional[int]
+    
+    # Ghost-specific filters
+    label: Optional[str]        # Filter by ghost label (set when placing)
+    placed_tick: Optional[int]  # Filter by tick when ghost was placed
+    entity_name: Optional[str]  # Filter by the entity type the ghost represents
 
 
 # =============================================================================
