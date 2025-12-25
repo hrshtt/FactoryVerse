@@ -434,7 +434,7 @@ def introspect_affordances() -> str:
         _ReachableAccessor,
         _DuckDBAccessor
     )
-    from FactoryVerse.dsl.ghosts import GhostManager
+    from FactoryVerse.dsl.agent.ghost import GhostManager
     
     output = []
     output.append("=== TOP-LEVEL AFFORDANCES ===\n")

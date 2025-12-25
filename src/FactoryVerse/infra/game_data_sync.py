@@ -1179,7 +1179,7 @@ class GameDataSyncService:
         Reloads the entire file into the appropriate table.
         """
         import json
-        from FactoryVerse.infra.db.loader.utils import load_jsonl_file
+        from FactoryVerse.dsl.agent.snapshot.db.loader.utils import load_jsonl_file
         
         file_path_obj = Path(file_path)
         if not file_path_obj.exists():

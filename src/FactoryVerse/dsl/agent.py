@@ -26,7 +26,7 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 from FactoryVerse.dsl.types import Direction, MapPosition, BoundingBox
 from FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
-from FactoryVerse.dsl.ghosts import GhostManager
+from FactoryVerse.dsl.agent.ghost import GhostManager
 from FactoryVerse.infra.game_data_sync import GameDataSyncService
 
 if TYPE_CHECKING:
@@ -2014,7 +2014,7 @@ class PlayingFactory:
             print("🔄 Reloading snapshot data after bootstrap...")
             print("=" * 60)
             
-            from FactoryVerse.infra.db.loader import load_all
+            from FactoryVerse.dsl.agent.snapshot.db.loader import load_all
             load_all(
                 self._duckdb_connection,
                 snapshot_dir,
@@ -2062,7 +2062,7 @@ class PlayingFactory:
             if db_path is None:
                 con = duckdb.connect(':memory:')
             else:
-                from FactoryVerse.infra.db.duckdb_schema import connect
+                from FactoryVerse.dsl.agent.snapshot.db.schema import connect
                 con = connect(db_path)
             self._duckdb_connection = con
         
@@ -2133,7 +2133,7 @@ class PlayingFactory:
                 print(f"⚠️  Warning: No snapshot files found after {max_wait} seconds. Loading whatever exists...")
         
         # Load data (this will auto-create schema if needed)
-        from FactoryVerse.infra.db.loader import load_all
+        from FactoryVerse.dsl.agent.snapshot.db.loader import load_all
         load_all(
             self._duckdb_connection,
             snapshot_dir,
