@@ -697,6 +697,36 @@ This is a read-only query that provides a complete snapshot of entity state.]],
     },
 
     -- ========================================================================
+    -- LIFECYCLE
+    -- ========================================================================
+    reset = {
+        category = "lifecycle",
+        is_async = false,
+        doc = [[Reset the agent (two-call pattern).
+First call: Sets a pending flag and returns a warning.
+Second call: Resets the agent if the flag was set.
+Reset behavior: Clears inventory and moves agent to spawn point.
+If reset_force is true, also resets the agent's force (technologies, research).]],
+        paramspec = {
+            _param_order = { "reset_force" },
+            reset_force = { type = "boolean", default = false, doc = "If true, reset the whole force (technologies, research)" },
+        },
+        returns = {
+            type = "result",
+            schema = {
+                warning = { type = "boolean", doc = "True if this is the first call (warning)" },
+                success = { type = "boolean", doc = "True if reset completed" },
+                message = { type = "string", doc = "Warning or success message" },
+                reset_force = { type = "boolean", doc = "Whether force was reset" },
+                position = { type = "position", doc = "Final position after reset (if successful)" },
+            },
+        },
+        func = function(self, reset_force)
+            return self:reset(reset_force)
+        end,
+    },
+
+    -- ========================================================================
     -- DEBUG
     -- ========================================================================
     inspect_state = {

@@ -160,6 +160,9 @@ function Agent:new(agent_id, color, force_name, spawn_position, udp_port)
         -- Message queue for UDP notifications (processed by game state)
         -- Structure: message_queue[category_string] = {message1, message2, ...}
         message_queue = {},
+        
+        -- Reset flag for two-call reset pattern
+        reset_pending = false,
     }, Agent)
 
     -- Create entity and initialize
@@ -357,6 +360,73 @@ function Agent:merge_force(destination_force)
     end
 
     return true
+end
+
+--- Reset agent (two-call pattern)
+--- First call: Sets reset_pending flag and returns warning
+--- Second call: Resets agent if flag is set
+--- @param reset_force boolean|nil If true, reset the whole force (technologies, research, etc.)
+--- @return table Result with warning or success message
+function Agent:reset(reset_force)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- First call: set flag and return warning
+    if not self.reset_pending then
+        self.reset_pending = true
+        return {
+            warning = true,
+            message = "Reset pending. Call reset() again to confirm and reset the agent.",
+            reset_force = reset_force or false,
+        }
+    end
+    
+    -- Second call: perform reset
+    self.reset_pending = false
+    
+    -- Stop any ongoing activities
+    if self.walking and self.walking.action_id then
+        self:stop_walking()
+    end
+    if self.mining and self.mining.action_id then
+        self:stop_mining()
+    end
+    
+    -- Clear inventory
+    local inventory = self.character.get_main_inventory()
+    if inventory then
+        inventory.clear()
+    end
+    
+    -- Reset force if requested
+    if reset_force and self.force_name then
+        local force = game.forces[self.force_name]
+        if force then
+            force.cancel_current_research()
+            force.reset_technology_effects()
+            force.reset_technologies()
+        end
+    end
+    
+    -- Move agent back to spawn point
+    local surface = self.character.surface
+    local force = self.character.force
+    local spawn_pos = force.get_spawn_position(surface)
+    local safe_position = surface.find_non_colliding_position("character", spawn_pos, 10, 2)
+    
+    if safe_position then
+        self.character.teleport(safe_position)
+    else
+        self.character.teleport(spawn_pos)
+    end
+    
+    return {
+        success = true,
+        message = "Agent reset successfully.",
+        reset_force = reset_force or false,
+        position = { x = self.character.position.x, y = self.character.position.y },
+    }
 end
 
 -- ============================================================================

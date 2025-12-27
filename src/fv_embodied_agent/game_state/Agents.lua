@@ -101,25 +101,33 @@ function M.get_agent(agent_id)
     return agent
 end
 
+--- Find next available agent ID
+--- @return number Next available agent ID
+local function find_next_agent_id()
+    if not storage.agents or next(storage.agents) == nil then
+        return 1
+    end
+    
+    -- Find the highest existing agent ID
+    local max_id = 0
+    for agent_id, _ in pairs(storage.agents) do
+        if type(agent_id) == "number" and agent_id > max_id then
+            max_id = agent_id
+        end
+    end
+    
+    -- Return next available ID
+    return max_id + 1
+end
+
 --- Create a single agent
 --- @param udp_port number|nil UDP port for agent-specific payloads (defaults to 34202)
---- @param destroy_existing boolean|nil If true, destroy existing agents
 --- @param set_unique_forces boolean|nil Default false - use player force; if true, agent gets unique force
 --- @param default_common_force string|nil Force name to use if set_unique_forces=false (default: "player")
 --- @param initial_inventory table|nil Initial inventory items {item_name = count, ...}
 --- @return table Created agent info {agent_id, force_name, interface_name}
-function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_common_force, initial_inventory)
+function M.create_agent(udp_port, set_unique_forces, default_common_force, initial_inventory)
     if not storage.agents then
-        storage.agents = {}
-    end
-    
-    if destroy_existing and storage.agents then
-        -- Destroy existing agents
-        for agent_id, agent in pairs(storage.agents) do
-            if agent and type(agent.destroy) == "function" then
-                agent:destroy(false)  -- Don't remove force
-            end
-        end
         storage.agents = {}
     end
     
@@ -151,8 +159,8 @@ function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_c
         end
     end
 
-    -- Create single agent with ID 1
-    local agent_id = 1
+    -- Find next available agent ID
+    local agent_id = find_next_agent_id()
     log("Creating agent " .. agent_id)
     
     local position = { x = 0, y = 0 }
@@ -163,7 +171,12 @@ function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_c
         force_name = default_common_force or "player"
     end
     
-    local color = generate_agent_color(1, 1)
+    -- Calculate color based on total number of agents (including the new one)
+    local total_agents = 0
+    for _ in pairs(storage.agents) do
+        total_agents = total_agents + 1
+    end
+    local color = generate_agent_color(total_agents + 1, total_agents + 1)
     local agent = M._create_agent_instance(agent_id, color, force_name, position, udp_port)
     
     -- Add initial inventory items if provided
@@ -186,13 +199,40 @@ function M.create_agent(udp_port, destroy_existing, set_unique_forces, default_c
     }
 end
 
+--- Find agent by ID or tag
+--- @param agent_ref number|string Agent ID (number) or agent tag (string, e.g., "Agent-1")
+--- @return Agent|nil Agent instance or nil if not found
+local function find_agent_by_ref(agent_ref)
+    if type(agent_ref) == "number" then
+        return M.get_agent(agent_ref)
+    elseif type(agent_ref) == "string" then
+        -- Try to extract ID from tag (format: "Agent-{id}")
+        local id_str = string.match(agent_ref, "^Agent%-(%d+)$")
+        if id_str then
+            local agent_id = tonumber(id_str)
+            if agent_id then
+                return M.get_agent(agent_id)
+            end
+        end
+        -- If tag format doesn't match, search by name_tag
+        if storage.agents then
+            for _, agent in pairs(storage.agents) do
+                if agent and agent.character and agent.character.valid and agent.character.name_tag == agent_ref then
+                    return agent
+                end
+            end
+        end
+    end
+    return nil
+end
+
 --- Destroy an agent
---- @param agent_id number
+--- @param agent_ref number|string Agent ID (number) or agent tag (string, e.g., "Agent-1")
 --- @param remove_force boolean|nil If true, merge force with player force
-function M.destroy_agent(agent_id, remove_force)
-    local agent = M.get_agent(agent_id)
+function M.destroy_agent(agent_ref, remove_force)
+    local agent = find_agent_by_ref(agent_ref)
     if not agent then
-        error("Agent " .. tostring(agent_id) .. " not found")
+        error("Agent " .. tostring(agent_ref) .. " not found")
     end
 
     -- Use Agent:destroy() which handles all cleanup
@@ -200,19 +240,21 @@ function M.destroy_agent(agent_id, remove_force)
 end
 
 --- Destroy multiple agents
---- @param agent_ids table<number> Array of agent IDs to destroy
+--- @param agent_refs table<number|string> Array of agent IDs or tags to destroy
 --- @param remove_forces boolean|nil If true, merge forces with player force
---- @return table {destroyed: number[], errors: table[]}
-function M.destroy_agents(agent_ids, remove_forces)
+--- @return table {destroyed: table[], errors: table[]}
+function M.destroy_agents(agent_refs, remove_forces)
     local destroyed = {}
     local errors = {}
     
-    for _, agent_id in ipairs(agent_ids or {}) do
-        local ok = M.destroy_agent(agent_id, remove_forces)
+    for _, agent_ref in ipairs(agent_refs or {}) do
+        local ok, err = pcall(function()
+            return M.destroy_agent(agent_ref, remove_forces)
+        end)
         if ok then
-            table.insert(destroyed, agent_id)
+            table.insert(destroyed, agent_ref)
         else
-            table.insert(errors, {agent_id = agent_id, error = tostring(err)})
+            table.insert(errors, {agent_ref = agent_ref, error = tostring(err)})
         end
     end
     
@@ -492,16 +534,15 @@ end
 --- Specifications for admin API methods
 M.AdminApiSpecs = {
     create_agent = {
-        _param_order = {"udp_port", "destroy_existing", "set_unique_forces", "default_common_force", "initial_inventory"},
+        _param_order = {"udp_port", "set_unique_forces", "default_common_force", "initial_inventory"},
         udp_port = {type = "number", required = false},
-        destroy_existing = {type = "boolean", required = false},
         set_unique_forces = {type = "boolean", required = false},
         default_common_force = {type = "string", required = false},
         initial_inventory = {type = "table", required = false},
     },
     destroy_agents = {
-        _param_order = {"agent_ids", "destroy_forces"},
-        agent_ids = {type = "table", required = true},
+        _param_order = {"agent_refs", "destroy_forces"},
+        agent_refs = {type = "table", required = true},
         destroy_forces = {type = "boolean", required = false},
     },
     update_agent_friends = {
