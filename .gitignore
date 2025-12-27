@@ -23,3 +23,18 @@ uv.lock
 .pytest_cache/
 .vscode/
 notebooks/
+
+.env
+.env.local
+*.env
+# Database files
+*.duckdb
+*.db
+*.sqlite
+# Script output
+script-output/
+# macOS
+.DS_Store
+**/.DS_Store
+# Jupyter notebooks (optional - if you want to exclude them)
+# *.ipynb
