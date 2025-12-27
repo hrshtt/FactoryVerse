@@ -89,6 +89,7 @@ Returns immediately; completion signaled via UDP with items gained.]],
             _param_order = { "resource_name", "max_count" },
             resource_name = { type = "string", required = true, doc = "Resource prototype name (e.g., 'iron-ore', 'coal', 'stone')" },
             max_count = { type = "number", default = nil, doc = "Max items to mine (nil = deplete resource)" },
+            position = { type = "position", default = nil, doc = "Exact Position to mine (nil = nearest)" },
         },
         returns = {
             type = "async_action",
@@ -296,7 +297,7 @@ The agent must have the items in their inventory.]],
             },
         },
         func = function(self, entity_name, position, inventory_type, item_name, count)
-            return self:set_inventory_item(entity_name, position, inventory_type, item_name, count)
+            return self:put_inventory_item(entity_name, position, inventory_type, item_name, count)
         end,
     },
 

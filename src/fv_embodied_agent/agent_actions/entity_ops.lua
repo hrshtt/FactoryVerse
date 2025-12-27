@@ -6,6 +6,7 @@
 local EntityInterface = require("game_state.EntityInterface")
 local custom_events = require("utils.custom_events")
 local utils = require("utils.utils")
+local inspection = require("agent_actions.inspection")
 
 local EntityOpsActions = {}
 
@@ -440,7 +441,7 @@ end
 --- @param item_name string Item name to set
 --- @param count number Count to set
 --- @return table Result
-function EntityOpsActions.set_inventory_item(self, entity_name, position, inventory_type, item_name, count)
+function EntityOpsActions.put_inventory_item(self, entity_name, position, inventory_type, item_name, count)
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
@@ -523,7 +524,7 @@ function EntityOpsActions.set_inventory_item(self, entity_name, position, invent
     
     -- Enqueue completion message (sync action)
     self:enqueue_message({
-        action = "set_inventory_item",
+        action = "put_inventory_item",
         agent_id = self.agent_id,
         entity_name = entity_name,
         position = { x = entity.position.x, y = entity.position.y },
@@ -709,6 +710,7 @@ end
 --- @param entity_name string Entity prototype name
 --- @param position table Position {x, y}
 --- @return table Entity inspection data
+--- Note: Inspection is a read-only query and works from any distance (no reachability check)
 function EntityOpsActions.inspect_entity(self, entity_name, position)
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
@@ -718,244 +720,10 @@ function EntityOpsActions.inspect_entity(self, entity_name, position)
     local entity_interface = EntityInterface:new(entity_name, position, nil, true)
     local entity = entity_interface.entity
     
-    -- Validate agent can reach entity
-    if not self:can_reach_entity(entity) then
-        error("Agent: Entity is out of reach")
-    end
+    -- No reachability check - inspection is read-only and works from anywhere
     
-    -- Build inspection data
-    local data = {
-        entity_name = entity.name,
-        entity_type = entity.type,
-        position = { x = entity.position.x, y = entity.position.y },
-        tick = game.tick or 0,
-    }
-    
-    -- Add status if available (convert enum to name)
-    if entity.status then
-        -- Try to convert status enum to name
-        local status_name = nil
-        if utils and utils.status_to_name then
-            status_name = utils.status_to_name(entity.status)
-        end
-        
-        -- If conversion failed, try direct enum lookup
-        if not status_name and defines.entity_status then
-                for k, v in pairs(defines.entity_status) do
-                    if v == entity.status then
-                    status_name = string.lower(string.gsub(k, "_", "-"))
-                    break
-                    end
-            end
-        end
-        
-        -- Use converted name or fallback to string
-        data.status = status_name or tostring(entity.status)
-    end
-    
-    -- Add recipe if applicable (assemblers, furnaces, rocket-silo)
-    local is_crafter = (entity.type == "assembling-machine" or 
-                        entity.type == "furnace" or 
-                        entity.type == "rocket-silo")
-    
-    if is_crafter then
-        local recipe = entity.get_recipe()
-        if recipe then
-            data.recipe = recipe.name
-        end
-        
-        -- Add crafting progress for crafting machines
-        if entity.crafting_progress ~= nil then
-            data.crafting_progress = entity.crafting_progress
-        end
-    end
-    
-    -- Add mining progress for mining drills
-    if entity.type == "mining-drill" and entity.mining_progress then
-        data.mining_progress = entity.mining_progress
-    end
-    
-    -- Add burner information (furnaces, burner mining drills, etc.)
-    local burner_result = nil
-    if entity.burner and entity.burner.valid then
-        local burner = entity.burner
-        local burner_data = {}
-        
-        -- Heat information
-        if burner.heat ~= nil then
-            burner_data.heat = burner.heat
-        end
-        
-        if burner.heat_capacity ~= nil then
-            burner_data.heat_capacity = burner.heat_capacity
-        end
-        
-        if burner.remaining_burning_fuel ~= nil then
-            burner_data.remaining_burning_fuel = burner.remaining_burning_fuel
-        end
-        
-        -- Currently burning item
-        local currently_burning = burner.currently_burning
-        local item_name = nil
-        if currently_burning then
-            item_name = currently_burning.name
-            if item_name then
-                burner_data.currently_burning = item_name
-            end
-        end
-        
-        -- If currently_burning is nil but there's remaining_burning_fuel, infer from fuel inventory
-        -- This handles cases where currently_burning isn't set but fuel is actively burning
-        if not item_name and burner_data.remaining_burning_fuel and burner_data.remaining_burning_fuel > 0 then
-            -- Check fuel inventory to see what fuel is available
-            local fuel_inv = entity.get_inventory(defines.inventory.fuel)
-            if fuel_inv then
-                -- Get the first fuel item in the inventory
-                for i = 1, #fuel_inv do
-                    local stack = fuel_inv[i]
-                    if stack and stack.valid_for_read and stack.count > 0 then
-                        item_name = stack.name
-                        burner_data.currently_burning = item_name
-                        break
-                    end
-                end
-            end
-        end
-        
-        -- Calculate burning progress if we have item_name and remaining_burning_fuel
-        if item_name and burner_data.remaining_burning_fuel and burner_data.remaining_burning_fuel > 0 then
-            -- Try to get fuel energy from prototype if available
-            local fuel_proto = prototypes.item[item_name]
-            if fuel_proto then
-                local fuel_energy = fuel_proto.fuel_value
-                if fuel_energy and fuel_energy > 0 then
-                    local progress = 1.0 - (burner_data.remaining_burning_fuel / fuel_energy)
-                    -- Clamp to [0, 1]
-                    if progress < 0 then progress = 0 end
-                    if progress > 1 then progress = 1 end
-                    burner_data.burning_progress = progress
-                end
-            end
-        end
-        
-        burner_result = burner_data
-    end
-    
-    if burner_result then
-        data.burner = burner_result
-    end
-    
-    -- Add productivity bonus if available
-    if entity.productivity_bonus then
-        data.productivity_bonus = entity.productivity_bonus
-    end
-    
-    -- Add energy state if applicable
-    if entity.energy ~= nil then
-        data.energy = {
-            current = entity.energy,
-            capacity = entity.electric_buffer_size or 0,
-        }
-    end
-    
-    -- Collect relevant inventories based on entity type
-    local inventories = {}
-    
-    -- Generic fuel for burner entities
-    if entity.burner and entity.burner.valid then
-        local fuel_inv = get_inventory_contents(entity, defines.inventory.fuel)
-        if fuel_inv and next(fuel_inv) ~= nil then
-            inventories.fuel = fuel_inv
-        end
-    end
-
-    -- Type-specific inventories
-    if entity.type == "assembling-machine" then
-        local input_inv = get_inventory_contents(entity, defines.inventory.assembling_machine_input)
-        if input_inv and next(input_inv) ~= nil then inventories.input = input_inv end
-        
-        local output_inv = get_inventory_contents(entity, defines.inventory.assembling_machine_output)
-        if output_inv and next(output_inv) ~= nil then inventories.output = output_inv end
-        
-        local module_inv = get_inventory_contents(entity, defines.inventory.assembling_machine_modules)
-        if module_inv and next(module_inv) ~= nil then inventories.modules = module_inv end
-        
-    elseif entity.type == "furnace" then
-        local source_inv = get_inventory_contents(entity, defines.inventory.furnace_source)
-        if source_inv and next(source_inv) ~= nil then inventories.input = source_inv end
-        
-        local result_inv = get_inventory_contents(entity, defines.inventory.furnace_result)
-        if result_inv and next(result_inv) ~= nil then inventories.output = result_inv end
-        
-    elseif entity.type == "container" or entity.type == "logistic-container" then
-        local chest_inv = get_inventory_contents(entity, defines.inventory.chest)
-        if chest_inv and next(chest_inv) ~= nil then inventories.chest = chest_inv end
-        
-    elseif entity.type == "mining-drill" then
-        local output_inv = entity.get_output_inventory()
-        if output_inv then
-            local contents = output_inv.get_contents()
-            if contents then
-                local output_contents = {}
-                for _, item in pairs(contents) do
-                    local item_name = item.name or item[1]
-                    local count = item.count or item[2]
-                    if item_name and count then
-                        output_contents[item_name] = (output_contents[item_name] or 0) + count
-                    end
-                end
-                if next(output_contents) ~= nil then
-                    inventories.output = output_contents
-                end
-            end
-        end
-        
-    elseif entity.type == "car" or entity.type == "cargo-wagon" then
-        local cargo_inv = get_inventory_contents(entity, defines.inventory.car_trunk) or get_inventory_contents(entity, defines.inventory.cargo_wagon)
-        if cargo_inv and next(cargo_inv) ~= nil then inventories.cargo = cargo_inv end
-    end
-
-    -- Add inventories if any exist
-    if next(inventories) ~= nil then
-        data.inventories = inventories
-    end
-    
-    -- Add inserter and mining drill targets
-    if entity.type == "inserter" then
-        local held = entity.held_stack
-        if held and held.valid_for_read then
-            data.held_item = {
-                name = held.name,
-                count = held.count
-            }
-        end
-        
-        data.pickup_position = { x = entity.pickup_position.x, y = entity.pickup_position.y }
-        data.drop_position = { x = entity.drop_position.x, y = entity.drop_position.y }
-
-        if entity.drop_target then
-            data.drop_target = {
-                name = entity.drop_target.name,
-                position = { x = entity.drop_target.position.x, y = entity.drop_target.position.y }
-            }
-        end
-        if entity.pickup_target then
-            data.pickup_target = {
-                name = entity.pickup_target.name,
-                position = { x = entity.pickup_target.position.x, y = entity.pickup_target.position.y }
-            }
-        end
-    elseif entity.type == "mining-drill" then
-        data.drop_position = { x = entity.drop_position.x, y = entity.drop_position.y }
-        if entity.drop_target then
-            data.drop_target = {
-                name = entity.drop_target.name,
-                position = { x = entity.drop_target.position.x, y = entity.drop_target.position.y }
-            }
-        end
-    end
-    
-    return data
+    -- Use centralized inspection module
+    return inspection.inspect_entity(entity)
 end
 
 return EntityOpsActions

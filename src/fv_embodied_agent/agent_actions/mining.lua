@@ -182,11 +182,13 @@ end
 --- @param resource_name string Resource name (e.g., "iron-ore", "tree", "rock")
 --- @param max_count number|nil Maximum count to mine (only for ores, ignored for trees/rocks)
 --- @return table Result with {success, queued, action_id, tick, estimated_ticks, expected_products}
-function MiningActions.mine_resource(self, resource_name, max_count)
+function MiningActions.mine_resource(self, resource_name, max_count, position)
     -- Validate input
     if not resource_name or type(resource_name) ~= "string" then
         error("Agent: resource_name (string) is required")
     end
+
+    position = position or nil
     
     if string.find(resource_name:lower(), "oil") then
         error("Agent: Cannot mine oil resources (use pumpjack)")
@@ -201,11 +203,14 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     local radius = self.character.resource_reach_distance or 2.5
     local surface = self.character.surface
     
-    local search_args = {
-        position = { x = agent_pos.x, y = agent_pos.y },
-        radius = radius,
-    }
-    
+    local search_args = {}
+    if position ~= nil then
+        search_args.position = position
+    else
+        search_args.position = { x = agent_pos.x, y = agent_pos.y }
+        search_args.radius = radius
+    end
+
     if RESOURCE_TYPE_MAPPING[resource_name] then
         search_args.type = RESOURCE_TYPE_MAPPING[resource_name]
     else
@@ -214,7 +219,11 @@ function MiningActions.mine_resource(self, resource_name, max_count)
     
     local entities = surface.find_entities_filtered(search_args)
     if not entities or #entities == 0 then
-        error("Agent: Resource not found within reach")
+        if position ~= nil then
+            error("Agent: Resource not found at position " .. position.x .. ", " .. position.y)
+        else
+            error("Agent: Resource not found within reach")
+        end
     end
     
     local entity = entities[1]
