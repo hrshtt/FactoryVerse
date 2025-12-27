@@ -2,13 +2,14 @@ from dataclasses import dataclass
 import enum
 import math
 from typing import (
-    Self, Tuple, Union, Any, List, Dict, TypeVar, Optional, 
-    TYPE_CHECKING, TypedDict
+    Self,
+    Tuple,
+    Any,
+    List,
+    Dict,
+    Optional,
+    TypedDict,
 )
-from contextvars import ContextVar
-
-if TYPE_CHECKING:
-    from FactoryVerse.dsl.agent import PlayingFactory
 
 
 class Direction(enum.Enum):
@@ -82,6 +83,10 @@ class Position:
         else:
             raise ValueError("MapPosition expects (x, y) or ((x, y))")
 
+    @classmethod
+    def from_dict(cls, pos: Dict[str, float]) -> Self:
+        return cls(x=pos["x"], y=pos["y"])
+
     def offset(self, offset: Tuple[int, int], direction: Direction) -> Self:
         """Offset the position by the offset vector, rotated according to the provided cardinal direction.
 
@@ -116,6 +121,8 @@ class Position:
             dx, dy = -x_off, -y_off
         elif direction == Direction.WEST:
             dx, dy = -y_off, x_off
+        else:
+            raise ValueError(f"Cannot offset non-cardinal direction: {direction.name}")
 
         return type(self)(x=self.x + dx, y=self.y + dy)
 
@@ -125,40 +132,40 @@ class AnchorVector(Position): ...
 
 class MapPosition(Position):
     """Coordinates of a tile in a map.
-    
+
     Pure position data - just x, y coordinates.
     Can be used as a set key or dictionary key via tuple (x, y).
     """
-    
+
     def __hash__(self) -> int:
         """Make MapPosition hashable using tuple (x, y)."""
         return hash((self.x, self.y))
-    
+
     def __eq__(self, other) -> bool:
         """Compare MapPosition instances by their (x, y) coordinates."""
         if not isinstance(other, MapPosition):
             return False
         return (self.x, self.y) == (other.x, other.y)
-    
+
     def distance(self, other: "MapPosition") -> float:
         """Calculate Euclidean distance to another MapPosition.
-        
+
         Args:
             other: Another MapPosition to calculate distance to.
-            
+
         Returns:
             The Euclidean distance between this position and other.
         """
         dx = self.x - other.x
         dy = self.y - other.y
         return math.sqrt(dx * dx + dy * dy)
-    
+
     def manhattan_distance(self, other: "MapPosition") -> float:
         """Calculate Manhattan distance to another MapPosition.
-        
+
         Args:
             other: Another MapPosition to calculate distance to.
-            
+
         Returns:
             The Manhattan distance (sum of absolute differences) between this position and other.
         """
@@ -188,7 +195,7 @@ class BoundingBox:
 
     left_top: Position
     right_bottom: Position
-    orientation: RealOrientation = None
+    orientation: Optional[RealOrientation] = None
 
     @classmethod
     def from_tuple(cls, coords):
@@ -201,16 +208,11 @@ class BoundingBox:
             lt = Position(x=coords[0][0], y=coords[0][1])
             rb = Position(x=coords[1][0], y=coords[1][1])
             orientation = RealOrientation(coords[2])
-            return cls(left_top=lt, right_bottom=rb, orientation=orientation)
+            return cls(left_top=lt, right_bottom=rb, orientation=orientation)  # type: ignore
         else:
             raise ValueError(
                 "BoundingBox expects (left_top, right_bottom) or (left_top, right_bottom, orientation)"
             )
-# Game context: agent is "playing" the factory game
-# Defined here to break circular dependencies between agent, entity, and mixins
-_playing_factory: ContextVar[Optional["PlayingFactory"]] = ContextVar(
-    "playing_factory", default=None
-)
 
 
 # =============================================================================
@@ -219,31 +221,23 @@ _playing_factory: ContextVar[Optional["PlayingFactory"]] = ContextVar(
 # These TypedDicts match the return schemas from RemoteInterface.lua INTERFACE_METHODS
 # Each async action returns immediately with queued status; completion comes via UDP.
 
-class AsyncActionResponse(TypedDict, total=False):
-    """Base response from an asynchronous RCON action.
-    
-    RCON Contract: RemoteInterface.lua async_action.schema
-    All async actions return at least {queued, action_id}.
-    """
-    queued: bool
-    action_id: Optional[str]
-    estimated_ticks: Optional[int]
-
 
 class WalkAsyncResponse(TypedDict, total=False):
     """Response from walk_to async action.
-    
+
     RCON Contract: RemoteInterface.lua walk_to.returns.schema
     """
+
     queued: bool
     action_id: str
 
 
 class MineAsyncResponse(TypedDict, total=False):
     """Response from mine_resource async action.
-    
+
     RCON Contract: RemoteInterface.lua mine_resource.returns.schema
     """
+
     queued: bool
     action_id: str
     entity_name: str
@@ -252,9 +246,10 @@ class MineAsyncResponse(TypedDict, total=False):
 
 class CraftAsyncResponse(TypedDict, total=False):
     """Response from craft_enqueue async action.
-    
+
     RCON Contract: RemoteInterface.lua craft_enqueue.returns.schema
     """
+
     queued: bool
     action_id: str
     recipe: str
@@ -265,11 +260,13 @@ class CraftAsyncResponse(TypedDict, total=False):
 # ASYNC COMPLETION PAYLOADS (received via UDP)
 # =============================================================================
 
+
 class WalkCompletionPayload(TypedDict, total=False):
     """Completion payload for walk_to action (received via UDP).
-    
+
     RCON Contract: RemoteInterface.lua walk_to.returns.completion
     """
+
     success: bool
     position: Dict[str, float]
     elapsed_ticks: int
@@ -279,9 +276,10 @@ class WalkCompletionPayload(TypedDict, total=False):
 
 class MineCompletionPayload(TypedDict, total=False):
     """Completion payload for mine_resource action (received via UDP).
-    
+
     RCON Contract: RemoteInterface.lua mine_resource.returns.completion
     """
+
     success: bool
     items: Dict[str, int]  # {item_name: count, ...}
     reason: str  # "completed", "interrupted", etc.
@@ -291,9 +289,10 @@ class MineCompletionPayload(TypedDict, total=False):
 
 class CraftCompletionPayload(TypedDict, total=False):
     """Completion payload for craft_enqueue action (received via UDP).
-    
+
     RCON Contract: RemoteInterface.lua craft_enqueue.returns.completion
     """
+
     success: bool
     items: Dict[str, int]  # {item_name: count, ...}
     action_id: str
@@ -304,8 +303,10 @@ class CraftCompletionPayload(TypedDict, total=False):
 # CRAFTING & RESEARCH STATUS
 # =============================================================================
 
+
 class CraftingStatus(TypedDict):
     """Current crafting status for an agent."""
+
     active: bool
     recipe: Optional[str]
     progress: float
@@ -314,6 +315,7 @@ class CraftingStatus(TypedDict):
 
 class ResearchQueueItem(TypedDict):
     """An item in the research queue."""
+
     technology: str
     progress: float
     level: int
@@ -321,6 +323,7 @@ class ResearchQueueItem(TypedDict):
 
 class ResearchStatus(TypedDict):
     """Current research status for the force."""
+
     queue: List[ResearchQueueItem]
     queue_length: int
     current_research: Optional[str]
@@ -331,17 +334,19 @@ class ResearchStatus(TypedDict):
 # ACTION RESULTS (sync operations)
 # =============================================================================
 
+
 class ActionResult(TypedDict, total=False):
     """Consolidated result for sync actions that return validation data and metadata.
-    
+
     Used for actions where the primary goal is confirmation of success/failure
     and basic feedback, rather than returning an interactable domain object.
-    
+
     RCON Contract: Covers multiple RemoteInterface.lua methods including:
     - set_entity_filter, set_inventory_limit, put_inventory_item
     - place_entity, remove_ghost, teleport
     - enqueue_research, cancel_current_research, craft_dequeue
     """
+
     success: bool
     item_name: str
     count: int
@@ -363,11 +368,13 @@ class ActionResult(TypedDict, total=False):
 # AGENT INSPECTION
 # =============================================================================
 
+
 class AgentActivityState(TypedDict, total=False):
     """Agent activity state (walking, mining, crafting).
-    
+
     RCON Contract: RemoteInterface.lua inspect.returns.schema.state
     """
+
     walking: Dict[str, Any]
     mining: Dict[str, Any]
     crafting: Dict[str, Any]
@@ -375,9 +382,10 @@ class AgentActivityState(TypedDict, total=False):
 
 class AgentInspectionData(TypedDict, total=False):
     """Response from inspect() query.
-    
+
     RCON Contract: RemoteInterface.lua inspect.returns.schema
     """
+
     agent_id: int
     tick: int
     position: Dict[str, float]
@@ -386,6 +394,7 @@ class AgentInspectionData(TypedDict, total=False):
 
 class ResourcePatchData(TypedDict):
     """Structured data for a resource patch inspection."""
+
     name: str
     type: str
     total_amount: int
@@ -396,6 +405,7 @@ class ResourcePatchData(TypedDict):
 
 class ProductData(TypedDict, total=False):
     """Structured data for a mineable product."""
+
     name: str
     type: str
     amount: int
@@ -406,19 +416,21 @@ class ProductData(TypedDict, total=False):
 
 class EntityEnergyData(TypedDict, total=False):
     """Energy state for an entity.
-    
+
     RCON Contract: RemoteInterface.lua inspect_entity.returns.schema.energy
     """
+
     current: float
     capacity: float
 
 
 class EntityInventoriesData(TypedDict, total=False):
     """Inventory contents by slot type.
-    
+
     RCON Contract: RemoteInterface.lua inspect_entity.returns.schema.inventories
     Each slot is a dict of {item_name: count, ...}
     """
+
     fuel: Dict[str, int]
     input: Dict[str, int]
     output: Dict[str, int]
@@ -428,18 +440,19 @@ class EntityInventoriesData(TypedDict, total=False):
 
 class HeldItemData(TypedDict, total=False):
     """Item held by an inserter.
-    
+
     RCON Contract: RemoteInterface.lua inspect_entity.returns.schema.held_item
     """
+
     name: str
     count: int
 
 
 class EntityInspectionData(TypedDict, total=False):
     """Comprehensive volatile state for a specific entity.
-    
+
     RCON Contract: RemoteInterface.lua inspect_entity.returns.schema
-    
+
     This TypedDict covers ALL fields that can be returned from inspect_entity().
     Not all fields are present for all entity types:
     - crafting_progress: Only for assemblers/furnaces with active recipe
@@ -447,39 +460,41 @@ class EntityInspectionData(TypedDict, total=False):
     - held_item: Only for inserters
     - inventories: Structure varies by entity type
     """
+
     # Core identification
     entity_name: str
     entity_type: str
     position: Dict[str, float]
     tick: int  # Game tick when inspection was taken
-    
+
     # State
     status: str  # "working", "no-power", "waiting-for-space", etc.
     direction: int
     health: float
-    
+
     # Recipe/Crafting (assemblers, furnaces, chemical plants)
     recipe: Optional[str]
     crafting_progress: float  # 0.0-1.0
-    burning_progress: float   # 0.0-1.0 (furnaces)
+    burning_progress: float  # 0.0-1.0 (furnaces)
     productivity_bonus: float
-    
+
     # Energy (electric entities)
     energy: EntityEnergyData
-    
+
     # Inventories by slot type
     inventories: EntityInventoriesData
-    
+
     # Inserter-specific
     held_item: HeldItemData
-    
+
     # Legacy/compatibility fields (may be used by older code)
     inventory: Dict[str, int]  # Simple contents for containers
-    fuel: Dict[str, float]     # Burner fuel info
+    fuel: Dict[str, float]  # Burner fuel info
 
 
 class EntityFilterOptions(TypedDict, total=False):
     """Filter options for get_entities / get_entity."""
+
     recipe: str
     direction: Direction
     entity_type: str
@@ -488,27 +503,28 @@ class EntityFilterOptions(TypedDict, total=False):
 
 class GhostAreaFilter(TypedDict, total=False):
     """Area filter for get_ghosts.
-    
+
     Used to filter ghosts by spatial area and/or metadata.
     All fields are optional - omit to not filter on that criteria.
-    
+
     Area can be specified as:
     - Bounding box: min_x, min_y, max_x, max_y
     - Circle: center_x, center_y, radius
     """
+
     # Bounding box filter
     min_x: float
     min_y: float
     max_x: float
     max_y: float
-    
+
     # Circle filter (alternative to bounding box)
     center_x: float
     center_y: float
     radius: float
-    
+
     # Ghost-specific filters
-    label: Optional[str]        # Filter by ghost label (set when placing)
+    label: Optional[str]  # Filter by ghost label (set when placing)
     placed_tick: Optional[int]  # Filter by tick when ghost was placed
     entity_name: Optional[str]  # Filter by the entity type the ghost represents
 
@@ -517,11 +533,13 @@ class GhostAreaFilter(TypedDict, total=False):
 # REACHABILITY SNAPSHOT DATA
 # =============================================================================
 
+
 class ReachableEntityData(TypedDict, total=False):
     """Entity data from get_reachable snapshot.
-    
+
     RCON Contract: RemoteInterface.lua get_reachable.returns.schema.entities.item_schema
     """
+
     name: str
     type: str
     position: Dict[str, float]
@@ -536,9 +554,10 @@ class ReachableEntityData(TypedDict, total=False):
 
 class ReachableResourceData(TypedDict, total=False):
     """Resource data from get_reachable snapshot.
-    
+
     RCON Contract: RemoteInterface.lua get_reachable.returns.schema.resources.item_schema
     """
+
     name: str
     type: str
     position: Dict[str, float]
@@ -549,9 +568,10 @@ class ReachableResourceData(TypedDict, total=False):
 
 class ReachableGhostData(TypedDict, total=False):
     """Ghost entity data from get_reachable snapshot.
-    
+
     RCON Contract: RemoteInterface.lua get_reachable.returns.schema.ghosts.item_schema
     """
+
     name: str  # Always "entity-ghost"
     type: str  # Always "entity-ghost"
     position: Dict[str, float]
@@ -562,9 +582,10 @@ class ReachableGhostData(TypedDict, total=False):
 
 class ReachableSnapshotData(TypedDict, total=False):
     """Full reachable snapshot response.
-    
+
     RCON Contract: RemoteInterface.lua get_reachable.returns.schema
     """
+
     entities: List[ReachableEntityData]
     resources: List[ReachableResourceData]
     ghosts: List[ReachableGhostData]  # Only if attach_ghosts=True
@@ -576,11 +597,13 @@ class ReachableSnapshotData(TypedDict, total=False):
 # PLACEMENT CUES DATA
 # =============================================================================
 
+
 class PlacementCueData(TypedDict, total=False):
     """Single placement cue position.
-    
+
     RCON Contract: RemoteInterface.lua get_placement_cues.returns.schema
     """
+
     position: Dict[str, float]
     resource_name: Optional[str]
     resource_amount: Optional[int]
@@ -588,9 +611,10 @@ class PlacementCueData(TypedDict, total=False):
 
 class PlacementCuesResponse(TypedDict):
     """Response from get_placement_cues query.
-    
+
     RCON Contract: RemoteInterface.lua get_placement_cues.returns.schema
     """
+
     entity_name: str
     collision_box: Dict[str, Any]
     tile_width: int

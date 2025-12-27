@@ -1,0 +1,323 @@
+"""Reachable entities and resources query module.
+
+Provides synchronous access to reachable entities and resources via RconHandler.
+No async listener needed - all operations are synchronous.
+"""
+
+from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+
+from FactoryVerse.dsl.types import MapPosition
+
+if TYPE_CHECKING:
+    from ..infra.rcon_handler import RconHandler
+    from FactoryVerse.dsl.entity.base import ReachableEntity
+
+
+class ReachableEntities:
+    """Represents reachable entities with query methods.
+
+    Similar to AgentInventory but for entities. Provides filtering
+    and query capabilities without returning raw lists.
+
+    Note: Always fetches fresh data from the game - no caching.
+    """
+
+    def __init__(self, rcon_handler: "RconHandler"):
+        self._rcon = rcon_handler
+        # Initialize action dependencies for factory
+        from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
+        from FactoryVerse.agent.actions.place_entity import PlacementAction
+
+        self._entity_ops = EntityOperationsAction(rcon_handler)
+        self._place_ops = PlacementAction(rcon_handler)
+
+    def _fetch_fresh_data(self):
+        """Fetch fresh entities data via RCON (no caching)."""
+        cmd = self._rcon.build_command("get_reachable", False)  # attach_ghosts=False
+        data = self._rcon.execute_and_parse_json(cmd)
+        entities_data = data.get("entities", [])
+
+        # Convert to Reachable view entities using new factory
+        from FactoryVerse.dsl.entity.factory import create_reachable_entity
+
+        entities_instances = []
+        for entity_data in entities_data:
+            try:
+                entity = create_reachable_entity(
+                    entity_data, self._entity_ops, self._place_ops
+                )
+                entities_instances.append(entity)
+            except ValueError as e:
+                # Entity type not yet migrated - skip it for now
+                pass
+
+        return entities_instances, entities_data
+
+    def get_entity(
+        self,
+        entity_name: str,
+        position: Optional[MapPosition] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[ReachableEntity]:
+        """Get a single entity matching criteria.
+
+        Always fetches fresh data from the game - no caching.
+
+        Args:
+            entity_name: Entity prototype name (e.g., "electric-mining-drill")
+            position: Optional exact position match
+            options: Optional dict with filters:
+                - recipe: str - filter by recipe name
+                - direction: Direction - filter by direction
+                - entity_type: str - filter by Factorio entity type
+                - status: str - filter by status (e.g., "working", "no-power")
+
+        Returns:
+            First matching ReachableEntity instance, or None if not found
+        """
+        # Always fetch fresh data
+        entities_instances, entities_data = self._fetch_fresh_data()
+        options = options or {}
+
+        # Filter by name first
+        matches = [
+            (inst, data)
+            for inst, data in zip(entities_instances, entities_data)
+            if inst.name == entity_name
+        ]
+
+        # Filter by position if provided
+        if position is not None:
+            matches = [
+                (inst, data) for inst, data in matches if inst.position == position
+            ]
+
+        # Apply option filters
+        if "recipe" in options:
+            recipe = options["recipe"]
+            matches = [
+                (inst, data) for inst, data in matches if data.get("recipe") == recipe
+            ]
+
+        if "direction" in options:
+            direction = options["direction"]
+            matches = [
+                (inst, data) for inst, data in matches if inst.direction == direction
+            ]
+
+        if "entity_type" in options:
+            entity_type = options["entity_type"]
+            matches = [
+                (inst, data)
+                for inst, data in matches
+                if data.get("type") == entity_type
+            ]
+
+        if "status" in options:
+            status = options["status"]
+            matches = [
+                (inst, data) for inst, data in matches if data.get("status") == status
+            ]
+
+        return matches[0][0] if matches else None
+
+    def get_entities(
+        self,
+        entity_name: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> List[ReachableEntity]:
+        """Get entities matching criteria.
+
+        Always fetches fresh data from the game - no caching.
+
+        Args:
+            entity_name: Optional entity prototype name filter
+            options: Optional dict with filters (same as get_entity)
+
+        Returns:
+            List of matching ReachableEntity instances (may be empty)
+        """
+        # Always fetch fresh data
+        entities_instances, entities_data = self._fetch_fresh_data()
+        options = options or {}
+
+        # Start with all entities
+        matches = [
+            (inst, data) for inst, data in zip(entities_instances, entities_data)
+        ]
+
+        # Filter by name if provided
+        if entity_name is not None:
+            matches = [
+                (inst, data) for inst, data in matches if inst.name == entity_name
+            ]
+
+        # Apply option filters (same logic as get_entity)
+        if "recipe" in options:
+            recipe = options["recipe"]
+            matches = [
+                (inst, data) for inst, data in matches if data.get("recipe") == recipe
+            ]
+
+        if "direction" in options:
+            direction = options["direction"]
+            matches = [
+                (inst, data) for inst, data in matches if inst.direction == direction
+            ]
+
+        if "entity_type" in options:
+            entity_type = options["entity_type"]
+            matches = [
+                (inst, data)
+                for inst, data in matches
+                if data.get("type") == entity_type
+            ]
+
+        if "status" in options:
+            status = options["status"]
+            matches = [
+                (inst, data) for inst, data in matches if data.get("status") == status
+            ]
+
+        return [inst for inst, _ in matches]
+
+
+class ReachableResources:
+    """Represents reachable resources with query methods.
+
+    Similar pattern to AgentInventory but for resources (ores, trees, rocks).
+
+    Note: Always fetches fresh data from the game - no caching.
+    """
+
+    def __init__(self, rcon_handler: "RconHandler"):
+        self._rcon = rcon_handler
+
+    def _fetch_fresh_data(self):
+        """Fetch fresh resources data via RCON (no caching)."""
+        cmd = self._rcon.build_command("get_reachable", False)  # attach_ghosts=False
+        data = self._rcon.execute_and_parse_json(cmd)
+        return data.get("resources", [])
+
+    def get_resource(
+        self, resource_name: str, position: Optional[MapPosition] = None
+    ) -> Optional[Any]:
+        """Get a single resource matching criteria.
+
+        Always fetches fresh data from the game - no caching.
+
+        Args:
+            resource_name: Resource name (e.g., "iron-ore", "tree")
+            position: Optional exact position match
+
+        Returns:
+            BaseResource instance (or appropriate subclass), or None if not found
+        """
+        from FactoryVerse.dsl.resource.base import _create_resource_from_data
+
+        # Always fetch fresh data
+        resources_data = self._fetch_fresh_data()
+
+        matches = [data for data in resources_data if data.get("name") == resource_name]
+
+        if position is not None:
+            matches = [
+                data
+                for data in matches
+                if data.get("position", {}).get("x") == position.x
+                and data.get("position", {}).get("y") == position.y
+            ]
+
+        if matches:
+            return _create_resource_from_data(matches[0])
+        return None
+
+    def get_resources(
+        self, resource_name: Optional[str] = None, resource_type: Optional[str] = None
+    ) -> List[Any]:
+        """Get resources matching criteria.
+
+        Returns ResourceOrePatch for multiple ore patches of same type,
+        BaseResource for single ore patches or entities.
+
+        Always fetches fresh data from the game - no caching.
+
+        Args:
+            resource_name: Optional resource name filter (e.g., "iron-ore", "tree")
+            resource_type: Optional resource type filter. Can be:
+                - "ore" or "resource" - filters to ore patches (type="resource")
+                - "entity" - filters to trees and rocks (type="tree" or "simple-entity")
+                - "tree" - filters to trees only
+                - "simple-entity" - filters to rocks only
+                - "resource" - filters to ore patches only (Factorio type)
+
+        Returns:
+            List[Union[ResourceOrePatch, BaseResource]]:
+            - ResourceOrePatch: Multiple ore patches of same type (consolidated)
+            - BaseResource: Single ore patch or entity (trees/rocks)
+        """
+        from FactoryVerse.dsl.resource.base import (
+            ResourceOrePatch,
+            BaseResource,
+            _create_resource_from_data,
+        )
+
+        # Always fetch fresh data
+        resources_data = self._fetch_fresh_data()
+
+        matches = resources_data
+
+        # Filter by name if provided
+        if resource_name is not None:
+            matches = [data for data in matches if data.get("name") == resource_name]
+
+        # Filter by type if provided
+        if resource_type is not None:
+            # Handle simplified aliases
+            if resource_type == "ore":
+                resource_type = "resource"
+            elif resource_type == "entity":
+                # Match both trees and simple-entities
+                matches = [
+                    data
+                    for data in matches
+                    if data.get("type") in ("tree", "simple-entity")
+                ]
+            else:
+                # Direct type match (resource, tree, simple-entity)
+                matches = [
+                    data for data in matches if data.get("type") == resource_type
+                ]
+
+        # Group by resource name
+        resources_by_name: Dict[str, List[Dict[str, Any]]] = {}
+        for data in matches:
+            name = data.get("name", "")
+            if name not in resources_by_name:
+                resources_by_name[name] = []
+            resources_by_name[name].append(data)
+
+        # Build result list
+        result: List[Union[ResourceOrePatch, BaseResource]] = []
+
+        for name, data_list in resources_by_name.items():
+            resource_type_val = data_list[0].get("type", "resource")
+
+            # Entities (trees, rocks) are always returned as BaseResource
+            if resource_type_val in ("tree", "simple-entity"):
+                for data in data_list:
+                    result.append(_create_resource_from_data(data))
+            # Ore patches: consolidate if multiple, return single as BaseResource
+            elif resource_type_val == "resource":
+                if len(data_list) > 1:
+                    # Multiple tiles of same ore type -> ResourceOrePatch
+                    result.append(ResourceOrePatch(name, data_list))
+                else:
+                    # Single tile -> BaseResource
+                    result.append(_create_resource_from_data(data_list[0]))
+            else:
+                # Unknown type, return as BaseResource
+                for data in data_list:
+                    result.append(_create_resource_from_data(data))
+
+        return result
