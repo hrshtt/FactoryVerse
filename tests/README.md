@@ -1,140 +1,139 @@
 # FactoryVerse Tests
 
-Comprehensive test suite for FactoryVerse DSL, mods, and snapshot system.
+Test suite for FactoryVerse DSL and mod.
 
 ## Quick Start
 
-### Prerequisites
-
-1. **Factorio running with test-ground scenario**
-   - Load the `test-ground` scenario from `src/factorio/scenarios/test-ground`
-   - Ensure RCON is enabled (default port 27015, password "factorio")
-
-2. **Install test dependencies**
-   ```bash
-   pip install pytest pytest-xdist
-   ```
-
-### Running Tests
-
 ```bash
-# Run all tests
-pytest tests/
-
-# Run with verbose output
-pytest -v tests/
+# Run all tests (server auto-starts if needed)
+uv run pytest tests/
 
 # Run specific test file
-pytest tests/test_ground_examples.py
+uv run pytest tests/test_infrastructure.py -v
 
-# Run tests matching a pattern
-pytest -k "snapshot" tests/
+# Run with specific marker
+uv run pytest -m "not slow" tests/
 ```
 
-## Test Structure
+## Fixture Hierarchy
 
 ```
-tests/
-├── conftest.py                    # pytest configuration and fixtures
-├── helpers/                       # Test helper modules
-│   ├── __init__.py
-│   └── test_ground.py            # TestGround helper class
-├── test_ground_examples.py        # Example tests demonstrating infrastructure
-├── dsl/                           # DSL operation tests (TODO)
-│   ├── actions/                   # Walking, mining, crafting, etc.
-│   └── entities/                  # Furnaces, drills, inserters, etc.
-├── snapshot/                      # Snapshot accuracy tests (TODO)
-└── workflows/                     # End-to-end workflow tests (TODO)
+factorio_server (session)     # Auto-starts Docker, manages RCON
+    └── rcon (function)       # RCON connection with xpcall error handling
+        ├── agent (function)  # Fresh agent per test
+        ├── test_ground       # Test area setup helpers
+        ├── admin             # Admin commands (add items, unlock, etc.)
+        └── game_world        # Combined access to all of the above
 ```
-
-## Key Concepts
-
-### test-ground Scenario
-
-- **512x512 lab tile map** - clean, obstacle-free testing environment
-- **Programmatic resource/entity placement** - deterministic test setup
-- **Force re-snapshot** - on-demand snapshot triggering for validation
-- **Metadata tracking** - all placed resources/entities tracked
-
-### TestGround Helper
-
-Python class providing high-level API for:
-- Resource placement (`place_iron_patch()`, `place_copper_patch()`, etc.)
-- Entity placement (`place_entity()`, `place_entity_grid()`)
-- Area management (`clear_area()`, `reset_test_area()`)
-- Snapshot control (`force_resnapshot()`)
-- Validation (`validate_resource_at()`, `validate_entity_at()`)
-
-### pytest Fixtures
-
-- `factory_instance` - Session-scoped DSL access
-- `test_ground` - Session-scoped TestGround helper
-- `iron_ore_patch`, `copper_ore_patch`, etc. - Pre-placed resource patches
-- `reset_between_tests` (autouse) - Automatic test isolation
 
 ## Example Test
 
 ```python
-def test_mine_from_known_patch(factory_instance, iron_ore_patch):
-    """Test mining from a known iron ore patch."""
-    # Walk to patch
-    patch_x = iron_ore_patch["center"]["x"]
-    patch_y = iron_ore_patch["center"]["y"]
-    factory_instance.walking.to(patch_x, patch_y)
-    
-    # Get initial inventory
-    initial_iron = factory_instance.inventory.get_total("iron-ore")
-    
-    # Mine
-    factory_instance.mining.resource("iron-ore", quantity=10)
-    
-    # Verify
-    final_iron = factory_instance.inventory.get_total("iron-ore")
-    assert final_iron == initial_iron + 10
+class TestMyFeature:
+    def test_place_and_mine(self, game_world):
+        # Setup: place a resource patch
+        patch = game_world.test_ground.place_iron_patch(100, 100, size=4)
+        
+        # Act: teleport agent and mine
+        game_world.agent.teleport(100, 100)
+        result = game_world.agent.mine_resource("iron-ore", 10)
+        
+        # Assert
+        assert result["queued"]
 ```
 
-## Documentation
+## Available Fixtures
 
-See [testing_infrastructure.md](../.gemini/antigravity/brain/42d2e351-8b2b-4afb-87af-cb2f2a49bb50/testing_infrastructure.md) for comprehensive documentation including:
-- Architecture overview
-- test-ground scenario API
-- TestGround helper API
-- Writing tests guide
-- Best practices
-- Troubleshooting
+### `rcon` (function scope)
+Raw RCON connection with xpcall wrapper. All Lua errors include tracebacks.
 
-## Contributing Tests
+```python
+def test_raw_rcon(rcon):
+    result = rcon.call("test_ground", "get_test_metadata")
+    assert result["entity_count"] >= 0
+```
 
-When adding new tests:
+### `agent` (function scope)
+Fresh agent created per test. Destroyed after test completes.
 
-1. **Use existing fixtures** when possible
-2. **Follow naming conventions**: `test_<feature>_<scenario>`
-3. **Add docstrings** explaining what the test validates
-4. **Use markers** for categorization:
-   - `@pytest.mark.slow` - Tests that take >5 seconds
-   - `@pytest.mark.snapshot` - Tests validating snapshot accuracy
-   - `@pytest.mark.dsl` - Tests validating DSL operations
-   - `@pytest.mark.mod` - Tests validating mod behavior
+```python
+def test_agent(agent):
+    pos = agent.get_position()
+    agent.teleport(10, 10)
+    agent.walk_to(20, 20)  # Async - returns immediately
+```
 
-5. **Ensure test isolation** - tests should not depend on each other
+### `test_ground` (function scope)
+Test area setup helpers.
 
-## Troubleshooting
+```python
+def test_setup(test_ground):
+    test_ground.place_iron_patch(50, 50, size=32)
+    test_ground.place_entity("stone-furnace", 60, 60)
+    test_ground.clear_area((0, 0), (100, 100))
+```
 
-### "test-ground scenario not loaded"
+### `clean_area` (function scope)
+Same as `test_ground` but resets the 512x512 area before the test.
 
-Ensure Factorio is running with the test-ground scenario and RCON is accessible.
+```python
+def test_clean_slate(clean_area):
+    # Area is guaranteed empty
+    metadata = clean_area.get_metadata()
+    assert metadata["entity_count"] == 0
+```
 
-### "No resources found in snapshot"
+### `admin` (function scope)
+Admin operations for test setup.
 
-Increase wait time after `force_resnapshot()` or implement snapshot status polling.
+```python
+def test_with_items(admin, agent):
+    admin.add_items(1, {"iron-plate": 100, "coal": 50})
+    admin.unlock_all_technologies()
+```
 
-### Tests interfere with each other
+### `game_world` (function scope)
+Combined access to agent, test_ground, and admin.
 
-Verify `reset_between_tests` fixture is working. Check `conftest.py` is in `tests/` directory.
+```python
+def test_full_workflow(game_world):
+    game_world.test_ground.place_coal_patch(80, 80, size=8)
+    game_world.agent.teleport(80, 80)
+    game_world.admin.add_items(1, {"burner-mining-drill": 1})
+```
 
-## Next Steps
+## Server Lifecycle
 
-1. Run `pytest tests/test_ground_examples.py` to verify infrastructure
-2. Write DSL operation tests in `tests/dsl/actions/`
-3. Write entity behavior tests in `tests/dsl/entities/`
-4. Write snapshot validation tests in `tests/snapshot/`
+The `factorio_server` fixture (session scope) handles Docker:
+
+1. **Startup**: If container not running, starts `factorio_0`
+2. **Health check**: Waits for RCON to respond
+3. **Teardown**: Stops container if we started it
+
+Override config via `server_config` fixture:
+
+```python
+@pytest.fixture(scope="session")
+def server_config():
+    return ServerConfig(
+        rcon_port=27000,
+        startup_timeout=60
+    )
+```
+
+## Markers
+
+- `@pytest.mark.slow` - Tests that take >5 seconds
+- `@pytest.mark.requires_restart` - Tests that require server restart
+
+## Files
+
+```
+tests/
+├── conftest.py           # All fixtures
+├── helpers/
+│   ├── server.py        # FactorioServer, RconConnection
+│   └── test_ground.py   # TestGround helper
+├── test_infrastructure.py  # Smoke tests for fixtures
+└── ...                   # Your tests
+```

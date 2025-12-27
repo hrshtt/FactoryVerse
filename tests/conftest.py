@@ -1,335 +1,350 @@
 """
-Pytest configuration for FactoryVerse tests with test-ground scenario.
+Pytest configuration for FactoryVerse tests.
 
-This configuration provides:
-- Session-scoped Factorio instance connection
-- Test-ground scenario helpers
-- Auto-reset between tests
-- Snapshot control
-- Resource/entity placement fixtures
+Auto-manages Factorio server lifecycle:
+- Starts Docker container if not running (session scope)
+- Creates fresh agent per test (function scope)
+- Cleans up on session end
+
+Server Fixture Hierarchy:
+    factorio_server (session) -> rcon (function) -> agent (function)
 """
 
 import pytest
-from pathlib import Path
-from typing import Generator
-import subprocess
-import time
+from typing import Generator, Any
 
-from FactoryVerse.dsl.agent import PlayingFactory
+from helpers.server import FactorioServer, RconConnection, ServerConfig
 from helpers.test_ground import TestGround
 
 
 # ============================================================================
-# Path Fixtures
+# SERVER FIXTURES (Session Scope)
 # ============================================================================
-
-@pytest.fixture
-def project_root() -> Path:
-    """Return the project root directory."""
-    return Path(__file__).parent.parent
-
-
-@pytest.fixture
-def mod_dir(project_root: Path) -> Path:
-    """Return the Factorio Verse mod directory."""
-    return project_root / "src" / "factorio_verse"
-
-
-@pytest.fixture
-def scenarios_dir(project_root: Path) -> Path:
-    """Return the scenarios directory."""
-    return project_root / "src" / "factorio" / "scenarios"
-
-
-@pytest.fixture
-def config_dir(project_root: Path) -> Path:
-    """Return the config directory."""
-    return project_root / "src" / "factorio" / "config"
-
-
-@pytest.fixture
-def output_dir(project_root: Path) -> Path:
-    """Return the output directory."""
-    return project_root / ".fv-output"
-
-
-# ============================================================================
-# Docker & Server Fixtures
-# ============================================================================
-
-@pytest.fixture(scope="module")
-def docker_available() -> bool:
-    """Check if Docker is available."""
-    try:
-        subprocess.run(["docker", "version"], capture_output=True, check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
-@pytest.fixture
-def docker_manager():
-    """Provide a ClusterManager instance for testing."""
-    from FactoryVerse.infra.docker import ClusterManager
-    return ClusterManager()
-
-
-@pytest.fixture
-def wait_for_server():
-    """Helper to wait for a server to be ready."""
-    def _wait(port: int, timeout: int = 30):
-        import socket
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                result = sock.connect_ex(('localhost', port))
-                sock.close()
-                if result == 0:
-                    return True
-            except Exception:
-                pass
-            time.sleep(0.5)
-        return False
-    return _wait
-
-
-# ============================================================================
-# Factory & Test Ground Fixtures
-# ============================================================================
-
-@pytest.fixture(scope="session")
-def factory_instance() -> Generator[PlayingFactory, None, None]:
-    """
-    Session-scoped factory instance connected to test-ground scenario.
-    
-    This fixture:
-    - Connects to Factorio running test-ground scenario
-    - Creates an agent for testing
-    - Provides DSL access for tests
-    - Persists across all tests in session
-    - Cleans up on session end
-    
-    Yields:
-        PlayingFactory: Connected factory instance
-    """
-    from factorio_rcon import RCONClient
-    from FactoryVerse import dsl
-    import json
-    
-    # TODO: Make these configurable via environment variables
-    rcon_client = RCONClient("localhost", 27100, "factorio")
-    
-    # Warm up RCON
-    rcon_client.send_command("/c rcon.print('hello world')")
-    rcon_client.send_command("/c rcon.print('hello world')")
-    
-    # Create an agent for testing with specific UDP port
-    agent_udp_port = 24389
-    agent_result = rcon_client.send_command(
-        f'/c rcon.print(helpers.table_to_json(remote.call("agent", "create_agent", {agent_udp_port}, true, false, "player", {{}})))'
-    )
-    
-    # Enable all recipes and research all technologies for testing
-    rcon_client.send_command("/c for _, tech in pairs(game.forces.player.technologies) do tech.researched = true end")
-    rcon_client.send_command("/c for _, recipe in pairs(game.forces.player.recipes) do recipe.enabled = true end")
-    
-    agent_info = json.loads(agent_result)
-    agent_id = agent_info["agent_id"]
-    agent_interface_name = agent_info["interface_name"]
-    
-    # Configure DSL with the created agent
-    dsl.configure(
-        rcon_client=rcon_client,
-        agent_id=agent_interface_name,
-        snapshot_dir=None,  # Will be set per-test if needed
-        db_path=None,  # In-memory database
-        agent_udp_port=agent_udp_port  # Enable async actions in tests
-    )
-    
-    # Enter playing context
-    with dsl.playing_factorio() as factory:
-        # Store numeric agent_id for admin commands
-        factory._numeric_agent_id = agent_id
-        yield factory
-    
-    # Cleanup: destroy agent
-    rcon_client.send_command('/c remote.call("agent", "destroy_agents")')
-
 
 
 @pytest.fixture(scope="session")
-def test_ground(factory_instance: PlayingFactory) -> TestGround:
+def server_config() -> ServerConfig:
+    """Server configuration. Override in conftest.py or via environment."""
+    return ServerConfig()
+
+
+@pytest.fixture(scope="session")
+def factorio_server(
+    server_config: ServerConfig,
+) -> Generator[FactorioServer, None, None]:
     """
-    Session-scoped test ground helper.
-    
-    Provides high-level helpers for:
-    - Resource placement
-    - Entity placement
-    - Area management
-    - Snapshot control
-    
-    Returns:
-        TestGround: Test ground helper instance
+    Session-scoped Factorio server.
+
+    Starts Docker container if not running.
+    Stops on session end if we started it.
     """
-    return TestGround(factory_instance._rcon)
+    server = FactorioServer(server_config)
+    server.ensure_running()
+
+    yield server
+
+    server.stop()
 
 
 # ============================================================================
-# Auto-Reset Fixture
+# RCON FIXTURES (Function Scope)
 # ============================================================================
 
-@pytest.fixture(autouse=False)  # Disabled for now - tests handle their own cleanup
-def reset_between_tests(test_ground: TestGround, factory_instance: PlayingFactory):
+
+@pytest.fixture(scope="function")
+def rcon(factorio_server: FactorioServer) -> RconConnection:
     """
-    Automatically reset game state between tests.
-    
-    NOTE: Currently disabled because it clears state before tests can validate.
-    Tests should handle their own cleanup for now.
+    Function-scoped RCON connection.
+
+    Ensures server is running and returns connection.
     """
-    # Pre-test setup
-    # test_ground.reset_test_area()
-    
-    # Reset player position (TODO: implement sync position reset)
-    # factory_instance.walking.to(0, 0)  # This is async, skip for now
-    
-    # TODO: Reset inventory to default state
-    # factory_instance._reset_inventory(factory_instance._test_default_inventory)
-    
-    # Force re-snapshot after reset
-    # test_ground.force_resnapshot()
-    
-    # Wait for snapshot to complete
-    # TODO: Poll snapshot status until complete
-    # time.sleep(2)
-    
-    yield  # Test runs here
-    
-    # Post-test cleanup (if needed)
-    pass
+    return factorio_server.rcon
 
 
 # ============================================================================
-# Resource Location Fixtures
+# TEST GROUND FIXTURES
 # ============================================================================
 
-@pytest.fixture
-def iron_ore_patch(test_ground: TestGround):
+
+@pytest.fixture(scope="function")
+def test_ground(rcon: RconConnection) -> TestGround:
     """
-    Provide a known iron ore patch.
-    
-    Places a 32x32 iron ore patch at (64, -64) with 10000 per tile.
-    
-    Returns:
-        dict: Patch metadata including position, size, amount
+    TestGround helper for test setup.
+
+    Provides:
+    - Resource placement (place_iron_patch, etc.)
+    - Entity placement (place_entity, etc.)
+    - Area management (clear_area, reset_test_area)
+    - Snapshot control (force_resnapshot)
     """
-    result = test_ground.place_iron_patch(x=64, y=-64, size=32, amount=10000)
-    # Force re-snapshot
-    test_ground.force_resnapshot()
-    time.sleep(1)
-    return result
+    return TestGround(rcon)
 
 
-@pytest.fixture
-def copper_ore_patch(test_ground: TestGround):
+@pytest.fixture(scope="function")
+def clean_area(test_ground: TestGround) -> Generator[TestGround, None, None]:
     """
-    Provide a known copper ore patch.
-    
-    Places a 32x32 copper ore patch at (-64, -64) with 10000 per tile.
-    
-    Returns:
-        dict: Patch metadata including position, size, amount
-    """
-    result = test_ground.place_copper_patch(x=-64, y=-64, size=32, amount=10000)
-    test_ground.force_resnapshot()
-    time.sleep(1)
-    return result
+    TestGround with clean test area.
 
-
-@pytest.fixture
-def coal_patch(test_ground: TestGround):
+    Resets the 512x512 test area before test runs.
+    Use when you need a completely empty map.
     """
-    Provide a known coal patch.
-    
-    Places a 32x32 coal patch at (64, 64) with 10000 per tile.
-    
-    Returns:
-        dict: Patch metadata including position, size, amount
-    """
-    result = test_ground.place_coal_patch(x=64, y=64, size=32, amount=10000)
-    test_ground.force_resnapshot()
-    time.sleep(1)
-    return result
-
-
-@pytest.fixture
-def stone_patch(test_ground: TestGround):
-    """
-    Provide a known stone patch.
-    
-    Places a 32x32 stone patch at (-64, 64) with 10000 per tile.
-    
-    Returns:
-        dict: Patch metadata including position, size, amount
-    """
-    result = test_ground.place_stone_patch(x=-64, y=64, size=32, amount=10000)
-    test_ground.force_resnapshot()
-    time.sleep(1)
-    return result
-
-
-@pytest.fixture
-def all_resource_patches(iron_ore_patch, copper_ore_patch, coal_patch, stone_patch):
-    """
-    Provide all basic resource patches.
-    
-    Returns:
-        dict: All patch metadata
-    """
-    return {
-        "iron": iron_ore_patch,
-        "copper": copper_ore_patch,
-        "coal": coal_patch,
-        "stone": stone_patch
-    }
+    test_ground.reset_test_area()
+    yield test_ground
 
 
 # ============================================================================
-# Empty Area Fixtures
+# AGENT FIXTURES
 # ============================================================================
 
-@pytest.fixture
-def empty_test_area(test_ground: TestGround):
+
+@pytest.fixture(scope="function")
+def agent_id(rcon: RconConnection) -> Generator[str, None, None]:
     """
-    Provide coordinates for a guaranteed empty area.
-    
-    Returns:
-        tuple: (x, y, width, height) of empty area
+    Create a fresh agent for testing.
+
+    Agent is destroyed after test completes.
+    Returns the agent interface name (e.g., "agent_1").
     """
-    # Area at (100, 100) with 20x20 size
-    # This is away from resource patches
-    return (100, 100, 20, 20)
+    # Create agent
+    result = rcon.call("agent", "create_agent", 34202, True, False, "player", {})
+    interface_name = result["interface_name"]
+
+    yield interface_name
+
+    # Cleanup: destroy all agents
+    rcon.call("agent", "destroy_agents")
+
+
+@pytest.fixture(scope="function")
+def agent(rcon: RconConnection, agent_id: str) -> "AgentInterface":
+    """
+    Agent interface for testing.
+
+    Provides methods to interact with the agent:
+    - walk_to, mine_resource, craft_enqueue (async)
+    - place_entity, pickup_entity, teleport (sync)
+    - inspect, get_inventory, get_position (queries)
+    """
+    return AgentInterface(rcon, agent_id)
+
+
+class AgentInterface:
+    """
+    Wrapper around agent remote interface.
+
+    Provides typed access to agent methods with proper error handling.
+    """
+
+    def __init__(self, rcon: RconConnection, interface_name: str):
+        self.rcon = rcon
+        self.interface_name = interface_name
+
+    def call(self, method: str, *args) -> Any:
+        """Call an agent method."""
+        return self.rcon.call(self.interface_name, method, *args)
+
+    # Queries
+    def inspect(self, attach_state: bool = False) -> dict:
+        """Get agent position and optionally activity state."""
+        return self.call("inspect", attach_state)
+
+    def get_position(self) -> dict:
+        """Get agent position."""
+        return self.call("get_position")
+
+    def get_inventory(self) -> dict:
+        """Get agent inventory contents."""
+        return self.call("get_inventory_items")
+
+    def get_reachable(self, attach_ghosts: bool = True) -> dict:
+        """Get reachable entities, resources, and ghosts."""
+        return self.call("get_reachable", attach_ghosts)
+
+    # Sync actions
+    def teleport(self, x: float, y: float) -> dict:
+        """Teleport agent to position."""
+        return self.call("teleport", {"x": x, "y": y})
+
+    def place_entity(
+        self,
+        entity_name: str,
+        x: float,
+        y: float,
+        direction: int = None,
+        ghost: bool = False,
+    ) -> dict:
+        """Place entity from inventory."""
+        return self.call(
+            "place_entity", entity_name, {"x": x, "y": y}, direction, ghost
+        )
+
+    def pickup_entity(self, entity_name: str, x: float = None, y: float = None) -> dict:
+        """Pick up entity into inventory."""
+        pos = {"x": x, "y": y} if x is not None else None
+        return self.call("pickup_entity", entity_name, pos)
+
+    def set_entity_recipe(
+        self, entity_name: str, x: float, y: float, recipe_name: str
+    ) -> dict:
+        """Set recipe on a machine."""
+        return self.call(
+            "set_entity_recipe", entity_name, {"x": x, "y": y}, recipe_name
+        )
+
+    def take_inventory_item(
+        self,
+        entity_name: str,
+        x: float,
+        y: float,
+        inventory_type: str,
+        item_name: str,
+        count: int = None,
+    ) -> dict:
+        """Take items from entity inventory."""
+        return self.call(
+            "take_inventory_item",
+            entity_name,
+            {"x": x, "y": y},
+            inventory_type,
+            item_name,
+            count,
+        )
+
+    def put_inventory_item(
+        self,
+        entity_name: str,
+        x: float,
+        y: float,
+        inventory_type: str,
+        item_name: str,
+        count: int,
+    ) -> dict:
+        """Put items into entity inventory."""
+        return self.call(
+            "put_inventory_item",
+            entity_name,
+            {"x": x, "y": y},
+            inventory_type,
+            item_name,
+            count,
+        )
+
+    def reset(self, reset_force: bool = False) -> dict:
+        """Reset agent (double-call pattern - call twice to confirm)."""
+        return self.call("reset", reset_force)
+
+    # Async actions (these need UDP handling for completion - just queue for now)
+    def walk_to(self, x: float, y: float, strict: bool = False) -> dict:
+        """Start walking to position. Returns immediately, action completes async."""
+        return self.call("walk_to", {"x": x, "y": y}, strict, {})
+
+    def stop_walking(self) -> dict:
+        """Stop current walking action."""
+        return self.call("stop_walking")
+
+    def mine_resource(self, resource_name: str, max_count: int = None) -> dict:
+        """Start mining resource. Returns immediately, action completes async."""
+        return self.call("mine_resource", resource_name, max_count)
+
+    def stop_mining(self) -> dict:
+        """Stop current mining action."""
+        return self.call("stop_mining")
+
+    def craft_enqueue(self, recipe_name: str, count: int = 1) -> dict:
+        """Queue crafting. Returns immediately, action completes async."""
+        return self.call("craft_enqueue", recipe_name, count)
+
+    def craft_dequeue(self, recipe_name: str, count: int = None) -> dict:
+        """Cancel queued crafting."""
+        return self.call("craft_dequeue", recipe_name, count)
 
 
 # ============================================================================
-# Pytest Configuration
+# ADMIN FIXTURES
 # ============================================================================
+
+
+@pytest.fixture(scope="function")
+def admin(rcon: RconConnection) -> "AdminInterface":
+    """
+    Admin interface for test setup.
+
+    Provides:
+    - add_items: Add items to agent inventory
+    - clear_inventory: Clear agent inventory
+    - unlock_technology: Unlock a technology
+    """
+    return AdminInterface(rcon)
+
+
+class AdminInterface:
+    """Wrapper around admin remote interface."""
+
+    def __init__(self, rcon: RconConnection):
+        self.rcon = rcon
+
+    def add_items(self, agent_id: int, items: dict) -> None:
+        """Add items to agent inventory."""
+        self.rcon.call("admin", "add_items", agent_id, items)
+
+    def clear_inventory(self, agent_id: int) -> None:
+        """Clear agent inventory."""
+        self.rcon.call("admin", "clear_inventory", agent_id)
+
+    def unlock_technology(self, tech_name: str) -> None:
+        """Unlock a technology."""
+        self.rcon.call("admin", "unlock_technology", tech_name)
+
+    def unlock_all_technologies(self) -> None:
+        """Unlock all technologies."""
+        self.rcon.execute(
+            "for _, tech in pairs(game.forces.player.technologies) do tech.researched = true end"
+        )
+
+    def enable_all_recipes(self) -> None:
+        """Enable all recipes."""
+        self.rcon.execute(
+            "for _, recipe in pairs(game.forces.player.recipes) do recipe.enabled = true end"
+        )
+
+
+# ============================================================================
+# CONVENIENCE FIXTURES
+# ============================================================================
+
+
+@pytest.fixture(scope="function")
+def game_world(agent: AgentInterface, test_ground: TestGround, admin: AdminInterface):
+    """
+    Complete game world fixture.
+
+    Provides:
+    - agent: Agent interface for actions
+    - test_ground: Test setup helpers
+    - admin: Admin commands
+    """
+    return GameWorld(agent, test_ground, admin)
+
+
+class GameWorld:
+    """Aggregate fixture providing complete game access."""
+
+    def __init__(
+        self, agent: AgentInterface, test_ground: TestGround, admin: AdminInterface
+    ):
+        self.agent = agent
+        self.test_ground = test_ground
+        self.admin = admin
+
+
+# ============================================================================
+# PYTEST CONFIGURATION
+# ============================================================================
+
 
 def pytest_configure(config):
-    """Configure pytest markers."""
+    """Register pytest markers."""
+    config.addinivalue_line("markers", "slow: marks tests as slow")
     config.addinivalue_line(
-        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
-    config.addinivalue_line(
-        "markers", "requires_scenario: marks tests that require test-ground scenario"
-    )
-    config.addinivalue_line(
-        "markers", "snapshot: marks tests that validate snapshot accuracy"
-    )
-    config.addinivalue_line(
-        "markers", "dsl: marks tests that validate DSL operations"
-    )
-    config.addinivalue_line(
-        "markers", "mod: marks tests that validate mod behavior"
+        "markers", "requires_restart: marks tests that require server restart"
     )

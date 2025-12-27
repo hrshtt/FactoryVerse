@@ -1,5 +1,13 @@
 """Test helpers for FactoryVerse testing."""
 
-from .test_ground import TestGround
+from .server import FactorioServer, RconConnection, ServerConfig
+from .test_ground import TestGround, ResourcePatch, PlacedEntity
 
-__all__ = ["TestGround"]
+__all__ = [
+    "FactorioServer",
+    "RconConnection",
+    "ServerConfig",
+    "TestGround",
+    "ResourcePatch",
+    "PlacedEntity",
+]
