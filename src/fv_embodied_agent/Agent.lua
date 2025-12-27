@@ -413,7 +413,7 @@ function Agent:reset(reset_force)
     local surface = self.character.surface
     local force = self.character.force
     local spawn_pos = force.get_spawn_position(surface)
-    local safe_position = surface.find_non_colliding_position("character", spawn_pos, 10, 2)
+    local safe_position = surface.find_non_colliding_position("character", spawn_pos, 10, 0.5)
     
     if safe_position then
         self.character.teleport(safe_position)

@@ -292,12 +292,10 @@ local function register_existing_agent_interfaces()
     for agent_id, agent in pairs(storage.agents) do
         -- Verify agent is valid (has metatable methods)
         if agent and type(agent.register_remote_interface) == "function" then
-            -- Check if interface already exists (shouldn't happen, but be safe)
-            local interface_name = "agent_" .. agent_id
-            if not remote.interfaces[interface_name] then
-                agent:register_remote_interface()
-                registered_count = registered_count + 1
-            end
+            -- Always re-register to ensure all methods are up-to-date
+            -- register_remote_interface() will remove existing interface if present
+            agent:register_remote_interface()
+            registered_count = registered_count + 1
         end
     end
 
