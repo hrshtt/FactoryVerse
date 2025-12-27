@@ -23,6 +23,7 @@ uv.lock
 .pytest_cache/
 .vscode/
 notebooks/
+*.ipynb
 
 .env
 .env.local
