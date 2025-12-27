@@ -40,32 +40,41 @@ fi
 # ============================================================================
 
 prepare_mods() {
-    echo "📦 Preparing FactoryVerse mod..."
+    echo "📦 Preparing FactoryVerse mods (fv_embodied_agent + fv_snapshot)..."
     
-    # Zip mod if needed
-    VERSION=$(grep -o '"version"\s*:\s*"[^"]*"' "${SCRIPT_DIR}/src/factorio_verse/info.json" | cut -d'"' -f4)
-    MOD_NAME="factorio_verse_${VERSION}"
-    MOD_ZIP="${LOCAL_MODS_PATH}/${MOD_NAME}.zip"
+    # Remove old mod copies
+    echo "   Removing existing FactoryVerse mod copies..."
+    rm -rf "${LOCAL_MODS_PATH}"/fv_embodied_agent*
+    rm -rf "${LOCAL_MODS_PATH}"/fv_snapshot*
+    rm -rf "${LOCAL_MODS_PATH}"/factorio_verse*
     
-    if [ ! -f "$MOD_ZIP" ] || [ "${SCRIPT_DIR}/src/factorio_verse" -nt "$MOD_ZIP" ]; then
-        TEMP_DIR=$(mktemp -d)
-        mkdir -p "$TEMP_DIR/$MOD_NAME"
-        cp -r "${SCRIPT_DIR}/src/factorio_verse"/* "$TEMP_DIR/$MOD_NAME/"
-        (cd "$TEMP_DIR" && zip -r "$MOD_ZIP" "$MOD_NAME" >/dev/null 2>&1)
-        rm -rf "$TEMP_DIR"
-    fi
+    # Prepare fv_embodied_agent mod
+    EA_VERSION=$(grep -o '"version"\s*:\s*"[^"]*"' "${SCRIPT_DIR}/src/fv_embodied_agent/info.json" | cut -d'"' -f4)
+    EA_MOD_NAME="fv_embodied_agent_${EA_VERSION}"
+    mkdir -p "${LOCAL_MODS_PATH}/${EA_MOD_NAME}"
+    cp -r "${SCRIPT_DIR}/src/fv_embodied_agent"/* "${LOCAL_MODS_PATH}/${EA_MOD_NAME}/"
+    echo "✓ fv_embodied_agent mod copied as ${EA_MOD_NAME}"
+    
+    # Prepare fv_snapshot mod
+    SS_VERSION=$(grep -o '"version"\s*:\s*"[^"]*"' "${SCRIPT_DIR}/src/fv_snapshot/info.json" | cut -d'"' -f4)
+    SS_MOD_NAME="fv_snapshot_${SS_VERSION}"
+    mkdir -p "${LOCAL_MODS_PATH}/${SS_MOD_NAME}"
+    cp -r "${SCRIPT_DIR}/src/fv_snapshot"/* "${LOCAL_MODS_PATH}/${SS_MOD_NAME}/"
+    echo "✓ fv_snapshot mod copied as ${SS_MOD_NAME}"
     
     # Update mod-list.json
     if [ -f "${LOCAL_MODS_PATH}/mod-list.json" ]; then
-        jq '.mods += [{"name": "factorio_verse", "enabled": true}] | 
-             .mods += [{"name": "elevated-rails", "enabled": false}] | 
-             .mods += [{"name": "quality", "enabled": false}] | 
-             .mods += [{"name": "space-age", "enabled": false}] | 
+        jq '.mods += [{\"name\": \"fv_embodied_agent\", \"enabled\": true}] | 
+             .mods += [{\"name\": \"fv_snapshot\", \"enabled\": true}] | 
+             .mods += [{\"name\": \"elevated-rails\", \"enabled\": false}] | 
+             .mods += [{\"name\": \"quality\", \"enabled\": false}] | 
+             .mods += [{\"name\": \"space-age\", \"enabled\": false}] | 
              .mods |= unique_by(.name) |
-             .mods |= map(if .name == "factorio_verse" then .enabled = true 
-                         elif .name == "elevated-rails" then .enabled = false 
-                         elif .name == "quality" then .enabled = false 
-                         elif .name == "space-age" then .enabled = false else . end)' \
+             .mods |= map(if .name == \"fv_embodied_agent\" then .enabled = true 
+                         elif .name == \"fv_snapshot\" then .enabled = true
+                         elif .name == \"elevated-rails\" then .enabled = false 
+                         elif .name == \"quality\" then .enabled = false 
+                         elif .name == \"space-age\" then .enabled = false else . end)' \
             "${LOCAL_MODS_PATH}/mod-list.json" > "${LOCAL_MODS_PATH}/mod-list.json.tmp"
         mv "${LOCAL_MODS_PATH}/mod-list.json.tmp" "${LOCAL_MODS_PATH}/mod-list.json"
     else
@@ -73,7 +82,8 @@ prepare_mods() {
 {
   "mods": [
     {"name": "base", "enabled": true},
-    {"name": "factorio_verse", "enabled": true},
+    {"name": "fv_embodied_agent", "enabled": true},
+    {"name": "fv_snapshot", "enabled": true},
     {"name": "elevated-rails", "enabled": false},
     {"name": "quality", "enabled": false},
     {"name": "space-age", "enabled": false}
@@ -82,7 +92,7 @@ prepare_mods() {
 EOF
     fi
     
-    echo "✓ Mod prepared"
+    echo "✓ Mods prepared"
 }
 
 # ============================================================================
@@ -119,7 +129,7 @@ EOF
         
         cat >> "${SCRIPT_DIR}/docker-compose.yml" <<EOF
   factorio_${i}:
-    image: factoriotools/factorio:2.0.60
+    image: factoriotools/factorio:2.0.72
     platform: ${DOCKER_PLATFORM}
     entrypoint: []
     command: ${EMULATOR} /opt/factorio/bin/x64/factorio --start-server-load-scenario ${scenario} --port 34197 --rcon-port 27015 --rcon-password "factorio" --server-settings /factorio/config/server-settings.json --map-gen-settings /factorio/config/map-gen-settings.json --map-settings /factorio/config/map-settings.json --server-whitelist /factorio/config/server-whitelist.json --use-server-whitelist --server-adminlist /factorio/config/server-adminlist.json --mod-directory /opt/factorio/mods --map-gen-seed 44340
@@ -158,7 +168,7 @@ EOF
 
 start_cluster() {
     local num_instances=$1
-    local scenario=${2:-test_scenario}
+    local scenario=${2:-test-ground}
     
     echo "🚀 Starting Factorio cluster (${num_instances} instance(s), scenario: ${scenario})"
     
@@ -196,7 +206,7 @@ fi
 
 COMMAND="${1:-start}"
 NUM_INSTANCES="${2:-1}"
-SCENARIO="${3:-test_scenario}"
+SCENARIO="${3:-test-ground}"
 
 case "$COMMAND" in
     start|'')
