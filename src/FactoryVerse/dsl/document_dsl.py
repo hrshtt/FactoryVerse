@@ -350,29 +350,49 @@ def introspect_entity_types(show_inherited: bool = False) -> str:
         show_inherited: If True, show all methods including inherited from mixins.
                        If False, show only unique methods per class.
     """
-    from FactoryVerse.dsl.entity import base
+    from FactoryVerse.dsl.entity import base_entity
+    from FactoryVerse.dsl.entity import implementations
     import inspect
 
     output = []
     output.append("=== ENTITY TYPES ===\n")
+    output.append(
+        "Note: All entities inherit from BaseEntity and are accessed via views:"
+    )
+    output.append("  - Reachable[EntityType]: Full interaction access")
+    output.append("  - RemoteView[EntityType]: Read-only access")
+    output.append("  - Ghost[EntityType]: Ghost/blueprint access\n")
 
-    # Dynamically discover all entity classes
+    # Discover entity classes from implementations
     entity_classes = []
-    for name, obj in inspect.getmembers(base, inspect.isclass):
-        # Skip private classes and imports
-        if name.startswith("_"):
-            continue
-        # Only include classes defined in this module
-        if obj.__module__ != "FactoryVerse.dsl.entity.base":
-            continue
-        # Skip mixin classes
-        if "Mixin" in name:
-            continue
-        # Skip EntityPosition (it's a helper, not an entity)
-        if name == "EntityPosition":
-            continue
 
-        entity_classes.append((name, obj))
+    # First add BaseEntity
+    entity_classes.append(("BaseEntity", base_entity.BaseEntity))
+
+    # Then discover from implementations
+    try:
+        for module_name in [
+            "assembler",
+            "container",
+            "furnace",
+            "inserter",
+            "mining_drill",
+            "pumpjack",
+            "transport",
+            "electric_pole",
+        ]:
+            module = getattr(implementations, module_name, None)
+            if module:
+                for name, obj in inspect.getmembers(module, inspect.isclass):
+                    if name.startswith("_"):
+                        continue
+                    if "Mixin" in name or "Inspection" in name:
+                        continue
+                    if name in ("EntityPosition", "BaseEntity"):
+                        continue
+                    entity_classes.append((name, obj))
+    except Exception:
+        pass
 
     # Sort by name for consistent output
     entity_classes.sort(key=lambda x: x[0])
@@ -390,9 +410,7 @@ def introspect_entity_types(show_inherited: bool = False) -> str:
             methods, properties = _get_class_methods_and_properties(cls)
         else:
             # Show only unique methods/properties (exclude inherited from bases)
-            exclude_bases = [
-                base for base in cls.__bases__ if base.__name__ != "object"
-            ]
+            exclude_bases = [b for b in cls.__bases__ if b.__name__ != "object"]
             methods, properties = _get_class_methods_and_properties(
                 cls, exclude_inherited_from=exclude_bases
             )
@@ -831,47 +849,32 @@ def list_affordances() -> List[str]:
 
 
 def introspect_entity_protocols() -> str:
-    """Generate documentation for entity capability protocols."""
-    from FactoryVerse.dsl.entity import protocols
-    import inspect
-
+    """Generate documentation for entity view architecture."""
     output = []
-    output.append("=== ENTITY CAPABILITY PROTOCOLS ===\n")
+    output.append("=== ENTITY VIEW ARCHITECTURE ===\n")
+    output.append(
+        "Entities are accessed through view wrappers that control available operations:\n"
+    )
 
-    # Discover all protocol classes
-    protocol_classes = []
-    for name, obj in inspect.getmembers(protocols, inspect.isclass):
-        if name.startswith("_"):
-            continue
-        # Check if it's a Protocol
-        if hasattr(obj, "__protocol_attrs__") or "Protocol" in str(obj.__bases__):
-            protocol_classes.append((name, obj))
+    output.append("Reachable[BaseEntity] (Full Access):")
+    output.append("  Returned by: runtime.reachable.get_entity(), get_entities()")
+    output.append("  Allows: inspect(), pickup(), and all entity-specific methods")
+    output.append("  Usage: For entities within agent's reach (~6 tiles)")
+    output.append("")
 
-    protocol_classes.sort(key=lambda x: x[0])
+    output.append("RemoteView[BaseEntity] (Read-Only):")
+    output.append("  Returned by: map_db queries, runtime.remote.get_entity()")
+    output.append("  Allows: inspect() only - read state without modification")
+    output.append("  Blocks: pickup(), set_recipe(), rotate(), etc.")
+    output.append("  Usage: For distant entities - navigate closer for full access")
+    output.append("")
 
-    for class_name, cls in protocol_classes:
-        output.append(f"{class_name}:")
-
-        # Get docstring
-        doc = inspect.getdoc(cls) or ""
-        if doc:
-            # Show first paragraph
-            first_para = doc.split("\n\n")[0]
-            for line in first_para.split("\n"):
-                output.append(f"  {line}")
-
-        methods, properties = _get_class_methods_and_properties(cls)
-
-        # Show properties
-        if properties:
-            for prop in properties:
-                output.append(f"  {prop['name']}: {prop['type']}")
-
-        # Show methods
-        for method in methods:
-            output.append(f"  {method['signature']}")
-
-        output.append("")
+    output.append("Ghost[BaseEntity] (Blueprint/Ghost Access):")
+    output.append("  Returned by: runtime.ghost.get_ghosts()")
+    output.append("  Allows: build() to materialize, remove() to delete")
+    output.append("  Blocks: inspect(), pickup() - ghost is not a real entity")
+    output.append("  Usage: For planned/blueprint entities waiting to be built")
+    output.append("")
 
     return "\n".join(output)
 
