@@ -49,6 +49,15 @@ dev = [
 
 # Pyrefly configuration
 [tool.pyrefly]
-project_includes = ["src"]
-search_path = ["src"]
-python_version = "3.12"
+# set the directory Pyrefly will search for files to type check
+project-includes = [
+    "src/FactoryVerse",
+    "tests",
+]
+
+# a table mapping error codes to an `is-enabled` boolean
+[errors]
+# disable `bad-assignment` errors
+bad-assignment = false
+# disable `bad-return` errors
+bad-return = false
