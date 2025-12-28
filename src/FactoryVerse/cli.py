@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-FactoryVerse CLI - File-based experiment tracking.
+FactoryVerse CLI - Manage Factorio instances and experiment tracking.
 
-Manages Jupyter notebook server and multiple Factorio servers.
+Manages Jupyter notebook server, multiple Factorio servers, and data pipelines.
+FactoryVerse mods (fv_embodied_agent + fv_snapshot) are ALWAYS loaded.
 """
 
 import argparse
@@ -12,19 +13,29 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any
 
+from .config import get_config
 from .infra.docker import (
     DockerComposeManager,
     FactorioServerManager,
     JupyterManager,
     HotreloadWatcher,
 )
-from .infra.docker.config import get_server_config
 from .infra.factorio_client_setup import (
     setup_client,
     launch_factorio_client,
     sync_hotreload_to_client,
     read_factorio_log,
     dump_data_raw,
+)
+from .infra.data_dump import (
+    refresh_data_dump,
+    prune_data_raw,
+    get_data_raw_path,
+)
+from .infra.instance_manager import (
+    FactorioInstanceManager,
+    NoInstanceError,
+    MultipleInstancesError,
 )
 
 
@@ -79,23 +90,32 @@ class SimpleExperimentTracker:
 
 
 def cmd_client_launch(args):
-    """Setup and launch Factorio client."""
-    from pathlib import Path
+    """Setup and launch Factorio client with FactoryVerse mods."""
+    config = get_config()
+    work_dir = config.project_root
 
-    # Error if --watch is used with --as-mod (hot reloading doesn't work for mods)
-    if args.watch and args.as_mod:
+    scenario = args.scenario
+
+    # Validate --watch only works with repo scenarios
+    if args.watch and not config.is_repo_scenario(scenario):
         print(
-            "❌ Error: --watch cannot be used with --as-mod. Hot reloading only works with scenarios, not mods.",
+            f"❌ Error: Cannot hot-reload scenario '{scenario}' - it's a local scenario.",
+            file=sys.stderr,
+        )
+        print(
+            "   Only repo scenarios (in src/factorio/scenarios/) can be hot-reloaded.",
+            file=sys.stderr,
+        )
+        print(
+            f"   Copy it to {config.scenarios_dir}/ first, or use without --watch.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    work_dir = Path.cwd()
-
     # Handle ghost reset
     if args.reset_ghosts:
         print("🧹 Clearing ghost state...")
-        fv_output = work_dir / ".fv-output"
+        fv_output = config.fv_output_dir
         if fv_output.exists():
             for ghost_file in fv_output.glob("*/ghosts.json"):
                 try:
@@ -105,82 +125,41 @@ def cmd_client_launch(args):
                     print(f"   Failed to delete {ghost_file}: {e}")
             print("✓ Ghost state cleared")
 
-    server_mgr = FactorioServerManager(work_dir)
+    server_mgr = FactorioServerManager(work_dir, config)
 
-    # Determine scenario
-    scenario = args.scenario
-
-    # Raise error if trying to use scenario route for FactoryVerse
-    if scenario == "factorio_verse" and not args.as_mod:
-        print(
-            "❌ Error: Scenario route for FactoryVerse is not supported.",
-            file=sys.stderr,
-        )
-        print(
-            "   FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot).",
-            file=sys.stderr,
-        )
-        print(
-            "   Please use --as-mod flag with a different scenario, or plan scenario support separately.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Setup client
-    # Pass work_dir directly (setup_client will derive mod paths from it)
-    if args.as_mod:
-        # Force loading as mod regardless of scenario
-        print(
-            f"📱 Setting up Factorio client (FactoryVerse mods, scenario: {scenario})"
-        )
-        setup_client(
-            work_dir,
-            scenario=scenario,
-            force=args.force,
-            project_scenarios_dir=server_mgr.scenarios_dir,
-            as_mod=True,
-        )
-    else:
-        # Setup for other scenarios (no FactoryVerse mods needed)
-        print(f"📱 Setting up Factorio client (scenario: {scenario})")
-        setup_client(
-            work_dir,
-            scenario=scenario,
-            force=args.force,
-            project_scenarios_dir=server_mgr.scenarios_dir,
-            as_mod=False,
-        )
+    # Setup client (always with mods)
+    print(f"📱 Setting up Factorio client (scenario: {scenario})")
+    setup_client(
+        work_dir,
+        scenario=scenario,
+        force=args.force,
+        project_scenarios_dir=server_mgr.scenarios_dir,
+    )
 
     # Launch client
     print("\n🚀 Launching Factorio client...")
     launch_factorio_client()
 
-    # Start hotreload watcher if requested (only works with scenarios, not mods)
+    # Start hotreload watcher if requested (only for repo scenarios)
     if args.watch:
-        if args.as_mod:
-            print("⚠️  --watch ignored: hotreload only works with scenarios, not mods")
-        else:
-            print("\n🔥 Starting hot-reload watcher...")
-            # Note: hotreload currently only works for factorio_verse scenario mode
-            # Since we've removed scenario support for FactoryVerse, this may not work
-            watcher = HotreloadWatcher(
-                server_mgr.verse_mod_dir, debounce_ms=2000
-            )  # 2 second debounce for IDE flush
+        print("\n🔥 Starting hot-reload watcher for scenario files...")
+        scenario_dir = config.scenarios_dir / scenario
+        watcher = HotreloadWatcher(scenario_dir, debounce_ms=2000)
 
-            def sync_and_reload():
-                sync_hotreload_to_client(server_mgr.verse_mod_dir)
+        def sync_and_reload():
+            sync_hotreload_to_client(scenario_dir)
 
-            watcher.start(sync_and_reload)
+        watcher.start(sync_and_reload)
 
-            try:
-                print("Press Ctrl+C to stop watching...")
-                while True:
-                    import time
+        try:
+            print("Press Ctrl+C to stop watching...")
+            while True:
+                import time
 
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                print("\nStopping watcher...")
-                watcher.stop()
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nStopping watcher...")
+            watcher.stop()
 
 
 def cmd_client_log(args):
@@ -190,31 +169,45 @@ def cmd_client_log(args):
 
 def cmd_client_dump_data(args):
     """Dump Factorio data.raw to JSON."""
-    from pathlib import Path
+    config = get_config()
+    work_dir = config.project_root
+    server_mgr = FactorioServerManager(work_dir, config)
 
-    work_dir = Path.cwd()
-    server_mgr = FactorioServerManager(work_dir)
-    # Pass work_dir directly (dump_data_raw will derive mod paths from it)
     dump_data_raw(
         work_dir,
         scenario=args.scenario,
         force=args.force,
         project_scenarios_dir=server_mgr.scenarios_dir,
-        as_mod=getattr(args, "as_mod", False),
     )
 
 
 def cmd_start(args):
     """Start Factorio servers with Jupyter AND setup client."""
-    from pathlib import Path
+    config = get_config()
+    work_dir = config.project_root
 
-    work_dir = Path.cwd()
-    config = get_server_config()
+    scenario = args.scenario
+
+    # Validate --watch only works with repo scenarios
+    if args.watch and not config.is_repo_scenario(scenario):
+        print(
+            f"❌ Error: Cannot hot-reload scenario '{scenario}' - it's a local scenario.",
+            file=sys.stderr,
+        )
+        print(
+            "   Only repo scenarios (in src/factorio/scenarios/) can be hot-reloaded.",
+            file=sys.stderr,
+        )
+        print(
+            f"   Copy it to {config.scenarios_dir}/ first, or use without --watch.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Handle ghost reset
     if args.reset_ghosts:
         print("🧹 Clearing ghost state...")
-        fv_output = work_dir / ".fv-output"
+        fv_output = config.fv_output_dir
         if fv_output.exists():
             for ghost_file in fv_output.glob("*/ghosts.json"):
                 try:
@@ -224,54 +217,39 @@ def cmd_start(args):
                     print(f"   Failed to delete {ghost_file}: {e}")
             print("✓ Ghost state cleared")
 
-    # Setup client first
-    server_mgr = FactorioServerManager(work_dir)
-
-    # Raise error if trying to use scenario route for FactoryVerse
-    if args.scenario == "factorio_verse" and not args.as_mod:
-        print(
-            "❌ Error: Scenario route for FactoryVerse is not supported.",
-            file=sys.stderr,
-        )
-        print(
-            "   FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot).",
-            file=sys.stderr,
-        )
-        print(
-            "   Please use --as-mod flag with a different scenario, or plan scenario support separately.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    server_mgr = FactorioServerManager(work_dir, config)
 
     # Validate scenario exists
-    if not server_mgr.validate_scenario(args.scenario):
-        print(f"❌ Error: Scenario '{args.scenario}' not found.", file=sys.stderr)
+    if not server_mgr.validate_scenario(scenario):
+        print(f"❌ Error: Scenario '{scenario}' not found.", file=sys.stderr)
         available = server_mgr.list_scenarios()
         if available:
             print(f"   Available scenarios: {', '.join(available)}", file=sys.stderr)
             print(
-                f"   Use 'fv server list-scenarios' to see all available scenarios.",
+                "   Use 'uv run fv server list-scenarios' to see all available scenarios.",
                 file=sys.stderr,
             )
         sys.exit(1)
 
-    print(f"📱 Setting up Factorio client (scenario: {args.scenario})")
-    # Pass work_dir directly (setup_client will derive mod paths from it)
+    # Setup client (always with mods)
+    print(f"📱 Setting up Factorio client (scenario: {scenario})")
     setup_client(
         work_dir,
-        scenario=args.scenario,
+        scenario=scenario,
         force=args.force,
         project_scenarios_dir=server_mgr.scenarios_dir,
-        as_mod=args.as_mod,
     )
 
     # Clear server snapshot directories before starting
-    print(f"🧹 Clearing server snapshot directories...")
+    print("🧹 Clearing server snapshot directories...")
     server_mgr.clear_all_server_snapshot_dirs(args.num)
 
-    # Prepare server mods
-    print(f"🚀 Starting FactoryVerse ({args.num} server(s), scenario: {args.scenario})")
-    server_mgr.prepare_mods(args.scenario, as_mod=args.as_mod)
+    # Consolidate local scenarios to repo (for Docker access)
+    server_mgr.consolidate_scenarios()
+
+    # Prepare server mods (always)
+    print(f"🚀 Starting FactoryVerse ({args.num} server(s), scenario: {scenario})")
+    server_mgr.prepare_mods(scenario)
 
     # Build compose file with services from both managers
     compose_mgr = DockerComposeManager(work_dir)
@@ -280,7 +258,7 @@ def cmd_start(args):
     compose_mgr.add_services("jupyter", jupyter_mgr.get_services())
     compose_mgr.add_services(
         "factorio",
-        server_mgr.get_services(args.num, args.scenario, max_agents=args.max_agents),
+        server_mgr.get_services(args.num, scenario, max_agents=args.max_agents),
     )
     compose_mgr.write_compose()
     compose_mgr.up()
@@ -292,29 +270,28 @@ def cmd_start(args):
 
     # Print server info
     for i in range(args.num):
-        rcon_port = config.get_rcon_port(i)
+        rcon_port = config.get_rcon_port(f"server_{i}")
         game_port = config.get_game_port(i)
         print(f"  Server {i}: Game=localhost:{game_port}, RCON=localhost:{rcon_port}")
-    print(f"\n📊 UDP Ports:")
+    print("\n📊 UDP Ports:")
     print(
         f"  Agent ports: {config.agent_port_base}-{config.agent_port_base + effective_max_agents - 1}"
     )
     print(f"  Snapshot port: {config.snapshot_port}")
-    print(f"📓 Jupyter: http://localhost:8888")
+    print("📓 Jupyter: http://localhost:8888")
 
     # Track experiment
     if args.name:
         tracker = SimpleExperimentTracker(work_dir)
         experiment_id = f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        tracker.add_experiment(experiment_id, args.name, args.num, args.scenario)
+        tracker.add_experiment(experiment_id, args.name, args.num, scenario)
         print(f"📝 Experiment '{args.name}' tracked (ID: {experiment_id})")
 
-    # Start hotreload watcher if requested
+    # Start hotreload watcher if requested (only for repo scenarios)
     if args.watch:
-        print("\n🔥 Starting hot-reload watcher...")
-        watcher = HotreloadWatcher(
-            server_mgr.verse_mod_dir, debounce_ms=2000
-        )  # 2 second debounce for IDE flush
+        print("\n🔥 Starting hot-reload watcher for scenario files...")
+        scenario_dir = config.scenarios_dir / scenario
+        watcher = HotreloadWatcher(scenario_dir, debounce_ms=2000)
 
         def sync_and_reload():
             # Sync to all running servers
@@ -336,28 +313,24 @@ def cmd_start(args):
 
 def cmd_stop(args):
     """Stop all services."""
-    from pathlib import Path
-
-    compose_mgr = DockerComposeManager(Path.cwd())
+    config = get_config()
+    compose_mgr = DockerComposeManager(config.project_root)
     compose_mgr.down()
     print("✅ Services stopped")
 
 
 def cmd_restart(args):
     """Restart all services."""
-    from pathlib import Path
-
-    compose_mgr = DockerComposeManager(Path.cwd())
+    config = get_config()
+    compose_mgr = DockerComposeManager(config.project_root)
     compose_mgr.restart()
     print("✅ Services restarted")
 
 
 def cmd_list(args):
     """List experiments."""
-    from pathlib import Path
-
-    work_dir = Path.cwd()
-    tracker = SimpleExperimentTracker(work_dir)
+    config = get_config()
+    tracker = SimpleExperimentTracker(config.project_root)
 
     experiments = tracker.list_experiments()
     if not experiments:
@@ -378,17 +351,15 @@ def cmd_list(args):
 
 def cmd_logs(args):
     """Show logs for a service."""
-    from pathlib import Path
-
-    compose_mgr = DockerComposeManager(Path.cwd())
+    config = get_config()
+    compose_mgr = DockerComposeManager(config.project_root)
     compose_mgr.logs(args.service, follow=args.follow)
 
 
 def cmd_server(args):
     """Control individual servers."""
-    from pathlib import Path
-
-    compose_mgr = DockerComposeManager(Path.cwd())
+    config = get_config()
+    compose_mgr = DockerComposeManager(config.project_root)
     service_name = f"factorio_{args.server_id}"
 
     if args.action == "start":
@@ -400,20 +371,110 @@ def cmd_server(args):
 
 
 def cmd_list_scenarios(args):
-    """List available scenarios."""
-    server_mgr = FactorioServerManager()
-    scenarios = server_mgr.list_scenarios()
+    """List available scenarios from both repo and local directories."""
+    config = get_config()
+    scenarios = config.list_scenarios(include_local=True)
 
     if not scenarios:
         print("No scenarios found.")
-        print(f"Scenarios directory: {server_mgr.scenarios_dir}")
+        print(f"Repo directory: {config.scenarios_dir}")
+        print(f"Local directory: {config.local_scenarios_dir}")
         return
 
+    # Get repo-only scenarios for comparison
+    repo_scenarios = set(config._list_scenarios_in_dir(config.scenarios_dir))
+
     print(f"Available scenarios ({len(scenarios)}):")
-    print("-" * 40)
+    print(f"{'Scenario':<25} {'Source':<10} {'Hot-reload':<10}")
+    print("-" * 50)
     for scenario in sorted(scenarios):
-        print(f"  {scenario}")
-    print("\nUsage: fv server start --scenario <scenario_name>")
+        is_repo = scenario in repo_scenarios
+        source = "repo" if is_repo else "local"
+        hotreload = "✓" if is_repo else "✗"
+        print(f"  {scenario:<23} {source:<10} {hotreload}")
+    print("\nUsage: uv run fv server start --scenario <scenario_name>")
+    print("Note: Only repo scenarios can be hot-reloaded with --watch.")
+
+
+# =============================================================================
+# Data Commands
+# =============================================================================
+
+
+def cmd_data_prune(args):
+    """Prune data-raw-dump.json to factorio-data-dump.json."""
+    config = get_config()
+    instance = args.instance or "client"
+
+    input_path = get_data_raw_path(instance)
+    output_path = config.data_dump_path
+
+    if not input_path.exists():
+        print(
+            f"❌ Error: data-raw-dump.json not found at {input_path}", file=sys.stderr
+        )
+        print("\n💡 Run Factorio with --dump-data to generate it:", file=sys.stderr)
+        print("   uv run fv client dump-data", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"📦 Pruning {input_path}")
+    print(f"   Output: {output_path}")
+
+    output, original_size, pruned_size = prune_data_raw(input_path, output_path)
+
+    reduction = (1 - pruned_size / original_size) * 100
+    print(
+        f"\n✅ Pruned: {original_size / 1024 / 1024:.1f}MB → {pruned_size / 1024 / 1024:.1f}MB ({reduction:.1f}% reduction)"
+    )
+    print(f"   Saved to: {output}")
+
+
+def cmd_data_refresh(args):
+    """Full pipeline: find data-raw-dump.json and prune it."""
+    instance = args.instance or "client"
+
+    print(f"🔄 Refreshing data dump from {instance}...")
+
+    try:
+        output = refresh_data_dump(instance)
+        print(f"\n✅ Data dump refreshed: {output}")
+    except FileNotFoundError as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_instance_list(args):
+    """List all Factorio instances and their status."""
+    print("🔍 Checking Factorio instances...\n")
+
+    instances = FactorioInstanceManager.list_available()
+
+    print(
+        f"{'Instance':<12} {'Type':<8} {'RCON Port':<12} {'Status':<10} {'Script Output'}"
+    )
+    print("-" * 80)
+
+    for inst in instances:
+        status = "✅ Active" if inst.test_connection() else "⬚ Inactive"
+        print(
+            f"{inst.name:<12} {inst.type:<8} {inst.rcon_port:<12} {status:<10} {inst.script_output_dir}"
+        )
+
+
+def cmd_instance_active(args):
+    """Show the currently active Factorio instance."""
+    try:
+        instance = FactorioInstanceManager.get_active(require_single=False)
+        print(f"✅ Active instance: {instance.name}")
+        print(f"   Type: {instance.type}")
+        print(f"   RCON: {instance.rcon_host}:{instance.rcon_port}")
+        print(f"   Script output: {instance.script_output_dir}")
+    except NoInstanceError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)
+    except MultipleInstancesError as e:
+        print(f"⚠️  {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main():
@@ -437,8 +498,8 @@ def main():
     client_launch_parser.add_argument(
         "-s",
         "--scenario",
-        default="factorio_verse",
-        help="Scenario to load (default: factorio_verse). Use 'test_scenario' for testing.",
+        default="test-ground",
+        help="Scenario to load (default: test-ground)",
     )
     client_launch_parser.add_argument(
         "-f", "--force", action="store_true", help="Force re-setup of client"
@@ -447,15 +508,10 @@ def main():
         "-w",
         "--watch",
         action="store_true",
-        help="Enable hot-reload watcher (scenario mode only)",
+        help="Enable hot-reload watcher (repo scenarios only)",
     )
     client_launch_parser.add_argument(
         "--reset-ghosts", action="store_true", help="Reset all ghost entities state"
-    )
-    client_launch_parser.add_argument(
-        "--as-mod",
-        action="store_true",
-        help="Force loading factorio_verse as a mod (removes existing mod copies and copies fresh files)",
     )
     client_launch_parser.set_defaults(func=cmd_client_launch)
 
@@ -475,16 +531,11 @@ def main():
     client_dump_parser.add_argument(
         "-s",
         "--scenario",
-        default="factorio_verse",
-        help="Scenario to use (default: factorio_verse)",
+        default="test-ground",
+        help="Scenario to use (default: test-ground)",
     )
     client_dump_parser.add_argument(
         "-f", "--force", action="store_true", help="Force re-setup of client"
-    )
-    client_dump_parser.add_argument(
-        "--as-mod",
-        action="store_true",
-        help="Force loading factorio_verse as a mod (removes existing mod copies and copies fresh files)",
     )
     client_dump_parser.set_defaults(func=cmd_client_dump_data)
 
@@ -505,7 +556,7 @@ def main():
         "-s",
         "--scenario",
         default="test-ground",
-        help="Scenario to load (default: test-ground). Use 'fv server list-scenarios' to see available.",
+        help="Scenario to load (default: test-ground). Use 'uv run fv server list-scenarios' to see available.",
     )
     server_start_parser.add_argument(
         "--max-agents",
@@ -518,15 +569,13 @@ def main():
         "-f", "--force", action="store_true", help="Force re-setup of client"
     )
     server_start_parser.add_argument(
-        "-w", "--watch", action="store_true", help="Enable hot-reload watcher"
+        "-w",
+        "--watch",
+        action="store_true",
+        help="Enable hot-reload watcher (repo scenarios only)",
     )
     server_start_parser.add_argument(
         "--reset-ghosts", action="store_true", help="Reset all ghost entities state"
-    )
-    server_start_parser.add_argument(
-        "--as-mod",
-        action="store_true",
-        help="Load FactoryVerse mods (fv_embodied_agent + fv_snapshot)",
     )
     server_start_parser.set_defaults(func=cmd_start)
 
@@ -569,6 +618,52 @@ def main():
     )
     server_instance_parser.add_argument("server_id", type=int, help="Server ID")
     server_instance_parser.set_defaults(func=cmd_server)
+
+    # ========== DATA COMMAND ==========
+    data_parser = subparsers.add_parser("data", help="Data dump management")
+    data_subparsers = data_parser.add_subparsers(dest="data_action", help="Data action")
+
+    # Data prune subcommand
+    data_prune_parser = data_subparsers.add_parser(
+        "prune", help="Prune data-raw-dump.json to factorio-data-dump.json"
+    )
+    data_prune_parser.add_argument(
+        "-i",
+        "--instance",
+        default="client",
+        help="Instance to read data-raw-dump.json from (default: client)",
+    )
+    data_prune_parser.set_defaults(func=cmd_data_prune)
+
+    # Data refresh subcommand
+    data_refresh_parser = data_subparsers.add_parser(
+        "refresh", help="Find and prune data-raw-dump.json"
+    )
+    data_refresh_parser.add_argument(
+        "-i",
+        "--instance",
+        default="client",
+        help="Instance to read data-raw-dump.json from (default: client)",
+    )
+    data_refresh_parser.set_defaults(func=cmd_data_refresh)
+
+    # ========== INSTANCE COMMAND ==========
+    instance_parser = subparsers.add_parser("instance", help="Instance management")
+    instance_subparsers = instance_parser.add_subparsers(
+        dest="instance_action", help="Instance action"
+    )
+
+    # Instance list subcommand
+    instance_list_parser = instance_subparsers.add_parser(
+        "list", help="List all instances and their status"
+    )
+    instance_list_parser.set_defaults(func=cmd_instance_list)
+
+    # Instance active subcommand
+    instance_active_parser = instance_subparsers.add_parser(
+        "active", help="Show active instance"
+    )
+    instance_active_parser.set_defaults(func=cmd_instance_active)
 
     args = parser.parse_args()
 

@@ -2,7 +2,7 @@
 """Factorio server management for FactoryVerse.
 
 Handles Docker container lifecycle, mod preparation, and server configuration.
-Uses pydantic-settings based configuration from config.py.
+Uses the unified FactoryVerseConfig from config.py.
 """
 
 import json
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from factorio_rcon import RCONClient
 
-from .config import get_server_config, get_path_config, ServerConfig, PathConfig
+from FactoryVerse.config import FactoryVerseConfig, get_config
 
 
 def _load_mod_list(mod_path: Path) -> dict:
@@ -50,51 +50,47 @@ def _update_mod_list(mod_path: Path, mod_name: str, enabled: bool) -> None:
 class FactorioServerManager:
     """Manages Factorio server configuration and lifecycle.
 
-    Uses ServerConfig and PathConfig for all configuration values.
+    Uses the unified FactoryVerseConfig for all configuration values.
     """
 
     def __init__(
         self,
         work_dir: Optional[Path] = None,
-        server_config: Optional[ServerConfig] = None,
-        path_config: Optional[PathConfig] = None,
+        config: Optional[FactoryVerseConfig] = None,
     ):
         """Initialize server manager.
 
         Args:
-            work_dir: Project root directory (deprecated, use path_config)
-            server_config: Server configuration (auto-loaded if not provided)
-            path_config: Path configuration (auto-loaded if not provided)
+            work_dir: Project root directory (optional, auto-detected from config)
+            config: Configuration (auto-loaded if not provided)
         """
-        self.config = server_config or get_server_config()
-        self.paths = path_config or get_path_config()
+        self.config = config or get_config()
 
-        # For backward compatibility
-        self.work_dir = work_dir or self.paths.project_root
+        # Work directory
+        self.work_dir = work_dir or self.config.project_root
 
-        # Legacy attributes (kept for backward compatibility)
+        # Mod directories
         self.verse_mod_dir = self.work_dir / "src" / "factorio_verse"
-        self.embodied_agent_mod_dir = self.paths.embodied_agent_mod_dir
-        self.snapshot_mod_dir = self.paths.snapshot_mod_dir
-        self.scenarios_dir = self.paths.scenarios_dir
-        self.config_dir = self.paths.server_config_dir
-        self.mod_path = self.paths.mods_dir
+        self.embodied_agent_mod_dir = self.config.embodied_agent_mod_dir
+        self.snapshot_mod_dir = self.config.snapshot_mod_dir
+        self.scenarios_dir = self.config.scenarios_dir
+        self.config_dir = self.config.server_config_dir
+        self.mod_path = self.config.mods_dir
 
         # Instance state
         self.num_instances = 1
         self.scenario = self.config.default_scenario
 
-    # =========================================================================
     # Scenario Management
     # =========================================================================
 
     def list_scenarios(self) -> List[str]:
-        """List available scenarios.
+        """List available scenarios from both repo and local directories.
 
         Returns:
-            List of scenario names that can be loaded
+            List of scenario names that can be loaded (includes local scenarios)
         """
-        return self.paths.list_scenarios()
+        return self.config.list_scenarios(include_local=True)
 
     def validate_scenario(self, scenario: str) -> bool:
         """Check if a scenario exists and is valid.
@@ -105,7 +101,46 @@ class FactorioServerManager:
         Returns:
             True if scenario exists and has control.lua
         """
-        return self.paths.validate_scenario(scenario)
+        return self.config.validate_scenario(scenario)
+
+    def consolidate_scenarios(self) -> int:
+        """Consolidate local scenarios to repo scenarios directory.
+
+        Copies scenarios from local Factorio directory to repo's scenarios
+        directory for server access. Repo scenarios take precedence (won't
+        be overwritten by local copies).
+
+        Returns:
+            Number of scenarios copied
+        """
+        local_dir = self.config.local_scenarios_dir
+        repo_dir = self.config.scenarios_dir
+
+        if not local_dir.exists():
+            return 0
+
+        copied = 0
+        for scenario_dir in local_dir.iterdir():
+            if not scenario_dir.is_dir():
+                continue
+            if not (scenario_dir / "control.lua").exists():
+                continue
+
+            target_dir = repo_dir / scenario_dir.name
+
+            # Skip if already exists in repo (repo takes precedence)
+            if target_dir.exists():
+                continue
+
+            # Copy scenario
+            print(f"📦 Copying local scenario '{scenario_dir.name}' to repo...")
+            shutil.copytree(scenario_dir, target_dir)
+            copied += 1
+
+        if copied > 0:
+            print(f"✓ Copied {copied} local scenario(s) to repo")
+
+        return copied
 
     # =========================================================================
     # Directory Management
@@ -113,7 +148,7 @@ class FactorioServerManager:
 
     def get_server_script_output_dir(self, instance_id: int = 0) -> Path:
         """Get script-output directory for a server instance."""
-        return self.paths.get_server_output_dir(instance_id)
+        return self.config.get_server_output_dir(instance_id)
 
     def clear_server_snapshot_dir(self, instance_id: int = 0) -> None:
         """Clear the snapshot directory for a server instance."""
@@ -139,58 +174,42 @@ class FactorioServerManager:
     # Mod Preparation
     # =========================================================================
 
-    def prepare_mods(self, scenario: str, as_mod: bool = False) -> None:
+    def prepare_mods(self, scenario: str) -> None:
         """Prepare FactoryVerse mods for server.
+
+        FactoryVerse mods (fv_embodied_agent + fv_snapshot) are ALWAYS loaded.
+        This is the only supported mode.
 
         Args:
             scenario: Scenario name to use
-            as_mod: If True, load FactoryVerse mods (fv_embodied_agent and fv_snapshot)
         """
-        if as_mod:
-            if scenario == "factorio_verse":
-                raise RuntimeError(
-                    "❌ Error: Cannot use scenario route for FactoryVerse. "
-                    "FactoryVerse has been split into two mods (fv_embodied_agent and fv_snapshot). "
-                    "Please use --as-mod flag with a different scenario."
-                )
-
-            # Check mod directories exist
-            if not self.embodied_agent_mod_dir.exists():
-                raise RuntimeError(
-                    f"FV Embodied Agent mod not found at {self.embodied_agent_mod_dir}"
-                )
-            if not self.snapshot_mod_dir.exists():
-                raise RuntimeError(
-                    f"FV Snapshot mod not found at {self.snapshot_mod_dir}"
-                )
-
-            print("📦 Preparing FactoryVerse mods for server...")
-
-            # Remove existing FactoryVerse mod copies
-            print("📦 Removing existing FactoryVerse mod copies...")
-            for old_mod_pattern in [
-                "fv_embodied_agent*",
-                "fv_snapshot*",
-                "factorio_verse*",
-            ]:
-                for old_mod in self.mod_path.glob(old_mod_pattern):
-                    if old_mod.is_dir():
-                        print(f"   Removing {old_mod.name}...")
-                        shutil.rmtree(old_mod)
-
-            # Prepare fv_embodied_agent mod
-            self._copy_mod(self.embodied_agent_mod_dir, "fv_embodied_agent")
-
-            # Prepare fv_snapshot mod
-            self._copy_mod(self.snapshot_mod_dir, "fv_snapshot")
-
-        elif scenario == "factorio_verse":
+        # Check mod directories exist
+        if not self.embodied_agent_mod_dir.exists():
             raise RuntimeError(
-                "❌ Error: Scenario route for FactoryVerse is not supported. "
-                "Please use --as-mod flag with a different scenario."
+                f"FV Embodied Agent mod not found at {self.embodied_agent_mod_dir}"
             )
-        else:
-            print(f"ℹ️  Using scenario mode (no mods needed for scenario: {scenario})")
+        if not self.snapshot_mod_dir.exists():
+            raise RuntimeError(f"FV Snapshot mod not found at {self.snapshot_mod_dir}")
+
+        print("📦 Preparing FactoryVerse mods for server...")
+
+        # Remove existing FactoryVerse mod copies
+        print("   Removing existing mod copies...")
+        for old_mod_pattern in [
+            "fv_embodied_agent*",
+            "fv_snapshot*",
+            "factorio_verse*",
+        ]:
+            for old_mod in self.mod_path.glob(old_mod_pattern):
+                if old_mod.is_dir():
+                    print(f"   Removing {old_mod.name}...")
+                    shutil.rmtree(old_mod)
+
+        # Prepare fv_embodied_agent mod
+        self._copy_mod(self.embodied_agent_mod_dir, "fv_embodied_agent")
+
+        # Prepare fv_snapshot mod
+        self._copy_mod(self.snapshot_mod_dir, "fv_snapshot")
 
         # Ensure DLC mods are disabled
         for dlc_mod in ["space-age", "quality", "elevated-rails"]:
@@ -260,7 +279,7 @@ class FactorioServerManager:
 
         # Calculate ports for this instance
         game_port = cfg.get_game_port(instance_id)
-        rcon_port = cfg.get_rcon_port(instance_id)
+        rcon_port = cfg.get_rcon_port(f"server_{instance_id}")
         output_dir = self.get_server_script_output_dir(instance_id)
 
         # Build Factorio command
@@ -328,7 +347,7 @@ class FactorioServerManager:
         }
 
     # =========================================================================
-    # Hot Reload (Legacy)
+    # Hot Reload
     # =========================================================================
 
     def sync_hotreload_to_server(self, compose_mgr, server_id: int = 0) -> None:
@@ -407,7 +426,7 @@ class FactorioServerManager:
 
             # Trigger reload via RCON
             print("🔌 Connecting via RCON...")
-            rcon_port = self.config.get_rcon_port(server_id)
+            rcon_port = self.config.get_rcon_port(f"server_{server_id}")
             rcon = RCONClient("localhost", rcon_port, self.config.rcon_password)
 
             try:
