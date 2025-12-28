@@ -53,33 +53,78 @@ This DSL bridges the gap between human visual understanding and LLM code generat
 
 ---
 
+## Installation
+
+### Development (Editable Install)
+
+Clone the repository and install with [uv](https://docs.astral.sh/uv/):
+
+```bash
+# Clone repository
+git clone https://github.com/hrshtt/FactoryVerse.git
+cd FactoryVerse
+
+# Install in editable mode with dev dependencies
+uv pip install -e .
+uv sync --group dev
+
+# Copy and configure environment
+cp .env.example .env
+# Edit .env with your API keys and settings
+```
+
+### From Repository (Non-Editable)
+
+```bash
+# Install directly from GitHub
+uv pip install git+https://github.com/hrshtt/FactoryVerse.git
+```
+
+---
+
 ## Working with This Repository
 
-FactoryVerse provides two primary entry points for different use cases:
+FactoryVerse provides two CLI entry points: `factoryverse` (full name) and `fv` (alias).
+FactoryVerse mods (`fv_embodied_agent` + `fv_snapshot`) are **always loaded**.
 
 ### CLI Entry Point
 
-The CLI (`src/FactoryVerse/cli.py`) manages Factorio servers, Jupyter notebooks, and client setup:
+The CLI manages Factorio instances, servers, and data:
 
 ```bash
+# Instance management
+uv run fv instance list        # List all instances and their status
+uv run fv instance active      # Show currently active instance
+
 # Launch Factorio client with FactoryVerse mods
-uv run python -m FactoryVerse.cli client launch --as-mod --scenario test_scenario
+uv run fv client launch --scenario test-ground
 
 # Start Factorio server(s) with Jupyter notebook
-uv run python -m FactoryVerse.cli server start --num 1 --scenario test_scenario --as-mod
+uv run fv server start --num 1 --scenario test-ground
+
+# Hot-reload scenario files during development (repo scenarios only)
+uv run fv server start --scenario test-ground --watch
 
 # View server logs
-uv run python -m FactoryVerse.cli server logs factorio_0 --follow
+uv run fv server logs factorio_0 --follow
 
 # Stop all services
-uv run python -m FactoryVerse.cli server stop
+uv run fv server stop
+
+# Data management
+uv run fv data prune           # Prune data-raw-dump.json → factorio-data-dump.json
+uv run fv data refresh         # Find and prune in one step
+
+# List available scenarios
+uv run fv server list-scenarios
 ```
 
 **Key Features:**
 - Docker-based server orchestration with Jupyter integration
-- Hot-reload support for rapid development (scenario mode only)
+- Hot-reload support for repo scenarios (`--watch` flag)
 - Multi-server support for parallel experiments
 - Client setup automation (mod installation, scenario configuration)
+- Live instance detection with collision handling
 
 ### Agent Runtime Entry Point
 
