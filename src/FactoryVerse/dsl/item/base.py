@@ -12,6 +12,8 @@ from FactoryVerse.dsl.mixins import (
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.entity.views import Reachable, RemoteView, Ghost
+    from FactoryVerse.dsl.entity.base_entity import BaseEntity
+    from FactoryVerse.agent.ghost.types import TrackedGhost
 
 
 ItemSubgroup = Literal[
@@ -272,131 +274,48 @@ class PlaceableItem(SpatialPropertiesMixin, PrototypeMixin, Item):
 
     def place(
         self, position: MapPosition, direction: Optional[Direction] = Direction.NORTH
-    ) -> "ReachableEntity":
+    ) -> "Reachable[BaseEntity]":
         """Place this item as an entity on the map.
 
-        Returns the created ReachableEntity instance.
+        Returns the created entity wrapped in a Reachable view.
+
+        NOTE: This method requires action injection which is not yet implemented.
+        Use AgentRuntime.placement.place_entity() instead.
         """
-        from FactoryVerse.dsl.entity.base import (
-            ReachableEntity,
-            ElectricMiningDrill,
-            BurnerMiningDrill,
-            Pumpjack,
-            Inserter,
-            FastInserter,
-            LongHandInserter,
-            TransportBelt,
-            Splitter,
-            AssemblingMachine,
-            Furnace,
-            ElectricPole,
-            WoodenChest,
-            IronChest,
-            Container,
+        # TODO: This method needs PlacementAction injection to work
+        # For now, use runtime.placement.place_entity() directly
+        raise NotImplementedError(
+            "PlaceableItem.place() requires action injection. "
+            "Use runtime.placement.place_entity() instead."
         )
-
-        result = self._factory.place_entity(self.name, position, direction, ghost=False)
-        if not result.get("success"):
-            error_msg = result.get("error", "Unknown error")
-            raise RuntimeError(f"Failed to place entity: {error_msg}")
-
-        # Use actual position from result if available
-        result_pos = result.get("position", position)
-        if isinstance(result_pos, dict):
-            position = MapPosition(x=result_pos["x"], y=result_pos["y"])
-
-        # Get entity name from result (might differ from item name in some cases)
-        entity_name = result.get("entity_name", self.name)
-
-        # Map entity names to specific classes (same as create_entity_from_data)
-        entity_map = {
-            "electric-mining-drill": ElectricMiningDrill,
-            "burner-mining-drill": BurnerMiningDrill,
-            "pumpjack": Pumpjack,
-            "inserter": Inserter,
-            "fast-inserter": FastInserter,
-            "long-handed-inserter": LongHandInserter,
-            "transport-belt": TransportBelt,
-            "splitter": Splitter,
-            "assembling-machine-1": AssemblingMachine,
-            "assembling-machine-2": AssemblingMachine,
-            "assembling-machine-3": AssemblingMachine,
-            "stone-furnace": Furnace,
-            "steel-furnace": Furnace,
-            "electric-furnace": Furnace,
-            "small-electric-pole": ElectricPole,
-            "medium-electric-pole": ElectricPole,
-            "big-electric-pole": ElectricPole,
-            "substation": ElectricPole,
-            "wooden-chest": WoodenChest,
-            "iron-chest": IronChest,
-            "steel-chest": Container,
-        }
-
-        entity_class = entity_map.get(entity_name, ReachableEntity)
-
-        # For Container subclasses, we need inventory_size from prototypes
-        if entity_class in (WoodenChest, IronChest, Container):
-            from FactoryVerse.dsl.prototypes import get_entity_prototypes
-
-            entity_protos = get_entity_prototypes()
-            entity_type = entity_protos.get_entity_type(entity_name)
-
-            # Try to get inventory_size from prototype data
-            inventory_size = None
-            if entity_type and entity_type in entity_protos.data:
-                entities = entity_protos.data[entity_type]
-                if isinstance(entities, dict) and entity_name in entities:
-                    entity_data = entities[entity_name]
-                    # Container entities have inventory_size in their prototype
-                    if "inventory_size" in entity_data:
-                        inventory_size = entity_data["inventory_size"]
-
-            if inventory_size is not None:
-                # We have inventory_size, create the proper container class
-                return entity_class(
-                    name=entity_name,
-                    position=position,
-                    direction=direction,
-                    inventory_size=inventory_size,
-                )
-            else:
-                # Fallback to ReachableEntity if we can't get inventory_size
-                entity_class = ReachableEntity
-
-        return entity_class(name=entity_name, position=position, direction=direction)
 
     def place_ghost(
         self,
         position: MapPosition,
         direction: Optional[Direction] = Direction.NORTH,
         label: Optional[str] = None,
-    ) -> "GhostEntity":
-        """Place this item as a ghost entity on the map.
+    ) -> "TrackedGhost":
+        """Create a tracked ghost for this item.
 
         Args:
             position: Position to place the ghost
             direction: Optional direction for the ghost
-            label: Optional label for grouping/staging (e.g., "bootstrap", "production")
+            label: Optional label for grouping/staging
 
         Returns:
-            The created GhostEntity instance.
+            TrackedGhost object for tracking.
+
+        NOTE: This method returns a TrackedGhost for Python-side tracking.
+        Use GhostManager.add_ghost() to track ghosts properly.
         """
-        from FactoryVerse.dsl.entity.base import GhostEntity
+        from FactoryVerse.agent.ghost.types import TrackedGhost
 
-        result = self._factory.place_entity(
-            self.name, position, direction, ghost=True, label=label
+        return TrackedGhost(
+            name=self.name,
+            position=position,
+            label=label,
+            placed_tick=0,
         )
-        if not result.get("success"):
-            error_msg = result.get("error", "Unknown error")
-            raise RuntimeError(f"Failed to place ghost entity: {error_msg}")
-
-        # Use actual position from result if available
-        result_pos = result.get("position", position)
-        if isinstance(result_pos, dict):
-            position = MapPosition(x=result_pos["x"], y=result_pos["y"])
-
-        return GhostEntity(name=self.name, position=position, direction=direction)
 
 
 class PlacementCues:
@@ -651,23 +570,25 @@ class BeltLine(ItemStack):
     """A belt line item stack with belt-specific operations.
 
     **For Agents**: Use for placing lines of belts efficiently.
+
+    NOTE: Ghost methods require action injection which is not yet implemented.
     """
 
     def get_ghost_line(
         self, position: MapPosition, length: int, direction: Direction
-    ) -> "GhostEntity":
-        """Get a ghost line of the belt."""
-        return self._factory.get_ghost_line(self.name, position, length, direction)
+    ) -> "TrackedGhost":
+        """Get a ghost line of the belt.
 
-    def get_ghost(self, position: MapPosition) -> "GhostEntity":
-        """Get a ghost entity at the position."""
-        return self._factory.get_ghost(self.name, position)
+        NOTE: Not implemented - requires action injection.
+        """
+        raise NotImplementedError("BeltLine requires action injection")
 
-    def get_ghost_line_v2(
-        self, position: MapPosition, length: int, direction: Direction
-    ) -> "GhostEntity":
-        """Get a ghost line of the belt."""
-        return self._factory.get_ghost_line(self.name, position, length, direction)
+    def get_ghost(self, position: MapPosition) -> "TrackedGhost":
+        """Get a ghost entity at the position.
+
+        NOTE: Not implemented - requires action injection.
+        """
+        raise NotImplementedError("BeltLine requires action injection")
 
 
 def get_item(name: str) -> Item:

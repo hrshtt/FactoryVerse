@@ -1,18 +1,16 @@
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 import json
-import math
 from pathlib import Path
 from FactoryVerse.dsl.types import (
     MapPosition,
-    AsyncActionResponse,
     GhostAreaFilter,
     ActionResult,
 )
 from FactoryVerse.dsl.item.base import ItemStack, PlaceableItemName
-from FactoryVerse.dsl.entity.base import GhostEntity
+from .types import TrackedGhost
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.agent.infra.rcon_handler import RconHandler
 
 
 class GhostManager:
@@ -20,18 +18,25 @@ class GhostManager:
 
     Provides methods to list, filter, and check buildability of ghosts.
     All ghost tracking is Python-only and does not affect the mod.
+
+    Note: TrackedGhost is for planning/tracking. Ghost[BaseEntity] views
+    are for interacting with actual in-game ghost entities.
     """
 
-    def __init__(self, factory: "PlayingFactory", agent_id: Optional[str] = None):
-        """Initialize GhostManager with reference to factory.
+    def __init__(
+        self,
+        rcon_handler: Optional["RconHandler"] = None,
+        agent_id: Optional[str] = None,
+    ):
+        """Initialize GhostManager.
 
         Args:
-            factory: PlayingFactory instance for accessing inventory and other methods
+            rcon_handler: Optional RconHandler for future game interactions
             agent_id: Agent ID (e.g., "agent_1"). If provided, persistence is enabled.
         """
-        self._factory = factory
+        self._rcon = rcon_handler
         self.__tracked_ghosts: Dict[
-            str, GhostEntity
+            str, TrackedGhost
         ] = {}  # Key: f"{position.x},{position.y}:{entity_name}"
 
         # Persistence setup
@@ -50,7 +55,7 @@ class GhostManager:
                     for key, ghost_data in data.items():
                         pos = ghost_data.get("position", {})
                         position = MapPosition(x=pos.get("x", 0), y=pos.get("y", 0))
-                        self.__tracked_ghosts[key] = GhostEntity(
+                        self.__tracked_ghosts[key] = TrackedGhost(
                             name=ghost_data.get("entity_name", ""),
                             position=position,
                             label=ghost_data.get("label"),
@@ -83,19 +88,19 @@ class GhostManager:
                 print(f"Warning: Failed to save ghost file {self.filepath}: {e}")
 
     @property
-    def _tracked_ghosts(self) -> Dict[str, GhostEntity]:
+    def _tracked_ghosts(self) -> Dict[str, TrackedGhost]:
         """Get tracked ghosts dictionary.
 
         Returns:
-            Dict mapping ghost_key -> GhostEntity
+            Dict mapping ghost_key -> TrackedGhost
         """
         return self.__tracked_ghosts
 
-    def list_ghosts(self) -> List[GhostEntity]:
+    def list_ghosts(self) -> List[TrackedGhost]:
         """List all tracked ghosts.
 
         Returns:
-            List of GhostEntity objects
+            List of TrackedGhost objects
         """
         return list(self._tracked_ghosts.values())
 
@@ -113,7 +118,7 @@ class GhostManager:
 
     def get_ghosts(
         self, area: Optional[GhostAreaFilter] = None, label: Optional[str] = None
-    ) -> List[GhostEntity]:
+    ) -> List[TrackedGhost]:
         """Get ghosts filtered by area and/or label.
 
         Args:
@@ -123,7 +128,7 @@ class GhostManager:
             label: Optional label to filter by
 
         Returns:
-            List of GhostEntity objects matching filters
+            List of TrackedGhost objects matching filters
         """
         filtered = []
 
@@ -187,8 +192,8 @@ class GhostManager:
         required_items: Dict[str, int] = {}
         ghost_counts: Dict[str, int] = {}  # entity_name -> count
 
-        for ghost_data in self.__tracked_ghosts.values():
-            entity_name = ghost_data.get("entity_name", "")
+        for ghost in self.__tracked_ghosts.values():
+            entity_name = ghost.name
             if entity_name:
                 ghost_counts[entity_name] = ghost_counts.get(entity_name, 0) + 1
                 # Each ghost requires 1 of its entity item
@@ -196,9 +201,8 @@ class GhostManager:
 
         # Check what can be built
         missing_items: Dict[str, int] = {}
-        buildable_ghosts: List[GhostEntity] = []
-        unbuildable_ghosts: List[GhostEntity] = []
-
+        buildable_ghosts: List[TrackedGhost] = []
+        unbuildable_ghosts: List[TrackedGhost] = []
         for ghost in self.__tracked_ghosts.values():
             available = inventory_dict.get(ghost.name, 0)
 
@@ -241,7 +245,7 @@ class GhostManager:
         """
         # Convert position to dict if needed
         ghost_key = f"{position.x},{position.y}:{entity_name}"
-        self.__tracked_ghosts[ghost_key] = GhostEntity(
+        self.__tracked_ghosts[ghost_key] = TrackedGhost(
             name=entity_name,
             position=position,
             label=label,
@@ -250,25 +254,17 @@ class GhostManager:
         self._save()
         return ghost_key
 
-    def remove_ghost(
-        self, position: Union[Dict[str, float], MapPosition], entity_name: str
-    ) -> ActionResult:
+    def remove_ghost(self, position: MapPosition, entity_name: str) -> ActionResult:
         """Remove a ghost from tracking.
 
         Args:
-            position: Ghost position (dict with x,y or MapPosition)
+            position: Ghost position
             entity_name: Entity prototype name the ghost represents
 
         Returns:
             ActionResult dict
         """
-        # Convert position to dict if needed
-        if hasattr(position, "x") and hasattr(position, "y"):
-            pos_dict = {"x": position.x, "y": position.y}
-        else:
-            pos_dict = position
-
-        ghost_key = f"{pos_dict['x']},{pos_dict['y']}:{entity_name}"
+        ghost_key = f"{position.x},{position.y}:{entity_name}"
         if ghost_key in self.__tracked_ghosts:
             del self.__tracked_ghosts[ghost_key]
             self._save()

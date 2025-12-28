@@ -1,5 +1,10 @@
-"""Agent module - Embodied agent for Factorio gameplay."""
+"""Agent module - Embodied agent for Factorio gameplay.
 
-from .playing_factorio import PlayingFactory, playing_factorio
+The new architecture uses FactoryVerse.factory.create_runtime() instead.
+See factory.py for the updated entry point.
+"""
 
-__all__ = ["PlayingFactory", "playing_factorio"]
+# Don't import from playing_factorio - it's deprecated and has broken imports
+# Use FactoryVerse.factory.create_runtime() instead
+
+__all__: list = []

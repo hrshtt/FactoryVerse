@@ -25,6 +25,19 @@ if TYPE_CHECKING:
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
 
 
+# Deprecated: FactoryContextMixin was part of the old context-based DSL pattern.
+# It's kept as a placeholder for backward compatibility with recipe/technology classes.
+# New code should use dependency injection via AgentRuntime from factory.py.
+class FactoryContextMixin:
+    """Deprecated mixin - placeholder for backward compatibility.
+
+    Previously provided access to the current PlayingFactory context.
+    Now does nothing - use dependency injection instead.
+    """
+
+    pass
+
+
 class SpatialPropertiesMixin:
     """Provides tile-based spatial properties from prototype data."""
 

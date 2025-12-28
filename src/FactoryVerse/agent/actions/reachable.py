@@ -4,13 +4,16 @@ Provides synchronous access to reachable entities and resources via RconHandler.
 No async listener needed - all operations are synchronous.
 """
 
+from __future__ import annotations
+
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 
 from FactoryVerse.dsl.types import MapPosition
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
-    from FactoryVerse.dsl.entity.base import ReachableEntity
+    from FactoryVerse.dsl.entity.views import Reachable
+    from FactoryVerse.dsl.entity.base_entity import BaseEntity
 
 
 class ReachableEntities:
@@ -58,7 +61,7 @@ class ReachableEntities:
         entity_name: str,
         position: Optional[MapPosition] = None,
         options: Optional[Dict[str, Any]] = None,
-    ) -> Optional[ReachableEntity]:
+    ) -> Optional["Reachable[BaseEntity]"]:
         """Get a single entity matching criteria.
 
         Always fetches fresh data from the game - no caching.
@@ -73,7 +76,7 @@ class ReachableEntities:
                 - status: str - filter by status (e.g., "working", "no-power")
 
         Returns:
-            First matching ReachableEntity instance, or None if not found
+            First matching Reachable[BaseEntity] instance, or None if not found
         """
         # Always fetch fresh data
         entities_instances, entities_data = self._fetch_fresh_data()
@@ -125,7 +128,7 @@ class ReachableEntities:
         self,
         entity_name: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
-    ) -> List[ReachableEntity]:
+    ) -> List["Reachable[BaseEntity]"]:
         """Get entities matching criteria.
 
         Always fetches fresh data from the game - no caching.
@@ -135,7 +138,7 @@ class ReachableEntities:
             options: Optional dict with filters (same as get_entity)
 
         Returns:
-            List of matching ReachableEntity instances (may be empty)
+            List of matching Reachable[BaseEntity] instances (may be empty)
         """
         # Always fetch fresh data
         entities_instances, entities_data = self._fetch_fresh_data()

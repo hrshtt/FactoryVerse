@@ -1,25 +1,17 @@
 """Runtime boilerplate code for agent sessions.
 
-This script is intended to be read as a file and executed directly 
+This script is intended to be read as a file and executed directly
 within the agent's Jupyter kernel.
+
+Uses the new factory.py pattern with create_runtime().
 """
+
 import os
 import json
 from pathlib import Path
 from factorio_rcon import RCONClient
 from FactoryVerse.config import get_runtime_config
-from FactoryVerse.dsl.dsl import (
-    walking,
-    crafting,
-    research,
-    inventory,
-    reachable,
-    ghost_manager,
-    configure,
-    playing_factorio,
-    map_db,
-    enable_logging,
-)
+from FactoryVerse.factory import create_runtime
 from FactoryVerse.dsl.types import MapPosition, Direction
 
 # Load per-agent runtime configuration
@@ -32,7 +24,7 @@ udp_port_override = os.getenv("FV_AGENT_UDP_PORT")  # Optional explicit port
 runtime_config = get_runtime_config(
     session_dir=session_dir,
     agent_id=agent_id,
-    udp_port=int(udp_port_override) if udp_port_override else None
+    udp_port=int(udp_port_override) if udp_port_override else None,
 )
 
 # Connect to RCON
@@ -42,7 +34,7 @@ rcon_client = create_rcon_client(
     runtime_config.rcon_host,
     runtime_config.rcon_port,
     runtime_config.rcon_password,
-    initialize=True
+    initialize=True,
 )
 print(f"✅ RCON connected to {runtime_config.rcon_host}:{runtime_config.rcon_port}")
 
@@ -53,14 +45,18 @@ agents_result = rcon_client.send_command(
 agents = json.loads(agents_result)
 
 # Find or create agent with configured ID
-existing = next((a for a in agents if a.get("interface_name") == runtime_config.agent_id), None)
+existing = next(
+    (a for a in agents if a.get("interface_name") == runtime_config.agent_id), None
+)
 
 if existing:
-    actual_udp_port = existing.get('udp_port', runtime_config.udp_port)
+    actual_udp_port = existing.get("udp_port", runtime_config.udp_port)
     print(f"✅ Reusing agent '{runtime_config.agent_id}' on UDP port {actual_udp_port}")
 else:
     # Create agent with initial inventory: burner mining drill, stone furnace, and wood
-    initial_inventory = '{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}'
+    initial_inventory = (
+        '{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}'
+    )
     rcon_client.send_command(
         f"/c local res = remote.call('agent', 'create_agent', {runtime_config.udp_port}, true, false, nil, {initial_inventory})"
     )
@@ -81,27 +77,37 @@ rcon_client.send_command(
 )
 print(f"✅ Synced {len(entity_list)} entities to Lua mod filter")
 
-# Configure DSL
-configure(
-    rcon_client,
-    runtime_config.agent_id,
+# Create runtime using new factory pattern
+runtime = create_runtime(
+    rcon_client=rcon_client,
+    agent_id=runtime_config.agent_id,
+    udp_port=actual_udp_port,
     snapshot_dir=runtime_config.snapshot_dir,
     db_path=runtime_config.db_path,
-    agent_udp_port=actual_udp_port
 )
-print(f"✅ DSL configured")
+
+# Start the runtime (enables async listener)
+await runtime.start()  # noqa: E999  # type: ignore
+
+print(f"✅ Runtime created")
 print(f"   Agent: {runtime_config.agent_id}")
 print(f"   UDP Port: {actual_udp_port}")
 print(f"   DB: {runtime_config.db_path}")
 print(f"   Snapshots: {runtime_config.snapshot_dir}")
 
-# Map database loading code (Uses ipykernel's autoawait)
-with playing_factorio():
-    await map_db.load_snapshots()  # noqa: E999  # type: ignore
-    con = map_db.connection
-    print(f"✅ Map database loaded. Connection: {con}")
+# Convenience accessors - make these available in the notebook namespace
+walking = runtime.walking
+mining = runtime.mining
+crafting = runtime.crafting
+research = runtime.research
+inventory = runtime.inventory
+reachable = runtime.reachable
+resources = runtime.resources
+entity_ops = runtime.entity_ops
+placement = runtime.placement
 
 print("\n💡 Tech/recipe info available in initial_state.md")
-print("   Use research.enqueue('tech-name') to start researching!\n")
-
-
+print("   Use research.queue('tech-name') to start researching!")
+print("\n📦 Available affordances:")
+print("   walking, mining, crafting, research, inventory, reachable, resources")
+print()
