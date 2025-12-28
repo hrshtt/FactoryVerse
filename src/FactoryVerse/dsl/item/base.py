@@ -11,7 +11,7 @@ from FactoryVerse.dsl.mixins import (
 )
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.entity.base import ReachableEntity, GhostEntity
+    from FactoryVerse.dsl.entity.views import Reachable, RemoteView, Ghost
 
 
 ItemSubgroup = Literal[

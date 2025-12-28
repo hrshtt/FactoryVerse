@@ -4,118 +4,37 @@ Furnaces smelt ore into plates using fuel.
 Includes: StoneFurnace, SteelFurnace, ElectricFurnace
 """
 
-from dataclasses import dataclass
 from typing import Dict, List, Optional
 from FactoryVerse.dsl.types import MapPosition, Direction
 from FactoryVerse.dsl.mixins import CrafterMixin, FuelableMixin
 from FactoryVerse.dsl.entity.base_entity import BaseEntity
-from FactoryVerse.dsl.entity.inspect import BaseInspectionData, BurnerData, EnergyData
+from FactoryVerse.dsl.entity.inspect import (
+    FurnaceInspection,
+    BurnerData,
+    EnergyData,
+)
 
 
-@dataclass
-class FurnaceInspection(BaseInspectionData):
-    """Furnace inspection data.
+def _parse_burner(data: Optional[Dict]) -> Optional[BurnerData]:
+    """Parse burner data from Lua response."""
+    if data is None:
+        return None
+    return BurnerData(
+        heat=data.get("heat"),
+        heat_capacity=data.get("heat_capacity"),
+        remaining_burning_fuel=data.get("remaining_burning_fuel"),
+        currently_burning=data.get("currently_burning"),
+    )
 
-    **For Agents**: Use this to check furnace state, recipe, progress, and inventories.
-    Access properties directly or print for formatted output.
-    """
 
-    recipe: Optional[str] = None
-    crafting_progress: Optional[float] = None
-    bonus_progress: Optional[float] = None
-    is_crafting: Optional[bool] = None
-    input: Optional[Dict[str, int]] = None
-    output: Optional[Dict[str, int]] = None
-    fuel: Optional[Dict[str, int]] = None
-    energy: Optional[EnergyData] = None
-    beacons_count: Optional[int] = None
-    burner: Optional[BurnerData] = None
-    previous_recipe: Optional[str] = None
-
-    # Helper properties for LLM decision-making
-    @property
-    def needs_fuel(self) -> bool:
-        """Check if furnace needs fuel.
-
-        **For Agents**: Use this to determine if you should add fuel.
-        """
-        if self.burner is None:
-            return False
-        return (
-            not self.burner.is_burning
-            and (self.burner.remaining_burning_fuel or 0) == 0
-        )
-
-    @property
-    def has_input(self) -> bool:
-        """Check if furnace has input materials."""
-        return self.input is not None and len(self.input) > 0
-
-    @property
-    def has_output(self) -> bool:
-        """Check if furnace has output products.
-
-        **For Agents**: Use this to determine if you should take products.
-        """
-        return self.output is not None and len(self.output) > 0
-
-    @property
-    def is_idle(self) -> bool:
-        """Check if furnace is idle (no recipe or not crafting).
-
-        **For Agents**: Idle furnaces can be given new recipes.
-        """
-        return self.recipe is None or (self.is_crafting is False)
-
-    def __str__(self) -> str:
-        """Format furnace inspection for human readability."""
-        lines = [
-            f"Furnace({self.entity_name}) at ({self.position.x:.1f}, {self.position.y:.1f})"
-        ]
-
-        # Status
-        lines.append(f"  Status: {self.status or 'unknown'}")
-
-        # Recipe and progress
-        if self.recipe:
-            lines.append(f"  Recipe: {self.recipe}")
-            if self.crafting_progress is not None:
-                lines.append(f"  Progress: {self.crafting_progress * 100:.1f}%")
-        else:
-            lines.append("  Recipe: (none)")
-
-        # Burner info
-        if self.burner:
-            burner_lines = str(self.burner).split("\n")
-            for line in burner_lines:
-                lines.append(f"  {line}")
-
-        # Inventories
-        if self.fuel:
-            fuel_str = ", ".join(
-                [f"{name}: {count}" for name, count in self.fuel.items()]
-            )
-            lines.append(f"  Fuel: {fuel_str}")
-        else:
-            lines.append("  Fuel: (empty)")
-
-        if self.input:
-            input_str = ", ".join(
-                [f"{name}: {count}" for name, count in self.input.items()]
-            )
-            lines.append(f"  Input: {input_str}")
-        else:
-            lines.append("  Input: (empty)")
-
-        if self.output:
-            output_str = ", ".join(
-                [f"{name}: {count}" for name, count in self.output.items()]
-            )
-            lines.append(f"  Output: {output_str}")
-        else:
-            lines.append("  Output: (empty)")
-
-        return "\n".join(lines)
+def _parse_energy(data: Optional[Dict]) -> Optional[EnergyData]:
+    """Parse energy data from Lua response."""
+    if data is None:
+        return None
+    return EnergyData(
+        current=data.get("current", 0),
+        capacity=data.get("capacity", 0),
+    )
 
 
 class Furnace(CrafterMixin, FuelableMixin, BaseEntity):
@@ -132,40 +51,24 @@ class Furnace(CrafterMixin, FuelableMixin, BaseEntity):
     def _format_inspection(self, data: Dict) -> str:
         """Format furnace inspection data.
 
+        Parses raw Lua data into FurnaceInspection dataclass and returns formatted string.
+
         Args:
-            data: Raw inspection data from the game
+            data: Raw inspection data from Lua (matches inspect_crafting_machine output)
 
         Returns:
             Formatted string for agent consumption
         """
+        # Parse position
+        pos_data = data.get("position", {})
+        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
 
-        # Extract burner data if present
-        burner_data = None
-        if data.get("burner"):
-            burner_info = data["burner"]
-            burner_data = BurnerData(
-                heat=burner_info.get("heat"),
-                heat_capacity=burner_info.get("heat_capacity"),
-                remaining_burning_fuel=burner_info.get("remaining_burning_fuel"),
-                currently_burning=burner_info.get("currently_burning"),
-            )
-
-        # Extract energy data if present
-        energy_data = None
-        if data.get("energy"):
-            energy_info = data["energy"]
-            energy_data = EnergyData(
-                current=energy_info.get("current", 0),
-                capacity=energy_info.get("capacity", 0),
-            )
-
-        # Get inventories
-        inventories = data.get("inventories", {})
-
+        # Build FurnaceInspection from Lua data
+        # NOTE: Lua sends data.input, data.output, data.fuel DIRECTLY (not nested in inventories)
         inspection = FurnaceInspection(
             entity_name=data.get("entity_name", ""),
             entity_type=data.get("entity_type", ""),
-            position=MapPosition.from_dict(data["position"]),
+            position=position,
             direction=data.get("direction", 0),
             tick=data.get("tick", 0),
             health=data.get("health"),
@@ -173,14 +76,14 @@ class Furnace(CrafterMixin, FuelableMixin, BaseEntity):
             status=data.get("status"),
             recipe=data.get("recipe"),
             crafting_progress=data.get("crafting_progress"),
-            bonus_progress=data.get("productivity_bonus"),
+            bonus_progress=data.get("bonus_progress"),
             is_crafting=data.get("is_crafting"),
-            input=inventories.get("input"),
-            output=inventories.get("output"),
-            fuel=inventories.get("fuel"),
-            energy=energy_data,
+            input=data.get("input"),  # Direct from Lua, not nested
+            output=data.get("output"),  # Direct from Lua, not nested
+            fuel=data.get("fuel"),  # Direct from Lua, not nested
+            energy=_parse_energy(data.get("energy")),
             beacons_count=data.get("beacons_count"),
-            burner=burner_data,
+            burner=_parse_burner(data.get("burner")),
             previous_recipe=data.get("previous_recipe"),
         )
         return str(inspection)

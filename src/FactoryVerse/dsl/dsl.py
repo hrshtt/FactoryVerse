@@ -1,13 +1,25 @@
 from __future__ import annotations
-from FactoryVerse.dsl.entity.base import ReachableEntity, GhostEntity
+
+# Views are now in entity.views: Reachable[T], RemoteView[T], Ghost[T]
 from FactoryVerse.dsl.item.base import ItemStack
 from FactoryVerse.dsl.agent import PlayingFactory
 from FactoryVerse.dsl.types import (
-    MapPosition, BoundingBox, Position, Direction, _playing_factory,
-    CraftingStatus, ResearchStatus, EntityFilterOptions, ActionResult
+    MapPosition,
+    BoundingBox,
+    Position,
+    Direction,
+    _playing_factory,
+    CraftingStatus,
+    ResearchStatus,
+    EntityFilterOptions,
+    ActionResult,
 )
 from FactoryVerse.dsl.item.base import ItemName, PlaceableItemName, Item, PlaceableItem
-from FactoryVerse.dsl.recipe.base import BasicRecipeName, RecipeCategory, BaseRecipe as Recipe
+from FactoryVerse.dsl.recipe.base import (
+    BasicRecipeName,
+    RecipeCategory,
+    BaseRecipe as Recipe,
+)
 from FactoryVerse.dsl.technology.base import TechnologyName, Technology
 from FactoryVerse.dsl.recipe.base import Recipes
 from FactoryVerse.dsl.technology.base import TechTree
@@ -16,6 +28,7 @@ from typing import List, Optional, Dict, Any, Union, Literal, TYPE_CHECKING
 from pathlib import Path
 
 import duckdb
+
 if TYPE_CHECKING:
     from FactoryVerse.dsl.entity.remote_view_entity import RemoteViewEntity
     from FactoryVerse.dsl.resource.base import BaseResource, ResourceOrePatch
@@ -41,18 +54,24 @@ def _get_factory() -> PlayingFactory:
 # Top-level action accessors - available in DSL context
 class _WalkingAccessor:
     """Top-level walking action accessor."""
-    
+
     def __repr__(self) -> str:
         return """WalkingAffordance
   Methods:
     - to(position, strict_goal?, options?, timeout?) - Move agent to a position (async)
     - cancel() - Cancel current walking action
   Usage: await walking.to(MapPosition(x, y))"""
-    
-    async def to(self, position: MapPosition, strict_goal: bool = False, options: Optional[dict] = None, timeout: Optional[int] = None) -> None:
+
+    async def to(
+        self,
+        position: MapPosition,
+        strict_goal: bool = False,
+        options: Optional[dict] = None,
+        timeout: Optional[int] = None,
+    ) -> None:
         """Walk to a position."""
         return await _get_factory().walking.to(position, strict_goal, options, timeout)
-    
+
     def cancel(self) -> None:
         """Cancel current walking action."""
         return _get_factory().walking.cancel()
@@ -60,11 +79,11 @@ class _WalkingAccessor:
 
 class _CraftingAccessor:
     """Top-level crafting action accessor.
-    
+
     Provides access to hand-crafting actions and recipe queries.
     Use index access to get a specific recipe: crafting['iron-gear-wheel']
     """
-    
+
     def __repr__(self) -> str:
         return """CraftingAffordance
   Methods:
@@ -76,60 +95,66 @@ class _CraftingAccessor:
   Usage: 
     await crafting['iron-gear-wheel'].craft(10)
     # OR legacy: await crafting.craft('iron-gear-wheel', count=10)"""
-    
+
     def __getitem__(self, recipe_name: str) -> "Recipe":
         """Get a recipe object by name.
-        
+
         **For Agents**: crafting['iron-gear-wheel'] returns a Recipe object.
         If the recipe is hand-craftable, you can call .craft() on it.
         """
         return _get_factory().recipes[recipe_name]
 
-    async def craft(self, recipe: BasicRecipeName, count: int = 1, timeout: Optional[int] = None) -> ActionResult:
+    async def craft(
+        self, recipe: BasicRecipeName, count: int = 1, timeout: Optional[int] = None
+    ) -> ActionResult:
         """Craft a recipe."""
         return await _get_factory().crafting.craft(recipe, count, timeout)
-    
+
     def enqueue(self, recipe: BasicRecipeName, count: int = 1) -> ActionResult:
         """Enqueue a recipe for crafting."""
         return _get_factory().crafting.enqueue(recipe, count)
-    
-    def dequeue(self, recipe: BasicRecipeName, count: Optional[int] = None) -> ActionResult:
+
+    def dequeue(
+        self, recipe: BasicRecipeName, count: Optional[int] = None
+    ) -> ActionResult:
         """Cancel queued crafting."""
         return _get_factory().crafting.dequeue(recipe, count)
-    
+
     def status(self) -> CraftingStatus:
         """Get current crafting status."""
         return _get_factory().crafting.status()
-    
-    def get_recipes(self, enabled_only: bool = True, category: Optional[RecipeCategory] = None) -> List["Recipe"]:
+
+    def get_recipes(
+        self, enabled_only: bool = True, category: Optional[RecipeCategory] = None
+    ) -> List["Recipe"]:
         """Get available recipes for the agent's force.
-        
+
         Args:
             enabled_only: If True, only return enabled recipes (default: True)
             category: Optional filter by recipe category (e.g., "crafting", "smelting")
-        
+
         Returns:
             List of Recipe objects
         """
         factory = _get_factory()
         recipes = list(factory.recipes)
-        
+
         if enabled_only:
             recipes = [r for r in recipes if r.enabled]
-        
+
         if category:
             recipes = [r for r in recipes if r.category == category]
-            
+
         return recipes
 
 
 class _ResearchAccessor:
     """Top-level research action accessor.
-    
+
     Provides access to technology research actions and queries.
     Use index access to get a specific technology: research['automation']
     """
-    
+
     def __repr__(self) -> str:
         return """ResearchAffordance
   Methods:
@@ -140,10 +165,10 @@ class _ResearchAccessor:
   Usage: 
     research['automation'].enqueue()
     # OR legacy: research.enqueue('automation')"""
-    
+
     def __getitem__(self, tech_name: str):
         """Get a technology object by name.
-        
+
         **For Agents**: research['automation'] returns a Technology object.
         You can check .researched, .can_research, or call .enqueue().
         """
@@ -152,48 +177,50 @@ class _ResearchAccessor:
     def enqueue(self, technology: TechnologyName) -> ActionResult:
         """Start researching a technology."""
         return _get_factory().research.enqueue(technology)
-    
+
     def get_queue(self) -> ResearchStatus:
         """Get current research queue with progress information."""
         return _get_factory().research.get_queue()
-    
+
     def dequeue(self) -> ActionResult:
         """Cancel current research."""
         return _get_factory().research.dequeue()
-    
+
     def status(self) -> ResearchStatus:
         """Get current research status."""
         return _get_factory().research.status()
-    
-    def get_technologies(self, researched_only: bool = False, only_available: bool = False) -> List["Technology"]:
+
+    def get_technologies(
+        self, researched_only: bool = False, only_available: bool = False
+    ) -> List["Technology"]:
         """Get technologies for the agent's force.
-        
+
         Args:
             researched_only: If True, only return already researched technologies
             only_available: If True, only return technologies that can be researched now (prerequisites met)
-        
+
         Returns:
             List of Technology objects
         """
         factory = _get_factory()
         # Ensure tech status is updated before returning objects
         technologies = list(factory.tech_tree.technologies.values())
-        
+
         if researched_only:
             technologies = [tech for tech in technologies if tech.researched]
-        
+
         if only_available:
             technologies = [tech for tech in technologies if tech.can_research]
-        
+
         return technologies
 
 
 class _InventoryAccessor:
     """Top-level inventory helper accessor.
-    
+
     Provides access to AgentInventory methods for querying and shaping items.
     """
-    
+
     def __repr__(self) -> str:
         return """InventoryAffordance
   Properties:
@@ -204,43 +231,46 @@ class _InventoryAccessor:
     - get_item_stacks(item_name, count, number_of_stacks?, strict?) - Get item stacks for a specific item
     - check_recipe_count(recipe_name) - Check how many times a recipe can be crafted
   Usage: inventory.get_total('iron-plate')"""
-    
+
     @property
     def item_stacks(self) -> List[ItemStack]:
         """Get agent inventory as list of ItemStack objects."""
         return _get_factory().inventory.item_stacks
-    
+
     def get_total(self, item_name: ItemName) -> int:
         """Get total count of an item across all stacks."""
         return _get_factory().inventory.get_total(item_name)
-    
+
     def get_item(self, item_name: ItemName) -> Union["Item", "PlaceableItem", None]:
         """Get a single Item or PlaceableItem instance."""
         return _get_factory().inventory.get_item(item_name)
-    
+
     def get_item_stacks(
         self,
         item_name: ItemName,
         count: Union[int, Literal["half", "full"]],
         number_of_stacks: Union[int, Literal["max"]] = "max",
-        strict: bool = False
+        strict: bool = False,
     ) -> List[ItemStack]:
         """Get item stacks for a specific item."""
-        return _get_factory().inventory.get_item_stacks(item_name, count, number_of_stacks, strict)
-    
+        return _get_factory().inventory.get_item_stacks(
+            item_name, count, number_of_stacks, strict
+        )
+
     def check_recipe_count(self, recipe_name: BasicRecipeName) -> int:
         """Check how many times a recipe can be crafted.
-        
+
         Raises:
             ValueError: If the recipe is not handcraftable
         """
         # Check if recipe is handcraftable
         from FactoryVerse.dsl.prototypes import get_recipe_prototypes
+
         recipe_protos = get_recipe_prototypes()
-        
+
         if not recipe_protos.is_handcraftable(recipe_name):
             category = recipe_protos.get_recipe_category(recipe_name)
-            if category == 'smelting':
+            if category == "smelting":
                 raise ValueError(
                     f"Cannot handcraft '{recipe_name}' - it requires smelting in a furnace. "
                     f"Smelting recipes (iron-plate, copper-plate, steel-plate, stone-brick) must be produced in stone-furnace, steel-furnace, or electric-furnace."
@@ -250,16 +280,16 @@ class _InventoryAccessor:
                     f"Cannot handcraft '{recipe_name}' - it requires category='{category}' machine. "
                     f"Only recipes with category='crafting' can be handcrafted."
                 )
-        
+
         return _get_factory().inventory.check_recipe_count(recipe_name)
 
 
 class _ReachableAccessor:
     """Top-level reachable entities/resources helper accessor.
-    
+
     Provides access to ReachableEntities and ReachableResources methods.
     """
-    
+
     def __repr__(self) -> str:
         return """ReachableAffordance
   Methods:
@@ -269,23 +299,23 @@ class _ReachableAccessor:
     - get_resource(resource_name, position?) - Get a single resource matching criteria
     - get_resources(resource_name?, resource_type?) - Get all resources matching criteria
   Usage: reachable.get_entity('stone-furnace')"""
-    
+
     def get_current_position(self) -> MapPosition:
         """Get current agent position from Lua.
-        
+
         Returns:
             MapPosition of the agent's current location
         """
         return _get_factory().get_position()
-    
+
     def get_entity(
         self,
         entity_name: PlaceableItemName,
         position: Optional[MapPosition] = None,
-        options: Optional[EntityFilterOptions] = None
+        options: Optional[EntityFilterOptions] = None,
     ) -> Optional[ReachableEntity]:
         """Get a single entity matching criteria.
-        
+
         Args:
             entity_name: Entity prototype name (e.g., "electric-mining-drill")
             position: Optional exact position match
@@ -294,54 +324,54 @@ class _ReachableAccessor:
                 - direction: Direction - filter by direction
                 - entity_type: str - filter by Factorio entity type
                 - status: str - filter by status (e.g., "working", "no-power")
-        
+
         Returns:
             First matching ReachableEntity instance, or None if not found
         """
-        return _get_factory().reachable_entities.get_entity(entity_name, position, options)
-    
+        return _get_factory().reachable_entities.get_entity(
+            entity_name, position, options
+        )
+
     def get_entities(
         self,
         entity_name: Optional[PlaceableItemName] = None,
-        options: Optional[EntityFilterOptions] = None
+        options: Optional[EntityFilterOptions] = None,
     ) -> List[ReachableEntity]:
         """Get entities matching criteria.
-        
+
         Args:
             entity_name: Optional entity prototype name filter
             options: Optional dict with filters (same as get_entity)
-        
+
         Returns:
             List of matching ReachableEntity instances (may be empty)
         """
         return _get_factory().reachable_entities.get_entities(entity_name, options)
-    
+
     def get_resource(
-        self,
-        resource_name: ItemName,
-        position: Optional[MapPosition] = None
+        self, resource_name: ItemName, position: Optional[MapPosition] = None
     ) -> Optional["BaseResource"]:
         """Get a single resource matching criteria.
-        
+
         Args:
             resource_name: Resource prototype name (e.g., "iron-ore", "stone")
             position: Optional exact position match
-        
+
         Returns:
             BaseResource instance (or appropriate subclass), or None if not found
         """
         return _get_factory().reachable_resources.get_resource(resource_name, position)
-    
+
     def get_resources(
         self,
         resource_name: Optional[ItemName] = None,
-        resource_type: Optional[str] = None
+        resource_type: Optional[str] = None,
     ) -> List[Union["ResourceOrePatch", "BaseResource"]]:
         """Get resources matching criteria.
-        
+
         Returns ResourceOrePatch for multiple ore patches of same type,
         BaseResource for single ore patches or entities.
-        
+
         Args:
             resource_name: Optional resource name filter (e.g., "iron-ore", "tree")
             resource_type: Optional resource type filter. Can be:
@@ -350,13 +380,15 @@ class _ReachableAccessor:
                 - "tree" - filters to trees only
                 - "simple-entity" - filters to rocks only
                 - "resource" - filters to ore patches only (Factorio type)
-        
+
         Returns:
             List[Union[ResourceOrePatch, BaseResource]]:
             - ResourceOrePatch: Multiple ore patches of same type (consolidated)
             - BaseResource: Single ore patch or entity (trees/rocks)
         """
-        return _get_factory().reachable_resources.get_resources(resource_name, resource_type)
+        return _get_factory().reachable_resources.get_resources(
+            resource_name, resource_type
+        )
 
 
 # Top-level action instances - use these in DSL context
@@ -366,89 +398,87 @@ research = _ResearchAccessor()
 inventory = _InventoryAccessor()
 reachable = _ReachableAccessor()
 
+
 # Ghost manager - direct access (not wrapped, accessed as property-like)
 class _GhostManagerProxy:
     """Proxy to access ghost_manager methods directly."""
-    
+
     def __getattr__(self, name):
         """Delegate all attribute access to the factory's ghost manager."""
         return getattr(_get_factory().ghosts, name)
+
 
 ghost_manager = _GhostManagerProxy()
 
 
 class _DuckDBAccessor:
     """Top-level DuckDB database accessor.
-    
+
     Provides high-level method to load snapshot data into the database.
     """
-    
+
     async def load_snapshots(
         self,
         snapshot_dir: Optional[Path] = None,
         db_path: Optional[Union[str, Path]] = None,
-        **kwargs
+        **kwargs,
     ) -> None:
         """Load snapshot data into the database (async, waits for completion).
-        
+
         High-level method that auto-creates connection, schema, and
         auto-detects snapshot directory if not provided.
-        
+
         By default, this method will block until all charted chunks reach
         COMPLETE state. Use wait_for_initial=False to skip waiting.
-        
+
         Args:
             snapshot_dir: Path to snapshot directory (auto-detects if None)
             db_path: Optional path to DuckDB database file (uses in-memory if None)
             **kwargs: Additional arguments passed to factory.load_snapshots()
                      Including: wait_for_initial (bool, default=True), initial_timeout (float)
-        
+
         Returns:
             None
         """
         return await _get_factory().load_snapshots(
-            snapshot_dir=snapshot_dir,
-            db_path=db_path,
-            **kwargs
+            snapshot_dir=snapshot_dir, db_path=db_path, **kwargs
         )
-    
+
     def load_snapshots_sync(
         self,
         snapshot_dir: Optional[Path] = None,
         db_path: Optional[Union[str, Path]] = None,
-        **kwargs
+        **kwargs,
     ) -> None:
         """Load snapshot data into the database (sync, doesn't wait for completion).
-        
+
         This is the synchronous version that loads existing files but doesn't
         wait for chunks to reach COMPLETE state. Use this if you want to load
         data and handle completion waiting manually.
-        
+
         Args:
             snapshot_dir: Path to snapshot directory (auto-detects if None)
             db_path: Optional path to DuckDB database file (uses in-memory if None)
             **kwargs: Additional arguments passed to factory._load_snapshots_sync()
-        
+
         Returns:
             None
         """
         _get_factory()._load_snapshots_sync(
-            snapshot_dir=snapshot_dir,
-            db_path=db_path,
-            **kwargs
+            snapshot_dir=snapshot_dir, db_path=db_path, **kwargs
         )
-    
+
     @property
     def connection(self) -> "duckdb.DuckDBPyConnection":
         """Get the DuckDB connection (automatically synced).
-        
+
         This property automatically ensures the DB is synced before returning.
         The sync happens asynchronously if needed, but the connection is returned
         immediately for synchronous queries.
-        
+
         Returns:
             DuckDB connection object
-        
+
         Raises:
             RuntimeError: If database has not been loaded yet
         """
@@ -458,10 +488,11 @@ class _DuckDBAccessor:
             raise RuntimeError(
                 "DuckDB database not loaded. Call map_db.load_snapshots() first."
             )
-        
+
         # Ensure sync if service is running (non-blocking)
         if factory._game_data_sync and factory._game_data_sync.is_running:
             import asyncio
+
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
@@ -473,7 +504,7 @@ class _DuckDBAccessor:
             except RuntimeError:
                 pass
         return con
-    
+
     async def ensure_synced(self, timeout: float = 5.0) -> ActionResult:
         """Explicitly ensure DB is synced before query."""
         factory = _get_factory()
@@ -485,6 +516,7 @@ class _DuckDBAccessor:
     def sync(self, timeout: float = 5.0) -> ActionResult:
         """Alias for ensure_synced() for consistency with factory.map_db.sync()."""
         import asyncio
+
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -504,68 +536,72 @@ class _DuckDBAccessor:
                 asyncio.set_event_loop(None)
                 loop.close()
 
-    
     def get_entity(self, query: str) -> Optional["RemoteViewEntity"]:
         """Get single read-only entity from DuckDB query.
-        
+
         Args:
             query: SQL SELECT query with LIMIT 1 (enforced)
-        
+
         Returns:
             RemoteViewEntity instance or None if no results
         """
         factory = _get_factory()
         return factory.map_db.get_entity(query)
-    
+
     def get_entities(self, query: str) -> List["RemoteViewEntity"]:
         """Get read-only entities from DuckDB query.
-        
+
         Args:
             query: SQL SELECT query (validated for safety)
-        
+
         Returns:
             List of RemoteViewEntity instances (read-only)
         """
         factory = _get_factory()
         return factory.map_db.get_entities(query)
 
+
 map_db = _DuckDBAccessor()
-
-
 
 
 def get_reachable_entities() -> List[ReachableEntity]:
     """Get the reachable entities.
-    
+
     Returns:
         List of ReachableEntity objects within reach
     """
     factory = _get_factory()
-    data = factory.get_reachable(attach_ghosts=False)  # Don't need ghosts for this function
-    
+    data = factory.get_reachable(
+        attach_ghosts=False
+    )  # Don't need ghosts for this function
+
     entities = []
     entities_data = data.get("entities", [])
-    
+
     for entity_data in entities_data:
         # Parse entity data and create ReachableEntity
         name = entity_data.get("name", "")
         position_data = entity_data.get("position", {})
         position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
-        
+
         # Parse bounding box if available
         bbox_data = entity_data.get("bounding_box")
         if bbox_data:
-            left_top = Position(x=bbox_data["left_top"]["x"], y=bbox_data["left_top"]["y"])
-            right_bottom = Position(x=bbox_data["right_bottom"]["x"], y=bbox_data["right_bottom"]["y"])
+            left_top = Position(
+                x=bbox_data["left_top"]["x"], y=bbox_data["left_top"]["y"]
+            )
+            right_bottom = Position(
+                x=bbox_data["right_bottom"]["x"], y=bbox_data["right_bottom"]["y"]
+            )
             bounding_box = BoundingBox(left_top=left_top, right_bottom=right_bottom)
         else:
             # Create minimal bounding box
-            
+
             bounding_box = BoundingBox(
                 left_top=Position(x=position.x, y=position.y),
-                right_bottom=Position(x=position.x + 1, y=position.y + 1)
+                right_bottom=Position(x=position.x + 1, y=position.y + 1),
             )
-        
+
         # Parse direction if available
         direction = None
         if "direction" in entity_data:
@@ -573,63 +609,61 @@ def get_reachable_entities() -> List[ReachableEntity]:
                 direction = Direction(entity_data["direction"])
             except (ValueError, KeyError):
                 pass
-        
+
         entity = ReachableEntity(
-            name=name,
-            position=position,
-            bounding_box=bounding_box,
-            direction=direction
+            name=name, position=position, bounding_box=bounding_box, direction=direction
         )
         entities.append(entity)
-    
+
     return entities
 
 
 # Internal storage for the configured factory instance
 _configured_factory: Optional[PlayingFactory] = None
 
+
 def enable_logging(level: int = logging.INFO):
     """
     Enable logging for the DSL to see RCON/UDP traffic.
     Useful in notebooks where default logging might be suppressed.
-    
+
     Args:
         level: Logging level (default INFO)
     """
     # Get the library logger
     logger = logging.getLogger("src.FactoryVerse")
     logger.setLevel(level)
-    
+
     # Check if handler already exists to avoid duplicates
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter(
-            '%(name)s - %(levelname)s - %(message)s'
-        ))
+        handler.setFormatter(
+            logging.Formatter("%(name)s - %(levelname)s - %(message)s")
+        )
         logger.addHandler(handler)
 
 
 def configure(
-    rcon_client: RconClient, 
+    rcon_client: RconClient,
     agent_id: str,
     snapshot_dir: Optional[Path] = None,
     db_path: Optional[Union[str, Path]] = None,
-    agent_udp_port: Optional[int] = None
+    agent_udp_port: Optional[int] = None,
 ):
     """
     Configure the DSL environment with RCON connection and agent ID.
     This should be called ONCE by the system/notebook initialization.
-    
+
     Args:
         rcon_client: RCON client for remote interface calls
         agent_id: Agent ID (e.g., 'agent_1')
         snapshot_dir: Optional path to snapshot directory (auto-detected if None)
         db_path: Optional path to DuckDB database file (uses in-memory if None)
-        agent_udp_port: Optional UDP port for agent-specific async actions. 
+        agent_udp_port: Optional UDP port for agent-specific async actions.
                        If provided, agent owns this port completely (decoupled from snapshot port).
     """
     global _configured_factory
-    
+
     # 1. Fetch recipes
     cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_recipes')))"
     try:
@@ -644,7 +678,7 @@ def configure(
     except Exception as e:
         print(f"Warning: Could not pre-fetch recipes: {e}")
         try:
-             # Only print partial response if possible to avoid massive logs, or just type
+            # Only print partial response if possible to avoid massive logs, or just type
             print(f"Recieved data type: {type(json.loads(res))}")
         except:
             pass
@@ -656,11 +690,13 @@ def configure(
         res = rcon_client.send_command(cmd)
         techs_res = json.loads(res)
         if isinstance(techs_res, dict):
-            techs_data = techs_res.get('technologies', [])
+            techs_data = techs_res.get("technologies", [])
         else:
             techs_data = techs_res
         tech_tree = TechTree.from_rcon_data(techs_data)
-        print(f"DEBUG: Loaded {len(tech_tree.technologies)} technologies into tech_tree.")
+        print(
+            f"DEBUG: Loaded {len(tech_tree.technologies)} technologies into tech_tree."
+        )
     except Exception as e:
         print(f"Warning: Could not pre-fetch technologies: {e}")
         tech_tree = TechTree()
@@ -671,15 +707,14 @@ def configure(
     _configured_factory = PlayingFactory(
         rcon_client, agent_id, recipes, tech_tree, agent_udp_port=agent_udp_port
     )
-    
+
     # 3. Auto-load snapshots if snapshot_dir or db_path provided
     # Note: Uses sync version here since configure() is not async
     # User should call await map_db.load_snapshots() in playing_factorio() context
     # to wait for initial snapshot completion
     if snapshot_dir is not None or db_path is not None:
         _configured_factory._load_snapshots_sync(
-            snapshot_dir=snapshot_dir,
-            db_path=db_path
+            snapshot_dir=snapshot_dir, db_path=db_path
         )
 
 
@@ -687,10 +722,10 @@ def configure(
 def playing_factorio():
     """
     Context manager to activate the configured DSL runtime.
-    
+
     Automatically starts GameDataSyncService if DB is loaded.
     The sync service runs in the background and keeps DB in sync.
-    
+
     Usage:
         with playing_factorio():
             await walking.to(...)
@@ -698,7 +733,7 @@ def playing_factorio():
             entities = map_db.connection.execute("SELECT * FROM map_entity").fetchall()
     """
     global _configured_factory
-    
+
     if _configured_factory is None:
         raise RuntimeError(
             "DSL not configured. System must call dsl.configure(rcon, agent_id) first."
@@ -706,7 +741,7 @@ def playing_factorio():
 
     # Set context var to the pre-configured instance
     token = _playing_factory.set(_configured_factory)
-    
+
     # Start game data sync service if DB is loaded (non-blocking)
     sync_started = False
     try:
@@ -720,18 +755,22 @@ def playing_factorio():
                     sync_started = True
                 else:
                     # No loop running, start sync service
-                    loop.run_until_complete(_configured_factory._ensure_game_data_sync())
+                    loop.run_until_complete(
+                        _configured_factory._ensure_game_data_sync()
+                    )
                     sync_started = True
             except RuntimeError:
                 # No event loop, create one and start sync
                 try:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    loop.run_until_complete(_configured_factory._ensure_game_data_sync())
+                    loop.run_until_complete(
+                        _configured_factory._ensure_game_data_sync()
+                    )
                     sync_started = True
                 except Exception as e:
                     logging.warning(f"Could not start game data sync service: {e}")
-        
+
         yield _configured_factory
     finally:
         # Stop sync service if we started it
@@ -745,8 +784,9 @@ def playing_factorio():
                     loop.run_until_complete(_configured_factory._stop_game_data_sync())
             except RuntimeError:
                 pass
-        
+
         _playing_factory.reset(token)
+
 
 """
 with playing_factorio():

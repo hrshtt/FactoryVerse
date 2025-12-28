@@ -15,25 +15,60 @@ if TYPE_CHECKING:
 
 # Import entity implementations
 from .implementations import (
+    # Containers
     Container,
     WoodenChest,
     IronChest,
     SteelChest,
     ShipWreck,
+    # Furnaces
     Furnace,
     StoneFurnace,
     SteelFurnace,
     ElectricFurnace,
+    # Processing machines
     AssemblingMachine,
     ChemicalPlant,
     OilRefinery,
     Centrifuge,
     RocketSilo,
+    # Mining drills
     ElectricMiningDrill,
     BurnerMiningDrill,
+    # Pumpjack
+    Pumpjack,
+    # Inserters
+    Inserter,
+    FastInserter,
+    LongHandedInserter,
+    FilterInserter,
+    StackInserter,
+    StackFilterInserter,
+    BulkInserter,
+    BurnerInserter,
+    # Transport belts
+    TransportBelt,
+    FastTransportBelt,
+    ExpressTransportBelt,
+    UndergroundBelt,
+    FastUndergroundBelt,
+    ExpressUndergroundBelt,
+    Splitter,
+    FastSplitter,
+    ExpressSplitter,
+    Loader,
+    FastLoader,
+    ExpressLoader,
+    # Electric poles
+    ElectricPole,
+    SmallElectricPole,
+    MediumElectricPole,
+    BigElectricPole,
+    Substation,
 )
 
 # Entity name -> class mapping
+# Maps Factorio entity names to Python classes
 ENTITY_CLASS_MAP: Dict[str, type] = {
     # Containers
     "wooden-chest": WoodenChest,
@@ -57,6 +92,38 @@ ENTITY_CLASS_MAP: Dict[str, type] = {
     # Mining drills
     "electric-mining-drill": ElectricMiningDrill,
     "burner-mining-drill": BurnerMiningDrill,
+    # Pumpjack
+    "pumpjack": Pumpjack,
+    # Inserters
+    "inserter": Inserter,
+    "fast-inserter": FastInserter,
+    "long-handed-inserter": LongHandedInserter,
+    "filter-inserter": FilterInserter,
+    "stack-inserter": StackInserter,
+    "stack-filter-inserter": StackFilterInserter,
+    "bulk-inserter": BulkInserter,
+    "burner-inserter": BurnerInserter,
+    # Transport belts
+    "transport-belt": TransportBelt,
+    "fast-transport-belt": FastTransportBelt,
+    "express-transport-belt": ExpressTransportBelt,
+    # Underground belts
+    "underground-belt": UndergroundBelt,
+    "fast-underground-belt": FastUndergroundBelt,
+    "express-underground-belt": ExpressUndergroundBelt,
+    # Splitters
+    "splitter": Splitter,
+    "fast-splitter": FastSplitter,
+    "express-splitter": ExpressSplitter,
+    # Loaders
+    "loader": Loader,
+    "fast-loader": FastLoader,
+    "express-loader": ExpressLoader,
+    # Electric poles
+    "small-electric-pole": SmallElectricPole,
+    "medium-electric-pole": MediumElectricPole,
+    "big-electric-pole": BigElectricPole,
+    "substation": Substation,
 }
 
 
@@ -165,92 +232,3 @@ def create_ghost_entity(
 
     base_entity = _create_base_entity(entity_data)
     return Ghost(base_entity, entity_ops, place_ops)
-
-# ============================================================================
-# INSPECTION DATA PARSING
-# ============================================================================
-
-from typing import Optional
-from .inspect import BaseInspectionData, BurnerData, EnergyData, EntityRef
-from .implementations.furnace import FurnaceInspection
-
-
-def _parse_burner(data: Optional[Dict[str, Any]]) -> Optional[BurnerData]:
-    """Parse burner data from Lua response."""
-    if data is None:
-        return None
-    return BurnerData(
-        heat=data.get("heat"),
-        heat_capacity=data.get("heat_capacity"),
-        remaining_burning_fuel=data.get("remaining_burning_fuel"),
-        currently_burning=data.get("currently_burning"),
-    )
-
-
-def _parse_energy(data: Optional[Dict[str, Any]]) -> Optional[EnergyData]:
-    """Parse energy data from Lua response."""
-    if data is None:
-        return None
-    return EnergyData(
-        current=data["current"],
-        capacity=data["capacity"]
-    )
-
-
-def _parse_entity_ref(data: Optional[Dict[str, Any]]) -> Optional[EntityRef]:
-    """Parse entity reference from Lua response."""
-    if data is None:
-        return None
-    return EntityRef(
-        name=data["name"],
-        position=MapPosition(data["position"]["x"], data["position"]["y"])
-    )
-
-
-def parse_inspection_data(raw_data: Dict[str, Any]) -> BaseInspectionData:
-    """Parse Lua inspection data into typed dataclass.
-    
-    Args:
-        raw_data: Raw dictionary from Lua inspection
-        
-    Returns:
-        Typed inspection dataclass matching entity type
-    """
-    entity_type = raw_data["entity_type"]
-    
-    # Parse furnace inspection
-    if entity_type == "furnace":
-        return FurnaceInspection(
-            entity_name=raw_data["entity_name"],
-            entity_type=entity_type,
-            position=MapPosition(raw_data["position"]["x"], raw_data["position"]["y"]),
-            direction=raw_data["direction"],
-            tick=raw_data["tick"],
-            health=raw_data.get("health"),
-            max_health=raw_data.get("max_health"),
-            status=raw_data.get("status"),
-            recipe=raw_data.get("recipe"),
-            crafting_progress=raw_data.get("crafting_progress"),
-            bonus_progress=raw_data.get("bonus_progress"),
-            is_crafting=raw_data.get("is_crafting"),
-            input=raw_data.get("input"),
-            output=raw_data.get("output"),
-            fuel=raw_data.get("fuel"),
-            energy=_parse_energy(raw_data.get("energy")),
-            beacons_count=raw_data.get("beacons_count"),
-            burner=_parse_burner(raw_data.get("burner")),
-            previous_recipe=raw_data.get("previous_recipe")
-        )
-    
-    # Fallback to base inspection
-    else:
-        return BaseInspectionData(
-            entity_name=raw_data["entity_name"],
-            entity_type=entity_type,
-            position=MapPosition(raw_data["position"]["x"], raw_data["position"]["y"]),
-            direction=raw_data["direction"],
-            tick=raw_data["tick"],
-            health=raw_data.get("health"),
-            max_health=raw_data.get("max_health"),
-            status=raw_data.get("status")
-        )

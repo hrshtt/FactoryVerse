@@ -4,13 +4,30 @@ Assembling machines craft items from recipes.
 Includes: AssemblingMachine (all tiers), ChemicalPlant, OilRefinery, Centrifuge, RocketSilo
 """
 
-from typing import Dict, Any, Union, Optional, TYPE_CHECKING
+from typing import Dict, Any, Union, Optional, List, TYPE_CHECKING
 from FactoryVerse.dsl.types import MapPosition, Direction
 from FactoryVerse.dsl.mixins import CrafterMixin
 from FactoryVerse.dsl.entity.base_entity import BaseEntity
+from FactoryVerse.dsl.entity.inspect import (
+    AssemblerInspection,
+    ChemicalPlantInspection,
+    OilRefineryInspection,
+    RocketSiloInspection,
+    EnergyData,
+)
 
 if TYPE_CHECKING:
     from FactoryVerse.dsl.recipe.base import BaseRecipe as Recipe
+
+
+def _parse_energy(data: Optional[Dict]) -> Optional[EnergyData]:
+    """Parse energy data from Lua response."""
+    if data is None:
+        return None
+    return EnergyData(
+        current=data.get("current", 0),
+        capacity=data.get("capacity", 0),
+    )
 
 
 class ProcessingMachine(CrafterMixin, BaseEntity):
@@ -63,45 +80,37 @@ class ProcessingMachine(CrafterMixin, BaseEntity):
         """Format processing machine inspection data.
 
         Args:
-            data: Raw inspection data from the game
+            data: Raw inspection data from Lua (matches inspect_crafting_machine output)
 
         Returns:
             Formatted string for agent consumption
         """
-        from FactoryVerse.dsl.entity.inspect import BaseInspectionData
+        # Parse position
+        pos_data = data.get("position", {})
+        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
 
-        inspection = BaseInspectionData(
+        # Build AssemblerInspection from Lua data
+        # NOTE: Lua sends data.input, data.output, data.modules DIRECTLY
+        inspection = AssemblerInspection(
             entity_name=data.get("entity_name", ""),
             entity_type=data.get("entity_type", ""),
-            position=MapPosition.from_dict(data["position"]),
+            position=position,
             direction=data.get("direction", 0),
             tick=data.get("tick", 0),
             health=data.get("health"),
             max_health=data.get("max_health"),
             status=data.get("status"),
+            recipe=data.get("recipe"),
+            crafting_progress=data.get("crafting_progress"),
+            bonus_progress=data.get("bonus_progress"),
+            is_crafting=data.get("is_crafting"),
+            input=data.get("input"),  # Direct from Lua
+            output=data.get("output"),  # Direct from Lua
+            modules=data.get("modules"),  # Direct from Lua
+            energy=_parse_energy(data.get("energy")),
+            beacons_count=data.get("beacons_count"),
         )
-
-        # Add recipe and progress info if available
-        lines = [str(inspection)]
-        if data.get("recipe"):
-            lines.append(f"  Recipe: {data['recipe']}")
-            if data.get("crafting_progress") is not None:
-                lines.append(f"  Progress: {data['crafting_progress'] * 100:.1f}%")
-
-        # Add inventory info if available
-        inventories = data.get("inventories", {})
-        if inventories.get("input"):
-            input_str = ", ".join(
-                [f"{name}: {count}" for name, count in inventories["input"].items()]
-            )
-            lines.append(f"  Input: {input_str}")
-        if inventories.get("output"):
-            output_str = ", ".join(
-                [f"{name}: {count}" for name, count in inventories["output"].items()]
-            )
-            lines.append(f"  Output: {output_str}")
-
-        return "\n".join(lines)
+        return str(inspection)
 
 
 class AssemblingMachine(ProcessingMachine):
@@ -113,13 +122,61 @@ class AssemblingMachine(ProcessingMachine):
 class ChemicalPlant(ProcessingMachine):
     """A chemical plant entity."""
 
-    pass
+    def _format_inspection(self, data: Dict) -> str:
+        """Format chemical plant inspection data."""
+        pos_data = data.get("position", {})
+        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
+
+        inspection = ChemicalPlantInspection(
+            entity_name=data.get("entity_name", ""),
+            entity_type=data.get("entity_type", ""),
+            position=position,
+            direction=data.get("direction", 0),
+            tick=data.get("tick", 0),
+            health=data.get("health"),
+            max_health=data.get("max_health"),
+            status=data.get("status"),
+            recipe=data.get("recipe"),
+            crafting_progress=data.get("crafting_progress"),
+            bonus_progress=data.get("bonus_progress"),
+            is_crafting=data.get("is_crafting"),
+            input=data.get("input"),
+            output=data.get("output"),
+            modules=data.get("modules"),
+            energy=_parse_energy(data.get("energy")),
+            beacons_count=data.get("beacons_count"),
+        )
+        return str(inspection)
 
 
 class OilRefinery(ProcessingMachine):
     """An oil refinery entity."""
 
-    pass
+    def _format_inspection(self, data: Dict) -> str:
+        """Format oil refinery inspection data."""
+        pos_data = data.get("position", {})
+        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
+
+        inspection = OilRefineryInspection(
+            entity_name=data.get("entity_name", ""),
+            entity_type=data.get("entity_type", ""),
+            position=position,
+            direction=data.get("direction", 0),
+            tick=data.get("tick", 0),
+            health=data.get("health"),
+            max_health=data.get("max_health"),
+            status=data.get("status"),
+            recipe=data.get("recipe"),
+            crafting_progress=data.get("crafting_progress"),
+            bonus_progress=data.get("bonus_progress"),
+            is_crafting=data.get("is_crafting"),
+            input=data.get("input"),
+            output=data.get("output"),
+            modules=data.get("modules"),
+            energy=_parse_energy(data.get("energy")),
+            beacons_count=data.get("beacons_count"),
+        )
+        return str(inspection)
 
 
 class Centrifuge(ProcessingMachine):
@@ -131,4 +188,30 @@ class Centrifuge(ProcessingMachine):
 class RocketSilo(ProcessingMachine):
     """A rocket silo entity."""
 
-    pass
+    def _format_inspection(self, data: Dict) -> str:
+        """Format rocket silo inspection data."""
+        pos_data = data.get("position", {})
+        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
+
+        inspection = RocketSiloInspection(
+            entity_name=data.get("entity_name", ""),
+            entity_type=data.get("entity_type", ""),
+            position=position,
+            direction=data.get("direction", 0),
+            tick=data.get("tick", 0),
+            health=data.get("health"),
+            max_health=data.get("max_health"),
+            status=data.get("status"),
+            recipe=data.get("recipe"),
+            crafting_progress=data.get("crafting_progress"),
+            bonus_progress=data.get("bonus_progress"),
+            is_crafting=data.get("is_crafting"),
+            input=data.get("input"),
+            output=data.get("output"),
+            modules=data.get("modules"),
+            energy=_parse_energy(data.get("energy")),
+            beacons_count=data.get("beacons_count"),
+            rocket_parts=data.get("rocket_parts"),
+            rocket_silo_status=data.get("rocket_silo_status"),
+        )
+        return str(inspection)
