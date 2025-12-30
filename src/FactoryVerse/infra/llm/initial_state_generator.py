@@ -1,4 +1,5 @@
 """Generate initial state summaries for agent sessions."""
+
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -9,20 +10,20 @@ if TYPE_CHECKING:
 
 class InitialStateGenerator:
     """Generate initial state summary for agent."""
-    
-    def __init__(self, runtime: 'FactoryVerseRuntime'):
+
+    def __init__(self, runtime: "FactoryVerseRuntime"):
         """
         Initialize generator.
-        
+
         Args:
             runtime: FactoryVerse runtime instance
         """
         self.runtime = runtime
-    
+
     def _generate_database_summary(self) -> str:
         """
         Generate a summary showing what data exists in the database with actual query results.
-        
+
         Returns:
             Markdown formatted database summary with query → result pairs
         """
@@ -103,19 +104,21 @@ with playing_factorio():
     
     print(json.dumps(results))
 """
-        
+
         try:
             result = self.runtime.execute_code(summary_code, compress_output=False)
             data = json.loads(result)
-            
+
             lines = []
             lines.append("## Database Summary\n\n")
-            
+
             # Resource patches with coordinates
-            if data.get('resource_patches'):
+            if data.get("resource_patches"):
                 lines.append("**Query:** What resource patches exist on the map?\n")
                 lines.append("```sql\n")
-                lines.append("SELECT resource_name, patch_id, total_amount, tile_count,\n")
+                lines.append(
+                    "SELECT resource_name, patch_id, total_amount, tile_count,\n"
+                )
                 lines.append("       centroid.x as x, centroid.y as y\n")
                 lines.append("FROM resource_patch\n")
                 lines.append("ORDER BY resource_name, patch_id\n")
@@ -123,13 +126,17 @@ with playing_factorio():
                 lines.append("**Result:**\n\n")
                 lines.append("| Resource | Patch ID | Amount | Tiles | Coordinates |\n")
                 lines.append("|----------|----------|--------|-------|-------------|\n")
-                for r in data['resource_patches']:
-                    amount_str = f"{r['amount']:,}" if r['amount'] >= 1000 else str(r['amount'])
-                    lines.append(f"| {r['name']} | #{r['patch_id']} | {amount_str} | {r['tiles']} | ({r['x']:.0f}, {r['y']:.0f}) |\n")
+                for r in data["resource_patches"]:
+                    amount_str = (
+                        f"{r['amount']:,}" if r["amount"] >= 1000 else str(r["amount"])
+                    )
+                    lines.append(
+                        f"| {r['name']} | #{r['patch_id']} | {amount_str} | {r['tiles']} | ({r['x']:.0f}, {r['y']:.0f}) |\n"
+                    )
                 lines.append("\n")
-            
+
             # Natural entities
-            if data.get('entity_types'):
+            if data.get("entity_types"):
                 lines.append("**Query:** What natural entities exist? (trees, rocks)\n")
                 lines.append("```sql\n")
                 lines.append("SELECT type, COUNT(*) as count\n")
@@ -139,27 +146,31 @@ with playing_factorio():
                 lines.append("**Result:**\n\n")
                 lines.append("| Entity Type | Count |\n")
                 lines.append("|-------------|-------|\n")
-                for e in data['entity_types']:
+                for e in data["entity_types"]:
                     lines.append(f"| {e['type']} | {e['count']:,} |\n")
                 lines.append("\n")
-            
+
             # Water patches with coordinates
-            if data.get('water_patches'):
+            if data.get("water_patches"):
                 lines.append("**Query:** What water patches exist on the map?\n")
                 lines.append("```sql\n")
-                lines.append("SELECT patch_id, tile_count, centroid.x as x, centroid.y as y\n")
+                lines.append(
+                    "SELECT patch_id, tile_count, centroid.x as x, centroid.y as y\n"
+                )
                 lines.append("FROM water_patch\n")
                 lines.append("ORDER BY patch_id\n")
                 lines.append("```\n\n")
                 lines.append("**Result:**\n\n")
                 lines.append("| Patch ID | Tiles | Coordinates |\n")
                 lines.append("|----------|-------|-------------|\n")
-                for w in data['water_patches']:
-                    lines.append(f"| #{w['patch_id']} | {w['tiles']} | ({w['x']:.0f}, {w['y']:.0f}) |\n")
+                for w in data["water_patches"]:
+                    lines.append(
+                        f"| #{w['patch_id']} | {w['tiles']} | ({w['x']:.0f}, {w['y']:.0f}) |\n"
+                    )
                 lines.append("\n")
-            
+
             # Placed entities
-            if data.get('placed_entities'):
+            if data.get("placed_entities"):
                 lines.append("**Query:** What entities have been placed?\n")
                 lines.append("```sql\n")
                 lines.append("SELECT entity_name, COUNT(*) as count\n")
@@ -169,23 +180,23 @@ with playing_factorio():
                 lines.append("**Result:**\n\n")
                 lines.append("| Entity | Count |\n")
                 lines.append("|--------|-------|\n")
-                for e in data['placed_entities']:
+                for e in data["placed_entities"]:
                     lines.append(f"| {e['name']} | {e['count']} |\n")
                 lines.append("\n")
-            
+
             return "".join(lines)
-        
+
         except Exception as e:
             # Fallback if database summary fails
             return f"## Database Summary\n\n*Database summary unavailable: {e}*\n\n"
-    
+
     def generate_summary(self, session_dir: Path) -> str:
         """
         Generate markdown summary of current game state using DuckDB queries.
-        
+
         Args:
             session_dir: Session directory to save summary to
-            
+
         Returns:
             Markdown summary text
         """
@@ -303,34 +314,36 @@ with playing_factorio():
         'entities': {r[0]: r[1] for r in entities_count}
     }))
 """
-        
+
         try:
             result = self.runtime.execute_code(state_code, compress_output=False)
             state = json.loads(result)
         except Exception as e:
             # Fallback if state gathering fails
             state = {
-                'position': {'x': 0, 'y': 0},
-                'inventory': {},
-                'researched_techs': [],
-                'enabled_recipes': [],
-                'all_patches': [],
-                'resource_summary': [],
-                'water': {'patches': 0, 'tiles': 0},
-                'map_bounds': None,
-                'entities': {}
+                "position": {"x": 0, "y": 0},
+                "inventory": {},
+                "researched_techs": [],
+                "enabled_recipes": [],
+                "all_patches": [],
+                "resource_summary": [],
+                "water": {"patches": 0, "tiles": 0},
+                "map_bounds": None,
+                "entities": {},
             }
-        
+
         # Build markdown summary
         summary_lines = [
             "# Initial Game State\n",
             f"*Generated at session start*\n\n",
         ]
-        
+
         # Add categorical references at the beginning
         try:
-            from FactoryVerse.llm.categorical_references import CategoricalReferenceGenerator
-            
+            from FactoryVerse.infra.llm.categorical_references import (
+                CategoricalReferenceGenerator,
+            )
+
             cat_gen = CategoricalReferenceGenerator()
             categorical_refs = cat_gen.generate_combined_reference()
             summary_lines.append(categorical_refs)
@@ -338,49 +351,57 @@ with playing_factorio():
         except Exception as e:
             # If categorical reference generation fails, continue without it
             summary_lines.append(f"*Categorical references unavailable: {e}*\n\n")
-        
+
         # Add database summary with query→result pairs
         database_summary = self._generate_database_summary()
         summary_lines.append(database_summary)
         summary_lines.append("\n")
-        
+
         # Add agent status
         summary_lines.append("## Agent Status\n")
-        summary_lines.append(f"**Position:** ({state['position']['x']:.1f}, {state['position']['y']:.1f})\n")
-        
+        summary_lines.append(
+            f"**Position:** ({state['position']['x']:.1f}, {state['position']['y']:.1f})\n"
+        )
+
         # Inventory section
         summary_lines.append("\n## Inventory\n")
-        if state['inventory']:
-            for item, count in sorted(state['inventory'].items()):
+        if state["inventory"]:
+            for item, count in sorted(state["inventory"].items()):
                 summary_lines.append(f"- **{item}**: {count}\n")
         else:
             summary_lines.append("*Empty*\n")
-        
+
         # Map overview
-        if state['map_bounds'] and state['map_bounds']['max_x'] is not None:
-            bounds = state['map_bounds']
-            width = bounds['max_x'] - bounds['min_x']
-            height = bounds['max_y'] - bounds['min_y']
+        if state["map_bounds"] and state["map_bounds"]["max_x"] is not None:
+            bounds = state["map_bounds"]
+            width = bounds["max_x"] - bounds["min_x"]
+            height = bounds["max_y"] - bounds["min_y"]
             summary_lines.append("\n## Map Overview\n")
-            summary_lines.append(f"**Explored area:** {width:.0f} × {height:.0f} tiles\n")
-            summary_lines.append(f"**Bounds:** X=[{bounds['min_x']:.0f}, {bounds['max_x']:.0f}], Y=[{bounds['min_y']:.0f}, {bounds['max_y']:.0f}]\n")
-        
+            summary_lines.append(
+                f"**Explored area:** {width:.0f} × {height:.0f} tiles\n"
+            )
+            summary_lines.append(
+                f"**Bounds:** X=[{bounds['min_x']:.0f}, {bounds['max_x']:.0f}], Y=[{bounds['min_y']:.0f}, {bounds['max_y']:.0f}]\n"
+            )
+
         # Natural entities (trees and rocks)
-        if state['entities']:
+        if state["entities"]:
             summary_lines.append("\n## Natural Entities\n")
-            for entity_type, count in sorted(state['entities'].items()):
+            for entity_type, count in sorted(state["entities"].items()):
                 summary_lines.append(f"- **{entity_type.title()}:** {count:,}\n")
-        
+
         # Technology & Recipes section
         try:
-            from FactoryVerse.llm.tech_recipe_prompt import TechRecipePromptGenerator
-            
+            from FactoryVerse.infra.llm.tech_recipe_prompt import (
+                TechRecipePromptGenerator,
+            )
+
             tech_recipe_gen = TechRecipePromptGenerator()
             tech_recipe_section = tech_recipe_gen.generate_combined_prompt(
-                researched=state.get('researched_techs', []),
-                enabled_recipes=state.get('enabled_recipes', []),
+                researched=state.get("researched_techs", []),
+                enabled_recipes=state.get("enabled_recipes", []),
                 tech_limit=8,  # Show top 8 available technologies
-                recipe_limit=12  # Show top 12 enabled recipes
+                recipe_limit=12,  # Show top 12 enabled recipes
             )
             summary_lines.append("\n")
             summary_lines.append(tech_recipe_section)
@@ -389,17 +410,21 @@ with playing_factorio():
             # If tech/recipe generation fails, continue without it
             summary_lines.append("\n## Technology & Recipes\n")
             summary_lines.append(f"*Tech/recipe information unavailable: {e}*\n")
-        
+
         # Add guidance
         summary_lines.append("\n## Next Steps\n")
-        summary_lines.append("Use the DSL to explore, gather resources, and build automation!\n")
+        summary_lines.append(
+            "Use the DSL to explore, gather resources, and build automation!\n"
+        )
         summary_lines.append("Query the database for spatial analysis and planning.\n")
-        summary_lines.append("Use `research.enqueue('tech-name')` to start researching technologies.\n")
-        
+        summary_lines.append(
+            "Use `research.enqueue('tech-name')` to start researching technologies.\n"
+        )
+
         # Combine and save
         summary_text = "".join(summary_lines)
         summary_path = session_dir / "initial_state.md"
-        with open(summary_path, 'w') as f:
+        with open(summary_path, "w") as f:
             f.write(summary_text)
-        
+
         return summary_text

@@ -5,11 +5,11 @@ import logging
 import datetime
 from typing import Optional, Dict, Any
 
-from FactoryVerse.llm.client import PrimeIntellectClient
+from FactoryVerse.infra.llm.client import PrimeIntellectClient
 from FactoryVerse.agent_runtime import FactoryVerseRuntime
-from FactoryVerse.llm.trajectory_manager import TrajectoryManager, ActionStatus
-from FactoryVerse.llm.tool_validator import ToolValidator
-from FactoryVerse.llm.console_output import ConsoleOutput
+from FactoryVerse.infra.llm.trajectory_manager import TrajectoryManager, ActionStatus
+from FactoryVerse.infra.llm.tool_validator import ToolValidator
+from FactoryVerse.infra.llm.console_output import ConsoleOutput
 
 logger = logging.getLogger(__name__)
 

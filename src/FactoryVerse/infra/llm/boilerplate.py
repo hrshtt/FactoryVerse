@@ -105,9 +105,11 @@ reachable = runtime.reachable
 resources = runtime.resources
 entity_ops = runtime.entity_ops
 placement = runtime.placement
+remote_view = runtime.remote_view
 
 print("\n💡 Tech/recipe info available in initial_state.md")
 print("   Use research.queue('tech-name') to start researching!")
 print("\n📦 Available affordances:")
 print("   walking, mining, crafting, research, inventory, reachable, resources")
+print("   remote_view (map-wide queries via DuckDB)")
 print()
