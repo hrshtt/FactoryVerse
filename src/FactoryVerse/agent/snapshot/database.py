@@ -1,170 +1,329 @@
-from typing import Optional
+"""Database connection and schema management.
+
+Single responsibility: DuckDB connection lifecycle and schema creation.
+Does NOT load data or handle queries - those are separate modules.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Optional, List
+
+import duckdb
+
+logger = logging.getLogger(__name__)
 
 
-class _DuckDBAccessor:
-    """Accessor for DuckDB map database operations.
+class SnapshotDatabase:
+    """Manages DuckDB connection and schema for snapshot data.
 
-    Provides read-only access to entities across the entire map via SQL queries.
-    Returns RemoteViewEntity instances that can be inspected and used for planning,
-    but cannot be mutated (no pickup, add_fuel, etc.).
+    Responsibilities:
+    - Create/connect to database
+    - Initialize schema (tables, indexes, types)
+    - Reset data
+    - Install extensions
+
+    Does NOT:
+    - Load data (see loader.py)
+    - Execute queries (see query.py)
+    - Handle sync (see sync.py)
     """
 
-    def __init__(self, connection):
-        """Initialize accessor with DuckDB connection.
+    def __init__(self, db_path: Optional[Path] = None):
+        """Create or connect to database.
 
         Args:
-            connection: DuckDB connection instance
+            db_path: Path for persistent DB. None = in-memory.
         """
-        self.connection = connection
+        self._path = db_path
+        self._connection: Optional[duckdb.DuckDBPyConnection] = None
+        self._schema_created = False
 
-    def get_entity(self, query: str) -> Optional["RemoteViewEntity"]:
-        """Get single read-only entity from DuckDB query.
+    @property
+    def connection(self) -> duckdb.DuckDBPyConnection:
+        """Get active connection, creating if needed."""
+        if self._connection is None:
+            self._connection = self._create_connection()
+        return self._connection
 
-        Args:
-            query: SQL SELECT query with LIMIT 1 (enforced)
+    @property
+    def is_connected(self) -> bool:
+        """True if connection is active."""
+        return self._connection is not None
 
-        Returns:
-            RemoteViewEntity instance or None if no results
+    def _create_connection(self) -> duckdb.DuckDBPyConnection:
+        """Create connection with extensions loaded."""
+        path = str(self._path) if self._path else ":memory:"
+        logger.info(f"Connecting to DuckDB: {path}")
 
-        Raises:
-            ValueError: If query is invalid, unsafe, or missing LIMIT 1
+        con = duckdb.connect(path)
 
-        Example:
-            >>> entity = map_db.get_entity('''
-            ...     SELECT * FROM map_entity me
-            ...     JOIN mining_drill md ON me.entity_key = md.entity_key
-            ...     WHERE entity_name = 'burner-mining-drill'
-            ...     LIMIT 1
-            ... ''')
-            >>> entity.output_position  # Planning capability
-            >>> entity.inspect()  # Requires context manager
+        # Install and load extensions
+        try:
+            con.execute("INSTALL spatial;")
+            con.execute("LOAD spatial;")
+        except Exception:
+            pass  # Already installed
+
+        try:
+            con.execute("INSTALL json;")
+            con.execute("LOAD json;")
+        except Exception:
+            pass  # Already installed
+
+        return con
+
+    def ensure_schema(self) -> None:
+        """Create schema if not exists.
+
+        Idempotent - safe to call multiple times.
         """
-        from FactoryVerse.dsl.entity.base import create_entity_from_db
+        if self._schema_created:
+            return
 
-        # Validate query
-        self._validate_query(query)
+        con = self.connection
+        self._create_types(con)
+        self._create_tables(con)
+        self._create_indexes(con)
+        self._schema_created = True
+        logger.info("Schema created successfully")
 
-        # Enforce LIMIT 1
-        query_upper = query.upper()
-        if "LIMIT 1" not in query_upper:
-            raise ValueError("get_entity() requires LIMIT 1 in query")
+    def _create_types(self, con: duckdb.DuckDBPyConnection) -> None:
+        """Create custom types."""
+        # Use simple VARCHAR for flexibility - avoid ENUM complexity
+        # Struct types for positions
+        self._exec_safe(
+            con, "CREATE TYPE IF NOT EXISTS map_position AS STRUCT(x DOUBLE, y DOUBLE);"
+        )
+        self._exec_safe(
+            con, "CREATE TYPE IF NOT EXISTS chunk_id AS STRUCT(x INTEGER, y INTEGER);"
+        )
 
-        # Execute query
-        cursor = self.connection.execute(query)
-        result = cursor.fetchone()
+    def _create_tables(self, con: duckdb.DuckDBPyConnection) -> None:
+        """Create all tables."""
+        # Core entity table
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS map_entity (
+                entity_key VARCHAR PRIMARY KEY,
+                entity_name VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
+                chunk_x INTEGER NOT NULL,
+                chunk_y INTEGER NOT NULL,
+                direction VARCHAR,
+                bbox_min_x DOUBLE,
+                bbox_min_y DOUBLE,
+                bbox_max_x DOUBLE,
+                bbox_max_y DOUBLE,
+                electric_network_id INTEGER,
+                -- Raw entity data for full reconstruction
+                raw_data VARCHAR
+            );
+        """)
 
-        if result is None:
-            return None
+        # Ghost table (entities with is_ghost=true behavior)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS ghost (
+                entity_key VARCHAR PRIMARY KEY,
+                ghost_name VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
+                chunk_x INTEGER NOT NULL,
+                chunk_y INTEGER NOT NULL,
+                direction VARCHAR,
+                placed_tick INTEGER,
+                placed_by VARCHAR,
+                label VARCHAR,
+                raw_data VARCHAR
+            );
+        """)
 
-        # Convert to RemoteViewEntity
-        entity_data = self._row_to_dict(result, cursor)
-        return create_entity_from_db(entity_data)
+        # Resource tiles (ores)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS resource_tile (
+                entity_key VARCHAR PRIMARY KEY,
+                name VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
+                chunk_x INTEGER NOT NULL,
+                chunk_y INTEGER NOT NULL,
+                amount INTEGER
+            );
+        """)
 
-    def get_entities(self, query: str) -> List["RemoteViewEntity"]:
-        """Get read-only entities from DuckDB query.
+        # Water tiles
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS water_tile (
+                entity_key VARCHAR PRIMARY KEY,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
+                chunk_x INTEGER NOT NULL,
+                chunk_y INTEGER NOT NULL
+            );
+        """)
 
-        Args:
-            query: SQL SELECT query (validated for safety)
+        # Resource entities (trees, rocks)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS resource_entity (
+                entity_key VARCHAR PRIMARY KEY,
+                name VARCHAR NOT NULL,
+                entity_type VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
+                chunk_x INTEGER NOT NULL,
+                chunk_y INTEGER NOT NULL,
+                raw_data VARCHAR
+            );
+        """)
 
-        Returns:
-            List of RemoteViewEntity instances (read-only)
+        # Sync state table (for tracking sequence)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sync_state (
+                key VARCHAR PRIMARY KEY,
+                value INTEGER NOT NULL
+            );
+        """)
 
-        Raises:
-            ValueError: If query is invalid or unsafe
+        # Component tables (inserter, belt, drill, etc.)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS inserter (
+                entity_key VARCHAR PRIMARY KEY,
+                direction VARCHAR NOT NULL,
+                pickup_position_x DOUBLE,
+                pickup_position_y DOUBLE,
+                drop_position_x DOUBLE,
+                drop_position_y DOUBLE,
+                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            );
+        """)
 
-        Example:
-            >>> drills = map_db.get_entities('''
-            ...     SELECT * FROM map_entity me
-            ...     JOIN mining_drill md ON me.entity_key = md.entity_key
-            ...     WHERE entity_name = 'burner-mining-drill'
-            ... ''')
-            >>> for drill in drills:
-            ...     print(drill.output_position)  # Planning capability
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS transport_belt (
+                entity_key VARCHAR PRIMARY KEY,
+                direction VARCHAR NOT NULL,
+                belt_speed DOUBLE,
+                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS mining_drill (
+                entity_key VARCHAR PRIMARY KEY,
+                direction VARCHAR NOT NULL,
+                mining_target VARCHAR,
+                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS assembler (
+                entity_key VARCHAR PRIMARY KEY,
+                recipe VARCHAR,
+                crafting_speed DOUBLE,
+                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            );
+        """)
+
+    def _create_indexes(self, con: duckdb.DuckDBPyConnection) -> None:
+        """Create indexes for common queries."""
+        # Entity indexes
+        self._exec_safe(
+            con,
+            "CREATE INDEX IF NOT EXISTS idx_map_entity_name ON map_entity(entity_name);",
+        )
+        self._exec_safe(
+            con,
+            "CREATE INDEX IF NOT EXISTS idx_map_entity_chunk ON map_entity(chunk_x, chunk_y);",
+        )
+        self._exec_safe(
+            con,
+            "CREATE INDEX IF NOT EXISTS idx_map_entity_pos ON map_entity(position_x, position_y);",
+        )
+
+        # Ghost indexes
+        self._exec_safe(
+            con, "CREATE INDEX IF NOT EXISTS idx_ghost_name ON ghost(ghost_name);"
+        )
+        self._exec_safe(
+            con,
+            "CREATE INDEX IF NOT EXISTS idx_ghost_chunk ON ghost(chunk_x, chunk_y);",
+        )
+
+        # Resource indexes
+        self._exec_safe(
+            con,
+            "CREATE INDEX IF NOT EXISTS idx_resource_tile_name ON resource_tile(name);",
+        )
+        self._exec_safe(
+            con,
+            "CREATE INDEX IF NOT EXISTS idx_resource_tile_chunk ON resource_tile(chunk_x, chunk_y);",
+        )
+        self._exec_safe(
+            con,
+            "CREATE INDEX IF NOT EXISTS idx_resource_entity_chunk ON resource_entity(chunk_x, chunk_y);",
+        )
+
+    def _exec_safe(self, con: duckdb.DuckDBPyConnection, sql: str) -> None:
+        """Execute SQL, ignoring errors (for IF NOT EXISTS patterns)."""
+        try:
+            con.execute(sql)
+        except Exception as e:
+            logger.debug(f"Safe exec ignored error: {e}")
+
+    def reset(self) -> None:
+        """Clear all data, keep schema.
+
+        Use this for rebuild operations.
         """
-        from FactoryVerse.dsl.entity.base import create_entity_from_db
-
-        # Validate query
-        self._validate_query(query)
-
-        # Execute query
-        cursor = self.connection.execute(query)
-        results = cursor.fetchall()
-
-        # Convert to RemoteViewEntity instances
-        entities = []
-        for row in results:
-            entity_data = self._row_to_dict(row, cursor)
-            entity = create_entity_from_db(entity_data)
-            entities.append(entity)
-
-        return entities
-
-    async def sync(self, timeout: float = 5.0) -> None:
-        """Explicitly sync the database before queries.
-
-        Call this before critical queries that require up-to-date data:
-            await map_db.sync()
-            entities = map_db.get_entities(...)
-
-        Args:
-            timeout: Maximum time to wait for sync (seconds)
-        """
-        from FactoryVerse.dsl.types import _playing_factory
-
-        factory = _playing_factory.get()
-        if factory and factory._game_data_sync and factory._game_data_sync.is_running:
-            await factory._game_data_sync.ensure_synced(timeout=timeout)
-
-    def _validate_query(self, query: str) -> None:
-        """Validate that query is safe and read-only.
-
-        Raises:
-            ValueError: If query contains forbidden operations
-        """
-        query_upper = query.upper().strip()
-
-        # Must be SELECT
-        if not query_upper.startswith("SELECT"):
-            raise ValueError("Only SELECT queries allowed")
-
-        # No aggregations (agents should query raw data)
-        forbidden_keywords = [
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "CREATE",
-            "ALTER",
-            "DROP",
-            "GROUP BY",
-            "HAVING",
-            "DISTINCT",
+        con = self.connection
+        tables = [
+            "map_entity",
+            "ghost",
+            "resource_tile",
+            "water_tile",
+            "resource_entity",
+            "sync_state",
+            "inserter",
+            "transport_belt",
+            "mining_drill",
+            "assembler",
         ]
+        for table in tables:
+            try:
+                con.execute(f"DELETE FROM {table};")
+            except Exception:
+                pass  # Table may not exist
 
-        for keyword in forbidden_keywords:
-            if keyword in query_upper:
-                raise ValueError(f"Query operation not allowed: {keyword}")
+        logger.info("Database reset complete")
 
-    def _row_to_dict(self, row, cursor) -> Dict[str, Any]:
-        """Convert DuckDB row to entity data dict.
+    def get_last_sequence(self) -> int:
+        """Get last processed sequence from sync_state table."""
+        try:
+            result = self.connection.execute(
+                "SELECT value FROM sync_state WHERE key = 'last_sequence'"
+            ).fetchone()
+            return result[0] if result else 0
+        except Exception:
+            return 0
 
-        Args:
-            row: DuckDB query result row (tuple-like)
-            cursor: DuckDB cursor with description
+    def set_last_sequence(self, sequence: int) -> None:
+        """Update last processed sequence in sync_state table."""
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO sync_state (key, value) 
+            VALUES ('last_sequence', ?)
+            """,
+            [sequence],
+        )
 
-        Returns:
-            Entity data dictionary compatible with create_entity_from_db
-        """
-        # DuckDB rows are tuples, get column names from cursor description
-        if not cursor.description:
-            raise ValueError(
-                "Cursor has no description - cannot determine column names"
-            )
+    def close(self) -> None:
+        """Close connection."""
+        if self._connection:
+            self._connection.close()
+            self._connection = None
+            self._schema_created = False
+            logger.info("Database connection closed")
 
-        # Extract column names from cursor description
-        # cursor.description is a list of tuples: [(name, type_code, ...), ...]
-        column_names = [desc[0] for desc in cursor.description]
 
-        # Convert row tuple to dict
-        entity_data = dict(zip(column_names, row))
-
-        return entity_data
+__all__ = ["SnapshotDatabase"]
