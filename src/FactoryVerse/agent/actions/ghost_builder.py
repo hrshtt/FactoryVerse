@@ -1,37 +1,51 @@
 """Ghost builder action for building ghost entities.
 
 This module handles building ghost entities by walking to them and placing
-real entities. It works with both:
-- TrackedGhost objects (from GhostManager)
-- Reachable[BaseEntity] ghost entities (from reachable_entities.get_ghosts())
+real entities. It works with ghost entities from:
+- RemoteView queries (runtime.remote_view.get_ghosts())
+- Reachable queries (runtime.reachable.get_ghosts())
+
+All ghost entities are now represented as RemoteView[BaseEntity] with is_ghost=True.
 """
 
 from typing import List, Dict, Any, Union, TYPE_CHECKING
-
-from .types import TrackedGhost
+from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from FactoryVerse.agent.actions.walking import MovementAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
     from FactoryVerse.agent.actions.inventory import AgentInventory
-    from FactoryVerse.dsl.entity.views import Reachable
+    from FactoryVerse.dsl.entity.views import Reachable, RemoteView
     from FactoryVerse.dsl.entity.base_entity import BaseEntity
+    from FactoryVerse.dsl.types import MapPosition
 
 
-# Type alias for ghost entities (either TrackedGhost or Reachable[ghost])
-GhostLike = Union[TrackedGhost, "Reachable[BaseEntity]"]
+@dataclass
+class GhostInfo:
+    """Extracted ghost information for building."""
+
+    name: str
+    position: "MapPosition"
+    direction: int | None = None
+
+
+# Type alias for ghost entities (Reachable or RemoteView wrappers)
+GhostLike = Union["Reachable[BaseEntity]", "RemoteView[BaseEntity]"]
 
 
 class GhostBuilderAction:
     """Handles building ghost entities by walking to them and placing real entities.
 
     This is an action class that coordinates movement and placement to
-    build ghosts. It supports both:
-    - TrackedGhost objects (lightweight Python tracking objects)
-    - Reachable[BaseEntity] with is_ghost=True (in-game ghost entities)
+    build ghosts. It supports ghost entities from any source:
+    - Remote ghosts: runtime.remote_view.get_ghosts(sql)
+    - Reachable ghosts: runtime.reachable.get_ghosts()
 
-    The GhostBuilderAction is the recommended way to build ghosts as it
-    handles movement orchestration automatically.
+    The GhostBuilderAction handles movement orchestration automatically.
+
+    Example:
+        >>> ghosts = remote_view.get_ghosts("SELECT * FROM ghost LIMIT 5")
+        >>> result = await ghost_builder.build_ghosts(ghosts)
     """
 
     def __init__(
@@ -51,24 +65,18 @@ class GhostBuilderAction:
         self._placement = placement
         self._inventory = inventory
 
-    def _extract_ghost_info(self, ghost: GhostLike) -> Dict[str, Any]:
-        """Extract name and position from a ghost-like object.
+    def _extract_ghost_info(self, ghost: GhostLike) -> GhostInfo:
+        """Extract name and position from a ghost entity.
 
-        Works with both TrackedGhost and Reachable[BaseEntity] ghosts.
+        Works with both Reachable and RemoteView wrapped ghosts.
         """
-        if isinstance(ghost, TrackedGhost):
-            return {
-                "name": ghost.name,
-                "position": ghost.position,
-                "direction": getattr(ghost, "direction", None),
-            }
-        else:
-            # Reachable[BaseEntity] with is_ghost=True
-            return {
-                "name": ghost.ghost_name or ghost.name,
-                "position": ghost.position,
-                "direction": ghost.direction,
-            }
+        # Ghost entities have ghost_name (the entity they represent)
+        # or fall back to name
+        name = getattr(ghost, "ghost_name", None) or getattr(ghost, "name", "unknown")
+        position = ghost.position
+        direction = getattr(ghost, "direction", None)
+
+        return GhostInfo(name=name, position=position, direction=direction)
 
     async def build_ghosts(
         self,
@@ -81,10 +89,8 @@ class GhostBuilderAction:
         This is an async method that walks to ghost locations and builds them.
         Prints progress as it goes.
 
-        Supports both TrackedGhost objects and Reachable[BaseEntity] ghost entities.
-
         Args:
-            ghosts: List of ghost objects to build (TrackedGhost or Reachable[ghost])
+            ghosts: List of ghost entities to build
             count: Max entities to build (default: 10)
             strict: If True, validate agent has all items before building
 
@@ -119,7 +125,7 @@ class GhostBuilderAction:
             # Count required items
             required: Dict[str, int] = {}
             for info in ghost_infos:
-                required[info["name"]] = required.get(info["name"], 0) + 1
+                required[info.name] = required.get(info.name, 0) + 1
 
             # Check availability
             missing: Dict[str, int] = {}
@@ -138,7 +144,7 @@ class GhostBuilderAction:
                     "error": f"Insufficient items: {missing}",
                 }
 
-        # Build ghosts one by one (simple approach)
+        # Build ghosts one by one
         built_count = 0
         failed_count = 0
         built_ghosts: List[GhostLike] = []
@@ -150,32 +156,32 @@ class GhostBuilderAction:
         for i, (ghost, info) in enumerate(zip(ghosts_to_build, ghost_infos), 1):
             try:
                 # Walk to ghost position
-                await self._movement.walk_to(info["position"])
+                await self._movement.walk_to(info.position)
 
                 # Place entity at position
                 result = self._placement.place(
-                    info["name"],
-                    info["position"],
-                    direction=info.get("direction"),
+                    info.name,
+                    info.position,
+                    direction=info.direction,
                 )
 
                 if result.success:
                     built_count += 1
                     built_ghosts.append(ghost)
                     print(
-                        f"  ({built_count}/{total}) Built {info['name']} at {info['position']}"
+                        f"  ({built_count}/{total}) Built {info.name} at {info.position}"
                     )
                 else:
                     failed_count += 1
                     failed_ghosts.append(ghost)
                     print(
-                        f"  Failed to build {info['name']}: {result.message or 'Unknown'}"
+                        f"  Failed to build {info.name}: {result.message or 'Unknown'}"
                     )
 
             except Exception as e:
                 failed_count += 1
                 failed_ghosts.append(ghost)
-                print(f"  Error building {info['name']}: {e}")
+                print(f"  Error building {info.name}: {e}")
 
         print(f"\nBuild summary: {built_count} built, {failed_count} failed")
 
@@ -194,7 +200,7 @@ class GhostBuilderAction:
         position and places the entity.
 
         Args:
-            ghost: Ghost to build (TrackedGhost or Reachable[ghost])
+            ghost: Ghost entity to build
 
         Returns:
             True if successfully built, False otherwise
