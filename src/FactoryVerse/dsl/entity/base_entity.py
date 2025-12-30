@@ -122,8 +122,11 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
     Does NOT define HOW to interact with it (that's the view wrapper's job).
 
     **For Agents**: You won't interact with BaseEntity directly. You'll get
-    view-wrapped entities like Reachable[Furnace], RemoteView[Assembler], or
-    Ghost[Container] that control what operations are available.
+    view-wrapped entities like Reachable[Furnace] or RemoteView[Assembler]
+    that control what operations are available.
+
+    Ghosts are entities with is_ghost=True. They appear in entity queries
+    for spatial awareness but have limited operations (build, remove, static inspect).
     """
 
     def __init__(
@@ -131,6 +134,8 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         name: str,
         position: MapPosition,
         direction: Optional[Direction] = None,
+        is_ghost: bool = False,
+        ghost_name: Optional[str] = None,
         **kwargs,
     ):
         """Initialize base entity.
@@ -139,11 +144,15 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
             name: Entity prototype name (e.g., "stone-furnace")
             position: Entity position in the world
             direction: Entity direction (if applicable)
+            is_ghost: Whether this is a ghost entity (default: False)
+            ghost_name: For ghosts, the entity prototype this ghost represents
             **kwargs: Additional entity-specific properties
         """
         self.name = name
         self._raw_position = position
         self.direction = direction
+        self._is_ghost = is_ghost
+        self._ghost_name = ghost_name
         self._prototype_cache: Optional[BasePrototype] = None
 
         # Action dependencies (injected by view wrappers)
@@ -181,11 +190,31 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         # Fallback to empty prototype
         return BasePrototype(_data={})
 
-    def inspect(self, raw_data: bool = False) -> Union[str, EntityInspectionData]:
+    @property
+    def is_ghost(self) -> bool:
+        """Whether this is a ghost entity.
+
+        **For Agents**: Ghosts are placeholder entities that can be built.
+        They appear in spatial queries but have limited operations.
+        """
+        return self._is_ghost
+
+    @property
+    def ghost_name(self) -> Optional[str]:
+        """For ghost entities, the entity prototype this ghost represents.
+
+        **For Agents**: Use this to know what entity will be created when building.
+        Returns None for non-ghost entities.
+        """
+        return self._ghost_name if self._is_ghost else None
+
+    def inspect(self, raw_data: bool = False) -> Union[str, "EntityInspectionData"]:
         """Inspect entity state with live game data.
 
         **For Agents**: Use this to check entity status, inventories, progress, etc.
         Entity must be wrapped in a view (Reachable/RemoteView) for this to work.
+
+        For ghost entities, returns static data (ghosts don't have live state).
 
         Args:
             raw_data: If False (default), returns formatted string for reading.
@@ -194,6 +223,10 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         Returns:
             Formatted string or EntityInspectionData TypedDict
         """
+        # Ghosts return static inspection (no live state)
+        if self._is_ghost:
+            return self._format_ghost_inspection()
+
         if self._entity_ops is None:
             raise RuntimeError(
                 f"Cannot inspect {self.__class__.__name__}: entity_ops not injected. "
@@ -203,6 +236,25 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         if raw_data:
             return data  # type: ignore
         return self._format_inspection(data)
+
+    def _format_ghost_inspection(self) -> str:
+        """Format static ghost inspection data.
+
+        Ghosts don't have live state (no fuel, no recipe progress, no inventory).
+        Returns a static representation based on the ghost's planned entity type.
+        """
+        lines = [
+            f"=== {self.name} (GHOST) ===",
+            f"Position: ({self.position.x}, {self.position.y})",
+            f"Will build: {self._ghost_name or self.name}",
+        ]
+        if self.direction is not None:
+            lines.append(f"Direction: {self.direction.name}")
+        lines.append("Status: Ghost (no live state)")
+        lines.append("")
+        lines.append("Use .build() to construct this ghost into a real entity.")
+        lines.append("Use .remove() to delete this ghost.")
+        return "\n".join(lines)
 
     def pickup(self) -> List["ItemStack"]:
         """Pick up the entity and return extracted items.
@@ -245,6 +297,7 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
     def __repr__(self) -> str:
         """Simple, explicit representation of the entity."""
         pos = self.position
+        ghost_indicator = " [GHOST]" if self._is_ghost else ""
         if self.direction is not None:
-            return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}), direction={self.direction.name})"
-        return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}))"
+            return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}), direction={self.direction.name}){ghost_indicator}"
+        return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y})){ghost_indicator}"

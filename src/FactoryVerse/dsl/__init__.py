@@ -5,14 +5,16 @@ agent system. The new architecture uses FactoryVerse.factory.create_runtime()
 as the entry point instead of context-based accessors.
 
 Stable components:
-- entity/ - Entity implementations and views (Reachable, RemoteView, Ghost)
+- entity/ - Entity implementations and views (Reachable, RemoteView)
 - types - Core types (MapPosition, Direction, BoundingBox)
 - prototypes - Prototype data management
 - item/ - Item and ItemStack classes
+
+Note: Ghosts are handled via the is_ghost property on entities, not a separate view.
 """
 
 # Entity types and views
-from .entity.views import Reachable, RemoteView, Ghost
+from .entity.views import Reachable, RemoteView
 from .entity.base_entity import BaseEntity
 from .types import MapPosition, Direction, BoundingBox
 
@@ -26,5 +28,4 @@ __all__ = [
     # Views
     "Reachable",
     "RemoteView",
-    "Ghost",
 ]

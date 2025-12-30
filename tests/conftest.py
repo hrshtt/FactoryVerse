@@ -11,7 +11,14 @@ Server Fixture Hierarchy:
 """
 
 import pytest
+import sys
+from pathlib import Path
 from typing import Generator, Any
+
+# Add tests directory to path for helper imports
+tests_dir = Path(__file__).parent
+if str(tests_dir) not in sys.path:
+    sys.path.insert(0, str(tests_dir))
 
 from helpers.server import FactorioServer, RconConnection, ServerConfig
 from helpers.test_ground import TestGround

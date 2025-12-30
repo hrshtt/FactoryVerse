@@ -1,352 +1,584 @@
 """DSL Documentation Generator.
 
-Generates LLM-readable documentation of the FactoryVerse DSL public interfaces.
-Focuses on type signatures and public methods without exposing implementation details.
+Generates LLM-readable documentation from the agent's perspective.
+Uses Python stub-style formatting for type definitions.
 """
 
 import inspect
 from typing import Any, List, Tuple, Type, get_type_hints
 
 
-def _get_public_methods(cls: Type) -> List[Tuple[str, str, str]]:
-    """Extract public methods with signatures and docstrings.
-
-    Returns list of (name, signature, docstring) tuples.
-    """
-    methods = []
-    for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
-        # Skip private/magic methods
-        if name.startswith("_"):
-            continue
-
-        try:
-            sig = inspect.signature(method)
-            # Format signature without 'self'
-            params = [p for p in sig.parameters.values() if p.name != "self"]
-            param_strs: List[str] = []
-            for p in params:
-                if p.annotation != inspect.Parameter.empty:
-                    ann = _format_annotation(p.annotation)
-                    if p.default != inspect.Parameter.empty:
-                        param_strs.append(f"{p.name}: {ann} = ...")
-                    else:
-                        param_strs.append(f"{p.name}: {ann}")
-                else:
-                    param_strs.append(p.name)
-
-            ret = ""
-            if sig.return_annotation != inspect.Signature.empty:
-                ret = f" -> {_format_annotation(sig.return_annotation)}"
-
-            signature = f"{name}({', '.join(param_strs)}){ret}"
-        except (ValueError, TypeError):
-            signature = f"{name}(...)"
-
-        doc = inspect.getdoc(method) or ""
-        # Take only first line of docstring
-        doc = doc.split("\n")[0] if doc else ""
-
-        methods.append((name, signature, doc))
-
-    return sorted(methods, key=lambda x: x[0])
-
-
-def _get_public_properties(cls: Type) -> List[Tuple[str, str, str]]:
-    """Extract public properties with types and docstrings.
-
-    Returns list of (name, type, docstring) tuples.
-    """
-    props = []
-    for name in dir(cls):
-        if name.startswith("_"):
-            continue
-
-        attr = getattr(cls, name, None)
-        if isinstance(attr, property):
-            # Get return type from getter if available
-            ret_type = "Any"
-            if attr.fget:
-                try:
-                    hints = get_type_hints(attr.fget)
-                    if "return" in hints:
-                        ret_type = _format_annotation(hints["return"])
-                except Exception:
-                    pass
-
-            doc = inspect.getdoc(attr) or ""
-            doc = doc.split("\n")[0] if doc else ""
-            props.append((name, ret_type, doc))
-
-    return sorted(props, key=lambda x: x[0])
-
-
-def _format_annotation(ann: Any) -> str:
-    """Format a type annotation as a readable string."""
-    if ann is None:
-        return "None"
-    if isinstance(ann, str):
-        return ann
-    if hasattr(ann, "__origin__"):
-        # Generic types like List[X], Optional[X], etc.
-        origin = getattr(ann, "__origin__", None)
-        args = getattr(ann, "__args__", ())
-
-        origin_name = getattr(origin, "__name__", str(origin))
-        if origin_name == "Union":
-            # Check for Optional (Union with None)
-            if len(args) == 2 and type(None) in args:
-                other = [a for a in args if a is not type(None)][0]
-                return f"Optional[{_format_annotation(other)}]"
-            return f"Union[{', '.join(_format_annotation(a) for a in args)}]"
-
-        if args:
-            return f"{origin_name}[{', '.join(_format_annotation(a) for a in args)}]"
-        return origin_name
-
-    return getattr(ann, "__name__", str(ann))
-
-
-def _format_class(cls: Type, show_bases: bool = True) -> str:
-    """Format a class with its public interface."""
-    lines = []
-
-    # Class header
-    if show_bases:
-        bases = [b.__name__ for b in cls.__bases__ if b.__name__ != "object"]
-        if bases:
-            lines.append(f"class {cls.__name__}({', '.join(bases)}):")
-        else:
-            lines.append(f"class {cls.__name__}:")
-    else:
-        lines.append(f"class {cls.__name__}:")
-
-    # Class docstring (first line only)
-    doc = inspect.getdoc(cls)
-    if doc:
-        lines.append(f'    """{doc.split(chr(10))[0]}"""')
-
-    # Properties
-    props = _get_public_properties(cls)
-    if props:
-        lines.append("")
-        lines.append("    # Properties")
-        for name, ptype, pdoc in props:
-            if pdoc:
-                lines.append(f"    {name}: {ptype}  # {pdoc}")
-            else:
-                lines.append(f"    {name}: {ptype}")
-
-    # Methods
-    methods = _get_public_methods(cls)
-    if methods:
-        lines.append("")
-        lines.append("    # Methods")
-        for name, sig, mdoc in methods:
-            if mdoc:
-                lines.append(f"    {sig}  # {mdoc}")
-            else:
-                lines.append(f"    {sig}")
-
-    return "\n".join(lines)
-
-
 # =============================================================================
-# DOCUMENTATION GENERATORS
-# =============================================================================
-
-
-def document_core_types() -> str:
-    """Document core DSL types (MapPosition, Direction, etc.)."""
-    from FactoryVerse.dsl.types import MapPosition, Direction
-
-    output = []
-    output.append("# Core Types\n")
-
-    # MapPosition
-    output.append("@dataclass")
-    output.append("class MapPosition:")
-    output.append('    """A position on the game map."""')
-    output.append("    x: float")
-    output.append("    y: float")
-    output.append("")
-
-    # Direction enum
-    output.append("class Direction(Enum):")
-    output.append('    """Cardinal directions for entity placement and movement."""')
-    output.append("    NORTH = 0")
-    output.append("    EAST = 2")
-    output.append("    SOUTH = 4")
-    output.append("    WEST = 6")
-    output.append("")
-
-    return "\n".join(output)
-
-
-def document_entity_views() -> str:
-    """Document entity view wrappers."""
-    from FactoryVerse.dsl.entity.views import Reachable, RemoteView, Ghost
-
-    output = []
-    output.append("# Entity Views\n")
-    output.append("# Views wrap BaseEntity to control what operations are available.\n")
-
-    output.append(_format_class(Reachable))
-    output.append("")
-    output.append(_format_class(RemoteView))
-    output.append("")
-    output.append(_format_class(Ghost))
-    output.append("")
-
-    return "\n".join(output)
-
-
-def document_base_entity() -> str:
-    """Document BaseEntity and key entity implementations."""
-    from FactoryVerse.dsl.entity.base_entity import BaseEntity
-
-    output = []
-    output.append("# Entity Classes\n")
-
-    output.append(_format_class(BaseEntity))
-    output.append("")
-
-    # Document specific entity implementations
-    try:
-        from FactoryVerse.dsl.entity.implementations.furnace import Furnace
-        from FactoryVerse.dsl.entity.implementations.mining_drill import (
-            BurnerMiningDrill,
-            ElectricMiningDrill,
-        )
-        from FactoryVerse.dsl.entity.implementations.inserter import Inserter
-        from FactoryVerse.dsl.entity.implementations.container import Container
-        from FactoryVerse.dsl.entity.implementations.assembler import AssemblingMachine
-
-        output.append("# Specific Entity Types (inherit from BaseEntity)")
-        output.append("# These add entity-specific methods and properties.\n")
-
-        for cls in [
-            Furnace,
-            BurnerMiningDrill,
-            ElectricMiningDrill,
-            Inserter,
-            Container,
-            AssemblingMachine,
-        ]:
-            output.append(_format_class(cls, show_bases=False))
-            output.append("")
-    except ImportError:
-        pass
-
-    return "\n".join(output)
-
-
-def document_items() -> str:
-    """Document Item types."""
-    from FactoryVerse.dsl.item.base import Item, PlaceableItem, ItemStack
-
-    output = []
-    output.append("# Item Classes\n")
-
-    output.append(_format_class(Item))
-    output.append("")
-    output.append(_format_class(PlaceableItem))
-    output.append("")
-    output.append(_format_class(ItemStack))
-    output.append("")
-
-    return "\n".join(output)
-
-
-def document_runtime() -> str:
-    """Document AgentRuntime affordances."""
-    output = []
-    output.append("# AgentRuntime\n")
-    output.append("# The runtime provides access to all agent capabilities.\n")
-
-    output.append("class AgentRuntime:")
-    output.append('    """Main runtime providing agent affordances."""')
-    output.append("")
-    output.append("    # Affordances (accessed as properties)")
-    output.append("    walking: MovementAction       # Movement and pathfinding")
-    output.append("    inventory: AgentInventory     # Inventory management")
-    output.append("    crafting: CraftingAction      # Crafting items")
-    output.append("    research: ResearchAction      # Technology research")
-    output.append("    reachable: ReachableEntities  # Query nearby entities")
-    output.append("    placement: PlacementAction    # Place/remove entities")
-    output.append("")
-
-    # Document key action classes
-    try:
-        from FactoryVerse.agent.actions.walking import MovementAction
-        from FactoryVerse.agent.actions.inventory import AgentInventory
-        from FactoryVerse.agent.actions.reachable import ReachableEntities
-        from FactoryVerse.agent.actions.place_entity import PlacementAction
-
-        output.append(_format_class(MovementAction))
-        output.append("")
-        output.append(_format_class(AgentInventory))
-        output.append("")
-        output.append(_format_class(ReachableEntities))
-        output.append("")
-        output.append(_format_class(PlacementAction))
-        output.append("")
-    except ImportError as e:
-        output.append(f"# Could not load action classes: {e}")
-
-    return "\n".join(output)
-
-
-def document_ghost_tracking() -> str:
-    """Document ghost/blueprint tracking."""
-    from FactoryVerse.agent.ghost.types import TrackedGhost
-    from FactoryVerse.agent.ghost.manager import GhostManager
-
-    output = []
-    output.append("# Ghost Tracking\n")
-    output.append("# For planning entity placements before building.\n")
-
-    output.append("@dataclass")
-    output.append("class TrackedGhost:")
-    output.append('    """A tracked ghost placement (Python-only, for planning)."""')
-    output.append("    name: str           # Entity prototype name")
-    output.append("    position: MapPosition")
-    output.append("    label: Optional[str] = None  # Grouping label")
-    output.append("    placed_tick: int = 0")
-    output.append("")
-
-    output.append(_format_class(GhostManager))
-    output.append("")
-
-    return "\n".join(output)
-
-
-# =============================================================================
-# MAIN GENERATION FUNCTION
+# MAIN GENERATION - Python Stub Style
 # =============================================================================
 
 
 def generate_dsl_documentation() -> str:
-    """Generate complete DSL documentation for LLM consumption."""
-    sections = []
+    """Generate agent-centric DSL documentation in stub format."""
+    lines = []
 
-    sections.append("=" * 60)
-    sections.append("FACTORYVERSE DSL REFERENCE")
-    sections.append("=" * 60)
-    sections.append("")
-    sections.append(
-        "This document describes the public interface of the FactoryVerse DSL."
+    lines.append('"""')
+    lines.append("FactoryVerse DSL Reference")
+    lines.append("==========================")
+    lines.append("")
+    lines.append("This document describes types and interfaces you work with.")
+    lines.append('"""')
+    lines.append("")
+    lines.append("from dataclasses import dataclass")
+    lines.append("from typing import Optional, List, Dict")
+    lines.append("from enum import Enum")
+    lines.append("")
+    lines.append("")
+
+    # Core Types
+    lines.append(
+        "# ============================================================================"
     )
-    sections.append("Use these types and methods to interact with the Factorio game.")
-    sections.append("")
+    lines.append("# CORE TYPES")
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("")
+    lines.append("@dataclass")
+    lines.append("class MapPosition:")
+    lines.append('    """A position on the game map."""')
+    lines.append("    x: float")
+    lines.append("    y: float")
+    lines.append("")
+    lines.append("")
+    lines.append("class Direction(Enum):")
+    lines.append('    """Cardinal directions for placement and movement."""')
+    lines.append("    NORTH = 0")
+    lines.append("    EAST = 2")
+    lines.append("    SOUTH = 4")
+    lines.append("    WEST = 6")
+    lines.append("")
+    lines.append("")
 
-    sections.append(document_core_types())
-    sections.append(document_entity_views())
-    sections.append(document_base_entity())
-    sections.append(document_items())
-    sections.append(document_runtime())
-    sections.append(document_ghost_tracking())
+    # Ghost Entities Concept
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("# GHOST ENTITIES")
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append(
+        "# Ghosts are placeholder entities that exist in the game world but aren't"
+    )
+    lines.append(
+        "# built yet. They're used for planning layouts before committing resources."
+    )
+    lines.append("#")
+    lines.append("# Key concepts:")
+    lines.append(
+        "# - Ghosts ARE entities with is_ghost=True, they appear in entity queries"
+    )
+    lines.append(
+        "# - This prevents silent overwrites - you'll see ghosts before placing over them"
+    )
+    lines.append(
+        "# - Ghosts provide: build() to construct, remove() to delete, inspect() for static data"
+    )
+    lines.append(
+        "# - Ghosts block: add_fuel(), set_recipe(), pickup() etc. (not real entities)"
+    )
+    lines.append("#")
+    lines.append("# Query ghosts:")
+    lines.append(
+        "#   all_nearby = reachable.get_entities()  # includes ghosts by default"
+    )
+    lines.append(
+        "#   only_real = reachable.get_entities(options={'include_ghosts': False})"
+    )
+    lines.append("#   only_ghosts = reachable.get_ghosts()")
+    lines.append("#")
+    lines.append("# Build ghosts:")
+    lines.append("#   ghost.build()  # if reachable")
+    lines.append("#   await ghost_builder.build_ghosts([ghost])  # handles walking")
+    lines.append("")
+    lines.append("")
 
-    return "\n".join(sections)
+    # Affordances
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("# AFFORDANCES (what you can do)")
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("")
+
+    lines.append("class walking:")
+    lines.append('    """Movement around the map."""')
+    lines.append("    current_position: MapPosition")
+    lines.append(
+        "    def walk_to(self, goal: MapPosition, strict_goal: bool = True) -> MapPosition: ..."
+    )
+    lines.append("    def stop(self) -> None: ...")
+    lines.append("")
+    lines.append("")
+
+    lines.append("class inventory:")
+    lines.append('    """Your items."""')
+    lines.append("    item_stacks: List[ItemStack]")
+    lines.append("    def check_total(self, item_name: str) -> int: ...")
+    lines.append(
+        "    def get_item(self, item_name: str) -> Optional[Item | PlaceableItem]: ..."
+    )
+    lines.append(
+        "    def create_item_stacks(self, item_name: str, count: int) -> List[ItemStack]: ..."
+    )
+    lines.append("")
+    lines.append("")
+
+    lines.append("class crafting:")
+    lines.append('    """Make items (async operations)."""')
+    lines.append(
+        "    async def craft(self, recipe: str, count: int = 1) -> CraftingResult: ..."
+    )
+    lines.append("    def can_craft(self, recipe: str) -> bool: ...")
+    lines.append("")
+    lines.append("")
+
+    lines.append("class research:")
+    lines.append('    """Unlock technologies."""')
+    lines.append("    def research(self, technology: str) -> ResearchResult: ...")
+    lines.append("    def get_available(self) -> List[str]: ...")
+    lines.append("")
+    lines.append("")
+
+    lines.append("class reachable:")
+    lines.append('    """Query nearby entities you can interact with.')
+    lines.append("    ")
+    lines.append("    Ghosts are included by default for spatial awareness.")
+    lines.append("    This prevents silent overwrites when placing entities.")
+    lines.append('    """')
+    lines.append(
+        "    def get_entity(self, name: str, position: Optional[MapPosition] = None, options: Optional[Dict] = None) -> Optional[Entity]: ..."
+    )
+    lines.append(
+        "    def get_entities(self, name: Optional[str] = None, options: Optional[Dict] = None) -> List[Entity]: ..."
+    )
+    lines.append(
+        "    def get_ghosts(self, entity_name: Optional[str] = None) -> List[Entity]: ..."
+    )
+    lines.append(
+        "    # options: include_ghosts=bool (default True), ghosts_only=bool, recipe=str, direction=Direction, status=str"
+    )
+    lines.append("")
+    lines.append("")
+
+    lines.append("class remote_view:")
+    lines.append('    """Query distant entities (read-only)."""')
+    lines.append(
+        "    def query(self, entity_type: str, area: Optional[BoundingBox] = None) -> List[EntityRecord]: ..."
+    )
+    lines.append("")
+    lines.append("")
+
+    # Items
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("# ITEMS")
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("")
+
+    lines.append("class Item:")
+    lines.append('    """Something in your inventory."""')
+    lines.append("    name: str")
+    lines.append("    stack_size: int")
+    lines.append("")
+    lines.append("")
+
+    lines.append("class PlaceableItem(Item):")
+    lines.append('    """An item you can place in the world."""')
+    lines.append("    tile_width: int")
+    lines.append("    tile_height: int")
+    lines.append("    ")
+    lines.append(
+        "    def place(self, position: MapPosition, direction: Direction = Direction.NORTH) -> Entity:"
+    )
+    lines.append('        """Place this item as an entity on the map."""')
+    lines.append("        ...")
+    lines.append("    ")
+    lines.append(
+        "    def place_ghost(self, position: MapPosition, label: Optional[str] = None) -> TrackedGhost:"
+    )
+    lines.append('        """Create a tracked ghost for planning (not built yet)."""')
+    lines.append("        ...")
+    lines.append("")
+    lines.append("")
+
+    lines.append("@dataclass")
+    lines.append("class ItemStack:")
+    lines.append('    """A quantity of items."""')
+    lines.append("    name: str")
+    lines.append("    count: int")
+    lines.append("    item: Item")
+    lines.append("    half: int  # half the count")
+    lines.append("    full: int  # full count")
+    lines.append("")
+    lines.append("")
+
+    # Entities
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("# ENTITIES")
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("")
+    lines.append(
+        "# Entities are things in the world. Access via reachable.get_entity()."
+    )
+    lines.append("# Each entity type has inspect() returning type-specific data.")
+    lines.append("")
+
+    lines.append("class Entity:")
+    lines.append('    """Base entity interface.')
+    lines.append("    ")
+    lines.append("    Entities with is_ghost=True are ghost placeholders.")
+    lines.append(
+        "    Ghosts provide build() and remove() instead of normal operations."
+    )
+    lines.append('    """')
+    lines.append("    name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    direction: Direction")
+    lines.append("    tile_width: int")
+    lines.append("    tile_height: int")
+    lines.append("    is_ghost: bool  # True for ghost entities")
+    lines.append(
+        "    ghost_name: Optional[str]  # Entity type this ghost represents (if is_ghost)"
+    )
+    lines.append("    ")
+    lines.append("    def inspect(self) -> InspectionData:")
+    lines.append('        """Get current state. Returns static data for ghosts."""')
+    lines.append("        ...")
+    lines.append("    ")
+    lines.append("    def pickup(self) -> List[ItemStack]:")
+    lines.append('        """Remove entity and get its contents. Error for ghosts."""')
+    lines.append("        ...")
+    lines.append("    ")
+    lines.append("    def build(self) -> ActionResult:")
+    lines.append(
+        '        """Build ghost into real entity (ghosts only, requires reachability)."""'
+    )
+    lines.append("        ...")
+    lines.append("    ")
+    lines.append("    def remove(self) -> bool:")
+    lines.append('        """Remove ghost entity (ghosts only)."""')
+    lines.append("        ...")
+    lines.append("")
+    lines.append("")
+
+    # Entity types with their inspection data
+    lines.append("# --- Furnace ---")
+    lines.append("")
+    lines.append("class Furnace(Entity):")
+    lines.append('    """Smelts ore into plates."""')
+    lines.append(
+        "    def add_fuel(self, items: List[ItemStack]) -> List[ItemStack]: ..."
+    )
+    lines.append(
+        "    def add_ingredients(self, items: List[ItemStack]) -> List[ItemStack]: ..."
+    )
+    lines.append("    def take_products(self) -> List[ItemStack]: ...")
+    lines.append("    def inspect(self) -> FurnaceInspection: ...")
+    lines.append("")
+    lines.append("")
+    lines.append("@dataclass")
+    lines.append("class FurnaceInspection:")
+    lines.append('    """Furnace inspection result."""')
+    lines.append("    entity_name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    status: Optional[str]")
+    lines.append("    recipe: Optional[str]")
+    lines.append("    crafting_progress: Optional[float]  # 0.0 to 1.0")
+    lines.append("    is_crafting: Optional[bool]")
+    lines.append("    input: Optional[Dict[str, int]]   # item_name -> count")
+    lines.append("    output: Optional[Dict[str, int]]  # item_name -> count")
+    lines.append("    fuel: Optional[Dict[str, int]]    # item_name -> count")
+    lines.append("    burner: Optional[BurnerData]")
+    lines.append("    ")
+    lines.append("    # Helper properties")
+    lines.append("    needs_fuel: bool       # True if needs fuel")
+    lines.append("    has_input: bool        # True if has input materials")
+    lines.append("    has_output: bool       # True if has products to take")
+    lines.append("    is_idle: bool          # True if not crafting")
+    lines.append("")
+    lines.append("")
+
+    lines.append("# --- Mining Drill ---")
+    lines.append("")
+    lines.append("class BurnerMiningDrill(Entity):")
+    lines.append('    """Mines ore, requires fuel."""')
+    lines.append(
+        "    def add_fuel(self, items: List[ItemStack]) -> List[ItemStack]: ..."
+    )
+    lines.append("    def take_products(self) -> List[ItemStack]: ...")
+    lines.append("    def inspect(self) -> MiningDrillInspection: ...")
+    lines.append("")
+    lines.append("")
+    lines.append("class ElectricMiningDrill(Entity):")
+    lines.append('    """Mines ore, uses electricity."""')
+    lines.append("    def take_products(self) -> List[ItemStack]: ...")
+    lines.append("    def inspect(self) -> MiningDrillInspection: ...")
+    lines.append("")
+    lines.append("")
+    lines.append("@dataclass")
+    lines.append("class MiningDrillInspection:")
+    lines.append('    """Mining drill inspection result."""')
+    lines.append("    entity_name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    status: Optional[str]")
+    lines.append("    mining_target: Optional[MiningTargetData]")
+    lines.append("    mining_progress: Optional[float]  # 0.0 to 1.0")
+    lines.append("    output: Optional[Dict[str, int]]  # item_name -> count")
+    lines.append("    burner: Optional[BurnerData]      # For burner drills")
+    lines.append("    energy: Optional[EnergyData]      # For electric drills")
+    lines.append("    ")
+    lines.append("    # Helper properties")
+    lines.append("    is_mining: bool        # True if actively mining")
+    lines.append("    has_output: bool       # True if has items to take")
+    lines.append("    needs_fuel: bool       # True if burner needs fuel")
+    lines.append("    has_power: bool        # True if has power")
+    lines.append("")
+    lines.append("")
+
+    lines.append("# --- Assembling Machine ---")
+    lines.append("")
+    lines.append("class AssemblingMachine(Entity):")
+    lines.append('    """Crafts items from recipes."""')
+    lines.append("    def set_recipe(self, recipe: str) -> None: ...")
+    lines.append(
+        "    def add_ingredients(self, items: List[ItemStack]) -> List[ItemStack]: ..."
+    )
+    lines.append("    def take_products(self) -> List[ItemStack]: ...")
+    lines.append("    def inspect(self) -> AssemblerInspection: ...")
+    lines.append("")
+    lines.append("")
+    lines.append("@dataclass")
+    lines.append("class AssemblerInspection:")
+    lines.append('    """Assembler inspection result."""')
+    lines.append("    entity_name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    status: Optional[str]")
+    lines.append("    recipe: Optional[str]")
+    lines.append("    crafting_progress: Optional[float]")
+    lines.append("    is_crafting: Optional[bool]")
+    lines.append("    input: Optional[Dict[str, int]]")
+    lines.append("    output: Optional[Dict[str, int]]")
+    lines.append("    modules: Optional[Dict[str, int]]")
+    lines.append("    energy: Optional[EnergyData]")
+    lines.append("    ")
+    lines.append("    # Helper properties")
+    lines.append("    has_recipe: bool")
+    lines.append("    has_input: bool")
+    lines.append("    has_output: bool")
+    lines.append("    is_idle: bool")
+    lines.append("    has_power: bool")
+    lines.append("")
+    lines.append("")
+
+    lines.append("# --- Inserter ---")
+    lines.append("")
+    lines.append("class Inserter(Entity):")
+    lines.append('    """Moves items between entities."""')
+    lines.append("    def set_filter(self, item_name: str) -> None: ...")
+    lines.append("    def inspect(self) -> InserterInspection: ...")
+    lines.append("")
+    lines.append("")
+    lines.append("@dataclass")
+    lines.append("class InserterInspection:")
+    lines.append('    """Inserter inspection result."""')
+    lines.append("    entity_name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    status: Optional[str]")
+    lines.append("    held_item: Optional[HeldItemData]")
+    lines.append("    pickup_target: Optional[EntityRef]")
+    lines.append("    drop_target: Optional[EntityRef]")
+    lines.append("    filters: Optional[Dict[int, str]]  # slot -> item_name")
+    lines.append("    burner: Optional[BurnerData]       # For burner inserter")
+    lines.append("    ")
+    lines.append("    # Helper properties")
+    lines.append("    is_holding_item: bool")
+    lines.append("    has_filters: bool")
+    lines.append("    needs_fuel: bool")
+    lines.append("")
+    lines.append("")
+
+    lines.append("# --- Container ---")
+    lines.append("")
+    lines.append("class Container(Entity):")
+    lines.append('    """Stores items (chests)."""')
+    lines.append("    def insert(self, items: List[ItemStack]) -> List[ItemStack]: ...")
+    lines.append(
+        "    def extract(self, item_name: str, count: int) -> List[ItemStack]: ..."
+    )
+    lines.append("    def inspect(self) -> ContainerInspection: ...")
+    lines.append("")
+    lines.append("")
+    lines.append("@dataclass")
+    lines.append("class ContainerInspection:")
+    lines.append('    """Container inspection result."""')
+    lines.append("    entity_name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    status: Optional[str]")
+    lines.append("    contents: Optional[Dict[str, int]]  # item_name -> count")
+    lines.append("    ")
+    lines.append("    # Helper properties")
+    lines.append("    is_empty: bool")
+    lines.append("    total_items: int")
+    lines.append("    ")
+    lines.append("    # Methods")
+    lines.append("    def get_item_count(self, item_name: str) -> int: ...")
+    lines.append("")
+    lines.append("")
+
+    lines.append("# --- Lab ---")
+    lines.append("")
+    lines.append("class Lab(Entity):")
+    lines.append('    """Consumes science packs for research."""')
+    lines.append("    def inspect(self) -> LabInspection: ...")
+    lines.append("")
+    lines.append("")
+    lines.append("@dataclass")
+    lines.append("class LabInspection:")
+    lines.append('    """Lab inspection result."""')
+    lines.append("    entity_name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    status: Optional[str]")
+    lines.append("    input: Optional[Dict[str, int]]    # science packs")
+    lines.append("    current_research: Optional[str]")
+    lines.append("    energy: Optional[EnergyData]")
+    lines.append("    ")
+    lines.append("    # Helper properties")
+    lines.append("    is_researching: bool")
+    lines.append("    has_science_packs: bool")
+    lines.append("")
+    lines.append("")
+
+    # Shared data types
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("# SHARED DATA TYPES")
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("")
+
+    lines.append("@dataclass")
+    lines.append("class BurnerData:")
+    lines.append('    """Burner component state."""')
+    lines.append("    heat: Optional[float]")
+    lines.append("    heat_capacity: Optional[float]")
+    lines.append("    remaining_burning_fuel: Optional[float]")
+    lines.append("    currently_burning: Optional[str]  # fuel item name")
+    lines.append("    is_burning: bool  # property")
+    lines.append("    heat_percentage: Optional[float]  # property (0-100)")
+    lines.append("")
+    lines.append("")
+
+    lines.append("@dataclass")
+    lines.append("class EnergyData:")
+    lines.append('    """Electric energy buffer state."""')
+    lines.append("    current: float")
+    lines.append("    capacity: float")
+    lines.append("    percentage: float  # property (0-100)")
+    lines.append("    is_full: bool      # property")
+    lines.append("    is_empty: bool     # property")
+    lines.append("")
+    lines.append("")
+
+    lines.append("@dataclass")
+    lines.append("class MiningTargetData:")
+    lines.append('    """What a mining drill is extracting."""')
+    lines.append("    name: str       # resource name (e.g. 'iron-ore')")
+    lines.append("    type: str       # resource type")
+    lines.append("    position: MapPosition")
+    lines.append("    amount: int     # remaining amount")
+    lines.append("")
+    lines.append("")
+
+    lines.append("@dataclass")
+    lines.append("class HeldItemData:")
+    lines.append('    """Item held by an inserter."""')
+    lines.append("    name: str")
+    lines.append("    count: int")
+    lines.append("")
+    lines.append("")
+
+    lines.append("@dataclass")
+    lines.append("class EntityRef:")
+    lines.append('    """Reference to another entity."""')
+    lines.append("    name: str")
+    lines.append("    position: MapPosition")
+    lines.append("")
+    lines.append("")
+
+    # Ghost planning
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("# PLANNING WITH GHOSTS")
+    lines.append(
+        "# ============================================================================"
+    )
+    lines.append("")
+
+    lines.append("@dataclass")
+    lines.append("class TrackedGhost:")
+    lines.append('    """A planned placement (Python tracking, not in-game)."""')
+    lines.append("    name: str")
+    lines.append("    position: MapPosition")
+    lines.append("    label: Optional[str]  # for grouping")
+    lines.append("")
+    lines.append("")
+
+    lines.append("class ghost_manager:")
+    lines.append('    """Track planned entity placements (Python-only).')
+    lines.append("    ")
+    lines.append("    Note: For in-game ghosts, use reachable.get_ghosts() instead.")
+    lines.append(
+        "    Ghost entities from reachable have is_ghost=True and provide build()/remove()."
+    )
+    lines.append('    """')
+    lines.append(
+        "    def add_ghost(self, position: MapPosition, entity_name: str, label: Optional[str] = None) -> str: ..."
+    )
+    lines.append(
+        "    def remove_ghost(self, position: MapPosition, entity_name: str) -> bool: ..."
+    )
+    lines.append("    def list_ghosts(self) -> List[TrackedGhost]: ...")
+    lines.append(
+        "    def get_ghosts(self, area: Optional[BoundingBox] = None, label: Optional[str] = None) -> List[TrackedGhost]: ..."
+    )
+    lines.append("    def can_build(self, inventory: List[ItemStack]) -> Dict: ...")
+    lines.append("")
+    lines.append("")
+
+    lines.append("class ghost_builder:")
+    lines.append('    """Build ghost entities (handles walking and placement).')
+    lines.append("    ")
+    lines.append("    This is the recommended way to build ghosts as it handles")
+    lines.append("    movement orchestration automatically.")
+    lines.append('    """')
+    lines.append(
+        "    async def build_ghosts(self, ghosts: List[Entity | TrackedGhost], count: int = 10, strict: bool = False) -> Dict: ..."
+    )
+    lines.append(
+        "    async def build_ghost(self, ghost: Entity | TrackedGhost) -> bool: ..."
+    )
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
 """Entity factory functions for creating view-wrapped entities.
 
 This module provides factory functions that create entity instances with
-appropriate view wrappers (Reachable, RemoteView, Ghost) and inject action
+appropriate view wrappers (Reachable, RemoteView) and inject action
 dependencies.
+
+Ghosts are now handled via the is_ghost property on BaseEntity, not a
+separate Ghost[T] wrapper. Ghost entities are created with is_ghost=True
+and ghost_name set to the entity prototype they represent.
 """
 
 from typing import Dict, Any, TYPE_CHECKING
@@ -127,11 +131,15 @@ ENTITY_CLASS_MAP: Dict[str, type] = {
 }
 
 
-def _create_base_entity(entity_data: Dict[str, Any]) -> "BaseEntity":
+def _create_base_entity(
+    entity_data: Dict[str, Any],
+    is_ghost: bool = False,
+) -> "BaseEntity":
     """Create base entity instance from data.
 
     Args:
         entity_data: Raw entity data with 'name', 'position', 'direction', etc.
+        is_ghost: Whether this is a ghost entity
 
     Returns:
         BaseEntity subclass instance
@@ -139,12 +147,20 @@ def _create_base_entity(entity_data: Dict[str, Any]) -> "BaseEntity":
     Raises:
         ValueError: If entity type is unknown
     """
-    name = entity_data["name"]
-    entity_class = ENTITY_CLASS_MAP.get(name)
+    # For ghosts, the actual entity name is in 'ghost_name', not 'name'
+    # 'name' for ghosts is usually "entity-ghost"
+    if is_ghost:
+        entity_name: str = entity_data.get("ghost_name") or entity_data["name"]
+        ghost_name: str | None = entity_name  # Store what entity this ghost represents
+    else:
+        entity_name = entity_data["name"]
+        ghost_name = None
+
+    entity_class = ENTITY_CLASS_MAP.get(entity_name)
 
     if entity_class is None:
         raise ValueError(
-            f"Unknown entity type: {name}. "
+            f"Unknown entity type: {entity_name}. "
             f"This entity has not been migrated to the new architecture yet."
         )
 
@@ -154,16 +170,21 @@ def _create_base_entity(entity_data: Dict[str, Any]) -> "BaseEntity":
     if "direction" in entity_data and entity_data["direction"] is not None:
         direction = Direction(entity_data["direction"])
 
-    # Create entity with all data
+    # Filter out keys we handle explicitly
+    extra_keys = {
+        k: v
+        for k, v in entity_data.items()
+        if k not in ["name", "position", "direction", "ghost_name", "type"]
+    }
+
+    # Create entity with ghost properties
     return entity_class(
-        name=name,
+        name=entity_name,
         position=position,
         direction=direction,
-        **{
-            k: v
-            for k, v in entity_data.items()
-            if k not in ["name", "position", "direction"]
-        },
+        is_ghost=is_ghost,
+        ghost_name=ghost_name,
+        **extra_keys,
     )
 
 
@@ -171,28 +192,32 @@ def create_reachable_entity(
     entity_data: Dict[str, Any],
     entity_ops: "EntityOperationsAction",
     place_ops: "PlacementAction",
+    is_ghost: bool = False,
 ):
     """Create a Reachable view wrapper around an entity.
 
-    Used by: reachable_entities.get_entity()
+    Used by: reachable_entities.get_entity(), reachable_entities.get_entities()
 
     Args:
         entity_data: Raw entity data from game
         entity_ops: Entity operations action for game interactions
         place_ops: Place entity action for placement operations
+        is_ghost: Whether this is a ghost entity (default: False)
 
     Returns:
         Reachable[BaseEntity] view wrapper
     """
     from .views import Reachable
 
-    base_entity = _create_base_entity(entity_data)
+    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost)
     return Reachable(base_entity, entity_ops, place_ops)
 
 
 def create_remote_view_entity(
     entity_data: Dict[str, Any],
     entity_ops: "EntityOperationsAction",
+    place_ops: "PlacementAction | None" = None,
+    is_ghost: bool = False,
 ):
     """Create a RemoteView wrapper around an entity.
 
@@ -201,34 +226,13 @@ def create_remote_view_entity(
     Args:
         entity_data: Raw entity data from game/database
         entity_ops: Entity operations action for inspection
+        place_ops: Optional place ops for ghost removal
+        is_ghost: Whether this is a ghost entity (default: False)
 
     Returns:
         RemoteView[BaseEntity] view wrapper
     """
     from .views import RemoteView
 
-    base_entity = _create_base_entity(entity_data)
-    return RemoteView(base_entity, entity_ops)
-
-
-def create_ghost_entity(
-    entity_data: Dict[str, Any],
-    entity_ops: "EntityOperationsAction",
-    place_ops: "PlacementAction",
-):
-    """Create a Ghost view wrapper around an entity.
-
-    Used by: ghost_manager, place_entity with ghost=True
-
-    Args:
-        entity_data: Raw entity data (ghost or planned entity)
-        entity_ops: Entity operations action for ghost removal
-        place_ops: Place entity action for building
-
-    Returns:
-        Ghost[BaseEntity] view wrapper
-    """
-    from .views import Ghost
-
-    base_entity = _create_base_entity(entity_data)
-    return Ghost(base_entity, entity_ops, place_ops)
+    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost)
+    return RemoteView(base_entity, entity_ops, place_ops)

@@ -2,6 +2,9 @@
 
 Provides synchronous access to reachable entities and resources via RconHandler.
 No async listener needed - all operations are synchronous.
+
+Ghosts are now included in entity queries by default (for spatial awareness).
+Use include_ghosts=False in options to exclude them.
 """
 
 from __future__ import annotations
@@ -22,6 +25,9 @@ class ReachableEntities:
     Similar to AgentInventory but for entities. Provides filtering
     and query capabilities without returning raw lists.
 
+    Ghost entities are included by default for spatial awareness.
+    This prevents silent overwrites when placing entities near ghosts.
+
     Note: Always fetches fresh data from the game - no caching.
     """
 
@@ -34,27 +40,50 @@ class ReachableEntities:
         self._entity_ops = EntityOperationsAction(rcon_handler)
         self._place_ops = PlacementAction(rcon_handler)
 
-    def _fetch_fresh_data(self):
-        """Fetch fresh entities data via RCON (no caching)."""
-        cmd = self._rcon.build_command("get_reachable", False)  # attach_ghosts=False
-        data = self._rcon.execute_and_parse_json(cmd)
-        entities_data = data.get("entities", [])
+    def _fetch_fresh_data(self, include_ghosts: bool = True):
+        """Fetch fresh entities data via RCON (no caching).
 
-        # Convert to Reachable view entities using new factory
+        Args:
+            include_ghosts: Whether to also fetch ghost entities (default: True)
+        """
+        # Fetch entities and optionally ghosts
+        cmd = self._rcon.build_command("get_reachable", include_ghosts)
+        data = self._rcon.execute_and_parse_json(cmd)
+
+        entities_data = data.get("entities", [])
+        ghosts_data = data.get("ghosts", []) if include_ghosts else []
+
+        # Convert to Reachable view entities using factory
         from FactoryVerse.dsl.entity.factory import create_reachable_entity
 
         entities_instances = []
+        all_data = []
+
+        # Process regular entities
         for entity_data in entities_data:
             try:
                 entity = create_reachable_entity(
-                    entity_data, self._entity_ops, self._place_ops
+                    entity_data, self._entity_ops, self._place_ops, is_ghost=False
                 )
                 entities_instances.append(entity)
-            except ValueError as e:
+                all_data.append(entity_data)
+            except ValueError:
                 # Entity type not yet migrated - skip it for now
                 pass
 
-        return entities_instances, entities_data
+        # Process ghost entities
+        for ghost_data in ghosts_data:
+            try:
+                entity = create_reachable_entity(
+                    ghost_data, self._entity_ops, self._place_ops, is_ghost=True
+                )
+                entities_instances.append(entity)
+                all_data.append(ghost_data)
+            except ValueError:
+                # Entity type not yet migrated - skip it for now
+                pass
+
+        return entities_instances, all_data
 
     def get_entity(
         self,
@@ -65,6 +94,7 @@ class ReachableEntities:
         """Get a single entity matching criteria.
 
         Always fetches fresh data from the game - no caching.
+        Includes ghost entities by default for spatial awareness.
 
         Args:
             entity_name: Entity prototype name (e.g., "electric-mining-drill")
@@ -74,13 +104,20 @@ class ReachableEntities:
                 - direction: Direction - filter by direction
                 - entity_type: str - filter by Factorio entity type
                 - status: str - filter by status (e.g., "working", "no-power")
+                - include_ghosts: bool - whether to include ghost entities (default: True)
+                - ghosts_only: bool - only return ghost entities (default: False)
 
         Returns:
             First matching Reachable[BaseEntity] instance, or None if not found
         """
-        # Always fetch fresh data
-        entities_instances, entities_data = self._fetch_fresh_data()
         options = options or {}
+        include_ghosts = options.get("include_ghosts", True)
+        ghosts_only = options.get("ghosts_only", False)
+
+        # Always fetch fresh data
+        entities_instances, entities_data = self._fetch_fresh_data(
+            include_ghosts=include_ghosts
+        )
 
         # Filter by name first
         matches = [
@@ -88,6 +125,12 @@ class ReachableEntities:
             for inst, data in zip(entities_instances, entities_data)
             if inst.name == entity_name
         ]
+
+        # Filter by ghost status
+        if ghosts_only:
+            matches = [(inst, data) for inst, data in matches if inst.is_ghost]
+        elif not include_ghosts:
+            matches = [(inst, data) for inst, data in matches if not inst.is_ghost]
 
         # Filter by position if provided
         if position is not None:
@@ -132,22 +175,40 @@ class ReachableEntities:
         """Get entities matching criteria.
 
         Always fetches fresh data from the game - no caching.
+        Includes ghost entities by default for spatial awareness.
 
         Args:
             entity_name: Optional entity prototype name filter
-            options: Optional dict with filters (same as get_entity)
+            options: Optional dict with filters (same as get_entity):
+                - recipe: str - filter by recipe name
+                - direction: Direction - filter by direction
+                - entity_type: str - filter by Factorio entity type
+                - status: str - filter by status (e.g., "working", "no-power")
+                - include_ghosts: bool - whether to include ghost entities (default: True)
+                - ghosts_only: bool - only return ghost entities (default: False)
 
         Returns:
             List of matching Reachable[BaseEntity] instances (may be empty)
         """
-        # Always fetch fresh data
-        entities_instances, entities_data = self._fetch_fresh_data()
         options = options or {}
+        include_ghosts = options.get("include_ghosts", True)
+        ghosts_only = options.get("ghosts_only", False)
+
+        # Always fetch fresh data
+        entities_instances, entities_data = self._fetch_fresh_data(
+            include_ghosts=include_ghosts
+        )
 
         # Start with all entities
         matches = [
             (inst, data) for inst, data in zip(entities_instances, entities_data)
         ]
+
+        # Filter by ghost status
+        if ghosts_only:
+            matches = [(inst, data) for inst, data in matches if inst.is_ghost]
+        elif not include_ghosts:
+            matches = [(inst, data) for inst, data in matches if not inst.is_ghost]
 
         # Filter by name if provided
         if entity_name is not None:
@@ -183,6 +244,22 @@ class ReachableEntities:
             ]
 
         return [inst for inst, _ in matches]
+
+    def get_ghosts(
+        self,
+        entity_name: Optional[str] = None,
+    ) -> List["Reachable[BaseEntity]"]:
+        """Get ghost entities matching criteria.
+
+        Convenience method equivalent to get_entities with ghosts_only=True.
+
+        Args:
+            entity_name: Optional entity prototype name filter
+
+        Returns:
+            List of matching ghost Reachable[BaseEntity] instances
+        """
+        return self.get_entities(entity_name, options={"ghosts_only": True})
 
 
 class ReachableResources:
