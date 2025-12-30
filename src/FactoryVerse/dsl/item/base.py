@@ -11,9 +11,8 @@ from FactoryVerse.dsl.mixins import (
 )
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.entity.views import Reachable, RemoteView, Ghost
+    from FactoryVerse.dsl.entity.views import Reachable, RemoteView
     from FactoryVerse.dsl.entity.base_entity import BaseEntity
-    from FactoryVerse.agent.ghost.types import TrackedGhost
 
 
 ItemSubgroup = Literal[
@@ -294,27 +293,24 @@ class PlaceableItem(SpatialPropertiesMixin, PrototypeMixin, Item):
         position: MapPosition,
         direction: Optional[Direction] = Direction.NORTH,
         label: Optional[str] = None,
-    ) -> "TrackedGhost":
-        """Create a tracked ghost for this item.
+    ) -> bool:
+        """Place a ghost entity for this item.
 
         Args:
             position: Position to place the ghost
             direction: Optional direction for the ghost
-            label: Optional label for grouping/staging
+            label: Optional label for grouping (stored in ghost table)
 
         Returns:
-            TrackedGhost object for tracking.
+            True if ghost was placed successfully.
 
-        NOTE: This method returns a TrackedGhost for Python-side tracking.
-        Use GhostManager.add_ghost() to track ghosts properly.
+        NOTE: This method requires action injection which is not yet implemented.
+        Use runtime.placement.place_ghost() instead.
         """
-        from FactoryVerse.agent.ghost.types import TrackedGhost
-
-        return TrackedGhost(
-            name=self.name,
-            position=position,
-            label=label,
-            placed_tick=0,
+        # TODO: This method needs PlacementAction injection to work
+        raise NotImplementedError(
+            "PlaceableItem.place_ghost() requires action injection. "
+            "Use runtime.placement.place_ghost() instead."
         )
 
 
@@ -571,24 +567,28 @@ class BeltLine(ItemStack):
 
     **For Agents**: Use for placing lines of belts efficiently.
 
-    NOTE: Ghost methods require action injection which is not yet implemented.
+    NOTE: Ghost line methods require action injection which is not yet implemented.
     """
 
-    def get_ghost_line(
-        self, position: MapPosition, length: int, direction: Direction
-    ) -> "TrackedGhost":
-        """Get a ghost line of the belt.
+    def place_ghost_line(
+        self, start: MapPosition, length: int, direction: Direction
+    ) -> int:
+        """Place a ghost line of belts.
 
-        NOTE: Not implemented - requires action injection.
+        Args:
+            start: Starting position
+            length: Number of belt segments
+            direction: Direction the belt faces
+
+        Returns:
+            Number of ghosts placed.
+
+        NOTE: Not implemented - use runtime.placement.place_ghost() in a loop.
         """
-        raise NotImplementedError("BeltLine requires action injection")
-
-    def get_ghost(self, position: MapPosition) -> "TrackedGhost":
-        """Get a ghost entity at the position.
-
-        NOTE: Not implemented - requires action injection.
-        """
-        raise NotImplementedError("BeltLine requires action injection")
+        raise NotImplementedError(
+            "BeltLine.place_ghost_line() requires action injection. "
+            "Use runtime.placement.place_ghost() in a loop instead."
+        )
 
 
 def get_item(name: str) -> Item:
