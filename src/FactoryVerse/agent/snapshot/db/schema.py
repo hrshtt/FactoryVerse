@@ -22,15 +22,25 @@ def _get_direction_enum(prototype_api_file: Optional[str] = None) -> List[str]:
         try:
             with open(prototype_api_file, "r") as f:
                 raw_proto = json.load(f)
-                defines = {i["name"]: i for i in raw_proto.get("defines", []) if i["name"] == "direction"}
+                defines = {
+                    i["name"]: i
+                    for i in raw_proto.get("defines", [])
+                    if i["name"] == "direction"
+                }
                 if "direction" in defines:
-                    direction_enum = [item['name'] for item in sorted(defines["direction"]["values"], key=lambda x: x['order'])]
+                    direction_enum = [
+                        item["name"]
+                        for item in sorted(
+                            defines["direction"]["values"], key=lambda x: x["order"]
+                        )
+                    ]
                     return direction_enum
         except:
             pass
-    
+
     # Fallback to Direction enum
-    from FactoryVerse.dsl.types import Direction
+    from FactoryVerse.factory.types import Direction
+
     return [d.name for d in Direction]
 
 
@@ -40,23 +50,42 @@ def _get_status_enum(prototype_api_file: Optional[str] = None) -> List[str]:
         try:
             with open(prototype_api_file, "r") as f:
                 raw_proto = json.load(f)
-                defines = {i["name"]: i for i in raw_proto.get("defines", []) if i["name"] == "entity_status"}
+                defines = {
+                    i["name"]: i
+                    for i in raw_proto.get("defines", [])
+                    if i["name"] == "entity_status"
+                }
                 if "entity_status" in defines:
-                    status_enum = [item['name'] for item in sorted(defines["entity_status"]["values"], key=lambda x: x['order'])]
+                    status_enum = [
+                        item["name"]
+                        for item in sorted(
+                            defines["entity_status"]["values"], key=lambda x: x["order"]
+                        )
+                    ]
                     return status_enum
         except:
             pass
-    
+
     # Fallback to default values
-    return ["active", "inactive", "disabled", "working", "no_power", "no_fuel", "no_recipe"]
+    return [
+        "active",
+        "inactive",
+        "disabled",
+        "working",
+        "no_power",
+        "no_fuel",
+        "no_recipe",
+    ]
 
 
-def _extract_enums_from_prototypes(prototype_api_file: Optional[str] = None) -> Dict[str, List[str]]:
+def _extract_enums_from_prototypes(
+    prototype_api_file: Optional[str] = None,
+) -> Dict[str, List[str]]:
     """Extract enum values from prototype data using FilterConfig (single source of truth)."""
     from FactoryVerse.prototype_data import get_prototype_manager
-    
+
     manager = get_prototype_manager()
-    
+
     return {
         "recipes": manager.get_filtered_recipes(),
         "resource_entities": manager.get_resource_entities(),
@@ -69,15 +98,16 @@ def _type_exists(con: duckdb.DuckDBPyConnection, type_name: str) -> bool:
     """Check if a type exists in the database."""
     try:
         result = con.execute(
-            "SELECT type_name FROM duckdb_types() WHERE type_name = ?",
-            [type_name]
+            "SELECT type_name FROM duckdb_types() WHERE type_name = ?", [type_name]
         ).fetchone()
         return result is not None
     except:
         return False
 
 
-def _create_type_if_not_exists(con: duckdb.DuckDBPyConnection, type_name: str, create_sql: str) -> None:
+def _create_type_if_not_exists(
+    con: duckdb.DuckDBPyConnection, type_name: str, create_sql: str
+) -> None:
     """Create a type only if it doesn't already exist."""
     if not _type_exists(con, type_name):
         try:
@@ -88,10 +118,12 @@ def _create_type_if_not_exists(con: duckdb.DuckDBPyConnection, type_name: str, c
             pass
 
 
-def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[str] = None) -> None:
+def create_schema(
+    con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[str] = None
+) -> None:
     """
     Create the complete schema with ENUMs and all tables.
-    
+
     Args:
         con: DuckDB connection
         prototype_api_file: Optional path to prototype-api.json file
@@ -107,47 +139,83 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
         con.execute("LOAD json;")
     except:
         pass
-    
+
     # Extract enum values
     enums = _extract_enums_from_prototypes(prototype_api_file)
     direction_enum = _get_direction_enum(prototype_api_file)
     status_enum = _get_status_enum(prototype_api_file)
-    
+
     # Create ENUM types (only if they don't exist)
     if enums["recipes"]:
         recipes_str = "(" + ", ".join([f"'{r}'" for r in enums["recipes"]]) + ")"
-        _create_type_if_not_exists(con, "recipe", f"CREATE TYPE recipe AS ENUM {recipes_str};")
+        _create_type_if_not_exists(
+            con, "recipe", f"CREATE TYPE recipe AS ENUM {recipes_str};"
+        )
     else:
-        _create_type_if_not_exists(con, "recipe", "CREATE TYPE recipe AS ENUM ('none');")
-    
+        _create_type_if_not_exists(
+            con, "recipe", "CREATE TYPE recipe AS ENUM ('none');"
+        )
+
     if enums["resource_entities"]:
-        resource_entities_str = "(" + ", ".join([f"'{e}'" for e in enums["resource_entities"]]) + ")"
-        _create_type_if_not_exists(con, "resource_entity", f"CREATE TYPE resource_entity AS ENUM {resource_entities_str};")
+        resource_entities_str = (
+            "(" + ", ".join([f"'{e}'" for e in enums["resource_entities"]]) + ")"
+        )
+        _create_type_if_not_exists(
+            con,
+            "resource_entity",
+            f"CREATE TYPE resource_entity AS ENUM {resource_entities_str};",
+        )
     else:
-        _create_type_if_not_exists(con, "resource_entity", "CREATE TYPE resource_entity AS ENUM ('none');")
-    
+        _create_type_if_not_exists(
+            con, "resource_entity", "CREATE TYPE resource_entity AS ENUM ('none');"
+        )
+
     if enums["resource_tiles"]:
-        resource_tiles_str = "(" + ", ".join([f"'{t}'" for t in enums["resource_tiles"]]) + ")"
-        _create_type_if_not_exists(con, "resource_tile", f"CREATE TYPE resource_tile AS ENUM {resource_tiles_str};")
+        resource_tiles_str = (
+            "(" + ", ".join([f"'{t}'" for t in enums["resource_tiles"]]) + ")"
+        )
+        _create_type_if_not_exists(
+            con,
+            "resource_tile",
+            f"CREATE TYPE resource_tile AS ENUM {resource_tiles_str};",
+        )
     else:
-        _create_type_if_not_exists(con, "resource_tile", "CREATE TYPE resource_tile AS ENUM ('none');")
-    
+        _create_type_if_not_exists(
+            con, "resource_tile", "CREATE TYPE resource_tile AS ENUM ('none');"
+        )
+
     if enums["placeable_entities"]:
-        placeable_entities_str = "(" + ", ".join([f"'{e}'" for e in enums["placeable_entities"]]) + ")"
-        _create_type_if_not_exists(con, "placeable_entity", f"CREATE TYPE placeable_entity AS ENUM {placeable_entities_str};")
+        placeable_entities_str = (
+            "(" + ", ".join([f"'{e}'" for e in enums["placeable_entities"]]) + ")"
+        )
+        _create_type_if_not_exists(
+            con,
+            "placeable_entity",
+            f"CREATE TYPE placeable_entity AS ENUM {placeable_entities_str};",
+        )
     else:
-        _create_type_if_not_exists(con, "placeable_entity", "CREATE TYPE placeable_entity AS ENUM ('none');")
-    
+        _create_type_if_not_exists(
+            con, "placeable_entity", "CREATE TYPE placeable_entity AS ENUM ('none');"
+        )
+
     direction_str = "(" + ", ".join([f"'{d}'" for d in direction_enum]) + ")"
-    _create_type_if_not_exists(con, "direction", f"CREATE TYPE direction AS ENUM {direction_str};")
-    
+    _create_type_if_not_exists(
+        con, "direction", f"CREATE TYPE direction AS ENUM {direction_str};"
+    )
+
     status_str = "(" + ", ".join([f"'{s}'" for s in status_enum]) + ")"
-    _create_type_if_not_exists(con, "status", f"CREATE TYPE status AS ENUM {status_str};")
-    
+    _create_type_if_not_exists(
+        con, "status", f"CREATE TYPE status AS ENUM {status_str};"
+    )
+
     # Create STRUCT types
-    _create_type_if_not_exists(con, "chunk_id", "CREATE TYPE chunk_id AS STRUCT(x INTEGER, y INTEGER);")
-    _create_type_if_not_exists(con, "map_position", "CREATE TYPE map_position AS STRUCT(x DOUBLE, y DOUBLE);")
-    
+    _create_type_if_not_exists(
+        con, "chunk_id", "CREATE TYPE chunk_id AS STRUCT(x INTEGER, y INTEGER);"
+    )
+    _create_type_if_not_exists(
+        con, "map_position", "CREATE TYPE map_position AS STRUCT(x DOUBLE, y DOUBLE);"
+    )
+
     # Create base tables
     con.execute("""
         CREATE TABLE IF NOT EXISTS water_tile (
@@ -156,7 +224,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             position map_position NOT NULL
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS resource_tile (
             entity_key VARCHAR PRIMARY KEY,
@@ -165,7 +233,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             amount INTEGER
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS resource_entity (
             entity_key VARCHAR PRIMARY KEY,
@@ -175,7 +243,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             bbox GEOMETRY
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS map_entity (
             entity_key VARCHAR PRIMARY KEY,
@@ -185,7 +253,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             electric_network_id INTEGER
         );
     """)
-    
+
     # Note: entity_status table is defined but not used for persistence.
     # Status is loaded on-the-fly from status files into temp_entity_status table.
     # Use entity_status_latest view to query current status.
@@ -197,7 +265,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     # Component tables
     con.execute("""
         CREATE TABLE IF NOT EXISTS inserter (
@@ -208,7 +276,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS transport_belt (
             entity_key VARCHAR PRIMARY KEY,
@@ -218,7 +286,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS electric_pole (
             entity_key VARCHAR PRIMARY KEY,
@@ -227,7 +295,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS mining_drill (
             entity_key VARCHAR PRIMARY KEY,
@@ -237,7 +305,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS pumpjack (
             entity_key VARCHAR PRIMARY KEY,
@@ -245,7 +313,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS assemblers (
             entity_key VARCHAR PRIMARY KEY,
@@ -253,7 +321,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     # Patch tables
     con.execute("""
         CREATE TABLE IF NOT EXISTS water_patch (
@@ -264,7 +332,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             tiles VARCHAR[]
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS resource_patch (
             patch_id INTEGER PRIMARY KEY,
@@ -276,7 +344,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             tiles VARCHAR[]
         );
     """)
-    
+
     # Belt network tables
     con.execute("""
         CREATE TABLE IF NOT EXISTS belt_line (
@@ -286,7 +354,7 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             belts VARCHAR[]
         );
     """)
-    
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS belt_line_segment (
             segment_id INTEGER PRIMARY KEY,
@@ -304,23 +372,43 @@ def create_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[s
             FOREIGN KEY (end_entity) REFERENCES map_entity(entity_key)
         );
     """)
-    
+
     # Create indexes
     # Note: Cannot index on STRUCT types (position), only on scalar types or GEOMETRY with RTREE
-    
+
     # Index on scalar columns
-    con.execute("CREATE INDEX IF NOT EXISTS idx_resource_tile_name ON resource_tile(name);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_map_entity_name ON map_entity(entity_name);")
-    
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_resource_tile_name ON resource_tile(name);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_map_entity_name ON map_entity(entity_name);"
+    )
+
     # Spatial indexes on GEOMETRY columns using RTREE
-    con.execute("CREATE INDEX IF NOT EXISTS idx_resource_entity_bbox ON resource_entity USING RTREE (bbox);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_map_entity_bbox ON map_entity USING RTREE (bbox);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_electric_pole_supply_area ON electric_pole USING RTREE (supply_area);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_mining_drill_mining_area ON mining_drill USING RTREE (mining_area);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_water_patch_geom ON water_patch USING RTREE (geom);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_resource_patch_geom ON resource_patch USING RTREE (geom);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_belt_line_geom ON belt_line USING RTREE (geom);")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_belt_line_segment_geom ON belt_line_segment USING RTREE (geom);")
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_resource_entity_bbox ON resource_entity USING RTREE (bbox);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_map_entity_bbox ON map_entity USING RTREE (bbox);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_electric_pole_supply_area ON electric_pole USING RTREE (supply_area);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mining_drill_mining_area ON mining_drill USING RTREE (mining_area);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_water_patch_geom ON water_patch USING RTREE (geom);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_resource_patch_geom ON resource_patch USING RTREE (geom);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_belt_line_geom ON belt_line USING RTREE (geom);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_belt_line_segment_geom ON belt_line_segment USING RTREE (geom);"
+    )
 
 
 def connect(db_path: Optional[Path] = None) -> duckdb.DuckDBPyConnection:
@@ -340,10 +428,12 @@ def connect(db_path: Optional[Path] = None) -> duckdb.DuckDBPyConnection:
     return con
 
 
-def init_schema(con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[str] = None) -> None:
+def init_schema(
+    con: duckdb.DuckDBPyConnection, prototype_api_file: Optional[str] = None
+) -> None:
     """
     Initialize the schema. This is a wrapper around create_schema for backward compatibility.
-    
+
     Args:
         con: DuckDB connection
         prototype_api_file: Optional path to prototype-api.json file for defines

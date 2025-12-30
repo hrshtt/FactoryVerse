@@ -7,12 +7,12 @@ but does NOT define HOW to interact with it (that's the view wrapper's job).
 
 from abc import ABC, abstractmethod
 from typing import Optional, Union, List, Dict, Any, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition, Direction, EntityInspectionData
-from FactoryVerse.dsl.mixins import SpatialPropertiesMixin, PrototypeMixin
-from FactoryVerse.dsl.prototypes import BasePrototype, get_entity_prototypes
+from FactoryVerse.factory.types import MapPosition, Direction, EntityInspectionData
+from FactoryVerse.factory.mixins import SpatialPropertiesMixin, PrototypeMixin
+from FactoryVerse.factory.prototypes import BasePrototype, get_entity_prototypes
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.item.base import PlaceableItem, ItemStack
+    from FactoryVerse.factory.item.base import PlaceableItem, ItemStack
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
 
@@ -271,7 +271,7 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
                 "Entity must be wrapped in Reachable view."
             )
         result = self._entity_ops.pickup_entity(self.name, self.position)
-        from FactoryVerse.dsl.item.base import ItemStack
+        from FactoryVerse.factory.item.base import ItemStack
 
         if result.extracted_items:
             return [

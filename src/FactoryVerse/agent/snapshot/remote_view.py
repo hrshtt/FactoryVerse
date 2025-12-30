@@ -23,9 +23,9 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
-    from FactoryVerse.dsl.entity.views import RemoteView as RemoteViewWrapper
-    from FactoryVerse.dsl.resource.remote_view_resource import RemoteViewResource
-    from FactoryVerse.dsl.entity.base_entity import BaseEntity
+    from FactoryVerse.factory.entity.views import RemoteView as RemoteViewWrapper
+    from FactoryVerse.factory.resource.remote_view_resource import RemoteViewResource
+    from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 from .database import SnapshotDatabase
 from .loader import SnapshotLoader

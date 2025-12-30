@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Union, List, Dict, Any, TYPE_CHECKING
-from FactoryVerse.dsl.mixins import FactoryContextMixin
+from FactoryVerse.factory.mixins import FactoryContextMixin
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.factory.agent import PlayingFactory
 
 TechnologyName = Literal[
     "steam-power",
@@ -89,6 +89,7 @@ class Ingredient:
 @dataclass
 class Recipe:
     """Simplified recipe data for technology unlocks."""
+
     name: str
     ingredients: List[Ingredient]
     products: List[Ingredient]
@@ -106,12 +107,13 @@ class Recipe:
 @dataclass
 class Technology(FactoryContextMixin):
     """Base technology class containing research data and status.
-    
+
     **For Agents**: Use this to plan your research path.
     - .researched: Has this been completed?
     - .enabled: Is it researchable or locked?
     - .can_research: Can you start researching this NOW?
     """
+
     name: str
     friendly_name: str
     description: str
@@ -120,7 +122,7 @@ class Technology(FactoryContextMixin):
     science_packs: List[Ingredient]
     count: int  # How many cycles
     time: int  # Time per cycle
-    
+
     # Status flags (populated from game data)
     researched: bool = False
     enabled: bool = False
@@ -140,7 +142,7 @@ class Technology(FactoryContextMixin):
             return False
         if not self.enabled:
             return False
-        
+
         # In Factorio, enabled=True usually means prerequisites are met
         # but we can verify against the graph if available.
         if self._graph_ref:
@@ -153,7 +155,16 @@ class Technology(FactoryContextMixin):
     @property
     def is_essential(self) -> bool:
         """Heuristic to determine if this is a critical path tech based on name."""
-        keywords = ["logistics", "automation", "processing", "rocket", "science", "electronics", "engine", "fluid"]
+        keywords = [
+            "logistics",
+            "automation",
+            "processing",
+            "rocket",
+            "science",
+            "electronics",
+            "engine",
+            "fluid",
+        ]
         return any(k in self.name for k in keywords)
 
     def get_parent_techs(self) -> List["Technology"]:
@@ -169,8 +180,16 @@ class Technology(FactoryContextMixin):
     def to_prompt_format(self) -> str:
         """Creates a prompt-ready description for the LLM."""
         prereqs = ", ".join(self.prerequisites) if self.prerequisites else "None"
-        unlocks = ", ".join(self.unlocks_recipes) if self.unlocks_recipes else "Passive Bonuses"
-        status = "COMPLETED" if self.researched else ("AVAILABLE" if self.can_research else "LOCKED")
+        unlocks = (
+            ", ".join(self.unlocks_recipes)
+            if self.unlocks_recipes
+            else "Passive Bonuses"
+        )
+        status = (
+            "COMPLETED"
+            if self.researched
+            else ("AVAILABLE" if self.can_research else "LOCKED")
+        )
 
         return (
             f"TECH: {self.friendly_name} ({self.name}) [%s]\n"
@@ -181,16 +200,20 @@ class Technology(FactoryContextMixin):
         ) % status
 
     def __repr__(self) -> str:
-        status = "Researched" if self.researched else ("Available" if self.can_research else "Locked")
+        status = (
+            "Researched"
+            if self.researched
+            else ("Available" if self.can_research else "Locked")
+        )
         return f"Technology({self.name})[{status}]"
 
 
 class ResearchableTechnology(Technology):
     """A technology that can be actively researched by the agent's force."""
-    
+
     def enqueue(self):
         """Start or queue this technology for research.
-        
+
         **For Agents**: Only works if .can_research is True.
         """
         if not self.can_research:
@@ -206,7 +229,7 @@ class ResearchableTechnology(Technology):
 
 class TechTree:
     """Manages the relationship between technologies and recipes."""
-    
+
     def __init__(self):
         self.technologies: Dict[str, Technology] = {}
         self.recipes: Dict[str, Recipe] = {}
@@ -259,13 +282,16 @@ class TechTree:
     @classmethod
     def from_rcon_data(cls, data: List[Dict[str, Any]]) -> "TechTree":
         """Initialize TechTree from RCON technologies data.
-        
+
         This data typically contains status flags (researched, enabled).
         """
         tree = cls()
         for item in data:
             unit = item.get("unit", {})
-            ingredients = [Ingredient(ing[0], ing[1], "item") for ing in unit.get("ingredients", [])]
+            ingredients = [
+                Ingredient(ing[0], ing[1], "item")
+                for ing in unit.get("ingredients", [])
+            ]
 
             unlocked_recipes = []
             if "effects" in item:
@@ -275,9 +301,11 @@ class TechTree:
 
             t = ResearchableTechnology(
                 name=item["name"],
-                friendly_name=(item.get("localised_name", [item["name"]])[0] 
-                              if isinstance(item.get("localised_name"), list) 
-                              else item["name"]),
+                friendly_name=(
+                    item.get("localised_name", [item["name"]])[0]
+                    if isinstance(item.get("localised_name"), list)
+                    else item["name"]
+                ),
                 description=str(item.get("localised_description", "")),
                 prerequisites=item.get("prerequisites", []),
                 unlocks_recipes=unlocked_recipes,
@@ -285,7 +313,7 @@ class TechTree:
                 count=unit.get("count", 1),
                 time=unit.get("time", 30),
                 researched=item.get("researched", False),
-                enabled=item.get("enabled", True)
+                enabled=item.get("enabled", True),
             )
             tree.add_tech(t)
         return tree
@@ -302,7 +330,11 @@ class TechTree:
             ingredients = []
             for ing in recipe_data.get("ingredients", []):
                 if isinstance(ing, dict):
-                    ingredients.append(Ingredient(ing["name"], ing.get("amount", 1), ing.get("type", "item")))
+                    ingredients.append(
+                        Ingredient(
+                            ing["name"], ing.get("amount", 1), ing.get("type", "item")
+                        )
+                    )
                 elif isinstance(ing, list):
                     ingredients.append(Ingredient(ing[0], ing[1], "item"))
 
@@ -310,11 +342,23 @@ class TechTree:
             if "results" in recipe_data:
                 for prod in recipe_data["results"]:
                     if isinstance(prod, dict):
-                        products.append(Ingredient(prod["name"], prod.get("amount", 1), prod.get("type", "item")))
+                        products.append(
+                            Ingredient(
+                                prod["name"],
+                                prod.get("amount", 1),
+                                prod.get("type", "item"),
+                            )
+                        )
                     elif isinstance(prod, list):
                         products.append(Ingredient(prod[0], prod[1], "item"))
             elif "result" in recipe_data:
-                products.append(Ingredient(recipe_data["result"], recipe_data.get("result_count", 1), "item"))
+                products.append(
+                    Ingredient(
+                        recipe_data["result"],
+                        recipe_data.get("result_count", 1),
+                        "item",
+                    )
+                )
 
             r = Recipe(
                 name=item["name"],
@@ -334,7 +378,10 @@ class TechTree:
                 continue
 
             unit = item.get("unit", {})
-            ingredients = [Ingredient(ing[0], ing[1], "item") for ing in unit.get("ingredients", [])]
+            ingredients = [
+                Ingredient(ing[0], ing[1], "item")
+                for ing in unit.get("ingredients", [])
+            ]
 
             unlocked_recipes = []
             if "effects" in item:
@@ -349,9 +396,11 @@ class TechTree:
             # Use ResearchableTechnology for all loaded techs to enable actions
             t = ResearchableTechnology(
                 name=item["name"],
-                friendly_name=(item.get("localised_name", [item["name"]])[0] 
-                              if isinstance(item.get("localised_name"), list) 
-                              else item["name"]),
+                friendly_name=(
+                    item.get("localised_name", [item["name"]])[0]
+                    if isinstance(item.get("localised_name"), list)
+                    else item["name"]
+                ),
                 description=str(item.get("localised_description", "")),
                 prerequisites=item.get("prerequisites", []),
                 unlocks_recipes=unlocked_recipes,
@@ -359,7 +408,7 @@ class TechTree:
                 count=unit.get("count", 1),
                 time=unit.get("time", 30),
                 researched=researched,
-                enabled=enabled
+                enabled=enabled,
             )
             tree.add_tech(t)
 

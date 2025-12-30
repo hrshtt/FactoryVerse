@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING, Dict
 import logging
 
-from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.factory.types import MapPosition
 from FactoryVerse.agent.models import (
     AsyncActionResponse,
     AsyncActionCompletion,

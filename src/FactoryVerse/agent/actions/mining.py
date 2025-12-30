@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import List, Optional, TYPE_CHECKING, Dict
 import logging
 
-from FactoryVerse.dsl.item.base import ItemStack
-from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.factory.item.base import ItemStack
+from FactoryVerse.factory.types import MapPosition
 from FactoryVerse.agent.models import (
     AsyncActionResponse,
     AsyncActionCompletion,

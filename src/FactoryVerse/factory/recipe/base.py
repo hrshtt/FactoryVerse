@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from typing import List, Dict, Any, Literal, Optional, get_args, Union, TYPE_CHECKING
-from FactoryVerse.dsl.mixins import FactoryContextMixin
-from FactoryVerse.dsl.types import ActionResult
+from FactoryVerse.factory.mixins import FactoryContextMixin
+from FactoryVerse.factory.types import ActionResult
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.agent import PlayingFactory
+    from FactoryVerse.factory.agent import PlayingFactory
 
 
 BasicRecipeName = Literal[
@@ -141,25 +141,27 @@ class Result:
     count: int
     type: Literal["item", "fluid"]
 
+
 @dataclass
 class BaseRecipe(FactoryContextMixin):
     """Base class for all recipes. Contains data properties.
-    
+
     **For Agents**: Use this to understand what ingredients are needed for a recipe.
-    If the recipe is hand-craftable (category='crafting'), it will be a 
+    If the recipe is hand-craftable (category='crafting'), it will be a
     HandCraftableRecipe and you can call .craft() on it.
     """
+
     name: str
     type: str
     ingredients: List[Ingredient]
     category: RecipeCategory
     enabled: bool
     results: List[Result]
-    
+
     def is_hand_craftable(self) -> bool:
         """Check if a recipe is hand-craftable."""
         return self.category == "crafting"
-    
+
     def __repr__(self) -> str:
         ins = ", ".join([f"{i.count}x {i.name}" for i in self.ingredients])
         outs = ", ".join([f"{r.count}x {r.name}" for r in self.results])
@@ -168,12 +170,14 @@ class BaseRecipe(FactoryContextMixin):
 
 class HandCraftableRecipe(BaseRecipe):
     """A recipe that can be crafted by the agent's own hands."""
-    
-    async def craft(self, count: int = 1, timeout: Optional[int] = None) -> ActionResult:
+
+    async def craft(
+        self, count: int = 1, timeout: Optional[int] = None
+    ) -> ActionResult:
         """Craft this recipe using the agent's hands.
-        
+
         **For Agents**: Only works for category='crafting' recipes.
-        
+
         Args:
             count: Number of times to craft
             timeout: Optional timeout for the async action
@@ -183,10 +187,10 @@ class HandCraftableRecipe(BaseRecipe):
 
 class Recipes:
     """Registry for all recipes available in the game."""
-    
+
     def __init__(self, data: List[Dict[str, Any]]):
         self._registry: Dict[str, BaseRecipe] = {}
-        
+
         for recipe_data in data:
             # Robust results parsing
             results_data = recipe_data.get("results")
@@ -195,29 +199,33 @@ class Recipes:
                     Result(
                         name=r.get("name"),
                         count=r.get("amount", r.get("count", 1)),
-                        type=r.get("type", "item")
-                    ) for r in results_data
+                        type=r.get("type", "item"),
+                    )
+                    for r in results_data
                 ]
             else:
                 # Infer from 'result' field or recipe name
                 result_name = recipe_data.get("result", recipe_data["name"])
-                result_count = recipe_data.get("result_count", 1) 
-                results_list = [Result(name=result_name, count=result_count, type="item")]
+                result_count = recipe_data.get("result_count", 1)
+                results_list = [
+                    Result(name=result_name, count=result_count, type="item")
+                ]
 
             # Ingredients parsing
             ingredients = [
                 Ingredient(
                     name=i["name"],
                     type=i.get("type", "item"),
-                    count=i.get("amount", i.get("count", 1))
-                ) for i in recipe_data["ingredients"]
+                    count=i.get("amount", i.get("count", 1)),
+                )
+                for i in recipe_data["ingredients"]
             ]
 
             category = recipe_data.get("category", "crafting")
-            
+
             # Determine class based on category
             recipe_class = HandCraftableRecipe if category == "crafting" else BaseRecipe
-            
+
             recipe_obj = recipe_class(
                 name=recipe_data["name"],
                 type=recipe_data.get("type", "recipe"),
@@ -226,21 +234,23 @@ class Recipes:
                 category=category,
                 enabled=recipe_data.get("enabled", True),
             )
-            
+
             # if recipe_obj.name not in get_args(BasicRecipeName):
             #     print(f"[WARNING] Recipe {recipe_obj.name} is not implemented in FactoryVerse. Skipping...")
             #     continue
-            assert recipe_obj.category in get_args(RecipeCategory), f"Invalid recipe category: {recipe_obj.category}"
+            assert recipe_obj.category in get_args(RecipeCategory), (
+                f"Invalid recipe category: {recipe_obj.category}"
+            )
             self._registry[recipe_obj.name] = recipe_obj
 
     def __getitem__(self, recipe_name: str) -> Union[HandCraftableRecipe, BaseRecipe]:
         """Get recipe by name using index access.
-        
+
         **For Agents**: Use crafting['recipe-name'] to get a recipe object.
-        Example: 
+        Example:
             # Hand-craft gear wheels
             await crafting['iron-gear-wheel'].craft(5)
-            
+
             # Check ingredients for iron plate (cannot be handcrafted)
             ingredients = crafting['iron-plate'].ingredients
         """

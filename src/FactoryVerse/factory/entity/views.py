@@ -7,8 +7,8 @@ based on access level:
 """
 
 from typing import Generic, TypeVar, TYPE_CHECKING
-from FactoryVerse.dsl.types import ActionResult
-from FactoryVerse.dsl.mixins import FuelableMixin, CrafterMixin, ContainerMixin
+from FactoryVerse.factory.types import ActionResult
+from FactoryVerse.factory.mixins import FuelableMixin, CrafterMixin, ContainerMixin
 
 if TYPE_CHECKING:
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction

@@ -5,10 +5,10 @@ Includes: StoneFurnace, SteelFurnace, ElectricFurnace
 """
 
 from typing import Dict, List, Optional
-from FactoryVerse.dsl.types import MapPosition, Direction
-from FactoryVerse.dsl.mixins import CrafterMixin, FuelableMixin
-from FactoryVerse.dsl.entity.base_entity import BaseEntity
-from FactoryVerse.dsl.entity.inspect import (
+from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.factory.mixins import CrafterMixin, FuelableMixin
+from FactoryVerse.factory.entity.base_entity import BaseEntity
+from FactoryVerse.factory.entity.inspect import (
     FurnaceInspection,
     BurnerData,
     EnergyData,

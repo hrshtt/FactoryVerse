@@ -1,18 +1,18 @@
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition, Direction
-from FactoryVerse.dsl.prototypes import (
+from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.factory.prototypes import (
     get_item_prototypes,
     get_entity_prototypes,
     BasePrototype,
 )
-from FactoryVerse.dsl.mixins import (
+from FactoryVerse.factory.mixins import (
     SpatialPropertiesMixin,
     PrototypeMixin,
 )
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.entity.views import Reachable, RemoteView
-    from FactoryVerse.dsl.entity.base_entity import BaseEntity
+    from FactoryVerse.factory.entity.views import Reachable, RemoteView
+    from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 
 ItemSubgroup = Literal[
@@ -596,7 +596,10 @@ def get_item(name: str) -> Item:
     # Note: We relax the strict input type hint to str to allow dynamic lookup,
     # but we should ideally validate against known names if possible.
 
-    from FactoryVerse.dsl.prototypes import get_item_prototypes, get_entity_prototypes
+    from FactoryVerse.factory.prototypes import (
+        get_item_prototypes,
+        get_entity_prototypes,
+    )
 
     item_protos = get_item_prototypes()
     place_result = item_protos.get_place_result(name)

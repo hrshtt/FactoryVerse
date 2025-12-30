@@ -7,9 +7,9 @@ from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import duckdb
-    from FactoryVerse.dsl.entity.views import RemoteView
-    from FactoryVerse.dsl.resource.remote_view_resource import RemoteViewResource
-    from FactoryVerse.dsl.entity.base_entity import BaseEntity
+    from FactoryVerse.factory.entity.views import RemoteView
+    from FactoryVerse.factory.resource.remote_view_resource import RemoteViewResource
+    from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ class QueryExecutor:
             entity_data = self._row_to_entity_data(row)
 
         # Import factory function
-        from FactoryVerse.dsl.entity.factory import create_remote_view_entity
+        from FactoryVerse.factory.entity.factory import create_remote_view_entity
 
         try:
             # Create a minimal entity_ops for inspection (RemoteView is read-only)
@@ -262,8 +262,10 @@ class QueryExecutor:
         self, row: Dict[str, Any]
     ) -> Optional["RemoteViewResource"]:
         """Create RemoteViewResource from row data."""
-        from FactoryVerse.dsl.resource.remote_view_resource import RemoteViewResource
-        from FactoryVerse.dsl.resource.base import _create_resource_from_data
+        from FactoryVerse.factory.resource.remote_view_resource import (
+            RemoteViewResource,
+        )
+        from FactoryVerse.factory.resource.base import _create_resource_from_data
 
         # Build resource data
         raw_data = row.get("raw_data")
@@ -294,7 +296,7 @@ class QueryExecutor:
 
     def _construct_ghost(self, row: Dict[str, Any]) -> Optional["RemoteView"]:
         """Create ghost entity from row data."""
-        from FactoryVerse.dsl.entity.factory import create_remote_view_entity
+        from FactoryVerse.factory.entity.factory import create_remote_view_entity
 
         # Build ghost data
         raw_data = row.get("raw_data")

@@ -5,9 +5,9 @@ Includes: WoodenChest, IronChest, SteelChest, ShipWreck (crash site chests)
 """
 
 from typing import Dict, Optional
-from FactoryVerse.dsl.types import MapPosition, Direction
-from FactoryVerse.dsl.entity.base_entity import BaseEntity
-from FactoryVerse.dsl.entity.inspect import ContainerInspection
+from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.factory.entity.base_entity import BaseEntity
+from FactoryVerse.factory.entity.inspect import ContainerInspection
 
 
 class Container(BaseEntity):

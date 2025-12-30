@@ -15,9 +15,9 @@ if TYPE_CHECKING:
     from FactoryVerse.agent.actions.walking import MovementAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
     from FactoryVerse.agent.actions.inventory import AgentInventory
-    from FactoryVerse.dsl.entity.views import Reachable, RemoteView
-    from FactoryVerse.dsl.entity.base_entity import BaseEntity
-    from FactoryVerse.dsl.types import MapPosition
+    from FactoryVerse.factory.entity.views import Reachable, RemoteView
+    from FactoryVerse.factory.entity.base_entity import BaseEntity
+    from FactoryVerse.factory.types import MapPosition
 
 
 @dataclass

@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Union, TYPE_CHECKING
 import logging
 
-from FactoryVerse.dsl.types import MapPosition
-from FactoryVerse.dsl.item.base import ItemStack
+from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.factory.item.base import ItemStack
 from FactoryVerse.agent.models import ActionResponse
 
 if TYPE_CHECKING:

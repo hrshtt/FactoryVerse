@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from typing import Optional, Union, Dict, TYPE_CHECKING
 import logging
 
-from FactoryVerse.dsl.types import MapPosition, Direction
+from FactoryVerse.factory.types import MapPosition, Direction
 from FactoryVerse.agent.models import ActionResponse
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
     from ..ghost.manager import GhostManager
-    from FactoryVerse.dsl.item.base import PlaceableItemName
+    from FactoryVerse.factory.item.base import PlaceableItemName
 
 logger = logging.getLogger(__name__)
 

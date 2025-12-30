@@ -4,11 +4,11 @@ This shows how ResourceOrePatch will use injected MiningAction.
 """
 
 from typing import List, Optional, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.factory.types import MapPosition
 
 if TYPE_CHECKING:
     from FactoryVerse.agent.actions.mining import MiningAction
-    from FactoryVerse.dsl.item.base import ItemStack
+    from FactoryVerse.factory.item.base import ItemStack
 
 
 class ResourceOrePatch:

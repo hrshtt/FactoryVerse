@@ -8,7 +8,7 @@ import json
 from typing import Dict, Any
 import logging
 
-from FactoryVerse.dsl.types import MapPosition, Direction
+from FactoryVerse.factory.types import MapPosition, Direction
 
 logger = logging.getLogger(__name__)
 

@@ -5,10 +5,10 @@ Includes: AssemblingMachine (all tiers), ChemicalPlant, OilRefinery, Centrifuge,
 """
 
 from typing import Dict, Any, Union, Optional, List, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition, Direction
-from FactoryVerse.dsl.mixins import CrafterMixin
-from FactoryVerse.dsl.entity.base_entity import BaseEntity
-from FactoryVerse.dsl.entity.inspect import (
+from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.factory.mixins import CrafterMixin
+from FactoryVerse.factory.entity.base_entity import BaseEntity
+from FactoryVerse.factory.entity.inspect import (
     AssemblerInspection,
     ChemicalPlantInspection,
     OilRefineryInspection,
@@ -17,7 +17,7 @@ from FactoryVerse.dsl.entity.inspect import (
 )
 
 if TYPE_CHECKING:
-    from FactoryVerse.dsl.recipe.base import BaseRecipe as Recipe
+    from FactoryVerse.factory.recipe.base import BaseRecipe as Recipe
 
 
 def _parse_energy(data: Optional[Dict]) -> Optional[EnergyData]:

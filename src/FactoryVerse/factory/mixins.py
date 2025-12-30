@@ -13,15 +13,15 @@ from typing import (
     Tuple,
     Literal,
 )
-from FactoryVerse.dsl.types import (
+from FactoryVerse.factory.types import (
     MapPosition,
     Direction,
 )
-from FactoryVerse.dsl.prototypes import BasePrototype
+from FactoryVerse.factory.prototypes import BasePrototype
 
 if TYPE_CHECKING:
     from .entity.base_entity import EntityPosition
-    from FactoryVerse.dsl.item.base import Item, ItemStack
+    from FactoryVerse.factory.item.base import Item, ItemStack
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
 
 
@@ -211,7 +211,7 @@ class FuelableMixin:
 
     def _validate_fuel(self, item_name: str):
         """Validate that item is valid fuel for this entity."""
-        from FactoryVerse.dsl.prototypes import get_item_prototypes
+        from FactoryVerse.factory.prototypes import get_item_prototypes
 
         item_protos = get_item_prototypes()
 
@@ -340,7 +340,7 @@ class CrafterMixin:
                 "Entity must be wrapped in a view (Reachable) for crafting operations."
             )
 
-        from FactoryVerse.dsl.item.base import ItemStack
+        from FactoryVerse.factory.item.base import ItemStack
 
         if items is None:
             # If no items specified, inspect and take everything

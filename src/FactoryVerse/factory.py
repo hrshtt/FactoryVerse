@@ -64,6 +64,7 @@ class AgentRuntime:
     - runtime.reachable - Reachable entity queries
     - runtime.resources - Reachable resource queries
     - runtime.research - Research actions
+    - runtime.remote_view - Map-wide entity queries (DuckDB)
     """
 
     def __init__(
@@ -114,20 +115,51 @@ class AgentRuntime:
         self._reachable = ReachableEntities(self._rcon)
         self._resources = ReachableResources(self._rcon)
 
+        # RemoteView - map-wide queries via DuckDB
+        from FactoryVerse.agent.snapshot import RemoteView
+        from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
+
+        # Detect snapshot dir if not provided
+        snapshot_dir = config.snapshot_dir
+        if snapshot_dir is None:
+            snapshot_dir = self._detect_snapshot_dir()
+
+        self._remote_view = RemoteView(
+            snapshot_dir=snapshot_dir,
+            db_path=config.db_path,
+            udp_dispatcher=get_udp_dispatcher(),  # Shared dispatcher
+        )
+
+    def _detect_snapshot_dir(self) -> Path:
+        """Auto-detect snapshot directory from environment."""
+        import os
+
+        script_output = os.environ.get("FACTORIO_SCRIPT_OUTPUT_DIR")
+        if script_output:
+            return Path(script_output)
+        # Default fallback
+        return Path.home() / ".factorio" / "script-output"
+
     async def start(self) -> None:
-        """Start the runtime (async listener, etc.).
+        """Start the runtime (async listener, RemoteView sync, etc.).
 
         Must be called before using async actions like walking.
         """
         if self._started:
             return
         await self._listener.start()
+
+        # Load and start RemoteView sync
+        self._remote_view.load()
+        await self._remote_view.start()
+
         self._started = True
 
     async def stop(self) -> None:
         """Stop the runtime and cleanup resources."""
         if not self._started:
             return
+        await self._remote_view.stop()
         await self._listener.stop()
         self._started = False
 
@@ -260,6 +292,22 @@ class AgentRuntime:
             PlacementAction instance
         """
         return self._placement
+
+    @property
+    def remote_view(self):
+        """Map-wide entity queries via DuckDB.
+
+        **For Agents**: Use to find entities anywhere on the map,
+        not just within interaction range.
+
+        - remote_view.get_entities(sql) - Query entities by SQL
+        - remote_view.get_ghosts(sql) - Query ghost entities
+        - remote_view.query(sql) - Raw SQL queries
+
+        Returns:
+            RemoteView instance
+        """
+        return self._remote_view
 
     @property
     def agent_id(self) -> str:

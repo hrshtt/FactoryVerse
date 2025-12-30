@@ -12,7 +12,7 @@ from pathlib import Path
 from factorio_rcon import RCONClient
 from FactoryVerse.config import get_runtime_config
 from FactoryVerse.factory import create_runtime
-from FactoryVerse.dsl.types import MapPosition, Direction
+from FactoryVerse.factory.types import MapPosition, Direction
 
 # Load per-agent runtime configuration
 # Session dir and agent ID injected by agent runtime via env vars

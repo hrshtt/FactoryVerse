@@ -11,12 +11,12 @@ from __future__ import annotations
 
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 
-from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.factory.types import MapPosition
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
-    from FactoryVerse.dsl.entity.views import Reachable
-    from FactoryVerse.dsl.entity.base_entity import BaseEntity
+    from FactoryVerse.factory.entity.views import Reachable
+    from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 
 class ReachableEntities:
@@ -54,7 +54,7 @@ class ReachableEntities:
         ghosts_data = data.get("ghosts", []) if include_ghosts else []
 
         # Convert to Reachable view entities using factory
-        from FactoryVerse.dsl.entity.factory import create_reachable_entity
+        from FactoryVerse.factory.entity.factory import create_reachable_entity
 
         entities_instances = []
         all_data = []
@@ -293,7 +293,7 @@ class ReachableResources:
         Returns:
             BaseResource instance (or appropriate subclass), or None if not found
         """
-        from FactoryVerse.dsl.resource.base import _create_resource_from_data
+        from FactoryVerse.factory.resource.base import _create_resource_from_data
 
         # Always fetch fresh data
         resources_data = self._fetch_fresh_data()
@@ -336,7 +336,7 @@ class ReachableResources:
             - ResourceOrePatch: Multiple ore patches of same type (consolidated)
             - BaseResource: Single ore patch or entity (trees/rocks)
         """
-        from FactoryVerse.dsl.resource.base import (
+        from FactoryVerse.factory.resource.base import (
             ResourceOrePatch,
             BaseResource,
             _create_resource_from_data,

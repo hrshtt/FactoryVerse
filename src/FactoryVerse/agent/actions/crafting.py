@@ -6,7 +6,7 @@ Handles all crafting-related operations with async support via RconHandler and A
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
-from FactoryVerse.dsl.item.base import ItemStack
+from FactoryVerse.factory.item.base import ItemStack
 from FactoryVerse.agent.models import AsyncActionResponse, AsyncActionCompletion
 
 if TYPE_CHECKING:

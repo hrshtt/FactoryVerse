@@ -10,7 +10,7 @@ and ghost_name set to the entity prototype they represent.
 """
 
 from typing import Dict, Any, TYPE_CHECKING
-from FactoryVerse.dsl.types import MapPosition, Direction
+from FactoryVerse.factory.types import MapPosition, Direction
 
 if TYPE_CHECKING:
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction

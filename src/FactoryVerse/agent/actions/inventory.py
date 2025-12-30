@@ -1,5 +1,5 @@
 from typing import List, Optional, Union, Literal, Dict
-from FactoryVerse.dsl.item.base import ItemStack, Item, PlaceableItem, get_item
+from FactoryVerse.factory.item.base import ItemStack, Item, PlaceableItem, get_item
 from ..infra.rcon_handler import RconHandler
 
 

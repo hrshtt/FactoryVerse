@@ -12,7 +12,7 @@ Access fields directly (e.g., furnace_data.recipe) or print for formatted output
 
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any
-from FactoryVerse.dsl.types import MapPosition
+from FactoryVerse.factory.types import MapPosition
 
 
 # =============================================================================
