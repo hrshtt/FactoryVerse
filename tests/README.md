@@ -1,6 +1,6 @@
 # FactoryVerse Tests
 
-Test suite for FactoryVerse DSL and mod.
+Test suite for FactoryVerse Factory (Factorio Objects) and mod.
 
 ## Test Organization
 
@@ -45,8 +45,8 @@ tests/
 │   ├── test_poles.py          # Electric pole networks
 │   └── test_inserters.py      # Inserter placement relative to machines
 │
-├── dsl/                        # Python DSL layer tests
-│   ├── conftest.py            # DSL-specific fixtures (PlayingFactory, etc.)
+├── factory/                        # Python Factory (Factorio Objects) layer tests
+│   ├── conftest.py            # Factory (Factorio Objects)-specific fixtures (PlayingFactory, etc.)
 │   ├── test_playing_factory.py # Context manager, session state
 │   ├── test_reachable.py      # Reachable entity queries
 │   ├── test_map_db.py         # DuckDB map queries
@@ -95,7 +95,7 @@ uv run pytest
 # Run specific domain
 uv run pytest tests/actions/
 uv run pytest tests/entities/
-uv run pytest tests/dsl/
+uv run pytest tests/factory/
 uv run pytest tests/functional/
 
 # Run multiple domains
@@ -128,7 +128,7 @@ factorio_server (session)     # Auto-starts Docker, manages RCON
 
 Each domain can define its own `conftest.py` for specialized fixtures:
 
-### `tests/dsl/conftest.py`
+### `tests/factory/conftest.py`
 
 ```python
 import pytest
@@ -136,12 +136,12 @@ from FactoryVerse.factory.agent import PlayingFactory
 
 @pytest.fixture(scope="function")
 def playing_factory(rcon, agent_id):
-    """PlayingFactory context for DSL tests."""
+    """PlayingFactory context for Factory (Factorio Objects) tests."""
     return PlayingFactory(rcon=rcon, agent_id=agent_id)
 
 @pytest.fixture(scope="function")
 def dsl_context(playing_factory, test_ground, admin):
-    """Complete DSL context with test helpers."""
+    """Complete Factory (Factorio Objects) context with test helpers."""
     return DSLTestContext(playing_factory, test_ground, admin)
 ```
 
@@ -179,7 +179,7 @@ def resource_area(clean_area):
 | Agent commands (walk, mine, craft) | `actions/` |
 | Specific entity types (furnace, drill) | `entities/` |
 | Entity connections (belts, pipes) | `connect/` |
-| Python DSL classes/methods | `dsl/` |
+| Python Factory (Factorio Objects) classes/methods | `factory/` |
 | UDP/snapshot/sync | `sync/` |
 | Multi-step workflows | `functional/` |
 | Multiple agents | `multiagent/` |
