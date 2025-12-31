@@ -196,8 +196,59 @@ class FactoryVerseConfig(BaseSettings):
 
     @property
     def data_dump_path(self) -> Path:
-        """Get path to factorio-data-dump.json."""
+        """Get path to factorio-data-dump.json (runtime dump)."""
         return self.fv_output_dir / "factorio-data-dump.json"
+
+    @property
+    def prototype_api_path(self) -> Path:
+        """Get path to prototype-api.json (static API definitions).
+
+        This file contains static type definitions from Factorio's API:
+        - defines (enums like direction, entity_status)
+        - type structures (MapPosition, BoundingBox, etc.)
+
+        Downloaded from: https://lua-api.factorio.com/2.0.72/prototype-api.json
+        Use `fv data refresh-api` or call download_prototype_api() to fetch.
+        """
+        return self.fv_output_dir / "prototype-api.json"
+
+    @property
+    def prototype_api_url(self) -> str:
+        """URL to download prototype-api.json from Factorio developers."""
+        return "https://lua-api.factorio.com/2.0.72/prototype-api.json"
+
+    def download_prototype_api(self, force: bool = False) -> Path:
+        """Download prototype-api.json from Factorio API.
+
+        Args:
+            force: If True, re-download even if file exists.
+
+        Returns:
+            Path to the downloaded file.
+
+        Raises:
+            RuntimeError: If download fails.
+        """
+        import urllib.request
+
+        dest = self.prototype_api_path
+
+        if dest.exists() and not force:
+            return dest
+
+        # Ensure output dir exists
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            print(f"Downloading prototype-api.json from {self.prototype_api_url}...")
+            urllib.request.urlretrieve(self.prototype_api_url, dest)
+            print(f"Downloaded to {dest}")
+            return dest
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to download prototype-api.json: {e}\n"
+                f"You can manually download from: {self.prototype_api_url}"
+            ) from e
 
     @property
     def arch(self) -> str:

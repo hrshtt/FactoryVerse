@@ -1,5 +1,18 @@
+"""Factory Types - Core type definitions for FactoryVerse.
+
+This module provides structural types (Position, BoundingBox) and re-exports
+authoritative Factorio types from factorio_types.py.
+
+Type System Overview:
+- Direction, EntityStatus: Enums from factorio_types.py (source of truth)
+- MapPosition, TilePosition, BoundingBox: Structural position types
+- EntityID, ItemID, RecipeID, etc.: Semantic type aliases for prototype names
+- TypedDicts: Response/payload types for RCON and async actions
+
+See factorio_types.py for the authoritative Factorio type definitions.
+"""
+
 from dataclasses import dataclass
-import enum
 import math
 from typing import (
     Self,
@@ -11,55 +24,42 @@ from typing import (
     TypedDict,
 )
 
+# =============================================================================
+# AUTHORITATIVE FACTORIO TYPES (re-exported from factorio_types.py)
+# =============================================================================
+# These are the source of truth for Factorio game types.
+# Direction and EntityStatus enums have values matching Factorio's defines.
 
-class Direction(enum.Enum):
-    """Direction in the game world.
-
-    Usually specified by using [defines.direction](runtime:defines.direction).
-    """
-
-    NORTH = 0  # North
-    NORTH_NORTH_EAST = 1  # NorthNorthEast
-    NORTH_EAST = 2  # NorthEast
-    EAST_NORTH_EAST = 3  # EastNorthEast
-    EAST = 4  # East
-    EAST_SOUTH_EAST = 5  # EastSouthEast
-    SOUTH_EAST = 6  # SouthEast
-    SOUTH_SOUTH_EAST = 7  # SouthSouthEast
-    SOUTH = 8  # South
-    SOUTH_SOUTH_WEST = 9  # SouthSouthWest
-    SOUTH_WEST = 10  # SouthWest
-    WEST_SOUTH_WEST = 11  # WestSouthWest
-    WEST = 12  # West
-    WEST_NORTH_WEST = 13  # WestNorthWest
-    NORTH_WEST = 14  # NorthWest
-    NORTH_NORTH_WEST = 15  # NorthNorthWest
-
-    def is_cardinal(self) -> bool:
-        return self in (
-            Direction.NORTH,
-            Direction.EAST,
-            Direction.SOUTH,
-            Direction.WEST,
-        )
-
-    def turn_left(self) -> "Direction":
-        # For cardinal directions, turn left by subtracting 4 (90 degrees CCW) modulo 16.
-        if not self.is_cardinal():
-            raise ValueError(f"Cannot turn non-cardinal direction: {self.name}")
-        return Direction((self.value - 4) % 16)
-
-    def turn_right(self) -> "Direction":
-        # For cardinal directions, turn right by adding 4 (90 degrees CW) modulo 16.
-        if not self.is_cardinal():
-            raise ValueError(f"Cannot turn non-cardinal direction: {self.name}")
-        return Direction((self.value + 4) % 16)
-
-    def flip(self) -> "Direction":
-        """Flip the direction 180 degrees."""
-        if not self.is_cardinal():
-            raise ValueError(f"Cannot flip non-cardinal direction: {self.name}")
-        return Direction((self.value + 8) % 16)
+from FactoryVerse.factory.factorio_types import (
+    # Enums
+    Direction,
+    EntityStatus,
+    # Type aliases
+    MapTick,
+    TilePosition,
+    EntityID,
+    ItemID,
+    RecipeID,
+    FluidID,
+    TechnologyID,
+    TileID,
+    ResourceCategoryID,
+    RecipeCategoryID,
+    FuelCategoryID,
+    ItemGroupID,
+    ItemSubGroupID,
+    ModuleCategoryID,
+    # Getters for Literal values
+    get_entity_ids,
+    get_item_ids,
+    get_recipe_ids,
+    get_resource_entity_ids,
+    get_resource_tile_ids,
+    # Validators
+    is_valid_entity_id,
+    is_valid_item_id,
+    is_valid_recipe_id,
+)
 
 
 @dataclass
@@ -621,3 +621,73 @@ class PlacementCuesResponse(TypedDict):
     tile_height: int
     positions: List[PlacementCueData]
     reachable_positions: List[PlacementCueData]
+
+
+# =============================================================================
+# EXPORTS
+# =============================================================================
+
+__all__ = [
+    # Re-exported from factorio_types.py (authoritative source)
+    "Direction",
+    "EntityStatus",
+    "MapTick",
+    "TilePosition",
+    "EntityID",
+    "ItemID",
+    "RecipeID",
+    "FluidID",
+    "TechnologyID",
+    "TileID",
+    "ResourceCategoryID",
+    "RecipeCategoryID",
+    "FuelCategoryID",
+    "ItemGroupID",
+    "ItemSubGroupID",
+    "ModuleCategoryID",
+    "get_entity_ids",
+    "get_item_ids",
+    "get_recipe_ids",
+    "get_resource_entity_ids",
+    "get_resource_tile_ids",
+    "is_valid_entity_id",
+    "is_valid_item_id",
+    "is_valid_recipe_id",
+    # Structural types (defined in this module)
+    "Position",
+    "AnchorVector",
+    "MapPosition",
+    "RealOrientation",
+    "BoundingBox",
+    # Async action types
+    "WalkAsyncResponse",
+    "MineAsyncResponse",
+    "CraftAsyncResponse",
+    "WalkCompletionPayload",
+    "MineCompletionPayload",
+    "CraftCompletionPayload",
+    # Status types
+    "CraftingStatus",
+    "ResearchQueueItem",
+    "ResearchStatus",
+    "ActionResult",
+    # Inspection types
+    "AgentActivityState",
+    "AgentInspectionData",
+    "ResourcePatchData",
+    "ProductData",
+    "EntityEnergyData",
+    "EntityInventoriesData",
+    "HeldItemData",
+    "EntityInspectionData",
+    "EntityFilterOptions",
+    "GhostAreaFilter",
+    # Reachability types
+    "ReachableEntityData",
+    "ReachableResourceData",
+    "ReachableGhostData",
+    "ReachableSnapshotData",
+    # Placement types
+    "PlacementCueData",
+    "PlacementCuesResponse",
+]

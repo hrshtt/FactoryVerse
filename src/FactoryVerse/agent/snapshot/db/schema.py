@@ -45,7 +45,7 @@ def _get_direction_enum(prototype_api_file: Optional[str] = None) -> List[str]:
 
 
 def _get_status_enum(prototype_api_file: Optional[str] = None) -> List[str]:
-    """Get status enum values from prototype API or default values."""
+    """Get status enum values from prototype API or EntityStatus enum."""
     if prototype_api_file:
         try:
             with open(prototype_api_file, "r") as f:
@@ -66,16 +66,10 @@ def _get_status_enum(prototype_api_file: Optional[str] = None) -> List[str]:
         except:
             pass
 
-    # Fallback to default values
-    return [
-        "active",
-        "inactive",
-        "disabled",
-        "working",
-        "no_power",
-        "no_fuel",
-        "no_recipe",
-    ]
+    # Fallback to EntityStatus enum (authoritative source from factorio_types.py)
+    from FactoryVerse.factory.factorio_types import EntityStatus
+
+    return [s.to_lua_name() for s in EntityStatus]
 
 
 def _extract_enums_from_prototypes(
