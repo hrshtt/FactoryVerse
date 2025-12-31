@@ -10,8 +10,10 @@
 ---   └── entities_updates.jsonl    # Append-only operations log
 ---
 --- Operations Log Format (entities_updates.jsonl):
----   {"op": "upsert", "tick": 12345, "entity": {...full entity data...}}
----   {"op": "remove", "tick": 12346, "key": "inserter@5,10", "position": {x: 5, y: 10}, "name": "inserter"}
+---   {\"op\": \"upsert\", \"tick\": 12345, \"sequence\": 1, \"entity\": {...full entity data...}}
+---   {\"op\": \"remove\", \"tick\": 12346, \"sequence\": 2, \"key\": \"inserter@5,10\", \"position\": {x: 5, y: 10}, \"name\": \"inserter\"}
+---
+--- Sequence numbers enable deterministic recovery: replay updates in sequence order.
 
 local utils = require("utils.utils")
 
@@ -29,6 +31,24 @@ M.UDP_PORT = 34400
 
 -- Debug flag for verbose logging
 M.DEBUG = false
+
+-- ============================================================================
+-- SEQUENCE COUNTER (for deterministic recovery)
+-- ============================================================================
+
+--- Get next global sequence number.
+--- Stored in storage for persistence across saves.
+--- @return number - Next sequence number
+function M.get_next_sequence()
+    storage.snapshot_sequence = (storage.snapshot_sequence or 0) + 1
+    return storage.snapshot_sequence
+end
+
+--- Get current sequence number without incrementing.
+--- @return number - Current sequence number
+function M.get_current_sequence()
+    return storage.snapshot_sequence or 0
+end
 
 -- ============================================================================
 -- FILE PATHS
@@ -376,6 +396,7 @@ function M.make_upsert_operation(entity_data)
     return {
         op = "upsert",
         tick = game.tick,
+        sequence = M.get_next_sequence(),
         entity = entity_data,
     }
 end
@@ -389,6 +410,7 @@ function M.make_remove_operation(entity_key, position, entity_name)
     return {
         op = "remove",
         tick = game.tick,
+        sequence = M.get_next_sequence(),
         key = entity_key,
         position = position,
         name = entity_name,
@@ -492,6 +514,7 @@ function M.make_ghost_upsert_operation(ghost_data)
     return {
         op = "upsert",
         tick = game.tick,
+        sequence = M.get_next_sequence(),
         ghost = ghost_data,
     }
 end
@@ -505,6 +528,7 @@ function M.make_ghost_remove_operation(ghost_key, position, ghost_name)
     return {
         op = "remove",
         tick = game.tick,
+        sequence = M.get_next_sequence(),
         key = ghost_key,
         position = position,
         ghost_name = ghost_name,
@@ -575,6 +599,7 @@ function M.send_entity_operation_udp(op_type, chunk_x, chunk_y, entity_key, enti
         op = op_type,
         chunk = { x = chunk_x, y = chunk_y },
         tick = game.tick,
+        sequence = M.get_current_sequence(),  -- Include current sequence for UDP sync
         entity_key = entity_key,
         entity_name = entity_name,
         position = position and { x = utils.floor(position.x), y = utils.floor(position.y) } or nil,
