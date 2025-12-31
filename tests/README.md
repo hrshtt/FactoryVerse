@@ -132,7 +132,7 @@ Each domain can define its own `conftest.py` for specialized fixtures:
 
 ```python
 import pytest
-from FactoryVerse.dsl.agent import PlayingFactory
+from FactoryVerse.factory.agent import PlayingFactory
 
 @pytest.fixture(scope="function")
 def playing_factory(rcon, agent_id):

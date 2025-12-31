@@ -29,7 +29,7 @@ async def agent_runtime(rcon: RconConnection, agent_id: str) -> Generator:
         await agent_runtime.walking.walk_to(MapPosition(10, 10))
     ```
     """
-    from FactoryVerse.factory import create_runtime
+    from FactoryVerse.runtime import create_runtime
 
     # Create runtime with a test UDP port
     # Use agent_id hash to get a somewhat unique port per agent
@@ -117,7 +117,10 @@ def with_prototypes() -> Generator[Path, None, None]:
 
     Provides path to prototype JSON for tests that need it.
     """
-    from FactoryVerse.dsl.prototypes import get_entity_prototypes, get_item_prototypes
+    from FactoryVerse.factory.prototypes import (
+        get_entity_prototypes,
+        get_item_prototypes,
+    )
 
     # Trigger prototype loading
     entity_protos = get_entity_prototypes()
