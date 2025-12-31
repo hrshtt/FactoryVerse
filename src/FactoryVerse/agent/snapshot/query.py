@@ -223,7 +223,7 @@ class QueryExecutor:
             entity_data = self._row_to_entity_data(row)
 
         # Import factory function
-        from FactoryVerse.factory.entity.factory import create_remote_view_entity
+        from FactoryVerse.factory.entity.create_entity import create_remote_view_entity
 
         try:
             # Create a minimal entity_ops for inspection (RemoteView is read-only)
@@ -296,7 +296,7 @@ class QueryExecutor:
 
     def _construct_ghost(self, row: Dict[str, Any]) -> Optional["RemoteView"]:
         """Create ghost entity from row data."""
-        from FactoryVerse.factory.entity.factory import create_remote_view_entity
+        from FactoryVerse.factory.entity.create_entity import create_remote_view_entity
 
         # Build ghost data
         raw_data = row.get("raw_data")

@@ -54,7 +54,7 @@ class ReachableEntities:
         ghosts_data = data.get("ghosts", []) if include_ghosts else []
 
         # Convert to Reachable view entities using factory
-        from FactoryVerse.factory.entity.factory import create_reachable_entity
+        from FactoryVerse.factory.entity.create_entity import create_reachable_entity
 
         entities_instances = []
         all_data = []
