@@ -4,7 +4,7 @@ This module is the central factory for creating a complete agent runtime.
 It wires up all infrastructure, actions, and DSL affordances with proper DI.
 
 Usage in boilerplate:
-    from FactoryVerse.factory import create_runtime
+    from FactoryVerse.runtime import create_runtime
 
     runtime = create_runtime(
         rcon_client=rcon_client,
@@ -349,7 +349,7 @@ def create_runtime(
     Example:
         ```python
         from factorio_rcon import RCONClient
-        from FactoryVerse.factory import create_runtime
+        from FactoryVerse.runtime import create_runtime
 
         rcon = RCONClient("localhost", 27015, "password")
         runtime = create_runtime(rcon, "agent_1", udp_port=34202)

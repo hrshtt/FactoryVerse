@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from unittest.mock import MagicMock
-from FactoryVerse.factory import dsl
+from FactoryVerse.runtime import dsl
 from FactoryVerse.factory.factoriopedia import Factoriopedia
 
 

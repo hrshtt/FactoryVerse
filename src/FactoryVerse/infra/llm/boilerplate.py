@@ -9,10 +9,9 @@ Uses the new factory.py pattern with create_runtime().
 import os
 import json
 from pathlib import Path
-from factorio_rcon import RCONClient
 from FactoryVerse.config import get_runtime_config
-from FactoryVerse.factory import create_runtime
-from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.runtime import create_runtime
+from FactoryVerse.factory.types import MapPosition, Direction  # noqa: F401
 
 # Load per-agent runtime configuration
 # Session dir and agent ID injected by agent runtime via env vars
@@ -28,7 +27,7 @@ runtime_config = get_runtime_config(
 )
 
 # Connect to RCON
-from FactoryVerse.utils.rcon_utils import create_rcon_client
+from FactoryVerse.utils.rcon_utils import create_rcon_client  # noqa: E402
 
 rcon_client = create_rcon_client(
     runtime_config.rcon_host,
@@ -64,7 +63,7 @@ else:
     print(f"✅ Created agent '{runtime_config.agent_id}' on UDP port {actual_udp_port}")
 
 # Sync filters to Lua mod
-from FactoryVerse.prototype_data import get_prototype_manager
+from FactoryVerse.prototype_data import get_prototype_manager  # noqa: E402
 
 # Get filtered entity list from shared prototype manager
 manager = get_prototype_manager()
