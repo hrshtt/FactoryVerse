@@ -660,25 +660,113 @@ function EntityOpsActions.remove_ghost(self, entity_name, position)
         end
     end
     
-    -- Store entity info before destruction
-    local ghost_name = ghost.ghost_name
-    local ghost_position = { x = ghost.position.x, y = ghost.position.y }
-    
-    ghost.destroy()
-    
-    -- Raise agent entity destroyed event (for ghost removal)
-    -- Note: Ghosts are tracked separately, but we raise the event for consistency
-    script.raise_event(custom_events.on_agent_entity_destroyed, {
-        entity = ghost,  -- Entity may be invalid, but event handlers should check
-        agent_id = self.agent_id,
-        entity_name = ghost_name,
-        position = ghost_position,
-    })
+    -- Destroy ghost with raise_destroy=true to trigger script_raised_destroy event
+    -- This allows fv_snapshot to track the ghost removal via Factorio's built-in event system
+    ghost.destroy({raise_destroy=true})
 
     return {
         success = true,
         entity_name = entity_name,
         position = position,
+    }
+end
+
+--- Rotate entity to a specific direction
+--- Supports both regular entities and ghost entities
+--- Note: Asymmetric entities (tile_width != tile_height) can only rotate in 180° increments
+--- @param entity_name string Entity prototype name (use ghost_name for ghosts)
+--- @param position table|nil Position {x, y} (nil to use agent position with radius search)
+--- @param direction defines.direction|nil Direction to rotate to (nil rotates 90° clockwise)
+--- @param is_ghost boolean|nil Whether to target a ghost entity (default: false)
+--- @return table Result
+function EntityOpsActions.rotate_entity(self, entity_name, position, direction, is_ghost)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    -- Resolve entity position
+    local pos, radius = _resolve_entity_position(self, position, 5.0)
+    
+    local entity = nil
+    local actual_entity_name = entity_name
+    
+    if is_ghost then
+        -- Find ghost entity by ghost_name at position
+        local ghosts = game.surfaces[1].find_entities_filtered({
+            position = pos,
+            radius = radius,
+            type = "entity-ghost",
+            ghost_name = entity_name
+        })
+        
+        if #ghosts == 0 then
+            error("Agent: No ghost entity '" .. entity_name .. "' found at position " .. pos.x .. ", " .. pos.y)
+        end
+        
+        entity = ghosts[1]
+    else
+        -- Create EntityInterface instance for regular entity
+        local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+        entity = entity_interface.entity
+    end
+    
+    -- Validate agent can reach entity
+    if not self:can_reach_entity(entity) then
+        error("Agent: Entity is out of reach")
+    end
+    
+    -- Store old direction for result
+    local old_direction = entity.direction
+    
+    -- Perform rotation
+    if direction then
+        entity.direction = direction
+    else
+        -- Rotate 90 degrees clockwise
+        local current_dir = old_direction or defines.direction.north
+        local dir_map = {
+            [defines.direction.north] = defines.direction.east,
+            [defines.direction.east] = defines.direction.south,
+            [defines.direction.south] = defines.direction.west,
+            [defines.direction.west] = defines.direction.north,
+            [defines.direction.northeast] = defines.direction.southeast,
+            [defines.direction.southeast] = defines.direction.southwest,
+            [defines.direction.southwest] = defines.direction.northwest,
+            [defines.direction.northwest] = defines.direction.northeast,
+        }
+        entity.direction = dir_map[current_dir] or defines.direction.north
+    end
+    
+    local new_direction = entity.direction
+    
+    -- Raise agent entity rotated event (snapshot will handle ghost vs entity)
+    script.raise_event(custom_events.on_agent_entity_rotated, {
+        entity = entity,
+        agent_id = self.agent_id,
+        old_direction = old_direction,
+        new_direction = new_direction,
+        is_ghost = is_ghost or (entity.type == "entity-ghost"),
+    })
+    
+    -- Enqueue completion message (sync action)
+    self:enqueue_message({
+        action = "rotate_entity",
+        agent_id = self.agent_id,
+        entity_name = actual_entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        old_direction = old_direction,
+        new_direction = new_direction,
+        is_ghost = is_ghost or false,
+        tick = game.tick or 0,
+    }, "entity_ops")
+    
+    return {
+        success = true,
+        entity_name = actual_entity_name,
+        position = { x = entity.position.x, y = entity.position.y },
+        old_direction = old_direction,
+        new_direction = new_direction,
+        is_ghost = is_ghost or false,
     }
 end
 

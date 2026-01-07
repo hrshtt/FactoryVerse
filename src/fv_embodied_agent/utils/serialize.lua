@@ -247,8 +247,9 @@ end
 --- Serialize entity data for JSON storage
 --- Direct LuaEntity access - no resolution overhead (for bulk operations)
 --- @param entity LuaEntity
+--- @param builder_info table|nil Optional builder info {agent_id, player_id, label}
 --- @return table|nil Serialized entity data or nil if invalid
-function M.serialize_entity(entity)
+function M.serialize_entity(entity, builder_info)
     if not (entity and entity.valid) then return nil end
 
     local out = {}
@@ -272,6 +273,11 @@ function M.serialize_entity(entity)
     -- Inserter IO (pickup/drop positions and resolved targets)
     if entity.type == "inserter" then
         _serialize_inserter_data(entity, out)
+    end
+    
+    -- Add builder metadata if provided
+    if builder_info then
+        out.builder = builder_info
     end
 
     return out
@@ -323,8 +329,9 @@ end
 
 --- Serialize ghost entity to data structure
 --- @param ghost LuaEntity Ghost entity (type="entity-ghost")
+--- @param builder_info table|nil Optional builder info {agent_id, player_id, label}
 --- @return table|nil Ghost data, or nil if invalid
-function M.serialize_ghost(ghost)
+function M.serialize_ghost(ghost, builder_info)
     if not (ghost and ghost.valid) then
         return nil
     end
@@ -354,6 +361,11 @@ function M.serialize_ghost(ghost)
     -- Generate entity key for the ghost (using ghost_name as the entity name)
     if ghost.ghost_name then
         data.key = entity_key(ghost.ghost_name, ghost.position.x, ghost.position.y)
+    end
+    
+    -- Add builder metadata if provided
+    if builder_info then
+        data.builder = builder_info
     end
     
     return data

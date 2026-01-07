@@ -435,20 +435,21 @@ function MiningActions.finalize_mining(self, reason)
         end
         
         -- Raise event for resource entities (trees/rocks)
+        -- This custom event is necessary because character mining doesn't raise Factorio's player events
         if is_resource_entity then
             if DEBUG then
-                game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: About to raise on_agent_entity_destroyed event, event_id=%s", 
-                    game.tick, tostring(custom_events.on_agent_entity_destroyed)))
+                game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: About to raise on_agent_resource_mined event, event_id=%s", 
+                    game.tick, tostring(custom_events.on_agent_resource_mined)))
             end
-            script.raise_event(custom_events.on_agent_entity_destroyed, {
-                entity = nil,  -- Entity is already destroyed, pass nil
+            script.raise_event(custom_events.on_agent_resource_mined, {
+                entity = nil,  -- Entity is already destroyed by Factorio engine
                 agent_id = self.agent_id,
                 entity_name = mining_state.entity_name,
                 entity_type = mining_state.entity_type,
                 position = mining_state.entity_position,
             })
             if DEBUG then
-                game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: Successfully raised on_agent_entity_destroyed event", game.tick))
+                game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: Successfully raised on_agent_resource_mined event", game.tick))
             end
         else
             if DEBUG then

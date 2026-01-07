@@ -16,7 +16,7 @@ local DEBUG = false
 --- @param direction number Direction (4=east, 6=west, 8=south, 10=north)
 --- @param ghost boolean Whether to place a ghost entity
 --- @return table Result with {success, position, entity_name, entity_type}
-function PlacementActions.place_entity(self, entity_name, position, direction, ghost)
+function PlacementActions.place_entity(self, entity_name, position, direction, ghost, label)
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
@@ -38,6 +38,8 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
     end
 
     ghost = ghost or false
+
+    label = label or nil
 
     -- Validate agent can reach placement position
     if not ghost and not self:can_reach_position(position) then
@@ -90,7 +92,28 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
         placement.name = "entity-ghost"
     end
 
-    -- Place entity
+    -- Check if there is already a ghost at the position and destroy it BEFORE placing entity
+    -- We destroy first because can_place_entity already validated placement will succeed
+    -- CRITICAL: fast_replace in create_entity does NOT raise destroy events, so we must manually destroy
+    local existing_ghost = game.surfaces[1].find_entities_filtered({position=position, type="entity-ghost"})
+    if #(existing_ghost) > 0 then
+        for _, ghost_entity in pairs(existing_ghost) do
+            if ghost_entity and ghost_entity.valid then
+                if DEBUG then
+                    game.print(string.format("[placement] Destroying ghost %s at (%f,%f) before placing entity", 
+                        ghost_entity.ghost_name or "unknown", ghost_entity.position.x, ghost_entity.position.y))
+                end
+                -- Destroy with raise_destroy=true to trigger script_raised_destroy event
+                -- This allows fv_snapshot to track ghost removal via Factorio's built-in event system
+                local destroyed = ghost_entity.destroy({raise_destroy=true})
+                if DEBUG then
+                    game.print(string.format("[placement] Ghost destruction result: %s", tostring(destroyed)))
+                end
+            end
+        end
+    end
+
+    -- Place entity (can_place_entity check ensures this will succeed)
     local created_entity = game.surfaces[1].create_entity(placement)
     if not created_entity or not created_entity.valid then
         error("Agent: Failed to place entity")
@@ -102,12 +125,13 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
     local entity_pos = { x = created_entity.position.x, y = created_entity.position.y }
 
     -- Raise agent entity built event for non-ghost entities (ghosts are handled separately)
-    if not ghost and created_entity.type ~= "entity-ghost" then
-        script.raise_event(custom_events.on_agent_entity_built, {
-            entity = created_entity,
-            agent_id = self.agent_id,
-        })
-    end
+
+    script.raise_event(custom_events.on_agent_entity_built, {
+        agent_id = self.agent_id,
+        entity = created_entity,
+        is_ghost = ghost,
+        label = label,
+    })
 
     local message = {
         action = "place_entity",

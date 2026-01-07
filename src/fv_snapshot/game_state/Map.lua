@@ -933,9 +933,9 @@ local function phase_find_entities(state, chunk_x, chunk_y)
             area = chunk_area,
             force = "player",
         }
-        -- Filter out ghosts from player entities (in Lua, not C++)
+        -- Filter out ghosts and character entities from player entities (in Lua, not C++)
         for _, entity in ipairs(all_entities) do
-            if entity and entity.valid and entity.type ~= "entity-ghost" then
+            if entity and entity.valid and entity.type ~= "entity-ghost" and entity.type ~= "character" then
                 table.insert(player_entities, entity)
             end
         end
@@ -944,7 +944,7 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         end
     end
     
-    -- Gather ghosts separately (for top-level ghosts-init.jsonl)
+    -- Gather ghosts separately (for chunk-wise ghosts-init.jsonl)
     -- PERFORMANCE: count first, then find only if count > 0
     local ghosts = {}
     if DEBUG then
@@ -992,7 +992,7 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         water_json = {},          -- Array of JSON strings for water-tiles.jsonl
         entities_json = {},       -- Array of JSON strings for entities.jsonl (trees+rocks)
         player_entity_data = {},  -- Array of {entity, data} for individual entity files
-        ghosts_json = {},         -- Array of JSON strings for top-level ghosts-init.jsonl
+        ghosts_json = {},         -- Array of JSON strings for chunk-wise ghosts-init.jsonl
     }
     state.serialize_index = 1
     
@@ -1090,14 +1090,19 @@ local function phase_serialize(state)
     end
     
     -- Serialize player-placed entities (individual files)
+    -- For initial chunk snapshot, entities are pre-existing (not built by agent or player during this session)
+    local pre_existing_builder_info = {
+        label = "pre-existing",
+        placed_tick = nil,  -- Unknown when pre-existing entities were placed
+    }
     local player_start = entities_start + total_trees_rocks
     local player_offset = entities_offset + total_trees_rocks  -- Pre-calculate offset for performance
     while idx >= player_start and idx < player_start + total_player and processed < budget do
         local player_idx = idx - player_offset
         local entity = gathered.player_entities[player_idx]
         if entity and entity.valid then
-            -- Use serialize module's serialization
-            local entity_data = serialize.serialize_entity(entity)
+            -- Use serialize module's serialization with pre-existing builder info
+            local entity_data = serialize.serialize_entity(entity, pre_existing_builder_info)
             if entity_data then
                 table_insert(serialized.player_entity_data, {
                     entity = entity,
@@ -1109,15 +1114,16 @@ local function phase_serialize(state)
         processed = processed + 1
     end
     
-    -- Serialize ghosts (for top-level ghosts-init.jsonl)
+    -- Serialize ghosts (for chunk-wise ghosts-init.jsonl)
+    -- For initial chunk snapshot, ghosts are pre-existing (not placed by agent or player during this session)
     local ghosts_start = player_start + total_player
     local ghosts_offset = player_offset + total_player  -- Pre-calculate offset for performance
     while idx >= ghosts_start and idx < ghosts_start + total_ghosts and processed < budget do
         local ghost_idx = idx - ghosts_offset
         local ghost = (gathered.ghosts and gathered.ghosts[ghost_idx]) or nil
         if ghost and ghost.valid then
-            -- Use serialize module's ghost serialization
-            local ghost_data = serialize.serialize_ghost(ghost)
+            -- Use serialize module's ghost serialization with pre-existing label
+            local ghost_data = serialize.serialize_ghost(ghost, pre_existing_builder_info)
             if ghost_data then
                 -- Add chunk info to ghost data for tracking
                 ghost_data.chunk = { x = chunk_x, y = chunk_y }
@@ -1158,7 +1164,7 @@ local function phase_serialize(state)
         --     return
         -- end
         
-        -- Queue resources_init.jsonl write (ore tiles)
+        -- Queue resources-init.jsonl write (ore tiles)
         if #serialized.resources_json > 0 then
             local content = table_concat(serialized.resources_json, "\n") .. "\n"
             local path = snapshot.resources_init_path(chunk_x, chunk_y)
@@ -1170,7 +1176,7 @@ local function phase_serialize(state)
             })
         end
         
-        -- Queue water_init.jsonl write
+        -- Queue water-init.jsonl write
         if #serialized.water_json > 0 then
             local content = table_concat(serialized.water_json, "\n") .. "\n"
             local path = snapshot.water_init_path(chunk_x, chunk_y)
@@ -1182,7 +1188,7 @@ local function phase_serialize(state)
             })
         end
         
-        -- Queue trees_rocks_init.jsonl write (trees + rocks)
+        -- Queue trees_rocks-init.jsonl write (trees + rocks)
         if #serialized.entities_json > 0 then
             local content = table_concat(serialized.entities_json, "\n") .. "\n"
             local path = snapshot.trees_rocks_init_path(chunk_x, chunk_y)
@@ -1194,7 +1200,7 @@ local function phase_serialize(state)
             })
         end
         
-        -- NEW: Queue single entities_init.jsonl for ALL player entities
+        -- NEW: Queue single entities-init.jsonl for ALL player entities
         -- Instead of individual files per entity, we write one JSONL file
         if #serialized.player_entity_data > 0 then
             local entity_json_lines = {}
@@ -1221,17 +1227,16 @@ local function phase_serialize(state)
             end
         end
         
-        -- Queue ghosts for top-level ghosts-init.jsonl (append mode)
-        -- Ghosts are tracked per chunk but written to top-level file
+        -- Queue ghosts for chunk-wise ghosts-init.jsonl
         if #serialized.ghosts_json > 0 then
             local content = table_concat(serialized.ghosts_json, "\n") .. "\n"
-            local path = snapshot.ghosts_init_path()
+            local path = snapshot.ghosts_init_path(chunk_x, chunk_y)
             table_insert(state.write_queue, {
                 path = path,
                 content = content,
                 file_type = "ghosts_init",
                 event_type = "file_created",
-                append = true,  -- Append to top-level file
+                append = false,  -- Chunk-wise file, not append mode
                 ghost_count = #serialized.ghosts_json,
                 chunk = { x = chunk_x, y = chunk_y },
             })
@@ -1297,9 +1302,9 @@ local function phase_write(state)
             local payload = udp_payloads.chunk_init_complete(chunk, item.entity_count or 0)
             udp_payloads.send_event(payload)
         elseif item.file_type == "ghosts_init" then
-            -- Ghosts are appended to top-level file - no notification needed (handled via entity_operation)
+            -- Ghosts written to chunk-wise file
             if DEBUG and game and game.print then
-                game.print(string.format("[snapshot] Appended %d ghosts to top-level file from chunk (%d, %d)",
+                game.print(string.format("[snapshot] Wrote %d ghosts to chunk (%d, %d) ghosts-init.jsonl",
                     item.ghost_count or 0, chunk_x, chunk_y))
             end
         end

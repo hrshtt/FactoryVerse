@@ -9,7 +9,9 @@ local table_to_json = helpers.table_to_json
 local send_udp = helpers.send_udp
 
 -- UDP port for agent action notifications (default for agent-specific payloads)
--- Note: Snapshot notifications use a separate port (34400)
+-- Note: Snapshot notifications use separate ports:
+--   - Server instances: 34400, 34401, 34402, ... (one per server)
+--   - Client: 34500
 M.UDP_PORT = 34202
 
 -- Debug flag for verbose logging

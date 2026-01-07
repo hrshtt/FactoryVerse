@@ -309,13 +309,15 @@ The agent must have the items in their inventory.]],
         is_async = false,
         doc = [[Place an entity from the agent's inventory onto the map.
 The agent must have the item in their inventory and be within build reach.
-Returns an entity reference for further operations on the placed entity.]],
+Returns an entity reference for further operations on the placed entity.
+An optional label can be provided for tracking/grouping placed entities.]],
         paramspec = {
-            _param_order = { "entity_name", "position", "direction", "ghost" },
+            _param_order = { "entity_name", "position", "direction", "ghost", "label" },
             entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to place" },
             position = { type = "position", required = true, doc = "Position to place entity" },
             direction = { type = "number", default = nil, doc = "Direction (4=east, 6=west, 8=south, 10=north)" },
             ghost = { type = "boolean", default = false, doc = "Whether to place a ghost entity" },
+            label = { type = "string", default = nil, doc = "Optional label for tracking" },
         },
         returns = {
             type = "entity_ref",
@@ -326,8 +328,8 @@ Returns an entity reference for further operations on the placed entity.]],
                 entity_type = { type = "string", doc = "Entity type string" },
             },
         },
-        func = function(self, entity_name, position, direction, ghost)
-            return self:place_entity(entity_name, position, direction, ghost)
+        func = function(self, entity_name, position, direction, ghost, label)
+            return self:place_entity(entity_name, position, direction, ghost, label)
         end,
     },
     pickup_entity = {
@@ -370,6 +372,35 @@ The ghost entity must be within reach.]],
         },
         func = function(self, entity_name, position)
             return self:remove_ghost(entity_name, position)
+        end,
+    },
+    rotate_entity = {
+        category = "entity",
+        is_async = false,
+        doc = [[Rotate an entity or ghost to a specific direction.
+The entity must be within reach. Supports both regular entities and ghost entities.
+Note: Asymmetric entities (where tile_width != tile_height, like splitters) can only
+rotate in 180° increments, not 90°.]],
+        paramspec = {
+            _param_order = { "entity_name", "position", "direction", "is_ghost" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name (use ghost_name for ghosts)" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest within reach)" },
+            direction = { type = "number", default = nil, doc = "Direction to rotate to (nil = rotate 90° clockwise). Values: 0=north, 4=east, 8=south, 12=west" },
+            is_ghost = { type = "boolean", default = false, doc = "Whether to target a ghost entity" },
+        },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if entity was rotated" },
+                entity_name = { type = "string", doc = "Entity name" },
+                position = { type = "position", doc = "Entity position" },
+                old_direction = { type = "number", doc = "Direction before rotation" },
+                new_direction = { type = "number", doc = "Direction after rotation" },
+                is_ghost = { type = "boolean", doc = "Whether a ghost was rotated" },
+            },
+        },
+        func = function(self, entity_name, position, direction, is_ghost)
+            return self:rotate_entity(entity_name, position, direction, is_ghost)
         end,
     },
 

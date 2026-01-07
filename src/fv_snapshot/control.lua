@@ -156,6 +156,7 @@ local function register_all_remote_interfaces()
         { name = "power",    module = Power },
         { name = "research", module = Research },
         { name = "resource", module = Resource },
+        { name = "snapshot", module = snapshot },
     }
 
     -- Register each module's remote interface
