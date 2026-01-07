@@ -4,6 +4,12 @@
 
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
+local ipairs = ipairs
+local table_insert = table.insert
+local string_match = string.match
+local string_format = string.format
+-- Cache helpers functions for performance
+local table_to_json = helpers.table_to_json
 
 local GameStateError = require("utils.Error")
 local utils = require("utils.utils")
@@ -114,48 +120,61 @@ function M.gather_resources_for_chunk(chunk)
         return { resources = {}, rocks = {}, trees = {}, water = {} }
     end
 
-    local gathered = {
-        resources = {}, -- Mineable resources (iron, copper, coal, crude-oil, etc.)
-        rocks = {},     -- Simple entities (rock-huge, rock-big, etc.)
-        trees = {},     -- Tree entities
-        water = {}      -- Water tiles
-    }
+    -- Pre-allocate result tables
+    local gathered_resources = {}
+    local gathered_rocks = {}
+    local gathered_trees = {}
+    local gathered_water = {}
+    
+    local chunk_area = chunk.area
 
     -- Resources (including crude oil) - PERFORMANCE: count before find (fast C++ check)
     local resource_count = surface.count_entities_filtered {
-        area = chunk.area,
+        area = chunk_area,
         type = "resource"
     }
     if resource_count > 0 then
         local resource_entities = surface.find_entities_filtered {
-            area = chunk.area,
+            area = chunk_area,
             type = "resource"
         }
-        for _, entity in ipairs(resource_entities) do
+        -- Use numeric for loop for hot path
+        local entity_count = #resource_entities
+        for i = 1, entity_count do
+            local entity = resource_entities[i]
             if entity and entity.valid then
-                table.insert(gathered.resources, M.serialize_resource_tile(entity, entity.name))
+                gathered_resources[#gathered_resources + 1] = M.serialize_resource_tile(entity, entity.name)
             end
         end
     end
 
     -- Rocks - check count first
-    local rock_count = surface.count_entities_filtered({ area = chunk.area, type = "simple-entity" })
+    local rock_count = surface.count_entities_filtered({ area = chunk_area, type = "simple-entity" })
     if rock_count > 0 then
-        local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
-        for _, entity in ipairs(rock_entities) do
-            if entity and entity.valid and entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
-                table.insert(gathered.rocks, M.serialize_rock(entity, chunk))
+        local rock_entities = surface.find_entities_filtered({ area = chunk_area, type = "simple-entity" })
+        -- Use numeric for loop for hot path
+        local entity_count = #rock_entities
+        for i = 1, entity_count do
+            local entity = rock_entities[i]
+            if entity and entity.valid then
+                local entity_name = entity.name
+                if entity_name and (string_match(entity_name, "rock") or string_match(entity_name, "stone")) then
+                    gathered_rocks[#gathered_rocks + 1] = M.serialize_rock(entity, chunk)
+                end
             end
         end
     end
 
     -- Trees - check count first
-    local tree_count = surface.count_entities_filtered({ area = chunk.area, type = "tree" })
+    local tree_count = surface.count_entities_filtered({ area = chunk_area, type = "tree" })
     if tree_count > 0 then
-        local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
-        for _, entity in ipairs(tree_entities) do
+        local tree_entities = surface.find_entities_filtered({ area = chunk_area, type = "tree" })
+        -- Use numeric for loop for hot path
+        local entity_count = #tree_entities
+        for i = 1, entity_count do
+            local entity = tree_entities[i]
             if entity and entity.valid then
-                table.insert(gathered.trees, M.serialize_tree(entity, chunk))
+                gathered_trees[#gathered_trees + 1] = M.serialize_tree(entity, chunk)
             end
         end
     end
@@ -165,18 +184,21 @@ function M.gather_resources_for_chunk(chunk)
     local water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
 
     local water_count = surface.count_tiles_filtered {
-        area = chunk.area,
+        area = chunk_area,
         name = water_tile_names
     }
     if water_count > 0 then
         local tiles = surface.find_tiles_filtered {
-            area = chunk.area,
+            area = chunk_area,
             name = water_tile_names
         }
-        for _, tile in ipairs(tiles) do
+        -- Use numeric for loop for hot path
+        local tiles_count = #tiles
+        for i = 1, tiles_count do
+            local tile = tiles[i]
             local x, y = utils.extract_position(tile)
             if x and y then
-                table.insert(gathered.water, { kind = "water", x = x, y = y, amount = 0 })
+                gathered_water[#gathered_water + 1] = { kind = "water", x = x, y = y, amount = 0 }
             end
         end
     end
@@ -184,15 +206,20 @@ function M.gather_resources_for_chunk(chunk)
     local end_tick = game.tick
     if M.DEBUG then
         local duration = end_tick - start_tick
-        local total = #gathered.resources + #gathered.rocks + #gathered.trees + #gathered.water
-        game.print(string.format("[PERF Resource] Chunk (%d,%d) gather complete: %d items in %d ticks",
+        local total = #gathered_resources + #gathered_rocks + #gathered_trees + #gathered_water
+        game.print(string_format("[PERF Resource] Chunk (%d,%d) gather complete: %d items in %d ticks",
             chunk.x, chunk.y, total, duration))
         if duration > 0 then
-            game.print(string.format("[PERF Resource] ⚠️  WARNING: gather took %d ticks - should be instant!", duration))
+            game.print(string_format("[PERF Resource] ⚠️  WARNING: gather took %d ticks - should be instant!", duration))
         end
     end
     
-    return gathered
+    return {
+        resources = gathered_resources,
+        rocks = gathered_rocks,
+        trees = gathered_trees,
+        water = gathered_water
+    }
 end
 
 --- Create a trees/rocks update entry when a tree or rock is mined

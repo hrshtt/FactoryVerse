@@ -5,11 +5,13 @@
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
 local ipairs = ipairs
--- local math_min = math.min
+local math_floor = math.floor
 local table_insert = table.insert
 local table_concat = table.concat
--- Cache helpers.table_to_json for performance (called frequently in serialization)
+local string_format = string.format
+-- Cache helpers functions for performance (called frequently in serialization)
 local table_to_json = helpers.table_to_json
+local write_file = helpers.write_file
 
 local utils = require("utils.utils")
 local Resource = require("game_state.Resource")
@@ -886,7 +888,7 @@ end
 local function phase_find_entities(state, chunk_x, chunk_y)
     local start_tick = game.tick
     if DEBUG then
-        game.print(string.format("[PERF] FIND_ENTITIES START: chunk (%d,%d) at tick %d", chunk_x, chunk_y, start_tick))
+        game.print(string_format("[PERF] FIND_ENTITIES START: chunk (%d,%d) at tick %d", chunk_x, chunk_y, start_tick))
     end
     
     local surface = game.surfaces[1]
@@ -907,11 +909,11 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     
     -- Gather all data using Resource module (this does the find_entities_filtered calls)
     if DEBUG then
-        game.print(string.format("[PERF]   Calling Resource.gather_resources_for_chunk..."))
+        game.print("[PERF]   Calling Resource.gather_resources_for_chunk...")
     end
     local gathered = Resource.gather_resources_for_chunk(chunk)
     if DEBUG then
-        game.print(string.format("[PERF]   Resources gathered: resources=%d, trees=%d, rocks=%d, water=%d",
+        game.print(string_format("[PERF]   Resources gathered: resources=%d, trees=%d, rocks=%d, water=%d",
             #gathered.resources, #gathered.trees, #gathered.rocks, #gathered.water))
     end
     
@@ -919,14 +921,14 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     -- PERFORMANCE: count first, then find only if count > 0
     local player_entities = {}
     if DEBUG then
-        game.print(string.format("[PERF]   Counting player entities..."))
+        game.print("[PERF]   Counting player entities...")
     end
     local entity_count = surface.count_entities_filtered {
         area = chunk_area,
         force = "player",
     }
     if DEBUG then
-        game.print(string.format("[PERF]   Player entity count: %d", entity_count))
+        game.print(string_format("[PERF]   Player entity count: %d", entity_count))
     end
     if entity_count > 0 then
         local all_entities = surface.find_entities_filtered {
@@ -934,13 +936,16 @@ local function phase_find_entities(state, chunk_x, chunk_y)
             force = "player",
         }
         -- Filter out ghosts and character entities from player entities (in Lua, not C++)
-        for _, entity in ipairs(all_entities) do
+        -- Use numeric for loop for hot path performance
+        local all_entities_count = #all_entities
+        for i = 1, all_entities_count do
+            local entity = all_entities[i]
             if entity and entity.valid and entity.type ~= "entity-ghost" and entity.type ~= "character" then
-                table.insert(player_entities, entity)
+                player_entities[#player_entities + 1] = entity
             end
         end
         if DEBUG then
-            game.print(string.format("[PERF]   Player entities after filtering: %d", #player_entities))
+            game.print(string_format("[PERF]   Player entities after filtering: %d", #player_entities))
         end
     end
     
@@ -948,14 +953,14 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     -- PERFORMANCE: count first, then find only if count > 0
     local ghosts = {}
     if DEBUG then
-        game.print(string.format("[PERF]   Counting ghosts..."))
+        game.print("[PERF]   Counting ghosts...")
     end
     local ghost_count = surface.count_entities_filtered {
         area = chunk_area,
         type = "entity-ghost",
     }
     if DEBUG then
-        game.print(string.format("[PERF]   Ghost count: %d", ghost_count))
+        game.print(string_format("[PERF]   Ghost count: %d", ghost_count))
     end
     if ghost_count > 0 then
         ghosts = surface.find_entities_filtered {
@@ -979,10 +984,10 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
     if DEBUG then
         local duration = end_tick - start_tick
-        game.print(string.format("[PERF] FIND_ENTITIES COMPLETE: chunk (%d,%d) - took %d ticks, found %d items (res=%d, water=%d, trees=%d, rocks=%d, entities=%d, ghosts=%d)", 
+        game.print(string_format("[PERF] FIND_ENTITIES COMPLETE: chunk (%d,%d) - took %d ticks, found %d items (res=%d, water=%d, trees=%d, rocks=%d, entities=%d, ghosts=%d)", 
             chunk_x, chunk_y, duration, total, #gathered.resources, #gathered.water, #gathered.trees, #gathered.rocks, #player_entities, #ghosts))
         if duration > 0 then
-            game.print(string.format("[PERF] ⚠️  WARNING: FIND_ENTITIES took %d ticks - this should complete in 1 tick!", duration))
+            game.print(string_format("[PERF] ⚠️  WARNING: FIND_ENTITIES took %d ticks - this should complete in 1 tick!", duration))
         end
     end
     
@@ -1002,8 +1007,7 @@ local function phase_find_entities(state, chunk_x, chunk_y)
     -- No UDP notification needed - only COMPLETE state matters for external systems
     
     if DEBUG and game and game.print then
-        local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
-        game.print(string.format("[snapshot] FIND_ENTITIES complete for chunk (%d, %d): %d items to serialize (%d ghosts)",
+        game.print(string_format("[snapshot] FIND_ENTITIES complete for chunk (%d, %d): %d items to serialize (%d ghosts)",
             chunk_x, chunk_y, total, #ghosts))
     end
 end
@@ -1022,27 +1026,44 @@ local function phase_serialize(state)
     local chunk_x = state.chunk_x
     local chunk_y = state.chunk_y
     
+    -- Cache gathered arrays locally to avoid repeated table lookups in hot loops
+    local gathered_resources = gathered.resources
+    local gathered_water = gathered.water
+    local gathered_trees = gathered.trees
+    local gathered_rocks = gathered.rocks
+    local gathered_player_entities = gathered.player_entities
+    local gathered_ghosts = gathered.ghosts
+    
+    -- Cache serialized arrays locally for hot loops
+    local serialized_resources_json = serialized.resources_json
+    local serialized_water_json = serialized.water_json
+    local serialized_entities_json = serialized.entities_json
+    local serialized_player_entity_data = serialized.player_entity_data
+    local serialized_ghosts_json = serialized.ghosts_json
+    
+    -- Calculate total items to serialize (cache lengths for repeated use)
+    local total_resources = #gathered_resources
+    local total_water = #gathered_water
+    local total_trees = #gathered_trees
+    local total_rocks = #gathered_rocks
+    local total_player = #gathered_player_entities
+    local total_ghosts = (gathered_ghosts and #gathered_ghosts) or 0
+    local total_trees_rocks = total_trees + total_rocks
+    
     if DEBUG and idx == 1 then
-        local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #gathered.player_entities + (#gathered.ghosts or 0)
-        game.print(string.format("[PERF] SERIALIZE START: tick %d, total=%d items, budget=%d/tick", 
+        local total = total_resources + total_water + total_trees + total_rocks + total_player + total_ghosts
+        game.print(string_format("[PERF] SERIALIZE START: tick %d, total=%d items, budget=%d/tick", 
             start_tick, total, budget))
     end
     
-    -- Calculate total items to serialize
-    local total_resources = #gathered.resources
-    local total_water = #gathered.water
-    local total_trees = #gathered.trees
-    local total_rocks = #gathered.rocks
-    local total_player = #gathered.player_entities
-    local total_ghosts = (gathered.ghosts and #gathered.ghosts) or 0
-    local total_trees_rocks = total_trees + total_rocks
-    
     -- Serialize resources (tiles.jsonl)
-    while idx <= total_resources and processed < budget do
-        local resource = gathered.resources[idx]
+    -- Use numeric for loop with direct indexing for hot path
+    local resource_end = total_resources
+    while idx <= resource_end and processed < budget do
+        local resource = gathered_resources[idx]
         local json_str = table_to_json(resource)
         if json_str then
-            table_insert(serialized.resources_json, json_str)
+            serialized_resources_json[#serialized_resources_json + 1] = json_str
         else
             serialization_failures = serialization_failures + 1
         end
@@ -1052,13 +1073,14 @@ local function phase_serialize(state)
     
     -- Serialize water tiles (water-tiles.jsonl)
     local water_start = total_resources + 1
+    local water_end = total_resources + total_water
     local water_offset = total_resources  -- Pre-calculate offset for performance
-    while idx >= water_start and idx < water_start + total_water and processed < budget do
+    while idx >= water_start and idx <= water_end and processed < budget do
         local water_idx = idx - water_offset
-        local water = gathered.water[water_idx]
+        local water = gathered_water[water_idx]
         local json_str = table_to_json(water)
         if json_str then
-            table_insert(serialized.water_json, json_str)
+            serialized_water_json[#serialized_water_json + 1] = json_str
         else
             serialization_failures = serialization_failures + 1
         end
@@ -1067,20 +1089,21 @@ local function phase_serialize(state)
     end
     
     -- Serialize trees and rocks (entities.jsonl)
-    local entities_start = water_start + total_water
+    local entities_start = water_end + 1
+    local entities_end = water_end + total_trees_rocks
     local entities_offset = total_resources + total_water  -- Pre-calculate offset for performance
-    while idx >= entities_start and idx < entities_start + total_trees_rocks and processed < budget do
+    while idx >= entities_start and idx <= entities_end and processed < budget do
         local entity_idx = idx - entities_offset
         local entity_data
         if entity_idx <= total_trees then
-            entity_data = gathered.trees[entity_idx]
+            entity_data = gathered_trees[entity_idx]
         else
-            entity_data = gathered.rocks[entity_idx - total_trees]
+            entity_data = gathered_rocks[entity_idx - total_trees]
         end
         if entity_data then
             local json_str = table_to_json(entity_data)
             if json_str then
-                table_insert(serialized.entities_json, json_str)
+                serialized_entities_json[#serialized_entities_json + 1] = json_str
             else
                 serialization_failures = serialization_failures + 1
             end
@@ -1095,19 +1118,20 @@ local function phase_serialize(state)
         label = "pre-existing",
         placed_tick = nil,  -- Unknown when pre-existing entities were placed
     }
-    local player_start = entities_start + total_trees_rocks
+    local player_start = entities_end + 1
+    local player_end = entities_end + total_player
     local player_offset = entities_offset + total_trees_rocks  -- Pre-calculate offset for performance
-    while idx >= player_start and idx < player_start + total_player and processed < budget do
+    while idx >= player_start and idx <= player_end and processed < budget do
         local player_idx = idx - player_offset
-        local entity = gathered.player_entities[player_idx]
+        local entity = gathered_player_entities[player_idx]
         if entity and entity.valid then
             -- Use serialize module's serialization with pre-existing builder info
             local entity_data = serialize.serialize_entity(entity, pre_existing_builder_info)
             if entity_data then
-                table_insert(serialized.player_entity_data, {
+                serialized_player_entity_data[#serialized_player_entity_data + 1] = {
                     entity = entity,
                     data = entity_data,
-                })
+                }
             end
         end
         idx = idx + 1
@@ -1116,11 +1140,12 @@ local function phase_serialize(state)
     
     -- Serialize ghosts (for chunk-wise ghosts-init.jsonl)
     -- For initial chunk snapshot, ghosts are pre-existing (not placed by agent or player during this session)
-    local ghosts_start = player_start + total_player
+    local ghosts_start = player_end + 1
+    local ghosts_end = player_end + total_ghosts
     local ghosts_offset = player_offset + total_player  -- Pre-calculate offset for performance
-    while idx >= ghosts_start and idx < ghosts_start + total_ghosts and processed < budget do
+    while idx >= ghosts_start and idx <= ghosts_end and processed < budget do
         local ghost_idx = idx - ghosts_offset
-        local ghost = (gathered.ghosts and gathered.ghosts[ghost_idx]) or nil
+        local ghost = gathered_ghosts and gathered_ghosts[ghost_idx]
         if ghost and ghost.valid then
             -- Use serialize module's ghost serialization with pre-existing label
             local ghost_data = serialize.serialize_ghost(ghost, pre_existing_builder_info)
@@ -1129,7 +1154,7 @@ local function phase_serialize(state)
                 ghost_data.chunk = { x = chunk_x, y = chunk_y }
                 local json_str = table_to_json(ghost_data)
                 if json_str then
-                    table_insert(serialized.ghosts_json, json_str)
+                    serialized_ghosts_json[#serialized_ghosts_json + 1] = json_str
                 else
                     serialization_failures = serialization_failures + 1
                 end
@@ -1145,10 +1170,10 @@ local function phase_serialize(state)
     if DEBUG and processed > 0 then
         local end_tick = game.tick
         local duration = end_tick - start_tick
-        game.print(string.format("[PERF] SERIALIZE tick %d: processed %d items (%d failures), took %d ticks",
+        game.print(string_format("[PERF] SERIALIZE tick %d: processed %d items (%d failures), took %d ticks",
             end_tick, processed, serialization_failures, duration))
         if duration > 0 then
-            game.print(string.format("[PERF] ⚠️  WARNING: SERIALIZE took %d ticks for %d items - should be 1 tick!", duration, processed))
+            game.print(string_format("[PERF] ⚠️  WARNING: SERIALIZE took %d ticks for %d items - should be 1 tick!", duration, processed))
         end
     end
     
@@ -1158,88 +1183,89 @@ local function phase_serialize(state)
         -- Build write queue - NEW APPROACH: single JSONL files per category
         state.write_queue = {}
         state.write_index = 1
-        -- chunk_x and chunk_y already cached at function start
-
-        -- if not serialized then
-        --     return
-        -- end
+        local write_queue = state.write_queue  -- Cache for repeated insertions
         
         -- Queue resources-init.jsonl write (ore tiles)
-        if #serialized.resources_json > 0 then
-            local content = table_concat(serialized.resources_json, "\n") .. "\n"
+        if #serialized_resources_json > 0 then
+            local content = table_concat(serialized_resources_json, "\n") .. "\n"
             local path = snapshot.resources_init_path(chunk_x, chunk_y)
-            table_insert(state.write_queue, {
+            write_queue[#write_queue + 1] = {
                 path = path,
                 content = content,
                 file_type = "resource",
                 event_type = "file_created",
-            })
+            }
         end
         
         -- Queue water-init.jsonl write
-        if #serialized.water_json > 0 then
-            local content = table_concat(serialized.water_json, "\n") .. "\n"
+        if #serialized_water_json > 0 then
+            local content = table_concat(serialized_water_json, "\n") .. "\n"
             local path = snapshot.water_init_path(chunk_x, chunk_y)
-            table_insert(state.write_queue, {
+            write_queue[#write_queue + 1] = {
                 path = path,
                 content = content,
                 file_type = "water",
                 event_type = "file_created",
-            })
+            }
         end
         
         -- Queue trees_rocks-init.jsonl write (trees + rocks)
-        if #serialized.entities_json > 0 then
-            local content = table_concat(serialized.entities_json, "\n") .. "\n"
+        if #serialized_entities_json > 0 then
+            local content = table_concat(serialized_entities_json, "\n") .. "\n"
             local path = snapshot.trees_rocks_init_path(chunk_x, chunk_y)
-            table_insert(state.write_queue, {
+            write_queue[#write_queue + 1] = {
                 path = path,
                 content = content,
                 file_type = "trees_rocks",
                 event_type = "file_created",
-            })
+            }
         end
         
         -- NEW: Queue single entities-init.jsonl for ALL player entities
         -- Instead of individual files per entity, we write one JSONL file
-        if #serialized.player_entity_data > 0 then
+        local player_entity_count = #serialized_player_entity_data
+        if player_entity_count > 0 then
             local entity_json_lines = {}
-            for _, item in ipairs(serialized.player_entity_data) do
+            -- Use numeric for loop for hot path
+            for i = 1, player_entity_count do
+                local item = serialized_player_entity_data[i]
                 local entity_data = item.data
                 if entity_data then
                     local json_str = table_to_json(entity_data)
                     if json_str then
-                        table_insert(entity_json_lines, json_str)
+                        entity_json_lines[#entity_json_lines + 1] = json_str
                     end
                 end
             end
             
-            if #entity_json_lines > 0 then
+            local entity_json_count = #entity_json_lines
+            if entity_json_count > 0 then
                 local content = table_concat(entity_json_lines, "\n") .. "\n"
                 local path = snapshot.entities_init_path(chunk_x, chunk_y)
-                table_insert(state.write_queue, {
+                write_queue[#write_queue + 1] = {
                     path = path,
                     content = content,
                     file_type = "entities_init",
                     event_type = "file_created",
-                    entity_count = #entity_json_lines,
-                })
+                    entity_count = entity_json_count,
+                }
             end
         end
         
         -- Queue ghosts for chunk-wise ghosts-init.jsonl
-        if #serialized.ghosts_json > 0 then
-            local content = table_concat(serialized.ghosts_json, "\n") .. "\n"
+        local ghosts_json_count = #serialized_ghosts_json
+        if ghosts_json_count > 0 then
+            local content = table_concat(serialized_ghosts_json, "\n") .. "\n"
             local path = snapshot.ghosts_init_path(chunk_x, chunk_y)
-            table_insert(state.write_queue, {
+            write_queue[#write_queue + 1] = {
                 path = path,
                 content = content,
                 file_type = "ghosts_init",
                 event_type = "file_created",
                 append = false,  -- Chunk-wise file, not append mode
-                ghost_count = #serialized.ghosts_json,
+                ghost_count = ghosts_json_count,
                 chunk = { x = chunk_x, y = chunk_y },
-            })
+            }
         end
         
         -- Transition to WRITE phase
@@ -1248,11 +1274,11 @@ local function phase_serialize(state)
         -- No UDP notification needed - only COMPLETE state matters for external systems
         
         if DEBUG then
-            game.print(string.format("[DEBUG Map.phase_serialize] Tick %d: SERIALIZE complete for chunk (%d, %d): %d files queued (%d entities)",
-                game.tick, chunk_x, chunk_y, #state.write_queue, #serialized.player_entity_data))
+            game.print(string_format("[DEBUG Map.phase_serialize] Tick %d: SERIALIZE complete for chunk (%d, %d): %d files queued (%d entities)",
+                game.tick, chunk_x, chunk_y, #write_queue, player_entity_count))
         end
     elseif DEBUG and processed > 0 then
-        game.print(string.format("[DEBUG Map.phase_serialize] Tick %d: Serialized %d items, index now %d", 
+        game.print(string_format("[DEBUG Map.phase_serialize] Tick %d: Serialized %d items, index now %d", 
             game.tick, processed, idx))
     end
 end
@@ -1267,25 +1293,33 @@ local function phase_write(state)
     local chunk_y = state.chunk_y
     local write_failures = 0
     
-    if DEBUG and state.write_index == 1 then
-        game.print(string.format("[PERF] WRITE START: tick %d, chunk (%d,%d), %d files queued, budget=%d writes/tick", 
-            start_tick, chunk_x, chunk_y, #state.write_queue, budget))
+    -- Cache write_queue locally for hot loop
+    local write_queue = state.write_queue
+    local write_queue_len = #write_queue
+    local write_index = state.write_index
+    
+    if DEBUG and write_index == 1 then
+        game.print(string_format("[PERF] WRITE START: tick %d, chunk (%d,%d), %d files queued, budget=%d writes/tick", 
+            start_tick, chunk_x, chunk_y, write_queue_len, budget))
     end
     
-    while state.write_index <= #state.write_queue and processed < budget do
-        local item = state.write_queue[state.write_index]
+    -- Pre-create chunk table once for UDP notifications (avoid repeated allocation)
+    local chunk = { x = chunk_x, y = chunk_y }
+    
+    while write_index <= write_queue_len and processed < budget do
+        local item = write_queue[write_index]
         
         -- Write file (use append mode for ghosts-init.jsonl)
         -- Disk I/O is BLOCKING and expensive - each write can take 0.1-1ms depending on disk speed
         local append_mode = item.append == true
         
         -- Write to disk (return value logged but not used for control flow)
-        local ok = helpers.write_file(item.path, item.content, append_mode)
+        local ok = write_file(item.path, item.content, append_mode)
         
         if not ok then
             write_failures = write_failures + 1
             if DEBUG and game and game.print then
-                game.print(string.format("[snapshot] WARNING: Failed to write file: %s", item.path))
+                game.print(string_format("[snapshot] WARNING: Failed to write file: %s", item.path))
             end
         end
         
@@ -1295,39 +1329,42 @@ local function phase_write(state)
         -- Individual init file writes (resources, water, trees_rocks) don't need notifications because:
         -- 1. Bootstrapping waits for COMPLETE state, then loads all init files at once
         -- 2. Updates use entity_operation events (append-only log), not init file writes
-        local chunk = { x = chunk_x, y = chunk_y }
+        local file_type = item.file_type
         
         -- For entities_init, send chunk_init_complete notification (useful for knowing when entity data is ready)
-        if item.file_type == "entities_init" then
+        if file_type == "entities_init" then
             local payload = udp_payloads.chunk_init_complete(chunk, item.entity_count or 0)
             udp_payloads.send_event(payload)
-        elseif item.file_type == "ghosts_init" then
+        elseif file_type == "ghosts_init" then
             -- Ghosts written to chunk-wise file
             if DEBUG and game and game.print then
-                game.print(string.format("[snapshot] Wrote %d ghosts to chunk (%d, %d) ghosts-init.jsonl",
+                game.print(string_format("[snapshot] Wrote %d ghosts to chunk (%d, %d) ghosts-init.jsonl",
                     item.ghost_count or 0, chunk_x, chunk_y))
             end
         end
         -- Other init files (resources, water, trees_rocks) - no notification needed
         
-        state.write_index = state.write_index + 1
+        write_index = write_index + 1
         processed = processed + 1
     end
+    
+    -- Update state with new write_index
+    state.write_index = write_index
     
     -- Log performance metrics for this tick
     if DEBUG and processed > 0 then
         local end_tick = game.tick
         local duration = end_tick - start_tick
-        local remaining = #state.write_queue - state.write_index + 1
-        game.print(string.format("[PERF] WRITE tick %d: wrote %d files (%d failures), %d remaining, took %d ticks",
+        local remaining = write_queue_len - write_index + 1
+        game.print(string_format("[PERF] WRITE tick %d: wrote %d files (%d failures), %d remaining, took %d ticks",
             end_tick, processed, write_failures, remaining, duration))
         if duration > 0 then
-            game.print(string.format("[PERF] ⚠️  WARNING: WRITE took %d ticks for %d files - disk I/O is blocking!", duration, processed))
+            game.print(string_format("[PERF] ⚠️  WARNING: WRITE took %d ticks for %d files - disk I/O is blocking!", duration, processed))
         end
     end
     
     -- Check if all writes are complete
-    if state.write_index > #state.write_queue then
+    if write_index > write_queue_len then
         -- Clear memory IMMEDIATELY before transitioning to COMPLETE
         -- This prevents memory accumulation during large snapshotting operations
         state.gathered = nil
@@ -1340,14 +1377,13 @@ local function phase_write(state)
         state.phase = SnapshotPhase.COMPLETE
         
         -- Send snapshot state payload
-        local chunk = { x = chunk_x, y = chunk_y }
         local progress = {
-            files_written = #state.write_queue,
+            files_written = write_queue_len,
         }
         send_snapshot_state_payload(udp_payloads.SNAPSHOT_STATE.COMPLETE, chunk, progress)
         
         if DEBUG and game and game.print then
-            game.print(string.format("[snapshot] WRITE complete for chunk (%d, %d)", chunk_x, chunk_y))
+            game.print(string_format("[snapshot] WRITE complete for chunk (%d, %d)", chunk_x, chunk_y))
         end
     end
 end
@@ -1361,7 +1397,7 @@ local function phase_complete(state)
     local gathered = state.gathered
     
     if DEBUG then
-        game.print(string.format("[DEBUG Map.phase_complete] Tick %d: Completing chunk (%d,%d)", 
+        game.print(string_format("[DEBUG Map.phase_complete] Tick %d: Completing chunk (%d,%d)", 
             game.tick, chunk_x, chunk_y))
     end
     
@@ -1369,11 +1405,16 @@ local function phase_complete(state)
     if gathered then
         -- Track resources
         local tracked_resources = {}
-        for _, resource_data in ipairs(gathered.resources or {}) do
+        local gathered_resources = gathered.resources
+        if gathered_resources then
+            local resources_count = #gathered_resources
+            for i = 1, resources_count do
+                local resource_data = gathered_resources[i]
             local tracker_name = map_resource_name(resource_data.kind)
             if tracker_name and not tracked_resources[tracker_name] then
                 tracker:mark_chunk_has("resource", tracker_name, chunk_x, chunk_y)
                 tracked_resources[tracker_name] = true
+                end
             end
         end
         
@@ -1406,7 +1447,7 @@ local function phase_complete(state)
     sys_state.stats.chunks_snapshotted = sys_state.stats.chunks_snapshotted + 1
     
     if DEBUG and game and game.print then
-        game.print(string.format("[snapshot] COMPLETE: Chunk (%d, %d) fully snapshotted (total: %d, pending: %d)", 
+        game.print(string_format("[snapshot] COMPLETE: Chunk (%d, %d) fully snapshotted (total: %d, pending: %d)", 
             chunk_x, chunk_y, sys_state.stats.chunks_snapshotted, sys_state.stats.chunks_pending))
     end
     

@@ -10,6 +10,11 @@
 -- Module-level local references for performance optimization
 local pairs = pairs
 local ipairs = ipairs
+local table_insert = table.insert
+local math_floor = math.floor
+local string_format = string.format
+-- Cache helpers functions for performance
+local table_to_json = helpers.table_to_json
 
 -- EntityInterface is from fv_embodied_agent mod (dependency)
 local EntityInterface = require("__fv_embodied_agent__.game_state.EntityInterface")
@@ -170,15 +175,22 @@ function M.collect_all_statuses_for_dump(charted_chunks)
     local surface = game.surfaces[1]
     local status_records = {}
     
-    for _, chunk in ipairs(charted_chunks) do
+    -- Cache ENTITY_NAME_ENUM locally for hot loop
+    local entity_name_enum = ENTITY_NAME_ENUM
+    local chunks_count = #charted_chunks
+    
+    for i = 1, chunks_count do
+        local chunk = charted_chunks[i]
+        local chunk_x = chunk.x
+        local chunk_y = chunk.y
         local chunk_area = {
             left_top = {
-                x = chunk.x * 32,
-                y = chunk.y * 32
+                x = chunk_x * 32,
+                y = chunk_y * 32
             },
             right_bottom = {
-                x = (chunk.x + 1) * 32,
-                y = (chunk.y + 1) * 32
+                x = (chunk_x + 1) * 32,
+                y = (chunk_y + 1) * 32
             }
         }
         
@@ -194,31 +206,34 @@ function M.collect_all_statuses_for_dump(charted_chunks)
             force = "player",
         }
         
-        for _, entity in ipairs(entities) do
+        -- Use numeric for loop for hot path
+        local entities_count = #entities
+        for j = 1, entities_count do
+            local entity = entities[j]
             if entity and entity.valid and entity.status then
                 -- Only track entities in our enum
-                if not is_trackable_entity(entity.name) then
-                    goto next_entity
-                end
-                
-                local entity_enum = ENTITY_NAME_ENUM[entity.name]
+                local entity_name = entity.name
+                local entity_enum = entity_name_enum[entity_name]
+                if entity_enum then
                 local status_enum = entity.status  -- Already a number from defines.entity_status
-                local pos_x = entity.position.x
-                local pos_y = entity.position.y
+                    local position = entity.position
+                    local pos_x = position.x
+                    local pos_y = position.y
                 
                 -- Convert position to integer (multiply by 2 since x%0.5 == 0 and y%0.5 == 0)
-                local pos_x_int = math.floor(pos_x * 2)
-                local pos_y_int = math.floor(pos_y * 2)
+                    local pos_x_int = math_floor(pos_x * 2)
+                    local pos_y_int = math_floor(pos_y * 2)
                 
                 -- Format: [entity_enum, status_enum, x, y]
-                table.insert(status_records, {
+                    -- Use direct array indexing for performance
+                    status_records[#status_records + 1] = {
                     entity_enum,
                     status_enum,
                     pos_x_int,
                     pos_y_int
-                })
+                    }
             end
-            ::next_entity::
+            end
         end
         ::continue::
     end
@@ -231,20 +246,24 @@ end
 function M.dump_status_to_disk(charted_chunks)
     local status_records = M.collect_all_statuses_for_dump(charted_chunks)
     
-    if #status_records == 0 then
+    local records_count = #status_records
+    if records_count == 0 then
         return
     end
     
     -- Build JSONL content: one JSON array per line [entity_enum, status_enum, x, y]
     local jsonl_lines = {}
-    for _, record in ipairs(status_records) do
-        local json_str = helpers.table_to_json(record)
+    -- Use numeric for loop for hot path
+    for i = 1, records_count do
+        local record = status_records[i]
+        local json_str = table_to_json(record)
         if json_str then
-            table.insert(jsonl_lines, json_str)
+            jsonl_lines[#jsonl_lines + 1] = json_str
         end
     end
     
-    if #jsonl_lines == 0 then
+    local lines_count = #jsonl_lines
+    if lines_count == 0 then
         return
     end
     
@@ -263,7 +282,7 @@ function M.dump_status_to_disk(charted_chunks)
     -- External systems are responsible for reading and managing their own memory
     
     if M.DEBUG and game and game.print then
-        game.print(string.format("[status_dump] Wrote status dump: %s (%d entities)", file_path, #status_records))
+        game.print(string_format("[status_dump] Wrote status dump: %s (%d entities)", file_path, records_count))
     end
 end
 
