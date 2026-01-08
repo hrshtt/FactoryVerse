@@ -263,22 +263,34 @@ def cmd_start(args):
     compose_mgr.write_compose()
     compose_mgr.up()
 
+    # Configure snapshot ports for each server (after they start)
+    from FactoryVerse.utils.port_config import configure_all_server_snapshot_ports
+    configure_all_server_snapshot_ports(args.num, config)
+
     # Calculate effective max_agents for display
     effective_max_agents = (
         args.max_agents if args.max_agents is not None else config.max_agents
     )
 
     # Print server info
+    print("\n🌐 Server Information:")
     for i in range(args.num):
         rcon_port = config.get_rcon_port(f"server_{i}")
         game_port = config.get_game_port(i)
-        print(f"  Server {i}: Game=localhost:{game_port}, RCON=localhost:{rcon_port}")
-    print("\n📊 UDP Ports:")
-    print(
-        f"  Agent ports: {config.agent_port_base}-{config.agent_port_base + effective_max_agents - 1}"
-    )
-    print(f"  Snapshot port: {config.snapshot_port}")
-    print("📓 Jupyter: http://localhost:8888")
+        snapshot_port = config.get_snapshot_port(f"server_{i}")
+        agent_range = config.get_agent_port_range(server_index=i)
+        
+        print(f"  Server {i}:")
+        print(f"    Game Port: localhost:{game_port}")
+        print(f"    RCON Port: localhost:{rcon_port}")
+        print(f"    Snapshot Port: {snapshot_port}")
+        print(f"    Agent Ports: {agent_range[0]}-{agent_range[-1]}")
+    
+    print("\n📊 Client Ports:")
+    print(f"  Snapshot Port: {config.client_snapshot_port}")
+    agent_range_client = config.get_agent_port_range(server_index=None)
+    print(f"  Agent Ports: {agent_range_client[0]}-{agent_range_client[-1]}")
+    print("\n📓 Jupyter: http://localhost:8888")
 
     # Track experiment
     if args.name:

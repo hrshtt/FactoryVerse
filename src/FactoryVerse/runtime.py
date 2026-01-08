@@ -9,7 +9,7 @@ Usage in boilerplate:
     runtime = create_runtime(
         rcon_client=rcon_client,
         agent_id="agent_1",
-        udp_port=34202,
+        udp_port=None,  # Auto-allocates via dynamic port discovery
     )
     await runtime.start()
 
@@ -352,7 +352,7 @@ def create_runtime(
         from FactoryVerse.runtime import create_runtime
 
         rcon = RCONClient("localhost", 27015, "password")
-        runtime = create_runtime(rcon, "agent_1", udp_port=34202)
+        runtime = create_runtime(rcon, "agent_1")  # udp_port auto-allocated
         await runtime.start()
 
         # Now use the runtime
