@@ -1,6 +1,11 @@
 """Entity placement action implementation with dataclass response types.
 
 Handles all entity placement operations: place entities, remove ghosts.
+
+Ghost Tracking:
+    Ghost entities are tracked by the fv_snapshot mod and stored in DuckDB.
+    When placing ghosts with a label, the label is passed to RCON and stored
+    in the ghost table. Query ghosts via remote_view.get_ghosts(sql).
 """
 
 from dataclasses import dataclass
@@ -12,7 +17,6 @@ from FactoryVerse.agent.models import ActionResponse
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
-    from ..ghost.manager import GhostManager
     from FactoryVerse.factory.item.base import PlaceableItemName
 
 logger = logging.getLogger(__name__)
@@ -81,21 +85,19 @@ class PlacementAction:
     - remove_ghost(): Remove a ghost entity
 
     All methods return structured dataclass response types for type safety.
+    
+    Ghost Tracking:
+        Ghosts are tracked by fv_snapshot mod → DuckDB ghost table.
+        No in-memory tracking needed. Query via remote_view.get_ghosts(sql).
     """
 
-    def __init__(
-        self,
-        rcon_handler: "RconHandler",
-        ghost_manager: Optional["GhostManager"] = None,
-    ):
+    def __init__(self, rcon_handler: "RconHandler"):
         """Initialize placement action.
 
         Args:
             rcon_handler: RCON handler for command execution
-            ghost_manager: Optional ghost manager for tracking placed ghosts
         """
         self._rcon = rcon_handler
-        self._ghost_manager = ghost_manager
 
     def place(
         self,
@@ -112,49 +114,27 @@ class PlacementAction:
             position: MapPosition or dict with x, y coordinates
             direction: Optional direction for placement
             ghost: Whether to place as ghost entity (default: False)
-            label: Optional label for ghost entities (Python-only, for grouping)
+            label: Optional label for tracking/grouping placed entities
 
         Returns:
             EntityPlaced response with placement result and metadata
 
         Raises:
             RuntimeError: If RCON command fails
+        
+        Note:
+            Entity tracking is handled by fv_snapshot mod. The label is passed
+            to RCON and stored in the snapshot. Query entities by label via:
+            - Entities: remote_view.get_entities("SELECT * FROM map_entity WHERE label = 'my_label'")
+            - Ghosts: remote_view.get_ghosts("SELECT * FROM ghost WHERE label = 'my_label'")
         """
         # Build and execute RCON command
+        # Pass label to RCON for ghost tracking in fv_snapshot
         cmd = self._rcon.build_command(
-            "place_entity", entity_name, position, direction, ghost
+            "place_entity", entity_name, position, direction, ghost, label
         )
         response_dict = self._rcon.execute_and_parse_json(cmd)
-        result = EntityPlaced.from_dict(response_dict)
-
-        # Track ghost if placed and ghost manager available
-        if ghost and result.success and self._ghost_manager:
-            pos = result.position or (
-                position
-                if isinstance(position, dict)
-                else {"x": position.x, "y": position.y}
-            )
-            self._ghost_manager.add_ghost(
-                position=pos,
-                entity_name=entity_name,
-                label=label,
-                placed_tick=result.tick,
-            )
-        elif not ghost and result.success and self._ghost_manager:
-            # If placing a real entity, check if we're replacing a tracked ghost
-            pos_dict = (
-                position
-                if isinstance(position, dict)
-                else {"x": position.x, "y": position.y}
-            )
-            if self._ghost_manager.remove_ghost(
-                position=pos_dict, entity_name=entity_name
-            ):
-                logger.info(
-                    f"Ghost at {pos_dict} for {entity_name} replaced by real entity."
-                )
-
-        return result
+        return EntityPlaced.from_dict(response_dict)
 
     def remove_ghost(
         self, entity_name: str, position: Union[Dict[str, float], MapPosition]
@@ -170,6 +150,10 @@ class PlacementAction:
 
         Raises:
             RuntimeError: If RCON command fails
+        
+        Note:
+            Ghost removal is tracked by fv_snapshot mod. The ghost table
+            is automatically updated when ghosts are destroyed.
         """
         # Convert MapPosition to dict if needed
         if hasattr(position, "x") and hasattr(position, "y"):
@@ -180,10 +164,4 @@ class PlacementAction:
         # Build and execute RCON command
         cmd = self._rcon.build_command("remove_ghost", entity_name, pos_dict)
         response_dict = self._rcon.execute_and_parse_json(cmd)
-        result = GhostRemoved.from_dict(response_dict)
-
-        # Remove from tracking if successful and ghost manager available
-        if result.success and self._ghost_manager:
-            self._ghost_manager.remove_ghost(position=pos_dict, entity_name=entity_name)
-
-        return result
+        return GhostRemoved.from_dict(response_dict)

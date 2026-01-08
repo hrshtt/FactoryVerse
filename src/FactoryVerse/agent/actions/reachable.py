@@ -15,7 +15,6 @@ from FactoryVerse.factory.types import MapPosition
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
-    from FactoryVerse.factory.entity.views import Reachable
     from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 
@@ -90,7 +89,7 @@ class ReachableEntities:
         entity_name: str,
         position: Optional[MapPosition] = None,
         options: Optional[Dict[str, Any]] = None,
-    ) -> Optional["Reachable[BaseEntity]"]:
+    ) -> Optional["BaseEntity"]:
         """Get a single entity matching criteria.
 
         Always fetches fresh data from the game - no caching.
@@ -108,7 +107,7 @@ class ReachableEntities:
                 - ghosts_only: bool - only return ghost entities (default: False)
 
         Returns:
-            First matching Reachable[BaseEntity] instance, or None if not found
+            First matching BaseEntity instance with REACHABLE view, or None if not found
         """
         options = options or {}
         include_ghosts = options.get("include_ghosts", True)
@@ -171,7 +170,7 @@ class ReachableEntities:
         self,
         entity_name: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
-    ) -> List["Reachable[BaseEntity]"]:
+    ) -> List["BaseEntity"]:
         """Get entities matching criteria.
 
         Always fetches fresh data from the game - no caching.
@@ -188,7 +187,7 @@ class ReachableEntities:
                 - ghosts_only: bool - only return ghost entities (default: False)
 
         Returns:
-            List of matching Reachable[BaseEntity] instances (may be empty)
+            List of matching BaseEntity instances with REACHABLE view (may be empty)
         """
         options = options or {}
         include_ghosts = options.get("include_ghosts", True)
@@ -248,7 +247,7 @@ class ReachableEntities:
     def get_ghosts(
         self,
         entity_name: Optional[str] = None,
-    ) -> List["Reachable[BaseEntity]"]:
+    ) -> List["BaseEntity"]:
         """Get ghost entities matching criteria.
 
         Convenience method equivalent to get_entities with ghosts_only=True.
@@ -257,7 +256,7 @@ class ReachableEntities:
             entity_name: Optional entity prototype name filter
 
         Returns:
-            List of matching ghost Reachable[BaseEntity] instances
+            List of matching ghost BaseEntity instances with REACHABLE view
         """
         return self.get_entities(entity_name, options={"ghosts_only": True})
 

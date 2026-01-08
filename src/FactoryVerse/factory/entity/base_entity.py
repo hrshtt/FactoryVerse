@@ -2,10 +2,11 @@
 
 This module defines the core BaseEntity contract that all entity implementations
 must follow. BaseEntity defines WHAT an entity is through its mixins and properties,
-but does NOT define HOW to interact with it (that's the view wrapper's job).
+and HOW to interact with it through the view property that controls access.
 """
 
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Optional, Union, List, Dict, Any, TYPE_CHECKING
 from FactoryVerse.factory.types import MapPosition, Direction, EntityInspectionData
 from FactoryVerse.factory.mixins import SpatialPropertiesMixin, PrototypeMixin
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import PlaceableItem, ItemStack
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
+
+
+class EntityView(Enum):
+    REMOTE = "remote"
+    REACHABLE = "reachable"
 
 
 class EntityPosition(MapPosition):
@@ -118,16 +124,27 @@ class EntityPosition(MapPosition):
 class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
     """Abstract base class for all entity implementations.
 
-    Defines WHAT an entity is through its mixins and properties.
-    Does NOT define HOW to interact with it (that's the view wrapper's job).
+    Defines WHAT an entity is through its mixins and properties,
+    and HOW to interact with it through the view property that controls access.
 
-    **For Agents**: You won't interact with BaseEntity directly. You'll get
-    view-wrapped entities like Reachable[Furnace] or RemoteView[Assembler]
-    that control what operations are available.
+    **For Agents**: Entities are returned with appropriate view settings:
+    - Reachable entities: Full access - can mutate entity state, build/remove ghosts
+    - Remote entities: Read-only access - can inspect but not mutate, can remove ghosts
+    - Ghost entities: Limited operations (build, remove, static inspect)
 
     Ghosts are entities with is_ghost=True. They appear in entity queries
     for spatial awareness but have limited operations (build, remove, static inspect).
     """
+
+    # Blocked methods by view/ghost status
+    _REACHABLE_ONLY = frozenset({
+        "pickup", "add_fuel", "add_ingredients", "take_products",
+        "store_items", "take_items", "set_recipe", "build"
+    })
+    _GHOST_BLOCKED = frozenset({
+        "pickup", "add_fuel", "add_ingredients", "take_products",
+        "store_items", "take_items", "set_recipe"
+    })
 
     def __init__(
         self,
@@ -136,6 +153,7 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         direction: Optional[Direction] = None,
         is_ghost: bool = False,
         ghost_name: Optional[str] = None,
+        view: EntityView = EntityView.REMOTE,
         **kwargs,
     ):
         """Initialize base entity.
@@ -146,6 +164,7 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
             direction: Entity direction (if applicable)
             is_ghost: Whether this is a ghost entity (default: False)
             ghost_name: For ghosts, the entity prototype this ghost represents
+            view: Entity view type (REMOTE or REACHABLE, default: REMOTE)
             **kwargs: Additional entity-specific properties
         """
         self.name = name
@@ -153,9 +172,10 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         self.direction = direction
         self._is_ghost = is_ghost
         self._ghost_name = ghost_name
+        self._view = view
         self._prototype_cache: Optional[BasePrototype] = None
 
-        # Action dependencies (injected by view wrappers)
+        # Action dependencies (injected during entity creation)
         self._entity_ops: Optional["EntityOperationsAction"] = None
         self._place_ops: Optional["PlacementAction"] = None
 
@@ -256,11 +276,114 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         lines.append("Use .remove() to delete this ghost.")
         return "\n".join(lines)
 
+    def __getattribute__(self, name: str):
+        """Filter method access based on view and ghost status.
+        
+        Control flow makes the distinction clear:
+        1. View (REACHABLE vs REMOTE) controls proximity-based access:
+           - REMOTE entities: read-only (can inspect, can remove ghosts, cannot build/mutate)
+           - REACHABLE entities: full access (can build ghosts, can mutate)
+        2. Ghost status controls what operations make sense:
+           - Ghosts: can build/remove, cannot mutate (no live state to mutate)
+           - Real entities: can mutate (have live state)
+        
+        This means:
+        - REACHABLE ghost: can build (proximity + is ghost) ✅
+        - REMOTE ghost: cannot build (no proximity) ❌
+        - REACHABLE real entity: can mutate ✅
+        - REMOTE real entity: cannot mutate ❌
+        """
+        attr = super().__getattribute__(name)
+        
+        # Only filter callable methods (not properties or private attributes)
+        if not callable(attr) or name.startswith('_'):
+            return attr
+        
+        # Get view and ghost status (using super() to avoid recursion)
+        view = super().__getattribute__('_view')
+        is_ghost = super().__getattribute__('_is_ghost')
+        
+        # Step 1: View-based filtering (proximity check)
+        # REMOTE entities cannot perform mutations, including building ghosts
+        if view == EntityView.REMOTE and name in BaseEntity._REACHABLE_ONLY:
+            raise AttributeError(
+                f"Cannot {name}() remotely. Entity not reachable. "
+                "Use reachable_entities.get_entity() for full access."
+            )
+        
+        # Step 2: Ghost-based filtering (state check)
+        # Ghosts cannot be mutated (they have no live state), but can be built/removed if REACHABLE
+        if is_ghost and name in BaseEntity._GHOST_BLOCKED:
+            raise AttributeError(
+                f"Cannot {name}() on ghost entity. "
+                "Ghosts are placeholders - use build() first to create a real entity."
+            )
+        
+        return attr
+
+    def build(self) -> Dict[str, Any]:
+        """Build ghost into real entity. Ghost-only.
+
+        **For Agents**: Use this to commit a ghost and create a real entity.
+        Only works on ghost entities (entity.is_ghost == True).
+
+        Returns:
+            ActionResult dict with success status
+        """
+        if not self._is_ghost:
+            raise RuntimeError(
+                f"Cannot build {self.name}: not a ghost entity. "
+                "Use build() only on ghost entities."
+            )
+        
+        if self._place_ops is None:
+            raise RuntimeError(
+                f"Cannot build {self.name}: place_ops not injected. "
+                "Entity must be created with placement capabilities."
+            )
+        
+        # Use ghost_name (what entity to create) for placement
+        entity_name = self._ghost_name or self.name
+        result = self._place_ops.place(
+            entity_name,  # type: ignore
+            self.position,
+            self.direction,
+            ghost=False,
+        )
+        return {"success": result.success}  # type: ignore
+
+    def remove(self) -> bool:
+        """Remove ghost entity. Ghost-only.
+
+        **For Agents**: Use this to delete a ghost you no longer want.
+        Only works on ghost entities (entity.is_ghost == True).
+
+        Note: Ghost removal can be done remotely (no reachability required).
+
+        Returns:
+            True if successfully removed, False otherwise
+        """
+        if not self._is_ghost:
+            raise RuntimeError(
+                f"Cannot remove {self.name} via remove(): not a ghost entity. "
+                "Use pickup() to remove real entities."
+            )
+        
+        if self._place_ops is None:
+            raise RuntimeError(
+                f"Cannot remove {self.name}: place_ops not injected. "
+                "Entity must be created with placement capabilities."
+            )
+        
+        entity_name = self._ghost_name or self.name
+        result = self._place_ops.remove_ghost(entity_name, self.position)
+        return result.success
+
     def pickup(self) -> List["ItemStack"]:
         """Pick up the entity and return extracted items.
 
         **For Agents**: Use this to remove an entity and get its contents.
-        Entity must be wrapped in Reachable view for this to work.
+        Entity must be reachable for this to work.
 
         Returns:
             List of ItemStack objects representing items extracted from the entity
@@ -268,7 +391,7 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         if self._entity_ops is None:
             raise RuntimeError(
                 f"Cannot pickup {self.__class__.__name__}: entity_ops not injected. "
-                "Entity must be wrapped in Reachable view."
+                "Entity must be reachable."
             )
         result = self._entity_ops.pickup_entity(self.name, self.position)
         from FactoryVerse.factory.item.base import ItemStack
@@ -295,9 +418,9 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         pass
 
     def __repr__(self) -> str:
-        """Simple, explicit representation of the entity."""
+        """Show entity with view prefix (Reachable or Remote), with GHOST: prefix for ghosts."""
         pos = self.position
-        ghost_indicator = " [GHOST]" if self._is_ghost else ""
-        if self.direction is not None:
-            return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y}), direction={self.direction.name}){ghost_indicator}"
-        return f"{self.__class__.__name__}(name='{self.name}', position=({pos.x}, {pos.y})){ghost_indicator}"
+        prefix = self._view.value.capitalize()
+        entity_name = f"GHOST:{self.__class__.__name__}" if self._is_ghost else self.__class__.__name__
+        dir_str = f", direction={self.direction.name}" if self.direction is not None else ""
+        return f"{prefix}[{entity_name}](name='{self.name}', position=({pos.x}, {pos.y}){dir_str})"

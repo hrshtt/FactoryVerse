@@ -2,10 +2,10 @@
 
 This module handles building ghost entities by walking to them and placing
 real entities. It works with ghost entities from:
-- RemoteView queries (runtime.remote_view.get_ghosts())
+- Remote queries (runtime.remote_view.get_ghosts())
 - Reachable queries (runtime.reachable.get_ghosts())
 
-All ghost entities are now represented as RemoteView[BaseEntity] with is_ghost=True.
+All ghost entities are represented as BaseEntity with is_ghost=True.
 """
 
 from typing import List, Dict, Any, Union, TYPE_CHECKING
@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from FactoryVerse.agent.actions.walking import MovementAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
     from FactoryVerse.agent.actions.inventory import AgentInventory
-    from FactoryVerse.factory.entity.views import Reachable, RemoteView
     from FactoryVerse.factory.entity.base_entity import BaseEntity
     from FactoryVerse.factory.types import MapPosition
 
@@ -29,8 +28,8 @@ class GhostInfo:
     direction: int | None = None
 
 
-# Type alias for ghost entities (Reachable or RemoteView wrappers)
-GhostLike = Union["Reachable[BaseEntity]", "RemoteView[BaseEntity]"]
+# Type alias for ghost entities
+GhostLike = "BaseEntity"
 
 
 class GhostBuilderAction:

@@ -11,7 +11,6 @@ from FactoryVerse.factory.mixins import (
 )
 
 if TYPE_CHECKING:
-    from FactoryVerse.factory.entity.views import Reachable, RemoteView
     from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 
@@ -273,10 +272,10 @@ class PlaceableItem(SpatialPropertiesMixin, PrototypeMixin, Item):
 
     def place(
         self, position: MapPosition, direction: Optional[Direction] = Direction.NORTH
-    ) -> "Reachable[BaseEntity]":
+    ) -> "BaseEntity":
         """Place this item as an entity on the map.
 
-        Returns the created entity wrapped in a Reachable view.
+        Returns the created entity with REACHABLE view.
 
         NOTE: This method requires action injection which is not yet implemented.
         Use AgentRuntime.placement.place_entity() instead.

@@ -1,16 +1,17 @@
-"""Entity factory functions for creating view-wrapped entities.
+"""Entity factory functions for creating entities with view properties.
 
 This module provides factory functions that create entity instances with
-appropriate view wrappers (Reachable, RemoteView) and inject action
+appropriate view properties (REACHABLE, REMOTE) and inject action
 dependencies.
 
-Ghosts are now handled via the is_ghost property on BaseEntity, not a
-separate Ghost[T] wrapper. Ghost entities are created with is_ghost=True
-and ghost_name set to the entity prototype they represent.
+Ghosts are handled via the is_ghost property on BaseEntity. Ghost entities
+are created with is_ghost=True and ghost_name set to the entity prototype
+they represent.
 """
 
 from typing import Dict, Any, TYPE_CHECKING
 from FactoryVerse.factory.types import MapPosition, Direction
+from .base_entity import EntityView
 
 if TYPE_CHECKING:
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
@@ -134,12 +135,14 @@ ENTITY_CLASS_MAP: Dict[str, type] = {
 def _create_base_entity(
     entity_data: Dict[str, Any],
     is_ghost: bool = False,
+    view: EntityView = EntityView.REMOTE,
 ) -> "BaseEntity":
     """Create base entity instance from data.
 
     Args:
         entity_data: Raw entity data with 'name', 'position', 'direction', etc.
         is_ghost: Whether this is a ghost entity
+        view: Entity view type (default: REMOTE)
 
     Returns:
         BaseEntity subclass instance
@@ -177,13 +180,14 @@ def _create_base_entity(
         if k not in ["name", "position", "direction", "ghost_name", "type"]
     }
 
-    # Create entity with ghost properties
+    # Create entity with ghost properties and view
     return entity_class(
         name=entity_name,
         position=position,
         direction=direction,
         is_ghost=is_ghost,
         ghost_name=ghost_name,
+        view=view,
         **extra_keys,
     )
 
@@ -193,8 +197,8 @@ def create_reachable_entity(
     entity_ops: "EntityOperationsAction",
     place_ops: "PlacementAction",
     is_ghost: bool = False,
-):
-    """Create a Reachable view wrapper around an entity.
+) -> "BaseEntity":
+    """Create an entity with REACHABLE view.
 
     Used by: reachable_entities.get_entity(), reachable_entities.get_entities()
 
@@ -205,34 +209,36 @@ def create_reachable_entity(
         is_ghost: Whether this is a ghost entity (default: False)
 
     Returns:
-        Reachable[BaseEntity] view wrapper
+        BaseEntity instance with REACHABLE view
     """
-    from .views import Reachable
-
-    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost)
-    return Reachable(base_entity, entity_ops, place_ops)
+    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost, view=EntityView.REACHABLE)
+    base_entity._entity_ops = entity_ops
+    base_entity._place_ops = place_ops
+    return base_entity
 
 
 def create_remote_view_entity(
     entity_data: Dict[str, Any],
-    entity_ops: "EntityOperationsAction",
+    entity_ops: "EntityOperationsAction | None" = None,
     place_ops: "PlacementAction | None" = None,
     is_ghost: bool = False,
-):
-    """Create a RemoteView wrapper around an entity.
+) -> "BaseEntity":
+    """Create an entity with REMOTE view.
 
     Used by: map_db queries (entities not in reach)
 
     Args:
         entity_data: Raw entity data from game/database
-        entity_ops: Entity operations action for inspection
+        entity_ops: Optional entity operations action for inspection
         place_ops: Optional place ops for ghost removal
         is_ghost: Whether this is a ghost entity (default: False)
 
     Returns:
-        RemoteView[BaseEntity] view wrapper
+        BaseEntity instance with REMOTE view
     """
-    from .views import RemoteView
-
-    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost)
-    return RemoteView(base_entity, entity_ops, place_ops)
+    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost, view=EntityView.REMOTE)
+    if entity_ops is not None:
+        base_entity._entity_ops = entity_ops
+    if place_ops is not None:
+        base_entity._place_ops = place_ops
+    return base_entity
