@@ -19,7 +19,7 @@ def create_notebook_from_template(
     experiment_id: str,
     pg_dsn: str,
     factorio_host: str = "localhost",
-    factorio_rcon_port: int = 27000
+    factorio_rcon_port: Optional[int] = None
 ) -> None:
     """
     Create a new agent notebook from template.
@@ -36,8 +36,12 @@ def create_notebook_from_template(
         experiment_id: Experiment UUID
         pg_dsn: PostgreSQL DSN
         factorio_host: Factorio server host
-        factorio_rcon_port: Factorio RCON port
+        factorio_rcon_port: Factorio RCON port (defaults to server_0 port from config)
     """
+    if factorio_rcon_port is None:
+        from FactoryVerse.config import get_config
+        factorio_rcon_port = get_config().get_rcon_port("server_0")
+    
     nb = nbformat.v4.new_notebook()
 
     # Cell 1: Setup and imports
@@ -173,7 +177,7 @@ def create_notebook_with_state(
     pg_dsn: str,
     agent_state: Dict[str, Any],
     factorio_host: str = "localhost",
-    factorio_rcon_port: int = 27000
+    factorio_rcon_port: Optional[int] = None
 ) -> None:
     """
     Create a notebook with checkpointed state injected.
@@ -188,8 +192,12 @@ def create_notebook_with_state(
         pg_dsn: PostgreSQL DSN
         agent_state: Dict with 'variables' and 'history' keys
         factorio_host: Factorio server host
-        factorio_rcon_port: Factorio RCON port
+        factorio_rcon_port: Factorio RCON port (defaults to server_0 port from config)
     """
+    if factorio_rcon_port is None:
+        from FactoryVerse.config import get_config
+        factorio_rcon_port = get_config().get_rcon_port("server_0")
+    
     # First create the base notebook
     create_notebook_from_template(
         notebook_path=notebook_path,

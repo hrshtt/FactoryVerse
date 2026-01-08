@@ -80,3 +80,66 @@ def find_process_using_port(port: int) -> str:
         return ""
     except Exception:
         return ""
+
+
+def find_free_udp_port(start_port: int = 34202, max_attempts: int = 100, host: str = "127.0.0.1") -> int:
+    """Find a free UDP port starting from start_port.
+    
+    This is useful for dynamic agent port allocation where we need to find
+    an available port at runtime rather than pre-allocating a range.
+    
+    Args:
+        start_port: Starting port number to search from
+        max_attempts: Maximum number of ports to try
+        host: Host address to check (default: localhost)
+        
+    Returns:
+        First available port number found
+        
+    Raises:
+        RuntimeError: If no free port found within max_attempts
+    """
+    for offset in range(max_attempts):
+        port = start_port + offset
+        if port > 65535:
+            raise RuntimeError(f"Port number exceeded maximum (65535)")
+        
+        if is_port_available(port, host):
+            logger.debug(f"Found free UDP port: {port}")
+            return port
+    
+    raise RuntimeError(
+        f"Could not find free UDP port in range {start_port}-{start_port + max_attempts - 1}"
+    )
+
+
+def find_free_udp_ports(count: int, start_port: int = 34202, host: str = "127.0.0.1") -> list[int]:
+    """Find multiple free UDP ports.
+    
+    Args:
+        count: Number of free ports to find
+        start_port: Starting port number to search from
+        host: Host address to check (default: localhost)
+        
+    Returns:
+        List of available port numbers
+        
+    Raises:
+        RuntimeError: If unable to find enough free ports
+    """
+    ports = []
+    current_port = start_port
+    max_total_attempts = 1000
+    
+    while len(ports) < count and current_port < start_port + max_total_attempts:
+        if is_port_available(current_port, host):
+            ports.append(current_port)
+        current_port += 1
+    
+    if len(ports) < count:
+        raise RuntimeError(
+            f"Could not find {count} free UDP ports starting from {start_port}"
+        )
+    
+    logger.debug(f"Found {count} free UDP ports: {ports}")
+    return ports

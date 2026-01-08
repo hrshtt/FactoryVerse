@@ -37,27 +37,34 @@ def initialize_rcon_connection(client: RCONClient) -> None:
 
 
 def create_rcon_client(
-    host: str = "localhost",
-    port: int = 27100,
-    password: str = "factorio",
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    password: Optional[str] = None,
     initialize: bool = True
 ) -> RCONClient:
     """
     Create and optionally initialize an RCON client.
     
     Args:
-        host: RCON server host
-        port: RCON server port
-        password: RCON password
+        host: RCON server host (defaults to config.rcon_host)
+        port: RCON server port (defaults to config.rcon_client_port)
+        password: RCON password (defaults to config.rcon_password)
         initialize: If True, run initialization to clear first-command warning
         
     Returns:
         RCONClient instance ready to use
         
     Example:
-        >>> rcon = create_rcon_client()
+        >>> rcon = create_rcon_client()  # Uses config defaults
         >>> # Client is ready to use immediately
     """
+    from FactoryVerse.config import get_config
+    
+    cfg = get_config()
+    host = host or cfg.rcon_host
+    port = port or cfg.rcon_client_port
+    password = password or cfg.rcon_password
+    
     client = RCONClient(host, port, password)
     
     if initialize:
@@ -67,9 +74,9 @@ def create_rcon_client(
 
 
 def validate_rcon_connection(
-    host: str = "localhost",
-    port: int = 27100,
-    password: str = "factorio"
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    password: Optional[str] = None
 ) -> tuple[bool, Optional[str]]:
     """
     Validate that Factorio RCON is available.
@@ -78,9 +85,9 @@ def validate_rcon_connection(
     command to verify that the Factorio server is running and accessible.
     
     Args:
-        host: RCON server host
-        port: RCON server port
-        password: RCON password
+        host: RCON server host (defaults to config.rcon_host)
+        port: RCON server port (defaults to config.rcon_client_port)
+        password: RCON password (defaults to config.rcon_password)
         
     Returns:
         (success, error_message) tuple where:
@@ -88,10 +95,17 @@ def validate_rcon_connection(
         - error_message is None on success, error description on failure
         
     Example:
-        >>> success, error = validate_rcon_connection()
+        >>> success, error = validate_rcon_connection()  # Uses config defaults
         >>> if not success:
         ...     print(f"Connection failed: {error}")
     """
+    from FactoryVerse.config import get_config
+    
+    cfg = get_config()
+    host = host or cfg.rcon_host
+    port = port or cfg.rcon_client_port
+    password = password or cfg.rcon_password
+    
     try:
         # Attempt to create client
         client = RCONClient(host, port, password)
