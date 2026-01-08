@@ -67,7 +67,7 @@ class SnapshotHandler:
             include_derived: Load derived tables (patches, belt networks)
             include_ghosts: Load ghost tables
             include_analytics: Load analytics tables (power, agent stats)
-            replay_updates: Replay operations logs (entities_updates.jsonl, etc.)
+            replay_updates: Replay operations logs (entities-updates.jsonl, etc.)
             wait_for_initial: If True, wait for all charted chunks to reach COMPLETE state
             initial_timeout: Maximum time to wait for initial snapshot completion (seconds)
         """

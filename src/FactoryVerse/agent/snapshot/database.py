@@ -117,6 +117,11 @@ class SnapshotDatabase:
                 bbox_max_x DOUBLE,
                 bbox_max_y DOUBLE,
                 electric_network_id INTEGER,
+                -- Builder metadata (who placed this entity)
+                agent_id INTEGER,
+                player_id INTEGER,
+                label VARCHAR,
+                placed_tick INTEGER,
                 -- Raw entity data for full reconstruction
                 raw_data VARCHAR
             );

@@ -23,7 +23,6 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
-    from FactoryVerse.factory.entity.views import RemoteView as RemoteViewWrapper
     from FactoryVerse.factory.resource.remote_view_resource import RemoteViewResource
     from FactoryVerse.factory.entity.base_entity import BaseEntity
 
@@ -189,17 +188,17 @@ class RemoteView:
         self._ensure_query_ready()
         return self._query.query(sql)
 
-    def get_entities(self, sql: str) -> List["RemoteViewWrapper"]:
-        """Execute SQL, return entity instances.
+    def get_entities(self, sql: str) -> List["BaseEntity"]:
+        """Execute SQL, return entity instances with REMOTE view.
 
         Query should select from map_entity table (or joins with it).
-        Each row is converted to a RemoteViewEntity (read-only wrapper).
+        Each row is converted to a BaseEntity with REMOTE view (read-only).
 
         Args:
             sql: SQL query against map_entity table
 
         Returns:
-            List of RemoteViewEntity instances
+            List of BaseEntity instances with REMOTE view
 
         Example:
             >>> drills = view.get_entities('''
@@ -211,7 +210,7 @@ class RemoteView:
         self._ensure_query_ready()
         return self._query.get_entities(sql)
 
-    def get_entity(self, sql: str) -> Optional["RemoteViewWrapper"]:
+    def get_entity(self, sql: str) -> Optional["BaseEntity"]:
         """Execute SQL with LIMIT 1, return single entity.
 
         Convenience method when you expect at most one result.
@@ -220,7 +219,7 @@ class RemoteView:
             sql: SQL query (LIMIT 1 added if not present)
 
         Returns:
-            Single RemoteViewEntity or None
+            Single BaseEntity with REMOTE view or None
         """
         self._ensure_query_ready()
         return self._query.get_entity(sql)
@@ -245,8 +244,8 @@ class RemoteView:
         self._ensure_query_ready()
         return self._query.get_resources(sql)
 
-    def get_ghosts(self, sql: str) -> List["RemoteViewWrapper"]:
-        """Execute SQL against ghost table, return ghost entities.
+    def get_ghosts(self, sql: str) -> List["BaseEntity"]:
+        """Execute SQL against ghost table, return ghost entities with REMOTE view.
 
         Ghosts are tracked separately from regular entities.
         Each ghost has is_ghost=True.

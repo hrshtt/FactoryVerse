@@ -14,7 +14,7 @@ from .utils import normalize_snapshot_dir, load_jsonl_file, iter_chunk_dirs
 
 
 def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load water tiles from water_init.jsonl files.
+    """Load water tiles from water-init.jsonl files.
     
     This loads ALL water tiles from ALL chunks globally into the water_tile table.
     """
@@ -23,12 +23,12 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
     # Clear existing water tiles to ensure we have fresh data
     con.execute("DELETE FROM water_tile;")
     
-    water_files = list(snapshot_dir.rglob("water_init.jsonl"))
+    water_files = list(snapshot_dir.rglob("water-init.jsonl"))
     
     if not water_files:
         return
     
-    print(f"  Found {len(water_files)} water_init.jsonl files across all chunks")
+    print(f"  Found {len(water_files)} water-init.jsonl files across all chunks")
     
     # Collect all water tiles from ALL chunks
     water_data = []
@@ -63,9 +63,9 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
 
 
 def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load resource tiles from resources_init.jsonl files."""
+    """Load resource tiles from resources-init.jsonl files."""
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    resource_files = list(snapshot_dir.rglob("resources_init.jsonl"))
+    resource_files = list(snapshot_dir.rglob("resources-init.jsonl"))
     
     if not resource_files:
         return
@@ -103,17 +103,17 @@ def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> N
 
 
 def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, replay_updates: bool = True) -> None:
-    """Load resource entities (trees, rocks) from trees_rocks_init.jsonl files.
+    """Load resource entities (trees, rocks) from trees_rocks-init.jsonl files.
     
-    Optionally replays trees_rocks-update.jsonl to compute current state.
+    Optionally replays trees_rocks-updates.jsonl to compute current state.
     
     Args:
         con: DuckDB connection
         snapshot_dir: Path to snapshot directory
-        replay_updates: If True, replay trees_rocks-update.jsonl operations log
+        replay_updates: If True, replay trees_rocks-updates.jsonl operations log
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    entity_files = list(snapshot_dir.rglob("trees_rocks_init.jsonl"))
+    entity_files = list(snapshot_dir.rglob("trees_rocks-init.jsonl"))
     
     if not entity_files:
         return
@@ -179,9 +179,9 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, r
                     ],
                 )
     
-    # Replay updates log (trees_rocks-update.jsonl) if requested
+    # Replay updates log (trees_rocks-updates.jsonl) if requested
     if replay_updates:
-        update_files = list(snapshot_dir.rglob("trees_rocks-update.jsonl"))
+        update_files = list(snapshot_dir.rglob("trees_rocks-updates.jsonl"))
         for update_file in update_files:
             with open(update_file, "r") as f:
                 for line in f:
@@ -255,14 +255,14 @@ def load_map_entities(
     replay_updates: bool = True,
 ) -> None:
     """
-    Load map entities from entities_init.jsonl files.
+    Load map entities from entities-init.jsonl files.
     
-    Optionally replays entities_updates.jsonl to compute current state.
+    Optionally replays entities-updates.jsonl to compute current state.
     
     Args:
         con: DuckDB connection
         snapshot_dir: Path to snapshot directory
-        replay_updates: If True, replay entities_updates.jsonl operations log
+        replay_updates: If True, replay entities-updates.jsonl operations log
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     
@@ -281,14 +281,14 @@ def load_map_entities(
     
     # Load initial state from all chunks
     for chunk_x, chunk_y, chunk_dir in iter_chunk_dirs(snapshot_dir):
-        init_file = chunk_dir / "entities_init.jsonl"
+        init_file = chunk_dir / "entities-init.jsonl"
         if init_file.exists():
             for entry in load_jsonl_file(init_file):
                 skipped_count += _process_entity_data(entry, entity_data, valid_entities)
         
         # Replay operations log if requested
         if replay_updates:
-            updates_file = chunk_dir / "entities_updates.jsonl"
+            updates_file = chunk_dir / "entities-updates.jsonl"
             if updates_file.exists():
                 for op in load_jsonl_file(updates_file):
                     op_type = op.get("op")
@@ -303,6 +303,16 @@ def load_map_entities(
                         if entity_key:
                             # Remove from entity_data list
                             entity_data[:] = [e for e in entity_data if e["entity_key"] != entity_key]
+                    elif op_type == "rotated":
+                        entity_key = op.get("key")
+                        direction = op.get("direction")
+                        if entity_key and direction is not None:
+                            # Update direction in entity_data list
+                            for entity in entity_data:
+                                if entity.get("entity_key") == entity_key:
+                                    entity["direction"] = direction
+                                    entity["direction_name"] = op.get("direction_name")
+                                    break
     
     if skipped_count > 0:
         print(f"  Skipped {skipped_count} entities not in placeable_entity ENUM")
@@ -338,7 +348,7 @@ def load_ghosts(
     replay_updates: bool = True,
 ) -> None:
     """
-    Load ghosts from ghosts-init.jsonl file.
+    Load ghosts from chunk-wise ghosts-init.jsonl files.
     
     Optionally replays ghosts-updates.jsonl to compute current state.
     
@@ -360,9 +370,9 @@ def load_ghosts(
     
     ghosts_by_key: Dict[str, Tuple] = {}
     
-    # Load initial state from top-level ghosts-init.jsonl
-    init_file = snapshot_dir / "ghosts-init.jsonl"
-    if init_file.exists():
+    # Load initial state from chunk-wise ghosts-init.jsonl files
+    ghost_init_files = list(snapshot_dir.rglob("ghosts-init.jsonl"))
+    for init_file in ghost_init_files:
         for entry in load_jsonl_file(init_file):
             ghost_name = entry.get("ghost_name") or "unknown"
             pos = entry.get("position") or {}
@@ -387,10 +397,10 @@ def load_ghosts(
                 chunk_y,
             )
     
-    # Replay operations log if requested
+    # Replay operations log if requested (chunk-wise ghosts-updates.jsonl files)
     if replay_updates:
-        updates_file = snapshot_dir / "ghosts-updates.jsonl"
-        if updates_file.exists():
+        update_files = list(snapshot_dir.rglob("ghosts-updates.jsonl"))
+        for updates_file in update_files:
             for op in load_jsonl_file(updates_file):
                 op_type = op.get("op")
                 if op_type == "upsert":
@@ -419,6 +429,16 @@ def load_ghosts(
                     ghost_key = op.get("key")
                     if ghost_key:
                         ghosts_by_key.pop(ghost_key, None)
+                elif op_type == "rotated":
+                    ghost_key = op.get("key")
+                    direction = op.get("direction")
+                    if ghost_key and direction is not None:
+                        # Update direction in ghosts_by_key if it exists
+                        if ghost_key in ghosts_by_key:
+                            ghost_data = list(ghosts_by_key[ghost_key])
+                            ghost_data[5] = direction  # direction is at index 5
+                            ghost_data[6] = op.get("direction_name")  # direction_name is at index 6
+                            ghosts_by_key[ghost_key] = tuple(ghost_data)
     
     # Insert into database
     if ghosts_by_key:
@@ -448,7 +468,7 @@ def load_base_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, replay_
     Args:
         con: DuckDB connection
         snapshot_dir: Path to snapshot directory (will be normalized)
-        replay_updates: If True, replay operations logs (entities_updates.jsonl, trees_rocks-update.jsonl)
+        replay_updates: If True, replay operations logs (entities-updates.jsonl, trees_rocks-updates.jsonl)
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Callable, Dict, Any, Optional, TYPE_CHECKING
+from typing import Callable, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import duckdb
@@ -120,13 +120,30 @@ class SyncService:
             if not self._check_sequence(sequence):
                 return  # Rebuild triggered
 
-            # Apply operation
+            # Apply operation based on type
             op = payload.get("op")
+            is_ghost = payload.get("is_ghost", False)
 
-            if op == "upsert":
-                self._apply_entity_upsert(payload)
-            elif op == "remove":
-                self._apply_entity_remove(payload)
+            if op == "created" or op == "upsert":
+                if is_ghost:
+                    self._apply_ghost_upsert(payload)
+                else:
+                    self._apply_entity_upsert(payload)
+            elif op == "destroyed" or op == "remove":
+                if is_ghost:
+                    self._apply_ghost_remove(payload)
+                else:
+                    self._apply_entity_remove(payload)
+            elif op == "rotated":
+                if is_ghost:
+                    self._apply_ghost_rotation(payload)
+                else:
+                    self._apply_entity_rotation(payload)
+            elif op == "configuration_changed":
+                if is_ghost:
+                    self._apply_ghost_config_change(payload)
+                else:
+                    self._apply_entity_config_change(payload)
             else:
                 logger.warning(f"Unknown entity operation: {op}")
 
@@ -142,10 +159,14 @@ class SyncService:
 
             op = payload.get("op")
 
-            if op == "upsert":
+            if op == "created" or op == "upsert":
                 self._apply_ghost_upsert(payload)
-            elif op == "remove":
+            elif op == "destroyed" or op == "remove":
                 self._apply_ghost_remove(payload)
+            elif op == "rotated":
+                self._apply_ghost_rotation(payload)
+            elif op == "configuration_changed":
+                self._apply_ghost_config_change(payload)
             else:
                 logger.warning(f"Unknown ghost operation: {op}")
 
@@ -220,12 +241,20 @@ class SyncService:
 
         bbox = entity_data.get("bounding_box", {})
 
+        # Extract builder metadata
+        builder = entity_data.get("builder", {})
+        agent_id = builder.get("agent_id") if builder else None
+        player_id = builder.get("player_id") if builder else None
+        label = builder.get("label") if builder else None
+        placed_tick = builder.get("placed_tick") if builder else payload.get("tick")
+
         self._db.execute(
             """
             INSERT OR REPLACE INTO map_entity 
             (entity_key, entity_name, position_x, position_y, chunk_x, chunk_y,
-             direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
+             agent_id, player_id, label, placed_tick, raw_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 entity_key,
@@ -239,6 +268,10 @@ class SyncService:
                 bbox.get("min_y"),
                 bbox.get("max_x"),
                 bbox.get("max_y"),
+                agent_id,
+                player_id,
+                label,
+                placed_tick,
                 json.dumps(entity_data),
             ],
         )
@@ -257,9 +290,10 @@ class SyncService:
 
     def _apply_ghost_upsert(self, payload: Dict[str, Any]) -> None:
         """Apply ghost upsert to database."""
-        ghost_data = payload.get("ghost", {})
+        # Handle payloads from both ghost_operation and entity_operation
+        ghost_data = payload.get("ghost") or payload.get("entity")
         if not ghost_data:
-            logger.warning("Ghost upsert missing ghost data")
+            logger.warning("Ghost upsert missing ghost/entity data")
             return
 
         position = ghost_data.get("position", {})
@@ -298,13 +332,75 @@ class SyncService:
 
     def _apply_ghost_remove(self, payload: Dict[str, Any]) -> None:
         """Apply ghost remove to database."""
-        ghost_key = payload.get("key")
+        ghost_key = payload.get("entity_key") or payload.get("key")
         if not ghost_key:
-            logger.warning("Ghost remove missing key")
+            logger.warning("Ghost remove missing entity_key/key")
             return
 
         self._db.execute("DELETE FROM ghost WHERE entity_key = ?", [ghost_key])
         logger.debug(f"Applied ghost remove: {ghost_key}")
+
+    def _apply_entity_rotation(self, payload: Dict[str, Any]) -> None:
+        """Apply entity rotation update to database."""
+        entity_key = payload.get("entity_key")
+        if not entity_key:
+            logger.warning("Entity rotation missing entity_key")
+            return
+
+        direction = payload.get("direction")
+
+        # Update only the direction field
+        self._db.execute(
+            "UPDATE map_entity SET direction = ? WHERE entity_key = ?",
+            [direction, entity_key],
+        )
+        logger.debug(f"Applied entity rotation: {entity_key} -> direction={direction}")
+
+    def _apply_ghost_rotation(self, payload: Dict[str, Any]) -> None:
+        """Apply ghost rotation update to database."""
+        entity_key = payload.get("entity_key")
+        if not entity_key:
+            logger.warning("Ghost rotation missing entity_key")
+            return
+
+        direction = payload.get("direction")
+
+        # Update only the direction field
+        self._db.execute(
+            "UPDATE ghost SET direction = ? WHERE entity_key = ?",
+            [direction, entity_key],
+        )
+        logger.debug(f"Applied ghost rotation: {entity_key} -> direction={direction}")
+
+    def _apply_entity_config_change(self, payload: Dict[str, Any]) -> None:
+        """Apply entity configuration change to database.
+
+        Configuration changes include recipe changes, filter changes, etc.
+        We upsert the entire entity data since configuration may affect multiple fields.
+        """
+        entity_data = payload.get("entity", {})
+        if not entity_data:
+            logger.warning("Entity config change missing entity data")
+            return
+
+        # Re-use entity upsert since config change sends full entity data
+        self._apply_entity_upsert(payload)
+        logger.debug(f"Applied entity config change: {entity_data.get('key')}")
+
+    def _apply_ghost_config_change(self, payload: Dict[str, Any]) -> None:
+        """Apply ghost configuration change to database.
+
+        Configuration changes for ghosts (e.g., recipe presets on ghost assemblers).
+        We upsert the entire ghost data since configuration may affect multiple fields.
+        """
+        ghost_data = payload.get("entity") or payload.get("ghost", {})
+        if not ghost_data:
+            logger.warning("Ghost config change missing ghost data")
+            return
+
+        # Re-use ghost upsert since config change sends full ghost data
+        self._apply_ghost_upsert(payload)
+        logger.debug(f"Applied ghost config change: {ghost_data.get('key')}")
 
 
 __all__ = ["SyncService"]

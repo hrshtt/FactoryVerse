@@ -19,12 +19,12 @@ def load_inserters(
     replay_updates: bool = True,
 ) -> None:
     """
-    Load inserters from entities_init.jsonl files.
+    Load inserters from entities-init.jsonl files.
     
-    Optionally replays entities_updates.jsonl to compute current state.
+    Optionally replays entities-updates.jsonl to compute current state.
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
+    entity_files = list(snapshot_dir.rglob("entities-init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
     try:
@@ -81,7 +81,7 @@ def load_inserters(
     # Replay operations log if requested
     if replay_updates:
         for chunk_x, chunk_y, chunk_dir in iter_chunk_dirs(snapshot_dir):
-            updates_file = chunk_dir / "entities_updates.jsonl"
+            updates_file = chunk_dir / "entities-updates.jsonl"
             if updates_file.exists():
                 for op in load_jsonl_file(updates_file):
                     op_type = op.get("op")
@@ -93,6 +93,12 @@ def load_inserters(
                         entity_key = op.get("key")
                         if entity_key:
                             inserter_data.pop(entity_key, None)
+                    elif op_type == "rotated":
+                        entity_key = op.get("key")
+                        direction = op.get("direction")
+                        if entity_key and direction is not None and entity_key in inserter_data:
+                            # Update direction in inserter_data
+                            inserter_data[entity_key]["direction"] = direction
     
     if inserter_data:
         for i in inserter_data.values():
@@ -117,12 +123,12 @@ def load_transport_belts(
     replay_updates: bool = True,
 ) -> None:
     """
-    Load transport belts from entities_init.jsonl files.
+    Load transport belts from entities-init.jsonl files.
     
-    Optionally replays entities_updates.jsonl to compute current state.
+    Optionally replays entities-updates.jsonl to compute current state.
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
+    entity_files = list(snapshot_dir.rglob("entities-init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
     try:
@@ -172,7 +178,7 @@ def load_transport_belts(
     # Replay operations log if requested
     if replay_updates:
         for chunk_x, chunk_y, chunk_dir in iter_chunk_dirs(snapshot_dir):
-            updates_file = chunk_dir / "entities_updates.jsonl"
+            updates_file = chunk_dir / "entities-updates.jsonl"
             if updates_file.exists():
                 for op in load_jsonl_file(updates_file):
                     op_type = op.get("op")
@@ -184,6 +190,13 @@ def load_transport_belts(
                         entity_key = op.get("key")
                         if entity_key:
                             belt_data.pop(entity_key, None)
+                    elif op_type == "rotated":
+                        entity_key = op.get("key")
+                        direction = op.get("direction")
+                        direction_name = op.get("direction_name")
+                        if entity_key and direction is not None and entity_key in belt_data:
+                            # Update direction in belt_data
+                            belt_data[entity_key]["direction"] = direction_name.upper() if direction_name else None
     
     if belt_data:
         for b in belt_data.values():
@@ -203,9 +216,9 @@ def load_transport_belts(
 
 
 def load_mining_drills(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load mining drills from entities_init.jsonl files."""
+    """Load mining drills from entities-init.jsonl files."""
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
+    entity_files = list(snapshot_dir.rglob("entities-init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
     try:
@@ -271,9 +284,9 @@ def load_mining_drills(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> No
 
 
 def load_assemblers(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load assemblers from entities_init.jsonl files."""
+    """Load assemblers from entities-init.jsonl files."""
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
+    entity_files = list(snapshot_dir.rglob("entities-init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
     try:
@@ -343,9 +356,9 @@ def load_assemblers(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
 
 
 def load_pumpjacks(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
-    """Load pumpjacks from entities_init.jsonl files."""
+    """Load pumpjacks from entities-init.jsonl files."""
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    entity_files = list(snapshot_dir.rglob("entities_init.jsonl"))
+    entity_files = list(snapshot_dir.rglob("entities-init.jsonl"))
     
     # Get valid placeable entity names from the ENUM
     try:
@@ -398,7 +411,7 @@ def load_component_tables(
     Args:
         con: DuckDB connection
         snapshot_dir: Path to snapshot directory (will be normalized)
-        replay_updates: If True, replay entities_updates.jsonl operations log
+        replay_updates: If True, replay entities-updates.jsonl operations log
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
     

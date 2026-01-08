@@ -248,6 +248,20 @@ def create_schema(
         );
     """)
 
+    # Ghost layer table for tracking entity ghosts (blueprints)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS ghost_layer (
+            ghost_key VARCHAR PRIMARY KEY,
+            ghost_name VARCHAR NOT NULL,
+            force_name VARCHAR,
+            map_position POINT_2D NOT NULL,
+            direction INTEGER,
+            direction_name direction,
+            chunk_x INTEGER,
+            chunk_y INTEGER
+        );
+    """)
+
     # Note: entity_status table is defined but not used for persistence.
     # Status is loaded on-the-fly from status files into temp_entity_status table.
     # Use entity_status_latest view to query current status.
@@ -403,6 +417,10 @@ def create_schema(
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_belt_line_segment_geom ON belt_line_segment USING RTREE (geom);"
     )
+
+    # Note: ghost_layer.map_position is POINT_2D, not GEOMETRY, so RTREE index is not supported.
+    # Spatial queries still work but without index optimization.
+    # If performance becomes an issue, consider adding a separate GEOMETRY column.
 
 
 def connect(db_path: Optional[Path] = None) -> duckdb.DuckDBPyConnection:

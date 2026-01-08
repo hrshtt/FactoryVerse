@@ -80,9 +80,6 @@ class SnapshotLoader:
         # Replay all update files
         result.last_sequence = self.replay_updates()
 
-        # Load top-level ghost files if they exist
-        result.ghost_count += self._load_top_level_ghosts()
-
         logger.info(f"Load complete: {result}")
         return result
 
@@ -128,25 +125,30 @@ class SnapshotLoader:
             "trees_rocks": 0,
         }
 
-        # Load entities_init.jsonl
-        entities_file = chunk_dir / "entities_init.jsonl"
+        # Load entities-init.jsonl
+        entities_file = chunk_dir / "entities-init.jsonl"
         if entities_file.exists():
             counts["entities"] = self._load_entities_file(entities_file, chunk)
 
-        # Load resources_init.jsonl
-        resources_file = chunk_dir / "resources_init.jsonl"
+        # Load resources-init.jsonl
+        resources_file = chunk_dir / "resources-init.jsonl"
         if resources_file.exists():
             counts["resources"] = self._load_resources_file(resources_file, chunk)
 
-        # Load water_init.jsonl
-        water_file = chunk_dir / "water_init.jsonl"
+        # Load water-init.jsonl
+        water_file = chunk_dir / "water-init.jsonl"
         if water_file.exists():
             counts["water"] = self._load_water_file(water_file, chunk)
 
-        # Load trees_rocks_init.jsonl
-        trees_file = chunk_dir / "trees_rocks_init.jsonl"
+        # Load trees_rocks-init.jsonl
+        trees_file = chunk_dir / "trees_rocks-init.jsonl"
         if trees_file.exists():
             counts["trees_rocks"] = self._load_trees_rocks_file(trees_file, chunk)
+
+        # Load ghosts-init.jsonl (chunk-wise)
+        ghosts_file = chunk_dir / "ghosts-init.jsonl"
+        if ghosts_file.exists():
+            counts["ghosts"] = self._load_ghosts_file(ghosts_file, chunk)
 
         return counts
 
@@ -194,15 +196,14 @@ class SnapshotLoader:
                 logger.warning(f"Failed to load tree/rock: {e}")
         return count
 
-    def _load_top_level_ghosts(self) -> int:
-        """Load top-level ghosts-init.jsonl if it exists."""
-        ghosts_file = self._snapshot_dir / "ghosts-init.jsonl"
-        if not ghosts_file.exists():
-            return 0
-
+    def _load_ghosts_file(self, path: Path, chunk: ChunkKey) -> int:
+        """Load ghosts init file into ghost table."""
         count = 0
-        for data in self._iter_jsonl(ghosts_file):
+        for data in self._iter_jsonl(path):
             try:
+                # Add chunk info if not present
+                if "chunk" not in data:
+                    data["chunk"] = {"x": chunk.x, "y": chunk.y}
                 self._insert_ghost(data)
                 count += 1
             except Exception as e:
@@ -226,26 +227,27 @@ class SnapshotLoader:
             chunk_dir = self._snapshot_dir / str(chunk.x) / str(chunk.y)
 
             # Entity updates
-            updates_file = chunk_dir / "entities_updates.jsonl"
+            updates_file = chunk_dir / "entities-updates.jsonl"
             if updates_file.exists():
                 for data in self._iter_jsonl(updates_file):
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     operations.append(data)
 
             # Trees/rocks updates
-            trees_updates = chunk_dir / "trees_rocks-update.jsonl"
+            trees_updates = chunk_dir / "trees_rocks-updates.jsonl"
             if trees_updates.exists():
                 for data in self._iter_jsonl(trees_updates):
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     data["_type"] = "resource_entity"
                     operations.append(data)
 
-        # Top-level ghost updates
-        ghost_updates = self._snapshot_dir / "ghosts-updates.jsonl"
-        if ghost_updates.exists():
-            for data in self._iter_jsonl(ghost_updates):
-                data["_type"] = "ghost"
-                operations.append(data)
+            # Chunk-wise ghost updates
+            ghost_updates = chunk_dir / "ghosts-updates.jsonl"
+            if ghost_updates.exists():
+                for data in self._iter_jsonl(ghost_updates):
+                    data["chunk"] = {"x": chunk.x, "y": chunk.y}
+                    data["_type"] = "ghost"
+                    operations.append(data)
 
         # Sort by sequence number
         operations.sort(key=lambda x: x.get("sequence", 0))
@@ -300,6 +302,14 @@ class SnapshotLoader:
                 self._db.execute(
                     "DELETE FROM map_entity WHERE entity_key = ?", [entity_key]
                 )
+        elif op == "rotated":
+            entity_key = data.get("key") or data.get("entity_key")
+            direction = data.get("direction")
+            if entity_key and direction is not None:
+                self._db.execute(
+                    "UPDATE map_entity SET direction = ? WHERE entity_key = ?",
+                    [direction, entity_key],
+                )
 
     def _apply_ghost_operation(self, data: Dict[str, Any]) -> None:
         """Apply ghost operation."""
@@ -312,6 +322,14 @@ class SnapshotLoader:
             ghost_key = data.get("key")
             if ghost_key:
                 self._db.execute("DELETE FROM ghost WHERE entity_key = ?", [ghost_key])
+        elif op == "rotated":
+            ghost_key = data.get("key")
+            direction = data.get("direction")
+            if ghost_key and direction is not None:
+                self._db.execute(
+                    "UPDATE ghost SET direction = ? WHERE entity_key = ?",
+                    [direction, ghost_key],
+                )
 
     def _apply_resource_entity_operation(self, data: Dict[str, Any]) -> None:
         """Apply resource entity (tree/rock) operation."""
@@ -336,13 +354,21 @@ class SnapshotLoader:
         pos_y = float(position.get("y", 0))
 
         bbox = data.get("bounding_box", {})
+        
+        # Extract builder metadata
+        builder = data.get("builder", {})
+        agent_id = builder.get("agent_id") if builder else None
+        player_id = builder.get("player_id") if builder else None
+        label = builder.get("label") if builder else None
+        placed_tick = builder.get("placed_tick") if builder else None
 
         self._db.execute(
             """
             INSERT OR REPLACE INTO map_entity 
             (entity_key, entity_name, position_x, position_y, chunk_x, chunk_y,
-             direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
+             agent_id, player_id, label, placed_tick, raw_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 entity_key,
@@ -356,6 +382,10 @@ class SnapshotLoader:
                 bbox.get("min_y"),
                 bbox.get("max_x"),
                 bbox.get("max_y"),
+                agent_id,
+                player_id,
+                label,
+                placed_tick,
                 json.dumps(data),
             ],
         )

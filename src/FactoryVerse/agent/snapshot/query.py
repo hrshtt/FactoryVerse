@@ -7,7 +7,6 @@ from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import duckdb
-    from FactoryVerse.factory.entity.views import RemoteView
     from FactoryVerse.factory.resource.remote_view_resource import RemoteViewResource
     from FactoryVerse.factory.entity.base_entity import BaseEntity
 
@@ -82,17 +81,17 @@ class QueryExecutor:
             logger.error(f"Query failed: {e}")
             raise
 
-    def get_entities(self, sql: str) -> List["RemoteView"]:
-        """Execute SQL, construct RemoteView entity instances.
+    def get_entities(self, sql: str) -> List["BaseEntity"]:
+        """Execute SQL, construct entity instances with REMOTE view.
 
         Query should return rows from map_entity table (or joins with it).
-        Each row is converted to a RemoteView-wrapped entity object.
+        Each row is converted to an entity object with REMOTE view.
 
         Args:
             sql: SQL query against map_entity table
 
         Returns:
-            List of RemoteView[BaseEntity] instances
+            List of BaseEntity instances with REMOTE view
         """
         rows = self.query(sql)
         entities = []
@@ -107,14 +106,14 @@ class QueryExecutor:
 
         return entities
 
-    def get_entity(self, sql: str) -> Optional["RemoteView"]:
+    def get_entity(self, sql: str) -> Optional["BaseEntity"]:
         """Execute SQL with LIMIT 1, return single entity.
 
         Args:
             sql: SQL query (should include LIMIT 1 for efficiency)
 
         Returns:
-            Single RemoteView[BaseEntity] or None
+            Single BaseEntity with REMOTE view or None
 
         Raises:
             ValueError: If query doesn't include LIMIT 1
@@ -204,8 +203,8 @@ class QueryExecutor:
     # Entity Construction
     # =========================================================================
 
-    def _construct_entity(self, row: Dict[str, Any]) -> Optional["RemoteView"]:
-        """Create RemoteView-wrapped entity from row data.
+    def _construct_entity(self, row: Dict[str, Any]) -> Optional["BaseEntity"]:
+        """Create entity with REMOTE view from row data.
 
         Uses raw_data if available, otherwise constructs from columns.
         """
@@ -294,8 +293,8 @@ class QueryExecutor:
             "type": row.get("entity_type", "resource"),
         }
 
-    def _construct_ghost(self, row: Dict[str, Any]) -> Optional["RemoteView"]:
-        """Create ghost entity from row data."""
+    def _construct_ghost(self, row: Dict[str, Any]) -> Optional["BaseEntity"]:
+        """Create ghost entity with REMOTE view from row data."""
         from FactoryVerse.factory.entity.create_entity import create_remote_view_entity
 
         # Build ghost data
