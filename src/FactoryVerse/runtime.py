@@ -59,13 +59,15 @@ class AgentRuntime:
     **For Agents**: This object is created by the boilerplate. Access:
     - runtime.walking - Movement actions
     - runtime.crafting - Crafting actions
-    - runtime.mining - Mining actions
     - runtime.inventory - Inventory queries
-    - runtime.reachable - Reachable entity queries
-    - runtime.resources - Reachable resource queries
+    - runtime.reachable - Unified entity and resource queries
+    - runtime.resources - Alias for reachable (backward compatibility)
     - runtime.research - Research actions
     - runtime.ghost_builder - Ghost building orchestration
     - runtime.remote_view - Map-wide entity queries (DuckDB)
+
+    Note: Mining is done through resource objects, not a top-level action.
+    Get a resource via runtime.reachable.get_resource(), then call resource.mine().
     """
 
     def __init__(
@@ -99,15 +101,13 @@ class AgentRuntime:
         from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
         from FactoryVerse.agent.actions.place_entity import PlacementAction
         from FactoryVerse.agent.actions.ghost_builder import GhostBuilderAction
-        from FactoryVerse.agent.actions.reachable import (
-            ReachableEntities,
-            ReachableResources,
-        )
+        from FactoryVerse.agent.actions.placement_hints import PlacementHints
+        from FactoryVerse.agent.actions.reachable import Reachable
 
         # Wire up actions with their dependencies
         self._entity_ops = EntityOperationsAction(self._rcon)
         self._placement = PlacementAction(self._rcon)
-        
+
         # Actions that need placement for item injection
         self._walking = MovementAction(self._rcon, self._listener)
         self._mining = MiningAction(self._rcon, self._listener, self._placement)
@@ -120,9 +120,12 @@ class AgentRuntime:
             self._walking, self._placement, self._inventory
         )
 
-        # Query objects
-        self._reachable = ReachableEntities(self._rcon)
-        self._resources = ReachableResources(self._rcon)
+        # Unified query object for both entities and resources
+        # Single Reachable instance handles all get_entity/get_entities/get_resource/get_resources calls
+        self._reachable = Reachable(self._rcon, self._mining)
+
+        # Placement hints - spatial reasoning for entity placement
+        self._placement_hints = PlacementHints(self._rcon)
 
         # RemoteView - map-wide queries via DuckDB
         from FactoryVerse.agent.snapshot import RemoteView
@@ -191,20 +194,6 @@ class AgentRuntime:
         return self._walking
 
     @property
-    def mining(self):
-        """Mining actions.
-
-        **For Agents**: Use to mine resources and entities.
-
-        - await mining.mine(entity) - Mine a resource or entity
-        - await mining.mine_resource(position) - Mine at position
-
-        Returns:
-            MiningAction instance
-        """
-        return self._mining
-
-    @property
     def crafting(self):
         """Crafting actions.
 
@@ -249,32 +238,36 @@ class AgentRuntime:
 
     @property
     def reachable(self):
-        """Reachable entity queries.
+        """Unified reachable entity and resource queries.
 
-        **For Agents**: Use to find entities within interaction range.
+        **For Agents**: Use to find entities and resources within interaction range.
 
+        Entity queries:
         - reachable.get_entity(name) - Get first entity by name
         - reachable.get_entities(name) - Get all entities by name
         - reachable.get_entities() - Get all reachable entities
+        - reachable.get_ghosts() - Get ghost entities
+
+        Resource queries:
+        - reachable.get_resource(name) - Get specific resource
+        - reachable.get_resources() - Get all reachable resources
 
         Returns:
-            ReachableEntities instance
+            Reachable instance (unified interface for both entities and resources)
         """
         return self._reachable
 
     @property
     def resources(self):
-        """Reachable resource queries.
+        """Alias for reachable (backward compatibility).
 
-        **For Agents**: Use to find resources (ore, trees, rocks) in range.
-
-        - resources.get_resource(name) - Get specific resource
-        - resources.get_resources() - Get all reachable resources
+        **For Agents**: This is the same object as 'reachable'.
+        Use either reachable.get_resource() or resources.get_resource().
 
         Returns:
-            ReachableResources instance
+            Reachable instance (same as reachable property)
         """
-        return self._resources
+        return self._reachable
 
     @property
     def entity_ops(self):
@@ -332,6 +325,27 @@ class AgentRuntime:
             RemoteView instance
         """
         return self._remote_view
+
+    @property
+    def placement_hints(self):
+        """Spatial reasoning engine for entity placement.
+
+        **For Agents**: Use to plan and validate entity placements before committing.
+
+        Three-tier placement flow:
+        1. DRY RUN: placement_hints.get_placement_line() -> GhostPlan (validated)
+        2. PLACE: Use plan.positions to place ghosts or directly with ghost_builder.build_plan(plan)
+        3. BUILD: ghost.build() converts ghosts to real entities
+
+        - placement_hints.get_placement_line(entity, start, end) - Plan a line of entities
+        - placement_hints.get_connection_positions(source, target, type) - Find valid connection points
+        - plan.valid - Check if GhostPlan is valid
+        - plan.validate(placement_hints.validator) - Re-validate after map changes
+
+        Returns:
+            PlacementHints instance
+        """
+        return self._placement_hints
 
     @property
     def agent_id(self) -> str:

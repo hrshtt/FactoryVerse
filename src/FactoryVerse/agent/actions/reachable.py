@@ -18,20 +18,41 @@ if TYPE_CHECKING:
     from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 
-class ReachableEntities:
-    """Represents reachable entities with query methods.
+class Reachable:
+    """Unified reachable entities and resources query interface.
 
-    Similar to AgentInventory but for entities. Provides filtering
-    and query capabilities without returning raw lists.
+    Provides a single top-level object for querying both entities and resources
+    within the agent's interaction range.
 
-    Ghost entities are included by default for spatial awareness.
+    Entity queries:
+    - get_entity() - Get a single entity by name/criteria
+    - get_entities() - Get multiple entities by name/criteria
+    - get_ghosts() - Get ghost entities
+
+    Resource queries:
+    - get_resource() - Get a single resource (ore/tree/rock)
+    - get_resources() - Get multiple resources
+
+    Ghost entities are included in entity queries by default for spatial awareness.
     This prevents silent overwrites when placing entities near ghosts.
 
     Note: Always fetches fresh data from the game - no caching.
     """
 
-    def __init__(self, rcon_handler: "RconHandler"):
+    def __init__(
+        self,
+        rcon_handler: "RconHandler",
+        mining_action: Optional[Any] = None,
+    ):
+        """Initialize Reachable query interface.
+
+        Args:
+            rcon_handler: RCON handler for command execution
+            mining_action: Optional MiningAction to inject into resources for mining operations
+        """
         self._rcon = rcon_handler
+        self._mining_action = mining_action
+        
         # Initialize action dependencies for factory
         from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
         from FactoryVerse.agent.actions.place_entity import PlacementAction
@@ -39,7 +60,7 @@ class ReachableEntities:
         self._entity_ops = EntityOperationsAction(rcon_handler)
         self._place_ops = PlacementAction(rcon_handler)
 
-    def _fetch_fresh_data(self, include_ghosts: bool = True):
+    def _fetch_fresh_entities_data(self, include_ghosts: bool = True):
         """Fetch fresh entities data via RCON (no caching).
 
         Args:
@@ -84,6 +105,16 @@ class ReachableEntities:
 
         return entities_instances, all_data
 
+    def _fetch_fresh_resources_data(self):
+        """Fetch fresh resources data via RCON (no caching)."""
+        cmd = self._rcon.build_command("get_reachable", False)  # attach_ghosts=False
+        data = self._rcon.execute_and_parse_json(cmd)
+        return data.get("resources", [])
+
+    # =========================================================================
+    # Entity Query Methods
+    # =========================================================================
+
     def get_entity(
         self,
         entity_name: str,
@@ -114,7 +145,7 @@ class ReachableEntities:
         ghosts_only = options.get("ghosts_only", False)
 
         # Always fetch fresh data
-        entities_instances, entities_data = self._fetch_fresh_data(
+        entities_instances, entities_data = self._fetch_fresh_entities_data(
             include_ghosts=include_ghosts
         )
 
@@ -194,7 +225,7 @@ class ReachableEntities:
         ghosts_only = options.get("ghosts_only", False)
 
         # Always fetch fresh data
-        entities_instances, entities_data = self._fetch_fresh_data(
+        entities_instances, entities_data = self._fetch_fresh_entities_data(
             include_ghosts=include_ghosts
         )
 
@@ -260,23 +291,9 @@ class ReachableEntities:
         """
         return self.get_entities(entity_name, options={"ghosts_only": True})
 
-
-class ReachableResources:
-    """Represents reachable resources with query methods.
-
-    Similar pattern to AgentInventory but for resources (ores, trees, rocks).
-
-    Note: Always fetches fresh data from the game - no caching.
-    """
-
-    def __init__(self, rcon_handler: "RconHandler"):
-        self._rcon = rcon_handler
-
-    def _fetch_fresh_data(self):
-        """Fetch fresh resources data via RCON (no caching)."""
-        cmd = self._rcon.build_command("get_reachable", False)  # attach_ghosts=False
-        data = self._rcon.execute_and_parse_json(cmd)
-        return data.get("resources", [])
+    # =========================================================================
+    # Resource Query Methods
+    # =========================================================================
 
     def get_resource(
         self, resource_name: str, position: Optional[MapPosition] = None
@@ -290,12 +307,12 @@ class ReachableResources:
             position: Optional exact position match
 
         Returns:
-            BaseResource instance (or appropriate subclass), or None if not found
+            BaseResource instance (or appropriate subclass) with mining capability, or None if not found
         """
         from FactoryVerse.factory.resource.base import _create_resource_from_data
 
         # Always fetch fresh data
-        resources_data = self._fetch_fresh_data()
+        resources_data = self._fetch_fresh_resources_data()
 
         matches = [data for data in resources_data if data.get("name") == resource_name]
 
@@ -308,7 +325,8 @@ class ReachableResources:
             ]
 
         if matches:
-            return _create_resource_from_data(matches[0])
+            # Inject MiningAction and EntityOperationsAction into resource
+            return _create_resource_from_data(matches[0], self._mining_action, self._entity_ops)
         return None
 
     def get_resources(
@@ -342,7 +360,7 @@ class ReachableResources:
         )
 
         # Always fetch fresh data
-        resources_data = self._fetch_fresh_data()
+        resources_data = self._fetch_fresh_resources_data()
 
         matches = resources_data
 
@@ -385,18 +403,22 @@ class ReachableResources:
             # Entities (trees, rocks) are always returned as BaseResource
             if resource_type_val in ("tree", "simple-entity"):
                 for data in data_list:
-                    result.append(_create_resource_from_data(data))
+                    # Inject MiningAction and EntityOperationsAction into each resource
+                    result.append(_create_resource_from_data(data, self._mining_action, self._entity_ops))
             # Ore patches: consolidate if multiple, return single as BaseResource
             elif resource_type_val == "resource":
                 if len(data_list) > 1:
                     # Multiple tiles of same ore type -> ResourceOrePatch
-                    result.append(ResourceOrePatch(name, data_list))
+                    # Inject MiningAction and EntityOperationsAction into patch
+                    result.append(ResourceOrePatch(name, data_list, self._mining_action, self._entity_ops))
                 else:
                     # Single tile -> BaseResource
-                    result.append(_create_resource_from_data(data_list[0]))
+                    # Inject MiningAction and EntityOperationsAction into resource
+                    result.append(_create_resource_from_data(data_list[0], self._mining_action, self._entity_ops))
             else:
                 # Unknown type, return as BaseResource
                 for data in data_list:
-                    result.append(_create_resource_from_data(data))
+                    # Inject MiningAction and EntityOperationsAction into each resource
+                    result.append(_create_resource_from_data(data, self._mining_action, self._entity_ops))
 
         return result

@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 from FactoryVerse.factory.types import (
     MapPosition,
-    _playing_factory,
     ResourcePatchData,
     ProductData,
     EntityInspectionData,
@@ -10,19 +9,9 @@ from FactoryVerse.factory.types import (
 import asyncio
 
 if TYPE_CHECKING:
-    from FactoryVerse.factory.agent import PlayingFactory
     from FactoryVerse.factory.item.base import ItemStack
-
-
-def _get_factory() -> "PlayingFactory":
-    """Get the current playing factory context."""
-    factory = _playing_factory.get()
-    if factory is None:
-        raise RuntimeError(
-            "No active gameplay session. "
-            "Use 'with playing_factorio():' to enable operations."
-        )
-    return factory
+    from FactoryVerse.agent.actions.mining import MiningAction
+    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
 
 
 class ResourceOrePatch:
@@ -30,18 +19,30 @@ class ResourceOrePatch:
 
     Similar to ItemStack but for resources. Consolidates multiple resource
     entries with the same name into a single patch for cleaner agent interface.
+    
+    Uses dependency injection pattern - receives MiningAction to enable mining.
     """
 
-    def __init__(self, name: str, resource_data_list: List[Dict[str, Any]]):
+    def __init__(
+        self,
+        name: str,
+        resource_data_list: List[Dict[str, Any]],
+        mining_action: Optional["MiningAction"] = None,
+        entity_ops: Optional["EntityOperationsAction"] = None,
+    ):
         """Initialize ResourceOrePatch from a list of resource data dicts.
 
         Args:
             name: Resource name (e.g., "copper-ore", "iron-ore")
             resource_data_list: List of resource data dicts from get_reachable
+            mining_action: Injected MiningAction for mining operations
+            entity_ops: Injected EntityOperationsAction for inspection
         """
         self.name = name
         self._resource_data_list = resource_data_list
         self._resource_instances: Optional[List["BaseResource"]] = None
+        self._mining = mining_action
+        self._entity_ops = entity_ops
 
     @property
     def total(self) -> int:
@@ -105,7 +106,7 @@ class ResourceOrePatch:
         for data in self._resource_data_list:
             pos_data = data.get("position", {})
             if pos_data.get("x") == position.x and pos_data.get("y") == position.y:
-                return _create_resource_from_data(data)
+                return _create_resource_from_data(data, self._mining, self._entity_ops)
         return None
 
     def __getitem__(self, index: int) -> "BaseResource":
@@ -123,14 +124,16 @@ class ResourceOrePatch:
             )
 
         data = self._resource_data_list[index]
-        return _create_resource_from_data(data)
+        return _create_resource_from_data(data, self._mining, self._entity_ops)
 
-    def inspect(self, raw_data: bool = False) -> Union[str, ResourcePatchData]:
+    def inspect(self, raw_data: bool = False, live: bool = False) -> Union[str, ResourcePatchData]:
         """Return a representation of the resource patch.
 
         Args:
             raw_data: If False (default), returns a formatted string representation.
                       If True, returns the raw dictionary data.
+            live: If True, fetches live data from game via batch inspection (slower but current).
+                  If False (default), uses cached data from get_reachable.
 
         Returns:
             If raw_data=False: Formatted string representation
@@ -140,31 +143,40 @@ class ResourceOrePatch:
                 - total_amount (int): Total amount across all tiles
                 - tile_count (int): Number of tiles in patch
                 - position (dict): Average position {x, y}
-                - tiles (list): List of tile data dicts
+                - tiles (list): List of tile data dicts (live if live=True)
         """
+        tiles_data = self._resource_data_list
+        
+        # If live inspection requested, fetch current amounts from game
+        if live and self._entity_ops:
+            tiles_data = self._inspect_tiles_batch()
+        
+        # Calculate total from tiles
+        total_amount = sum(data.get("amount", 0) for data in tiles_data if "amount" in data)
+        
         if raw_data:
             return {
                 "name": self.name,
                 "type": self.resource_type,
-                "total_amount": self.total,
-                "tile_count": self.count,
+                "total_amount": total_amount,
+                "tile_count": len(tiles_data),
                 "position": {"x": self.position.x, "y": self.position.y},
-                "tiles": self._resource_data_list,
+                "tiles": tiles_data,
             }
 
         # Format as readable string
         lines = [
             f"ResourceOrePatch(name='{self.name}', type='{self.resource_type}')",
-            f"  Total amount: {self.total}",
-            f"  Tile count: {self.count}",
+            f"  Total amount: {total_amount}",
+            f"  Tile count: {len(tiles_data)}",
             f"  Average position: ({self.position.x:.1f}, {self.position.y:.1f})",
         ]
 
         # Show amount range if applicable
-        if self._resource_data_list:
+        if tiles_data:
             amounts = [
                 data.get("amount", 0)
-                for data in self._resource_data_list
+                for data in tiles_data
                 if "amount" in data
             ]
             if amounts:
@@ -173,6 +185,76 @@ class ResourceOrePatch:
                 )
 
         return "\n".join(lines)
+    
+    def _inspect_tiles_batch(self) -> List[Dict[str, Any]]:
+        """Batch inspect all tiles in this patch using efficient Lua loop.
+        
+        Similar to placement_hints batch validation pattern - generates Lua code
+        that inspects multiple resources in one RCON call.
+        
+        Returns:
+            List of updated tile data dicts with current amounts
+        """
+        if not self._entity_ops:
+            # Fallback to cached data if no entity_ops
+            return self._resource_data_list
+        
+        # Build Lua command for batch inspection
+        lua_code = f"""
+local surface = game.surfaces[1]
+local inspection = require("agent_actions.inspection")
+local results = {{}}
+
+"""
+        
+        # Add each tile inspection
+        for i, tile_data in enumerate(self._resource_data_list):
+            pos = tile_data.get("position", {})
+            lua_code += f"""
+local entity_{i} = surface.find_entity("{self.name}", {{x = {pos.get('x', 0)}, y = {pos.get('y', 0)}}})
+if entity_{i} and entity_{i}.valid then
+    results[{i + 1}] = inspection.inspect_entity(entity_{i})
+else
+    results[{i + 1}] = nil
+end
+"""
+        
+        lua_code += "\nrcon.print(helpers.table_to_json(results))"
+        
+        try:
+            import json
+            from FactoryVerse.agent.infra.rcon_handler import RconHandler
+            
+            # Execute batch inspection
+            result = self._entity_ops._rcon.execute(lua_code)
+            if not result:
+                return self._resource_data_list
+            
+            # Parse results
+            parsed = json.loads(result.strip())
+            
+            # Update tile data with live inspection results
+            updated_tiles = []
+            for i, tile_data in enumerate(self._resource_data_list):
+                inspection_data = parsed.get(str(i + 1)) if isinstance(parsed, dict) else (parsed[i] if i < len(parsed) else None)
+                
+                if inspection_data:
+                    # Merge inspection data with cached tile data
+                    updated_tile = tile_data.copy()
+                    updated_tile["amount"] = inspection_data.get("amount", tile_data.get("amount", 0))
+                    updated_tiles.append(updated_tile)
+                else:
+                    # Resource no longer exists or couldn't be inspected
+                    updated_tiles.append(tile_data)
+            
+            return updated_tiles
+            
+        except Exception as e:
+            # On error, return cached data
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Batch resource inspection failed: {e}, using cached data")
+            return self._resource_data_list
 
     async def mine(
         self, max_count: Optional[int] = None, timeout: Optional[int] = None
@@ -180,6 +262,7 @@ class ResourceOrePatch:
         """Mine a resource tile from this patch.
 
         Mines the first tile in the patch without requiring position.
+        Delegates to the injected MiningAction.
 
         Args:
             max_count: Max items to mine (None = mine up to 25, max 25)
@@ -190,7 +273,14 @@ class ResourceOrePatch:
 
         Raises:
             ValueError: If max_count exceeds 25
+            RuntimeError: If MiningAction not injected
         """
+        if self._mining is None:
+            raise RuntimeError(
+                f"Cannot mine {self.name}: MiningAction not injected. "
+                "Resource must be created through Reachable.get_resource() or Reachable.get_resources()."
+            )
+        
         # Enforce 25-item limit per operation
         if max_count is not None and max_count > 25:
             raise ValueError(
@@ -204,8 +294,18 @@ class ResourceOrePatch:
         if not self._resource_data_list:
             raise RuntimeError("Cannot mine from empty patch")
 
-        first_tile = self[0]
-        return await first_tile.mine(effective_max_count, timeout)
+        # Get position of first tile for mining
+        first_tile_data = self._resource_data_list[0]
+        pos_data = first_tile_data.get("position", {})
+        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
+        
+        # Delegate to injected MiningAction
+        return await self._mining.mine(
+            resource_name=self.name,
+            max_count=effective_max_count,
+            position=position,
+            timeout=timeout,
+        )
 
     def __repr__(self) -> str:
         """Clean summary of the resource patch."""
@@ -226,10 +326,17 @@ class BaseResource:
     """Base class for all mineable resources.
 
     Resources can be mined directly using the async mine() method.
+    Uses dependency injection pattern - receives MiningAction to enable mining.
     """
 
     def __init__(
-        self, name: str, position: MapPosition, resource_type: str, data: Dict[str, Any]
+        self,
+        name: str,
+        position: MapPosition,
+        resource_type: str,
+        data: Dict[str, Any],
+        mining_action: Optional["MiningAction"] = None,
+        entity_ops: Optional["EntityOperationsAction"] = None,
     ):
         """Initialize BaseResource.
 
@@ -238,6 +345,8 @@ class BaseResource:
             position: MapPosition of the resource
             resource_type: Factorio entity type ("resource", "tree", "simple-entity")
             data: Full resource data dict from get_reachable
+            mining_action: Injected MiningAction for mining operations
+            entity_ops: Injected EntityOperationsAction for inspection
         """
         self.name = name
         self.position = position
@@ -245,6 +354,8 @@ class BaseResource:
         self._data = data
         self._amount = data.get("amount")
         self._products: List[ProductData] = data.get("products", [])
+        self._mining = mining_action
+        self._entity_ops = entity_ops
 
     @property
     def amount(self) -> Optional[int]:
@@ -259,24 +370,38 @@ class BaseResource:
         """
         return self._products
 
-    @property
-    def _factory(self) -> "PlayingFactory":
-        """Get the current playing factory context."""
-        return _get_factory()
-
-    def inspect(self, raw_data: bool = False) -> Union[str, EntityInspectionData]:
+    def inspect(self, raw_data: bool = False, live: bool = False) -> Union[str, EntityInspectionData]:
         """Return a representation of the resource.
 
         Args:
             raw_data: If False (default), returns a formatted string representation.
                       If True, returns the raw dictionary data.
+            live: If True, fetches live data from game via inspection (slower but current).
+                  If False (default), uses cached data from get_reachable.
 
         Returns:
             If raw_data=False: Formatted string representation
-            If raw_data=True: Dictionary with resource data
+            If raw_data=True: Dictionary with resource data (live if live=True)
         """
+        data = self._data
+        
+        # If live inspection requested, fetch current state from game
+        if live and self._entity_ops:
+            try:
+                live_data = self._entity_ops.inspect_entity(self.name, self.position)
+                # Merge live data with cached data (live takes precedence)
+                data = {**self._data, **live_data}
+                # Update cached amount if available
+                if "amount" in live_data:
+                    self._amount = live_data["amount"]
+            except Exception as e:
+                # On error, use cached data
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Live resource inspection failed: {e}, using cached data")
+        
         if raw_data:
-            return self._data
+            return data
 
         # Format as readable string
         lines = [
@@ -284,8 +409,9 @@ class BaseResource:
             f"  Position: ({self.position.x:.1f}, {self.position.y:.1f})",
         ]
 
-        if self._amount is not None:
-            lines.append(f"  Amount: {self._amount}")
+        amount = data.get("amount", self._amount)
+        if amount is not None:
+            lines.append(f"  Amount: {amount}")
 
         if self._products:
             products_str = ", ".join([p.get("name", "unknown") for p in self._products])
@@ -298,6 +424,8 @@ class BaseResource:
     ) -> List["ItemStack"]:
         """Mine this resource.
 
+        Delegates to the injected MiningAction.
+
         Args:
             max_count: Max items to mine (None = mine up to 25, max 25)
             timeout: Optional timeout in seconds
@@ -307,7 +435,14 @@ class BaseResource:
 
         Raises:
             ValueError: If max_count exceeds 25
+            RuntimeError: If MiningAction not injected
         """
+        if self._mining is None:
+            raise RuntimeError(
+                f"Cannot mine {self.name}: MiningAction not injected. "
+                "Resource must be created through Reachable.get_resource() or Reachable.get_resources()."
+            )
+        
         # Enforce 25-item limit per operation
         if max_count is not None and max_count > 25:
             raise ValueError(
@@ -317,21 +452,13 @@ class BaseResource:
         # Cap at 25 even if None (to enforce hard limit)
         effective_max_count = min(max_count, 25) if max_count is not None else 25
 
-        from FactoryVerse.factory.item.base import ItemStack
-
-        # Use the factory's mine_resource method with this resource's position
-        # We need to find the resource by name and position
-        response = self._factory.mine_resource(self.name, effective_max_count)
-        result_payload = await self._factory._await_action(response, timeout=timeout)
-
-        # Parse result for items
-        items = []
-        result_data = result_payload.get("result", {})
-        if "actual_products" in result_data:
-            for name, count in result_data["actual_products"].items():
-                items.append(ItemStack(name=name, count=count, subgroup="raw-resource"))
-
-        return items
+        # Delegate to injected MiningAction
+        return await self._mining.mine(
+            resource_name=self.name,
+            max_count=effective_max_count,
+            position=self.position,
+            timeout=timeout,
+        )
 
     def __repr__(self) -> str:
         """String representation of the resource."""
@@ -387,61 +514,73 @@ class CrudeOil(BaseResource):
         )
 
 
-def _create_resource_from_data(data: Dict[str, Any]) -> BaseResource:
+def _create_resource_from_data(
+    data: Dict[str, Any],
+    mining_action: Optional["MiningAction"] = None,
+    entity_ops: Optional["EntityOperationsAction"] = None,
+) -> BaseResource:
     """Create appropriate resource instance from data dict.
 
     Args:
         data: Resource data dict from get_reachable
+        mining_action: Optional MiningAction to inject for mining operations
+        entity_ops: Optional EntityOperationsAction to inject for inspection
 
     Returns:
-        Appropriate BaseResource subclass instance
+        Appropriate BaseResource subclass instance with injected actions
     """
     name = data.get("name", "")
     resource_type = data.get("type", "resource")
     position_data = data.get("position", {})
     position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
 
-    # Map to specific resource classes
+    # Map to specific resource classes - all receive mining_action and entity_ops
     if resource_type == "simple-entity":
-        return RockEntity(name, position, resource_type, data)
+        return RockEntity(name, position, resource_type, data, mining_action, entity_ops)
     elif resource_type == "tree":
-        return TreeEntity(name, position, resource_type, data)
+        return TreeEntity(name, position, resource_type, data, mining_action, entity_ops)
     elif name == "copper-ore":
-        return CopperOre(name, position, resource_type, data)
+        return CopperOre(name, position, resource_type, data, mining_action, entity_ops)
     elif name == "iron-ore":
-        return IronOre(name, position, resource_type, data)
+        return IronOre(name, position, resource_type, data, mining_action, entity_ops)
     elif name == "coal":
-        return Coal(name, position, resource_type, data)
+        return Coal(name, position, resource_type, data, mining_action, entity_ops)
     elif name == "crude-oil":
-        return CrudeOil(name, position, resource_type, data)
+        return CrudeOil(name, position, resource_type, data, mining_action, entity_ops)
     else:
         # Default to BaseResource for unknown resources
-        return BaseResource(name, position, resource_type, data)
+        return BaseResource(name, position, resource_type, data, mining_action, entity_ops)
 
 
-def create_resource_from_reachable(data: Dict[str, Any]):
+def create_resource_from_reachable(
+    data: Dict[str, Any],
+    mining_action: Optional["MiningAction"] = None,
+    entity_ops: Optional["EntityOperationsAction"] = None,
+):
     """Create resource with full interface from reachable data.
 
     Returns a resource instance with full capabilities:
     - Has spatial properties (position, amount)
-    - Can be mined
-    - Can be inspected
+    - Can be mined (if mining_action provided)
+    - Can be inspected (if entity_ops provided)
 
     Args:
         data: Resource data dict from get_reachable()
+        mining_action: Optional MiningAction to inject for mining operations
+        entity_ops: Optional EntityOperationsAction to inject for inspection
 
     Returns:
         Resource instance (BaseResource subclass or ResourceOrePatch)
 
     Example:
-        >>> ore = create_resource_from_reachable(data)
+        >>> ore = create_resource_from_reachable(data, mining_action, entity_ops)
         >>> type(ore)
         <class 'IronOre'>
-        >>> await ore.mine(max_count=50)  # ✓ Works
-        >>> ore.inspect()  # ✓ Works
+        >>> await ore.mine(max_count=25)  # ✓ Works (if mining_action provided)
+        >>> ore.inspect(live=True)  # ✓ Works (if entity_ops provided)
     """
     # Create and return resource directly - has full interface
-    resource = _create_resource_from_data(data)
+    resource = _create_resource_from_data(data, mining_action, entity_ops)
     return resource
 
 
@@ -450,7 +589,7 @@ def create_resource_from_db(data: Dict[str, Any]):
 
     Returns a wrapped resource that provides read-only access:
     - Has all spatial properties and prototype data
-    - Can be inspected
+    - Can be inspected (cached data only, no live inspection)
     - Does NOT have mine() method
 
     This is achieved by wrapping the resource in RemoteViewResource.
@@ -467,13 +606,13 @@ def create_resource_from_db(data: Dict[str, Any]):
         <class 'RemoteViewResource'>
         >>> db_ore.position  # ✓ Works
         >>> db_ore.amount  # ✓ Works
-        >>> db_ore.inspect()  # ✓ Works
+        >>> db_ore.inspect()  # ✓ Works (cached data)
         >>> await db_ore.mine()  # ✗ AttributeError - no mine() method
     """
     from FactoryVerse.factory.resource.remote_view_resource import RemoteViewResource
 
-    # Create the resource with full interface
-    resource = _create_resource_from_data(data)
+    # Create the resource without mining_action or entity_ops (read-only)
+    resource = _create_resource_from_data(data, mining_action=None, entity_ops=None)
 
     # Wrap in RemoteViewResource for read-only access
     return RemoteViewResource(resource)
