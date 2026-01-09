@@ -77,11 +77,13 @@ rcon_client.send_command(
 print(f"✅ Synced {len(entity_list)} entities to Lua mod filter")
 
 # Create runtime using new factory pattern
+# Snapshot directory is under script-output in session dir
+snapshot_dir = runtime_config.session_dir / "script-output"
 runtime = create_runtime(
     rcon_client=rcon_client,
     agent_id=runtime_config.agent_id,
     udp_port=actual_udp_port,
-    snapshot_dir=runtime_config.snapshot_dir,
+    snapshot_dir=snapshot_dir,
     db_path=runtime_config.db_path,
 )
 
@@ -92,7 +94,7 @@ print(f"✅ Runtime created")
 print(f"   Agent: {runtime_config.agent_id}")
 print(f"   UDP Port: {actual_udp_port}")
 print(f"   DB: {runtime_config.db_path}")
-print(f"   Snapshots: {runtime_config.snapshot_dir}")
+print(f"   Snapshots: {snapshot_dir}")
 
 # Convenience accessors - make these available in the notebook namespace
 walking = runtime.walking
@@ -104,11 +106,12 @@ reachable = runtime.reachable
 resources = runtime.resources
 entity_ops = runtime.entity_ops
 placement = runtime.placement
+ghost_builder = runtime.ghost_builder
 remote_view = runtime.remote_view
 
 print("\n💡 Tech/recipe info available in initial_state.md")
 print("   Use research.queue('tech-name') to start researching!")
 print("\n📦 Available affordances:")
 print("   walking, mining, crafting, research, inventory, reachable, resources")
-print("   remote_view (map-wide queries via DuckDB)")
+print("   ghost_builder (build ghost entities), remote_view (map-wide queries via DuckDB)")
 print()

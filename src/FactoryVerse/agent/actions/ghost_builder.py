@@ -4,11 +4,13 @@ This module handles building ghost entities by walking to them and placing
 real entities. It works with ghost entities from:
 - Remote queries (runtime.remote_view.get_ghosts())
 - Reachable queries (runtime.reachable.get_ghosts())
+- GhostPlan objects (from placement_hints module)
 
 All ghost entities are represented as BaseEntity with is_ghost=True.
 """
 
-from typing import List, Dict, Any, Union, TYPE_CHECKING
+from FactoryVerse.factory.factorio_types import Direction
+from typing import List, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
     from FactoryVerse.agent.actions.inventory import AgentInventory
     from FactoryVerse.factory.entity.base_entity import BaseEntity
     from FactoryVerse.factory.types import MapPosition
+    from FactoryVerse.agent.actions.placement_hints import GhostPlan
 
 
 @dataclass
@@ -26,10 +29,6 @@ class GhostInfo:
     name: str
     position: "MapPosition"
     direction: int | None = None
-
-
-# Type alias for ghost entities
-GhostLike = "BaseEntity"
 
 
 class GhostBuilderAction:
@@ -64,7 +63,7 @@ class GhostBuilderAction:
         self._placement = placement
         self._inventory = inventory
 
-    def _extract_ghost_info(self, ghost: GhostLike) -> GhostInfo:
+    def _extract_ghost_info(self, ghost: "BaseEntity") -> GhostInfo:
         """Extract name and position from a ghost entity.
 
         Works with both Reachable and RemoteView wrapped ghosts.
@@ -79,7 +78,7 @@ class GhostBuilderAction:
 
     async def build_ghosts(
         self,
-        ghosts: List[GhostLike],
+        ghosts: List["BaseEntity"],
         count: int = 10,
         strict: bool = False,
     ) -> Dict[str, Any]:
@@ -146,8 +145,8 @@ class GhostBuilderAction:
         # Build ghosts one by one
         built_count = 0
         failed_count = 0
-        built_ghosts: List[GhostLike] = []
-        failed_ghosts: List[GhostLike] = []
+        built_ghosts: List[BaseEntity] = []
+        failed_ghosts: List[BaseEntity] = []
 
         total = len(ghosts_to_build)
         print(f"Building {total} ghosts...")
@@ -161,7 +160,7 @@ class GhostBuilderAction:
                 result = self._placement.place(
                     info.name,
                     info.position,
-                    direction=info.direction,
+                    direction=Direction(info.direction),
                 )
 
                 if result.success:
@@ -192,7 +191,7 @@ class GhostBuilderAction:
             "failed_ghosts": failed_ghosts,
         }
 
-    async def build_ghost(self, ghost: GhostLike) -> bool:
+    async def build_ghost(self, ghost: "BaseEntity") -> bool:
         """Build a single ghost entity.
 
         Convenience method for building one ghost. Walks to the ghost
@@ -206,3 +205,63 @@ class GhostBuilderAction:
         """
         result = await self.build_ghosts([ghost], count=1)
         return result["built_count"] == 1
+    
+    async def build_plan(self, plan: "GhostPlan", strict: bool = False) -> Dict[str, Any]:
+        """Build a GhostPlan by placing ghosts at all positions.
+        
+        This method commits a validated GhostPlan to the map as ghosts,
+        then builds them into real entities. It's a convenience wrapper
+        that combines ghost placement + building.
+        
+        Args:
+            plan: GhostPlan object from placement_hints module
+            strict: If True, validate agent has all items before building
+        
+        Returns:
+            Result dict with build statistics (same as build_ghosts)
+        
+        Example:
+            >>> plan = placement_hints.get_placement_line("transport-belt", start, end)
+            >>> result = await ghost_builder.build_plan(plan)
+        """
+        if not plan.valid:
+            return {
+                "built_count": 0,
+                "failed_count": 0,
+                "total_processed": 0,
+                "built_ghosts": [],
+                "failed_ghosts": [],
+                "error": "GhostPlan is not valid (validation failed)",
+            }
+        
+        # Place all ghosts from the plan
+        print(f"Placing {len(plan.positions)} ghosts for plan: {plan.description}")
+        placed_count = 0
+        
+        for position, direction in plan.positions:
+            try:
+                # Place ghost at position with label
+                self._placement.place(
+                    plan.entity_name,
+                    position,
+                    direction=direction,
+                    ghost=True,
+                    label=plan.label,
+                )
+                placed_count += 1
+            except Exception as e:
+                print(f"  Failed to place ghost at {position}: {e}")
+        
+        print(f"Placed {placed_count}/{len(plan.positions)} ghosts")
+        
+        # Now query the ghosts we just placed and build them
+        # We need to get them from the remote view since they're now in the DB
+        # This is a bit circular - we'd need remote_view access here
+        # For now, return placement stats
+        return {
+            "built_count": 0,
+            "failed_count": 0,
+            "total_processed": placed_count,
+            "placed_count": placed_count,
+            "error": "build_plan needs remote_view integration to query placed ghosts",
+        }

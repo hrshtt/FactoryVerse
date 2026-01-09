@@ -47,11 +47,6 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
     if not poles:
         return
 
-    # Build prototype lookup
-    pole_prototypes: Dict[str, Any] = {}
-    if hasattr(prototypes, "electric_poles"):
-        pole_prototypes = prototypes.electric_poles
-
     # Process each pole
     for row in poles:
         entity_key = row[0]
@@ -70,10 +65,8 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
         y = float(position.get("y", 0))
 
         # Get supply area distance from prototype
-        supply_area_distance = None
-        if entity_name in pole_prototypes:
-            supply_area_distance = pole_prototypes[entity_name].supply_area_distance
-
+        pole_proto = prototypes.get_prototype(entity_name)
+        supply_area_distance = pole_proto.get("supply_area_distance")
         if supply_area_distance is None:
             # Default values if prototype not found
             supply_area_distance = 2.5  # Default for small-electric-pole
@@ -85,10 +78,7 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
         max_y = y + supply_area_distance
 
         # Find connected poles (within maximum_wire_distance)
-        max_wire_distance = None
-        if entity_name in pole_prototypes:
-            max_wire_distance = pole_prototypes[entity_name].maximum_wire_distance
-
+        max_wire_distance = pole_proto.get("maximum_wire_distance")
         if max_wire_distance is None:
             max_wire_distance = 7.5  # Default for small-electric-pole
 
@@ -141,7 +131,7 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
 def derive_resource_patches(con: duckdb.DuckDBPyConnection) -> None:
     """
     Derive resource_patch table using DBSCAN clustering.
-    Uses _search_radius from ElectricMiningDrillPrototype as eps parameter.
+    Uses resource_searching_radius from electric-mining-drill prototype as eps parameter.
     Clustering is done GLOBALLY across all chunks for each resource type.
     """
     if not HAS_SKLEARN:
@@ -154,10 +144,8 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection) -> None:
 
     # Get search radius from prototype (uses PrototypeDataManager internally)
     prototypes = get_entity_prototypes()
-    search_radius = None
-    if hasattr(prototypes, "electric_mining_drill"):
-        search_radius = prototypes.electric_mining_drill._search_radius
-
+    drill_proto = prototypes.get_prototype("electric-mining-drill")
+    search_radius = drill_proto.get("resource_searching_radius")
     if search_radius is None:
         search_radius = 2.5  # Default
 

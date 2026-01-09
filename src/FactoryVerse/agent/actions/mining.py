@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import List, Optional, TYPE_CHECKING, Dict
 import logging
 
-from FactoryVerse.factory.item.base import ItemStack
 from FactoryVerse.factory.types import MapPosition
 from FactoryVerse.agent.models import (
     AsyncActionResponse,
@@ -18,6 +17,8 @@ from FactoryVerse.agent.models import (
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
     from ..infra.async_listener import AsyncActionListener
+    from FactoryVerse.factory.item.base import ItemStack
+    from FactoryVerse.agent.actions.place_entity import PlacementAction
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +69,24 @@ class MiningCompleted(AsyncActionCompletion):
         """True if any products were obtained."""
         return bool(self.actual_products)
 
-    def to_item_stacks(self) -> List[ItemStack]:
-        """Convert products to ItemStack list."""
+    def to_item_stacks(self, placement: Optional["PlacementAction"] = None) -> List["ItemStack"]:
+        """Convert products to ItemStack list with placement injected.
+        
+        Args:
+            placement: PlacementAction to inject into items (required for .place() to work)
+        """
+        from FactoryVerse.factory.item.create_item import create_item_stack
+        
         items = []
         for name, count in (self.actual_products or {}).items():
-            items.append(ItemStack(name=name, count=count, subgroup="raw-resource"))
+            items.append(
+                create_item_stack(
+                    name=name,
+                    count=count,
+                    placement=placement,
+                    subgroup="raw-resource",
+                )
+            )
         return items
 
 
@@ -110,16 +124,21 @@ class MiningAction:
     """
 
     def __init__(
-        self, rcon_handler: "RconHandler", async_listener: "AsyncActionListener"
+        self,
+        rcon_handler: "RconHandler",
+        async_listener: "AsyncActionListener",
+        placement: Optional["PlacementAction"] = None,
     ):
         """Initialize mining action.
 
         Args:
             rcon_handler: RCON handler for command execution
             async_listener: Async listener for action completion
+            placement: PlacementAction for item injection (optional for now)
         """
         self._rcon = rcon_handler
         self._listener = async_listener
+        self._placement = placement
 
     async def mine(
         self,
@@ -127,7 +146,7 @@ class MiningAction:
         max_count: Optional[int] = None,
         position: Optional[MapPosition] = None,
         timeout: Optional[int] = None,
-    ) -> List[ItemStack]:
+    ) -> List["ItemStack"]:
         """Mine a resource.
 
         Args:
@@ -137,7 +156,7 @@ class MiningAction:
             timeout: Optional timeout in seconds
 
         Returns:
-            List of ItemStack objects obtained from mining
+            List of ItemStack objects obtained from mining with placement injected
 
         Raises:
             RuntimeError: If mining fails to start or times out
@@ -166,8 +185,8 @@ class MiningAction:
         completion_dict = await self._listener.await_action(response, timeout=timeout)
         completion = MiningCompleted.from_dict(completion_dict)
 
-        # Return items as ItemStack list
-        return completion.to_item_stacks()
+        # Return items as ItemStack list with placement injected
+        return completion.to_item_stacks(self._placement)
 
     def cancel(self) -> MiningCancelled:
         """Cancel current mining action.

@@ -9,7 +9,7 @@ Ghost Tracking:
 """
 
 from dataclasses import dataclass
-from typing import Optional, Union, Dict, TYPE_CHECKING
+from typing import Optional, Union, Dict, Any, TYPE_CHECKING
 import logging
 
 from FactoryVerse.factory.types import MapPosition, Direction
@@ -50,6 +50,17 @@ class EntityPlaced(ActionResponse):
             return MapPosition(x=self.position["x"], y=self.position["y"])
         return None
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EntityPlaced":
+        """Create instance from dict, deriving is_ghost from entity_type."""
+        # Derive is_ghost from entity_type if not explicitly set
+        if "is_ghost" not in data and data.get("entity_type") == "entity-ghost":
+            data = dict(data)  # Copy to avoid mutating original
+            data["is_ghost"] = True
+
+        valid_fields = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid_fields)
+
 
 @dataclass
 class GhostRemoved(ActionResponse):
@@ -85,7 +96,7 @@ class PlacementAction:
     - remove_ghost(): Remove a ghost entity
 
     All methods return structured dataclass response types for type safety.
-    
+
     Ghost Tracking:
         Ghosts are tracked by fv_snapshot mod → DuckDB ghost table.
         No in-memory tracking needed. Query via remote_view.get_ghosts(sql).
@@ -121,7 +132,7 @@ class PlacementAction:
 
         Raises:
             RuntimeError: If RCON command fails
-        
+
         Note:
             Entity tracking is handled by fv_snapshot mod. The label is passed
             to RCON and stored in the snapshot. Query entities by label via:
@@ -150,7 +161,7 @@ class PlacementAction:
 
         Raises:
             RuntimeError: If RCON command fails
-        
+
         Note:
             Ghost removal is tracked by fv_snapshot mod. The ghost table
             is automatically updated when ghosts are destroyed.

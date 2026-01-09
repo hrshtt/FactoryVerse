@@ -63,6 +63,11 @@ from .electric_pole import (
     Substation,
 )
 
+# New entities
+from .lab import Lab
+from .accumulator import Accumulator
+from .generator import Boiler, SteamEngine, SteamTurbine
+
 __all__ = [
     # Containers
     "Container",
@@ -115,4 +120,10 @@ __all__ = [
     "MediumElectricPole",
     "BigElectricPole",
     "Substation",
+    # New entities
+    "Lab",
+    "Accumulator",
+    "Boiler",
+    "SteamEngine",
+    "SteamTurbine",
 ]

@@ -1,21 +1,21 @@
-"""Abstract base entity class and entity position helper.
+"""Base entity class and entity position helper.
 
-This module defines the core BaseEntity contract that all entity implementations
-must follow. BaseEntity defines WHAT an entity is through its mixins and properties,
-and HOW to interact with it through the view property that controls access.
+Defines the core BaseEntity contract that all entity implementations inherit.
+Uses Component Registry pattern for inspect() - returns EntityInspection
+with capability slots populated based on isinstance checks.
 """
 
-from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional, Union, List, Dict, Any, TYPE_CHECKING
-from FactoryVerse.factory.types import MapPosition, Direction, EntityInspectionData
-from FactoryVerse.factory.mixins import SpatialPropertiesMixin, PrototypeMixin
-from FactoryVerse.factory.prototypes import BasePrototype, get_entity_prototypes
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.factory.prototypes import get_entity_prototypes, get_width_height
+import math
 
 if TYPE_CHECKING:
-    from FactoryVerse.factory.item.base import PlaceableItem, ItemStack
+    from FactoryVerse.factory.item.base import ItemStack
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from .inspection import EntityInspection
 
 
 class EntityView(Enum):
@@ -28,57 +28,32 @@ class EntityPosition(MapPosition):
 
     High-level position type that knows about entities, items, and prototypes.
     Provides spatial reasoning for placement and layout calculations.
-    MapPosition remains pure - this handles the DSL-aware logic.
-
-    Can be bound to a parent entity, making offset calculations more ergonomic:
-        furnace.position.offset_by_entity(direction=Direction.NORTH)
     """
 
     def __init__(
         self,
         x: float,
         y: float,
-        entity: Optional[Union["BaseEntity", "PlaceableItem"]] = None,
+        entity: Optional["BaseEntity"] = None,
     ):
-        """Initialize EntityPosition, optionally bound to an entity.
-
-        Args:
-            x: X coordinate
-            y: Y coordinate
-            entity: Optional parent entity for default dimension calculations
-        """
         super().__init__(x, y)
         self._entity = entity
 
     def offset_by_entity(
         self,
         direction: Direction,
-        entity: Optional[Union["BaseEntity", "PlaceableItem", BasePrototype]] = None,
+        entity: Optional["BaseEntity"] = None,
         gap: int = 0,
     ) -> "EntityPosition":
         """Calculate position offset by entity dimensions in a cardinal direction.
 
-        Uses parent entity dimensions if no entity is provided.
-
         Args:
             direction: Cardinal direction to offset (NORTH/SOUTH/EAST/WEST)
-            entity: Entity, item, or prototype to get dimensions from (uses parent if None)
+            entity: Entity to get dimensions from (uses parent if None)
             gap: Additional tiles of spacing (default 0 for touching)
 
         Returns:
             New EntityPosition offset by entity dimensions + gap
-
-        Examples:
-            >>> # Offset using bound entity (most ergonomic)
-            >>> furnace = reachable_entities.get_entity("stone-furnace")
-            >>> next_pos = furnace.position.offset_by_entity(direction=Direction.NORTH)
-            >>>
-            >>> # Offset using different entity's dimensions
-            >>> next_pos = furnace.position.offset_by_entity(drill_item, Direction.EAST)
-            >>>
-            >>> # Standalone usage
-            >>> entity_pos = EntityPosition(x=10, y=20)
-            >>> next_pos = entity_pos.offset_by_entity(furnace, Direction.NORTH, gap=1)
         """
         if direction is None:
             raise ValueError("direction is required")
@@ -86,8 +61,7 @@ class EntityPosition(MapPosition):
         ref = entity or self._entity
         if ref is None:
             raise ValueError(
-                "No entity provided and no parent entity bound to this position. "
-                "Either pass an entity or use EntityPosition from an entity's .position property."
+                "No entity provided and no parent entity bound to this position."
             )
 
         if not direction.is_cardinal():
@@ -95,62 +69,68 @@ class EntityPosition(MapPosition):
                 f"Cannot offset in non-cardinal direction: {direction.name}"
             )
 
-        # Extract tile dimensions (all three types have these properties)
         tile_w = ref.tile_width
         tile_h = ref.tile_height
 
-        # Calculate distance based on direction
-        # NORTH/SOUTH: use height, EAST/WEST: use width
         if direction in (Direction.NORTH, Direction.SOUTH):
             distance = tile_h + gap
-        else:  # EAST or WEST
+        else:
             distance = tile_w + gap
 
-        # Calculate new position based on cardinal direction
-        # Positive x = east, positive y = south
         if direction == Direction.NORTH:
             new_x, new_y = self.x, self.y - distance
         elif direction == Direction.EAST:
             new_x, new_y = self.x + distance, self.y
         elif direction == Direction.SOUTH:
             new_x, new_y = self.x, self.y + distance
-        else:  # WEST
+        else:
             new_x, new_y = self.x - distance, self.y
 
-        # Return new EntityPosition, not bound to any entity (it's just a calculated position)
         return EntityPosition(x=new_x, y=new_y)
 
 
-class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
-    """Abstract base class for all entity implementations.
+class BaseEntity:
+    """Base class for all entity implementations.
 
-    Defines WHAT an entity is through its mixins and properties,
-    and HOW to interact with it through the view property that controls access.
+    Uses Component Registry pattern for inspection - the inspect() method
+    returns an EntityInspection with capability slots populated based on
+    which mixins the entity inherits from.
 
     **For Agents**: Entities are returned with appropriate view settings:
-    - Reachable entities: Full access - can mutate entity state, build/remove ghosts
-    - Remote entities: Read-only access - can inspect but not mutate, can remove ghosts
+    - Reachable entities: Full access (can mutate entity state)
+    - Remote entities: Read-only access (can inspect only)
     - Ghost entities: Limited operations (build, remove, static inspect)
-
-    Ghosts are entities with is_ghost=True. They appear in entity queries
-    for spatial awareness but have limited operations (build, remove, static inspect).
     """
 
     # Blocked methods by view/ghost status
-    _REACHABLE_ONLY = frozenset({
-        "pickup", "add_fuel", "add_ingredients", "take_products",
-        "store_items", "take_items", "set_recipe", "build"
-    })
-    _GHOST_BLOCKED = frozenset({
-        "pickup", "add_fuel", "add_ingredients", "take_products",
-        "store_items", "take_items", "set_recipe"
-    })
+    _REACHABLE_ONLY = frozenset(
+        {
+            "pickup",
+            "add_fuel",
+            "add_ingredients",
+            "take_products",
+            "store_items",
+            "take_items",
+            "set_recipe",
+            "build",
+        }
+    )
+    _GHOST_BLOCKED = frozenset(
+        {
+            "pickup",
+            "add_fuel",
+            "add_ingredients",
+            "take_products",
+            "store_items",
+            "take_items",
+            "set_recipe",
+        }
+    )
 
     def __init__(
         self,
         name: str,
         position: MapPosition,
-        direction: Optional[Direction] = None,
         is_ghost: bool = False,
         ghost_name: Optional[str] = None,
         view: EntityView = EntityView.REMOTE,
@@ -161,266 +141,259 @@ class BaseEntity(SpatialPropertiesMixin, PrototypeMixin, ABC):
         Args:
             name: Entity prototype name (e.g., "stone-furnace")
             position: Entity position in the world
-            direction: Entity direction (if applicable)
-            is_ghost: Whether this is a ghost entity (default: False)
+            is_ghost: Whether this is a ghost entity
             ghost_name: For ghosts, the entity prototype this ghost represents
-            view: Entity view type (REMOTE or REACHABLE, default: REMOTE)
-            **kwargs: Additional entity-specific properties
+            view: Entity view type (REMOTE or REACHABLE)
         """
         self.name = name
         self._raw_position = position
-        self.direction = direction
         self._is_ghost = is_ghost
         self._ghost_name = ghost_name
         self._view = view
-        self._prototype_cache: Optional[BasePrototype] = None
+        self._prototype_cache: Optional[Dict[str, Any]] = None
 
         # Action dependencies (injected during entity creation)
         self._entity_ops: Optional["EntityOperationsAction"] = None
         self._place_ops: Optional["PlacementAction"] = None
 
-        # Handle any additional kwargs for entity-specific properties
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+    # =========================================================================
+    # Properties (absorbed from SpatialPropertiesMixin and PrototypeMixin)
+    # =========================================================================
 
     @property
     def position(self) -> EntityPosition:
-        """Get entity position as EntityPosition bound to this entity.
-
-        **For Agents**: Use this for spatial calculations:
-        - next_pos = entity.position.offset_by_entity(direction=Direction.NORTH)
-        - distance = entity.position.distance_to(other_pos)
-        """
+        """Get entity position as EntityPosition bound to this entity."""
         return EntityPosition(
             x=self._raw_position.x, y=self._raw_position.y, entity=self
         )
 
-    def _load_prototype(self) -> BasePrototype:
-        """Load entity prototype by direct lookup.
+    @property
+    def prototype(self) -> Dict[str, Any]:
+        """Get prototype data as dict (lazy-loaded)."""
+        if self._prototype_cache is None:
+            protos = get_entity_prototypes()
+            self._prototype_cache = protos.get_prototype(self.name)
+        return self._prototype_cache
 
-        Entities have a simpler prototype loading path than items:
-        1. Get entity type from name
-        2. Load prototype data for that type
-        """
-        protos = get_entity_prototypes()
-        entity_type = protos.get_entity_type(self.name)
-        if entity_type and entity_type in protos.data:
-            entity_data = protos.data[entity_type].get(self.name, {})
-            return BasePrototype(_data=entity_data)
-        # Fallback to empty prototype
-        return BasePrototype(_data={})
+    @property
+    def tile_width(self) -> int:
+        """Calculate tile width from prototype collision_box."""
+        EPSILON = 0.001
+        proto = self.prototype
+        if "tile_width" in proto:
+            return int(proto["tile_width"])
+        if "collision_box" in proto:
+            w, _ = get_width_height(proto["collision_box"])
+            return int(math.ceil(w - EPSILON))
+        return 0
+
+    @property
+    def tile_height(self) -> int:
+        """Calculate tile height from prototype collision_box."""
+        EPSILON = 0.001
+        proto = self.prototype
+        if "tile_height" in proto:
+            return int(proto["tile_height"])
+        if "collision_box" in proto:
+            _, h = get_width_height(proto["collision_box"])
+            return int(math.ceil(h - EPSILON))
+        return 0
+
+    @property
+    def footprint(self) -> tuple:
+        """Get (width, height) tuple for spatial calculations."""
+        return (self.tile_width, self.tile_height)
 
     @property
     def is_ghost(self) -> bool:
-        """Whether this is a ghost entity.
-
-        **For Agents**: Ghosts are placeholder entities that can be built.
-        They appear in spatial queries but have limited operations.
-        """
+        """Whether this is a ghost entity."""
         return self._is_ghost
 
     @property
     def ghost_name(self) -> Optional[str]:
-        """For ghost entities, the entity prototype this ghost represents.
-
-        **For Agents**: Use this to know what entity will be created when building.
-        Returns None for non-ghost entities.
-        """
+        """For ghost entities, the entity prototype this ghost represents."""
         return self._ghost_name if self._is_ghost else None
 
-    def inspect(self, raw_data: bool = False) -> Union[str, "EntityInspectionData"]:
+    # =========================================================================
+    # Inspection - Component Registry Pattern
+    # =========================================================================
+
+    def inspect(self) -> "EntityInspection":
         """Inspect entity state with live game data.
 
         **For Agents**: Use this to check entity status, inventories, progress, etc.
-        Entity must be wrapped in a view (Reachable/RemoteView) for this to work.
-
-        For ghost entities, returns static data (ghosts don't have live state).
-
-        Args:
-            raw_data: If False (default), returns formatted string for reading.
-                     If True, returns raw dictionary for programmatic access.
+        Returns EntityInspection with capability slots populated based on entity type.
 
         Returns:
-            Formatted string or EntityInspectionData TypedDict
+            EntityInspection with populated capability slots
         """
-        # Ghosts return static inspection (no live state)
-        if self._is_ghost:
-            return self._format_ghost_inspection()
+        from .inspection import EntityInspection
+        from .capabilities import (
+            BurnerMixin,
+            ElectricMixin,
+            CrafterMixin,
+            MinerMixin,
+            InserterMixin,
+            FluidMixin,
+            BeltMixin,
+        )
 
+        # For ghosts, return minimal static inspection
+        if self._is_ghost:
+            return EntityInspection(
+                name=self.name,
+                position={"x": self.position.x, "y": self.position.y},
+                direction=getattr(self, "direction", None),
+                is_ghost=True,
+            )
+
+        # Get live inspection data from game
         if self._entity_ops is None:
             raise RuntimeError(
-                f"Cannot inspect {self.__class__.__name__}: entity_ops not injected. "
-                "Entity must be wrapped in a view (Reachable/RemoteView) for inspection."
+                f"Cannot inspect {self.__class__.__name__}: entity_ops not injected."
             )
-        data = self._entity_ops.inspect_entity(self.name, self.position)
-        if raw_data:
-            return data  # type: ignore
-        return self._format_inspection(data)
 
-    def _format_ghost_inspection(self) -> str:
-        """Format static ghost inspection data.
+        raw_data = self._entity_ops.inspect_entity(self.name, self.position)
 
-        Ghosts don't have live state (no fuel, no recipe progress, no inventory).
-        Returns a static representation based on the ghost's planned entity type.
-        """
-        lines = [
-            f"=== {self.name} (GHOST) ===",
-            f"Position: ({self.position.x}, {self.position.y})",
-            f"Will build: {self._ghost_name or self.name}",
-        ]
-        if self.direction is not None:
-            lines.append(f"Direction: {self.direction.name}")
-        lines.append("Status: Ghost (no live state)")
-        lines.append("")
-        lines.append("Use .build() to construct this ghost into a real entity.")
-        lines.append("Use .remove() to delete this ghost.")
-        return "\n".join(lines)
+        # Build base inspection
+        inspection = EntityInspection(
+            name=self.name,
+            position={"x": self.position.x, "y": self.position.y},
+            direction=getattr(self, "direction", None),
+            status=raw_data.get("status"),
+            is_ghost=False,
+        )
+
+        # Populate capability slots via isinstance checks
+        if isinstance(self, BurnerMixin):
+            inspection.burner = self._get_burner_state(raw_data)
+
+        if isinstance(self, ElectricMixin):
+            inspection.electric = self._get_electric_state(raw_data)
+
+        if isinstance(self, CrafterMixin):
+            inspection.crafter = self._get_crafter_state(raw_data)
+
+        if isinstance(self, MinerMixin):
+            inspection.miner = self._get_miner_state(raw_data)
+
+        if isinstance(self, InserterMixin):
+            inspection.inserter = self._get_inserter_state(raw_data)
+
+        if isinstance(self, FluidMixin):
+            inspection.fluid = self._get_fluid_state(raw_data)
+
+        if isinstance(self, BeltMixin):
+            inspection.belt = self._get_belt_state(raw_data)
+
+        # ===== Category-specific states (from implementations) =====
+        from .implementations.container import Container
+        from .implementations.lab import Lab
+        from .implementations.accumulator import Accumulator
+        from .implementations.electric_pole import ElectricPole
+        from .implementations.generator import GeneratorMixin
+
+        if isinstance(self, Container):
+            inspection.container = self._get_container_state(raw_data)
+
+        if isinstance(self, Lab):
+            inspection.lab = self._get_lab_state(raw_data)
+
+        if isinstance(self, Accumulator):
+            inspection.accumulator = self._get_accumulator_state(raw_data)
+
+        if isinstance(self, ElectricPole):
+            inspection.electric_pole = self._get_electric_pole_state(raw_data)
+
+        if isinstance(self, GeneratorMixin):
+            inspection.generator = self._get_generator_state(raw_data)
+
+        return inspection
+
+    # =========================================================================
+    # Actions
+    # =========================================================================
 
     def __getattribute__(self, name: str):
-        """Filter method access based on view and ghost status.
-        
-        Control flow makes the distinction clear:
-        1. View (REACHABLE vs REMOTE) controls proximity-based access:
-           - REMOTE entities: read-only (can inspect, can remove ghosts, cannot build/mutate)
-           - REACHABLE entities: full access (can build ghosts, can mutate)
-        2. Ghost status controls what operations make sense:
-           - Ghosts: can build/remove, cannot mutate (no live state to mutate)
-           - Real entities: can mutate (have live state)
-        
-        This means:
-        - REACHABLE ghost: can build (proximity + is ghost) ✅
-        - REMOTE ghost: cannot build (no proximity) ❌
-        - REACHABLE real entity: can mutate ✅
-        - REMOTE real entity: cannot mutate ❌
-        """
+        """Filter method access based on view and ghost status."""
         attr = super().__getattribute__(name)
-        
-        # Only filter callable methods (not properties or private attributes)
-        if not callable(attr) or name.startswith('_'):
+
+        if not callable(attr) or name.startswith("_"):
             return attr
-        
-        # Get view and ghost status (using super() to avoid recursion)
-        view = super().__getattribute__('_view')
-        is_ghost = super().__getattribute__('_is_ghost')
-        
-        # Step 1: View-based filtering (proximity check)
-        # REMOTE entities cannot perform mutations, including building ghosts
+
+        view = super().__getattribute__("_view")
+        is_ghost = super().__getattribute__("_is_ghost")
+
         if view == EntityView.REMOTE and name in BaseEntity._REACHABLE_ONLY:
             raise AttributeError(
                 f"Cannot {name}() remotely. Entity not reachable. "
                 "Use reachable_entities.get_entity() for full access."
             )
-        
-        # Step 2: Ghost-based filtering (state check)
-        # Ghosts cannot be mutated (they have no live state), but can be built/removed if REACHABLE
+
         if is_ghost and name in BaseEntity._GHOST_BLOCKED:
             raise AttributeError(
                 f"Cannot {name}() on ghost entity. "
-                "Ghosts are placeholders - use build() first to create a real entity."
+                "Ghosts are placeholders - use build() first."
             )
-        
+
         return attr
 
     def build(self) -> Dict[str, Any]:
-        """Build ghost into real entity. Ghost-only.
-
-        **For Agents**: Use this to commit a ghost and create a real entity.
-        Only works on ghost entities (entity.is_ghost == True).
-
-        Returns:
-            ActionResult dict with success status
-        """
+        """Build ghost into real entity. Ghost-only."""
         if not self._is_ghost:
-            raise RuntimeError(
-                f"Cannot build {self.name}: not a ghost entity. "
-                "Use build() only on ghost entities."
-            )
-        
+            raise RuntimeError(f"Cannot build {self.name}: not a ghost entity.")
+
         if self._place_ops is None:
-            raise RuntimeError(
-                f"Cannot build {self.name}: place_ops not injected. "
-                "Entity must be created with placement capabilities."
-            )
-        
-        # Use ghost_name (what entity to create) for placement
+            raise RuntimeError(f"Cannot build {self.name}: place_ops not injected.")
+
         entity_name = self._ghost_name or self.name
         result = self._place_ops.place(
             entity_name,  # type: ignore
             self.position,
-            self.direction,
+            getattr(self, "direction", None),
             ghost=False,
         )
         return {"success": result.success}  # type: ignore
 
     def remove(self) -> bool:
-        """Remove ghost entity. Ghost-only.
-
-        **For Agents**: Use this to delete a ghost you no longer want.
-        Only works on ghost entities (entity.is_ghost == True).
-
-        Note: Ghost removal can be done remotely (no reachability required).
-
-        Returns:
-            True if successfully removed, False otherwise
-        """
+        """Remove ghost entity. Ghost-only."""
         if not self._is_ghost:
             raise RuntimeError(
-                f"Cannot remove {self.name} via remove(): not a ghost entity. "
-                "Use pickup() to remove real entities."
+                f"Cannot remove {self.name} via remove(): not a ghost. Use pickup()."
             )
-        
+
         if self._place_ops is None:
-            raise RuntimeError(
-                f"Cannot remove {self.name}: place_ops not injected. "
-                "Entity must be created with placement capabilities."
-            )
-        
+            raise RuntimeError(f"Cannot remove {self.name}: place_ops not injected.")
+
         entity_name = self._ghost_name or self.name
         result = self._place_ops.remove_ghost(entity_name, self.position)
         return result.success
 
     def pickup(self) -> List["ItemStack"]:
-        """Pick up the entity and return extracted items.
-
-        **For Agents**: Use this to remove an entity and get its contents.
-        Entity must be reachable for this to work.
-
-        Returns:
-            List of ItemStack objects representing items extracted from the entity
-        """
+        """Pick up the entity and return extracted items with placement injected."""
         if self._entity_ops is None:
             raise RuntimeError(
-                f"Cannot pickup {self.__class__.__name__}: entity_ops not injected. "
-                "Entity must be reachable."
+                f"Cannot pickup {self.__class__.__name__}: entity_ops not injected."
             )
         result = self._entity_ops.pickup_entity(self.name, self.position)
-        from FactoryVerse.factory.item.base import ItemStack
+        from FactoryVerse.factory.item.create_item import create_item_stack
 
         if result.extracted_items:
             return [
-                ItemStack(name, count) for name, count in result.extracted_items.items()
+                create_item_stack(name, count, placement=self._place_ops)
+                for name, count in result.extracted_items.items()
             ]
         return []
 
-    @abstractmethod
-    def _format_inspection(self, data: Dict[str, Any]) -> str:
-        """Format inspection data for agent readability.
-
-        Entity-specific formatting logic. Each entity type knows how to
-        present its data (furnace shows burner info, assembler shows recipe, etc.)
-
-        Args:
-            data: Raw inspection data from the game
-
-        Returns:
-            Formatted string for agent consumption
-        """
-        pass
-
     def __repr__(self) -> str:
-        """Show entity with view prefix (Reachable or Remote), with GHOST: prefix for ghosts."""
+        """Show entity with view prefix."""
         pos = self.position
         prefix = self._view.value.capitalize()
-        entity_name = f"GHOST:{self.__class__.__name__}" if self._is_ghost else self.__class__.__name__
-        dir_str = f", direction={self.direction.name}" if self.direction is not None else ""
-        return f"{prefix}[{entity_name}](name='{self.name}', position=({pos.x}, {pos.y}){dir_str})"
+        entity_name = (
+            f"GHOST:{self.__class__.__name__}"
+            if self._is_ghost
+            else self.__class__.__name__
+        )
+        direction = getattr(self, "direction", None)
+        dir_str = f", dir={direction.name}" if direction else ""
+        return f"{prefix}[{entity_name}]('{self.name}', ({pos.x}, {pos.y}){dir_str})"

@@ -15,11 +15,12 @@ from typing import Optional, Dict, Any, List, Union, TYPE_CHECKING
 import logging
 
 from FactoryVerse.factory.types import MapPosition
-from FactoryVerse.factory.item.base import ItemStack
 from FactoryVerse.agent.models import ActionResponse
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
+    from FactoryVerse.factory.item.base import ItemStack
+    from FactoryVerse.agent.actions.place_entity import PlacementAction
 
 logger = logging.getLogger(__name__)
 
@@ -94,20 +95,28 @@ class InventoryItemTaken(ActionResponse):
         """True if multiple item types were taken."""
         return bool(self.items and len(self.items) > 1)
 
-    def to_item_stack(self) -> ItemStack:
-        """Convert to ItemStack (for single item transfers)."""
-        return ItemStack(name=self.item_name, count=self.count, subgroup="raw-material")
-
-    def to_item_stacks(self) -> List[ItemStack]:
-        """Convert to list of ItemStacks (for multi-item transfers)."""
+    def to_item_stacks(self, placement: Optional["PlacementAction"] = None) -> List["ItemStack"]:
+        """Convert to list of ItemStacks with placement injected.
+        
+        Args:
+            placement: PlacementAction to inject into items (required for .place() to work)
+            
+        Returns:
+            List of ItemStack instances with placement injected
+        """
+        from FactoryVerse.factory.item.create_item import create_item_stack
+        
         if self.items:
             return [
-                ItemStack(
-                    name=item["name"], count=item["count"], subgroup="raw-material"
+                create_item_stack(
+                    name=item["name"],
+                    count=item["count"],
+                    placement=placement,
+                    subgroup="raw-material",
                 )
                 for item in self.items
             ]
-        return [self.to_item_stack()]
+        return [create_item_stack(self.item_name, self.count, placement=placement)]
 
 
 @dataclass
@@ -202,10 +211,10 @@ class EntityOperationsAction:
     def set_entity_filter(
         self,
         entity_name: str,
+        position: MapPosition,
         inventory_type: str,
         filter_index: Optional[int] = None,
         filter_item: Optional[str] = None,
-        position: Optional[MapPosition] = None,
     ) -> EntityFilterSet:
         """Set inventory filter on an entity (inserter, filtered container).
 
@@ -298,7 +307,7 @@ class EntityOperationsAction:
         self,
         entity_name: str,
         inventory_type: str,
-        items: Union[ItemStack, List[ItemStack]],
+        items: Union["ItemStack", List["ItemStack"]],
         position: Optional[MapPosition] = None,
     ) -> Union[InventoryItemPut, List[InventoryItemPut]]:
         """Put items from agent's inventory into entity's inventory.

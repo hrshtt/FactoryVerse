@@ -1,94 +1,107 @@
 """Electric pole entity implementations.
 
-Electric poles distribute electricity across the factory.
-Includes: SmallElectricPole, MediumElectricPole, BigElectricPole, Substation
+Electric poles distribute power.
 """
 
-from typing import Dict, Optional
-from FactoryVerse.factory.types import MapPosition, Direction
+from typing import List, Optional, TYPE_CHECKING
+from pydantic import BaseModel, Field
 from FactoryVerse.factory.entity.base_entity import BaseEntity
-from FactoryVerse.factory.entity.inspect import (
-    ElectricPoleInspection,
-    EnergyData,
-)
+
+if TYPE_CHECKING:
+    from FactoryVerse.factory.types import BoundingBox
 
 
-def _parse_energy(data: Optional[Dict]) -> Optional[EnergyData]:
-    """Parse energy data from Lua response."""
-    if data is None:
-        return None
-    return EnergyData(
-        current=data.get("current", 0),
-        capacity=data.get("capacity", 0),
-    )
+class ElectricPoleState(BaseModel):
+    """State for electric pole entities (stub - implement later).
 
-
-class ElectricPole(BaseEntity):
-    """An electric pole entity.
-
-    **For Agents**: Electric poles connect to form a power network. They have a supply
-    area where machines can draw power, and a wire reach defining connection distance.
+    Source: runtime_inspection.jsonl electric pole fields
     """
 
-    def _format_inspection(self, data: Dict) -> str:
-        """Format electric pole inspection data.
+    electric_network_id: Optional[int] = None
+    connected_poles: List[str] = Field(default_factory=list)  # Entity names
+    supply_area_entities: int = 0  # Count of entities in supply area
 
-        Args:
-            data: Raw inspection data from Lua (matches inspect_electric_pole output)
+
+class ElectricPoleMixin:
+    """Mixin for electric pole entities (stub)."""
+
+    is_ghost: bool
+
+    def _get_electric_pole_state(self, inspection_data: dict) -> ElectricPoleState:
+        """Get electric pole state from inspection data."""
+        if self.is_ghost:
+            return ElectricPoleState()
+
+        # Parse connected poles
+        connected = []
+        neighbours = inspection_data.get("neighbours", [])
+        if isinstance(neighbours, list):
+            for n in neighbours:
+                if n and n.get("name"):
+                    connected.append(n["name"])
+
+        return ElectricPoleState(
+            electric_network_id=inspection_data.get("electric_network_id"),
+            connected_poles=connected,
+        )
+
+
+class ElectricPole(ElectricPoleMixin, BaseEntity):
+    """Electric pole - distributes power.
+
+    **For Agents**: Connects to other poles to form power network.
+    """
+
+    def get_supply_area(self) -> "BoundingBox":
+        """Calculate power supply area (static, geometric).
+
+        Returns a bounding box representing the area where this pole
+        can supply power to entities.
 
         Returns:
-            Formatted string for agent consumption
-        """
-        pos_data = data.get("position", {})
-        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
+            BoundingBox covering the supply area
 
-        inspection = ElectricPoleInspection(
-            entity_name=data.get("entity_name", ""),
-            entity_type=data.get("entity_type", ""),
-            position=position,
-            direction=data.get("direction", 0),
-            tick=data.get("tick", 0),
-            health=data.get("health"),
-            max_health=data.get("max_health"),
-            status=data.get("status"),
-            electric_network_id=data.get("electric_network_id"),
-            is_connected=data.get("is_connected", False),
-            energy=_parse_energy(data.get("energy")),
+        Example:
+            >>> pole = get_entity("small-electric-pole", pos)
+            >>> supply_area = pole.get_supply_area()
+        """
+        from FactoryVerse.factory.types import BoundingBox
+        distance = self.prototype["supply_area_distance"]
+        x, y = self.position.x, self.position.y
+        return BoundingBox.from_tuple(
+            ((x - distance, y - distance), (x + distance, y + distance))
         )
-        return str(inspection)
+
+    @property
+    def supply_area_distance(self) -> float:
+        """Get supply area radius from prototype."""
+        return self.prototype["supply_area_distance"]
+
+    @property
+    def maximum_wire_distance(self) -> float:
+        """Get maximum wire connection distance from prototype."""
+        return self.prototype["maximum_wire_distance"]
 
 
 class SmallElectricPole(ElectricPole):
-    """Small electric pole - basic, short range.
-
-    Supply area: 5x5, Wire reach: 7.5 tiles
-    """
+    """Small electric pole - basic, short range."""
 
     pass
 
 
 class MediumElectricPole(ElectricPole):
-    """Medium electric pole - larger supply area.
-
-    Supply area: 7x7, Wire reach: 9 tiles
-    """
+    """Medium electric pole - longer range, larger supply area."""
 
     pass
 
 
 class BigElectricPole(ElectricPole):
-    """Big electric pole - long range connections.
-
-    Supply area: 4x4, Wire reach: 30 tiles
-    """
+    """Big electric pole - very long range, no supply area."""
 
     pass
 
 
 class Substation(ElectricPole):
-    """Substation - largest supply area.
-
-    Supply area: 18x18, Wire reach: 18 tiles
-    """
+    """Substation - long range with large supply area."""
 
     pass

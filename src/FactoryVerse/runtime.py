@@ -64,6 +64,7 @@ class AgentRuntime:
     - runtime.reachable - Reachable entity queries
     - runtime.resources - Reachable resource queries
     - runtime.research - Research actions
+    - runtime.ghost_builder - Ghost building orchestration
     - runtime.remote_view - Map-wide entity queries (DuckDB)
     """
 
@@ -97,19 +98,27 @@ class AgentRuntime:
         from FactoryVerse.agent.actions.inventory import AgentInventory
         from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
         from FactoryVerse.agent.actions.place_entity import PlacementAction
+        from FactoryVerse.agent.actions.ghost_builder import GhostBuilderAction
         from FactoryVerse.agent.actions.reachable import (
             ReachableEntities,
             ReachableResources,
         )
 
         # Wire up actions with their dependencies
-        self._walking = MovementAction(self._rcon, self._listener)
-        self._mining = MiningAction(self._rcon, self._listener)
-        self._crafting = CraftingAction(self._rcon, self._listener)
-        self._research = ResearchAction(self._rcon)
-        self._inventory = AgentInventory(self._rcon)
         self._entity_ops = EntityOperationsAction(self._rcon)
         self._placement = PlacementAction(self._rcon)
+        
+        # Actions that need placement for item injection
+        self._walking = MovementAction(self._rcon, self._listener)
+        self._mining = MiningAction(self._rcon, self._listener, self._placement)
+        self._crafting = CraftingAction(self._rcon, self._listener, self._placement)
+        self._research = ResearchAction(self._rcon)
+        self._inventory = AgentInventory(self._rcon, self._placement)
+
+        # High-level orchestration actions
+        self._ghost_builder = GhostBuilderAction(
+            self._walking, self._placement, self._inventory
+        )
 
         # Query objects
         self._reachable = ReachableEntities(self._rcon)
@@ -292,6 +301,21 @@ class AgentRuntime:
             PlacementAction instance
         """
         return self._placement
+
+    @property
+    def ghost_builder(self):
+        """Ghost building orchestration.
+
+        **For Agents**: Build ghost entities by walking and placing.
+
+        - await ghost_builder.build_ghosts(ghosts, count=10) - Build multiple ghosts
+        - await ghost_builder.build_ghost(ghost) - Build a single ghost
+        - Automatically walks to each ghost and places the entity
+
+        Returns:
+            GhostBuilderAction instance
+        """
+        return self._ghost_builder
 
     @property
     def remote_view(self):

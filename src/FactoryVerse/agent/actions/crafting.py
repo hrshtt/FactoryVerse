@@ -6,12 +6,13 @@ Handles all crafting-related operations with async support via RconHandler and A
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
-from FactoryVerse.factory.item.base import ItemStack
 from FactoryVerse.agent.models import AsyncActionResponse, AsyncActionCompletion
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
     from ..infra.async_listener import AsyncActionListener
+    from FactoryVerse.factory.item.base import ItemStack
+    from FactoryVerse.agent.actions.place_entity import PlacementAction
 
 
 @dataclass
@@ -47,12 +48,23 @@ class CraftingCompleted(AsyncActionCompletion):
         """True if any items were crafted."""
         return bool(self.items)
 
-    def to_item_stacks(self) -> List[ItemStack]:
-        """Convert crafted items to ItemStack list."""
+    def to_item_stacks(self, placement: Optional["PlacementAction"] = None) -> List["ItemStack"]:
+        """Convert crafted items to ItemStack list with placement injected.
+        
+        Args:
+            placement: PlacementAction to inject into items (required for .place() to work)
+        """
+        from FactoryVerse.factory.item.create_item import create_item_stack
+        
         stacks = []
         for name, count in (self.items or {}).items():
             stacks.append(
-                ItemStack(name=name, count=count, subgroup="intermediate-product")
+                create_item_stack(
+                    name=name,
+                    count=count,
+                    placement=placement,
+                    subgroup="intermediate-product",
+                )
             )
         return stacks
 
@@ -68,20 +80,25 @@ class CraftingAction:
     """
 
     def __init__(
-        self, rcon_handler: "RconHandler", async_listener: "AsyncActionListener"
+        self,
+        rcon_handler: "RconHandler",
+        async_listener: "AsyncActionListener",
+        placement: Optional["PlacementAction"] = None,
     ):
         """Initialize crafting action.
 
         Args:
             rcon_handler: RCON handler for command execution
             async_listener: Async listener for action completion
+            placement: PlacementAction for item injection (optional for now)
         """
         self._rcon = rcon_handler
         self._listener = async_listener
+        self._placement = placement
 
     async def craft(
         self, recipe: str, count: int = 1, timeout: Optional[int] = None
-    ) -> List[ItemStack]:
+    ) -> List["ItemStack"]:
         """Craft a recipe asynchronously.
 
         Args:
@@ -90,7 +107,7 @@ class CraftingAction:
             timeout: Optional timeout in seconds
 
         Returns:
-            List of ItemStack objects crafted
+            List of ItemStack objects crafted with placement injected
 
         Raises:
             RuntimeError: If crafting fails to start or times out
@@ -110,7 +127,7 @@ class CraftingAction:
         completion = CraftingCompleted.from_dict(completion_dict)
 
         # Return items as ItemStack list
-        return completion.to_item_stacks()
+        return completion.to_item_stacks(self._placement)
 
     def enqueue(self, recipe: str, count: int = 1) -> Dict[str, Any]:
         """Enqueue a recipe for crafting.

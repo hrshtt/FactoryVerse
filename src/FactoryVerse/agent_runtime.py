@@ -230,7 +230,7 @@ class FactoryVerseRuntime:
     def setup_boilerplate(self):
         """Execute boilerplate setup code from boilerplate.py."""
         logger.info("Executing boilerplate...")
-        boilerplate_path = Path(__file__).parent / "llm" / "boilerplate.py"
+        boilerplate_path = Path(__file__).parent / "infra" / "llm" / "boilerplate.py"
         with open(boilerplate_path, "r") as f:
             code = f.read()
 

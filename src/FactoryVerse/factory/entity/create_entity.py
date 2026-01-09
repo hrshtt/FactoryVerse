@@ -21,13 +21,11 @@ if TYPE_CHECKING:
 # Import entity implementations
 from .implementations import (
     # Containers
-    Container,
     WoodenChest,
     IronChest,
     SteelChest,
     ShipWreck,
     # Furnaces
-    Furnace,
     StoneFurnace,
     SteelFurnace,
     ElectricFurnace,
@@ -65,12 +63,18 @@ from .implementations import (
     FastLoader,
     ExpressLoader,
     # Electric poles
-    ElectricPole,
     SmallElectricPole,
     MediumElectricPole,
     BigElectricPole,
     Substation,
+    # New entities
+    Lab,
+    Accumulator,
+    Boiler,
+    SteamEngine,
+    SteamTurbine,
 )
+
 
 # Entity name -> class mapping
 # Maps Factorio entity names to Python classes
@@ -129,6 +133,14 @@ ENTITY_CLASS_MAP: Dict[str, type] = {
     "medium-electric-pole": MediumElectricPole,
     "big-electric-pole": BigElectricPole,
     "substation": Substation,
+    # Labs
+    "lab": Lab,
+    # Accumulators
+    "accumulator": Accumulator,
+    # Generators
+    "boiler": Boiler,
+    "steam-engine": SteamEngine,
+    "steam-turbine": SteamTurbine,
 }
 
 
@@ -211,7 +223,9 @@ def create_reachable_entity(
     Returns:
         BaseEntity instance with REACHABLE view
     """
-    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost, view=EntityView.REACHABLE)
+    base_entity = _create_base_entity(
+        entity_data, is_ghost=is_ghost, view=EntityView.REACHABLE
+    )
     base_entity._entity_ops = entity_ops
     base_entity._place_ops = place_ops
     return base_entity
@@ -236,7 +250,9 @@ def create_remote_view_entity(
     Returns:
         BaseEntity instance with REMOTE view
     """
-    base_entity = _create_base_entity(entity_data, is_ghost=is_ghost, view=EntityView.REMOTE)
+    base_entity = _create_base_entity(
+        entity_data, is_ghost=is_ghost, view=EntityView.REMOTE
+    )
     if entity_ops is not None:
         base_entity._entity_ops = entity_ops
     if place_ops is not None:

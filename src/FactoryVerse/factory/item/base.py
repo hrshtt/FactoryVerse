@@ -1,18 +1,27 @@
+"""Base item classes for FactoryVerse.
+
+Items represent things in agent inventory that can be used, consumed, or placed.
+All items are agent-owned references - they exist from the perspective of what
+the agent currently possesses.
+"""
+
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal, TYPE_CHECKING
 from FactoryVerse.factory.types import MapPosition, Direction
 from FactoryVerse.factory.prototypes import (
     get_item_prototypes,
     get_entity_prototypes,
-    BasePrototype,
+    get_width_height,
 )
-from FactoryVerse.factory.mixins import (
-    SpatialPropertiesMixin,
-    PrototypeMixin,
-)
+import math
 
 if TYPE_CHECKING:
     from FactoryVerse.factory.entity.base_entity import BaseEntity
+    from FactoryVerse.agent.actions.place_entity import PlacementAction
 
+
+# =============================================================================
+# Type Literals - for filtering and research
+# =============================================================================
 
 ItemSubgroup = Literal[
     "barrel",
@@ -24,6 +33,7 @@ ItemSubgroup = Literal[
     "terrain",
     "uranium-processing",
 ]
+
 ItemName = Literal[
     "stone-brick",
     "wood",
@@ -149,14 +159,22 @@ PlaceableItemName = Literal[
 ]
 
 
+# =============================================================================
+# Base Item Classes
+# =============================================================================
+
+
 class Item:
     """Base class for all items.
 
     Items are things in inventory that can be used, consumed, or placed.
     They have prototypes that define their properties.
+
+    Items are agent-owned references - they only exist when the agent
+    possesses them in inventory, or has just crafted/extracted them.
     """
 
-    def __init__(self, name: Union[ItemName, PlaceableItemName]):
+    def __init__(self, name: str):
         self.name = name
         self._prototype_cache: Optional[Dict[str, Any]] = None
 
@@ -176,68 +194,33 @@ class Item:
         """Get stack size from prototype data."""
         return self._item_prototype_data.get("stack_size", 50)
 
-
-class RawMaterial(Item):
-    """Raw material item."""
-
-    def __init__(self, name: Union[ItemName, PlaceableItemName]):
-        super().__init__(name)
-        self.subgroup: ItemSubgroup = "raw-material"
-
-
-class RawResource(Item):
-    """Raw resource item."""
-
-    def __init__(self, name: Union[ItemName, PlaceableItemName]):
-        super().__init__(name)
-        self.subgroup: ItemSubgroup = "raw-resource"
-
-
-class IntermediateProduct(Item):
-    """Intermediate product item."""
-
-    def __init__(self, name: Union[ItemName, PlaceableItemName]):
-        super().__init__(name)
-        self.subgroup: ItemSubgroup = "intermediate-product"
-
-
-class Module(Item):
-    """Module item."""
-
-    def __init__(self, name: Union[ItemName, PlaceableItemName]):
-        super().__init__(name)
-        self.subgroup: ItemSubgroup = "module"
-
-
-class SciencePack(Item):
-    """Science pack item."""
-
-    def __init__(self, name: Union[ItemName, PlaceableItemName]):
-        super().__init__(name)
-        self.subgroup: ItemSubgroup = "science-pack"
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}('{self.name}')"
 
 
 class Fuel(Item):
-    """Fuel item with energy properties."""
+    """Fuel item with energy properties.
 
-    def __init__(
-        self,
-        name: Union[ItemName, PlaceableItemName],
-        fuel_value: Optional[float] = None,
-        fuel_category: Optional[Literal["chemical", "nuclear"]] = None,
-        burnt_result: Optional[ItemName] = None,
-        fuel_acceleration_multiplier: Optional[float] = None,
-        fuel_top_speed_multiplier: Optional[float] = None,
-    ):
-        super().__init__(name)
-        self.fuel_value = fuel_value
-        self.fuel_category = fuel_category
-        self.burnt_result = burnt_result
-        self.fuel_acceleration_multiplier = fuel_acceleration_multiplier
-        self.fuel_top_speed_multiplier = fuel_top_speed_multiplier
+    Provides fuel-specific properties from prototype data.
+    """
+
+    @property
+    def fuel_value(self) -> Optional[float]:
+        """Get fuel value from prototype."""
+        return self._item_prototype_data.get("fuel_value")
+
+    @property
+    def fuel_category(self) -> Optional[str]:
+        """Get fuel category from prototype."""
+        return self._item_prototype_data.get("fuel_category")
+
+    @property
+    def burnt_result(self) -> Optional[str]:
+        """Get burnt result item name from prototype."""
+        return self._item_prototype_data.get("burnt_result")
 
 
-class PlaceableItem(SpatialPropertiesMixin, PrototypeMixin, Item):
+class PlaceableItem(Item):
     """Items that can be placed as entities.
 
     These items have a place_result in their prototype, pointing to the entity they create.
@@ -247,28 +230,55 @@ class PlaceableItem(SpatialPropertiesMixin, PrototypeMixin, Item):
     Use tile_width and tile_height for spatial planning before placing.
     """
 
-    def __init__(self, name: PlaceableItemName):
+    def __init__(self, name: str, placement: Optional["PlacementAction"] = None):
         super().__init__(name)
-        self._entity_prototype_cache: Optional[BasePrototype] = None
+        self._placement = placement
+        self._entity_prototype_cache: Optional[Dict[str, Any]] = None
 
-    def _load_prototype(self) -> BasePrototype:
-        """Load entity prototype by resolving item's place_result.
+    @property
+    def prototype(self) -> Dict[str, Any]:
+        """Get entity prototype data as dict that this item creates when placed.
 
-        Items need to know what entity they become when placed, so we:
-        1. Load item prototype
-        2. Get place_result (entity name)
-        3. Load entity prototype for that entity
+        Loads the entity prototype by resolving the item's place_result.
         """
-        item_protos = get_item_prototypes()
-        place_result = item_protos.get_place_result(self.name)
-        if place_result:
-            entity_protos = get_entity_prototypes()
-            entity_type = entity_protos.get_entity_type(place_result)
-            if entity_type and entity_type in entity_protos.data:
-                entity_data = entity_protos.data[entity_type].get(place_result, {})
-                return BasePrototype(_data=entity_data)
-        # Fallback to empty prototype if no place_result
-        return BasePrototype(_data={})
+        if self._entity_prototype_cache is None:
+            item_protos = get_item_prototypes()
+            place_result = item_protos.get_place_result(self.name)
+            if place_result:
+                entity_protos = get_entity_prototypes()
+                self._entity_prototype_cache = entity_protos.get_prototype(place_result)
+            else:
+                self._entity_prototype_cache = {}
+        return self._entity_prototype_cache
+
+    @property
+    def tile_width(self) -> int:
+        """Calculate tile width from entity prototype collision_box."""
+        EPSILON = 0.001
+        proto = self.prototype
+        if "tile_width" in proto:
+            return int(proto["tile_width"])
+        if "collision_box" in proto:
+            w, _ = get_width_height(proto["collision_box"])
+            return int(math.ceil(w - EPSILON))
+        return 0
+
+    @property
+    def tile_height(self) -> int:
+        """Calculate tile height from entity prototype collision_box."""
+        EPSILON = 0.001
+        proto = self.prototype
+        if "tile_height" in proto:
+            return int(proto["tile_height"])
+        if "collision_box" in proto:
+            _, h = get_width_height(proto["collision_box"])
+            return int(math.ceil(h - EPSILON))
+        return 0
+
+    @property
+    def footprint(self) -> Tuple[int, int]:
+        """Get (width, height) tuple for spatial calculations."""
+        return (self.tile_width, self.tile_height)
 
     def place(
         self, position: MapPosition, direction: Optional[Direction] = Direction.NORTH
@@ -277,15 +287,35 @@ class PlaceableItem(SpatialPropertiesMixin, PrototypeMixin, Item):
 
         Returns the created entity with REACHABLE view.
 
-        NOTE: This method requires action injection which is not yet implemented.
-        Use AgentRuntime.placement.place_entity() instead.
+        Args:
+            position: Position to place the entity
+            direction: Direction for the entity (default: NORTH)
+
+        Returns:
+            The created entity instance with REACHABLE view
+
+        Raises:
+            RuntimeError: If placement action is not injected
         """
-        # TODO: This method needs PlacementAction injection to work
-        # For now, use runtime.placement.place_entity() directly
-        raise NotImplementedError(
-            "PlaceableItem.place() requires action injection. "
-            "Use runtime.placement.place_entity() instead."
+        if self._placement is None:
+            raise RuntimeError(
+                f"Cannot place {self.name}: PlacementAction not injected. "
+                "Item must be created through proper factory functions."
+            )
+
+        result = self._placement.place(
+            self.name,  # type: ignore
+            position,
+            direction,
+            ghost=False,
         )
+
+        if not result.success:
+            raise RuntimeError(f"Failed to place {self.name}: {result.error}")
+
+        # Return the created entity (placement action should return it)
+        # For now, return the result object which has entity data
+        return result  # type: ignore
 
     def place_ghost(
         self,
@@ -303,184 +333,29 @@ class PlaceableItem(SpatialPropertiesMixin, PrototypeMixin, Item):
         Returns:
             True if ghost was placed successfully.
 
-        NOTE: This method requires action injection which is not yet implemented.
-        Use runtime.placement.place_ghost() instead.
+        Raises:
+            RuntimeError: If placement action is not injected
         """
-        # TODO: This method needs PlacementAction injection to work
-        raise NotImplementedError(
-            "PlaceableItem.place_ghost() requires action injection. "
-            "Use runtime.placement.place_ghost() instead."
+        if self._placement is None:
+            raise RuntimeError(
+                f"Cannot place ghost {self.name}: PlacementAction not injected. "
+                "Item must be created through proper factory functions."
+            )
+
+        result = self._placement.place(
+            self.name,  # type: ignore
+            position,
+            direction,
+            ghost=True,
+            ghost_label=label,
         )
 
-
-class PlacementCues:
-    """Wrapper for placement cues that provides smart repr to avoid context spam.
-
-    Placement cues contain two separate lists:
-    - positions: All valid positions in scanned chunks (5x5 chunks around agent)
-    - reachable_positions: Valid positions within agent's build distance
-    """
-
-    def __init__(self, data: Dict[str, Any], entity_name: str):
-        self.entity_name = entity_name
-        self._data = data
-
-        # Extract positions and reachable_positions
-        self._all_cues = data.get("positions", [])
-        self._reachable_cues = data.get("reachable_positions", [])
-
-        # Cache for MapPosition conversions
-        self._positions_cache: Optional[List[MapPosition]] = None
-        self._reachable_positions_cache: Optional[List[MapPosition]] = None
-
-    @property
-    def positions(self) -> List[MapPosition]:
-        """Get all valid positions as MapPosition objects (from scanned chunks)."""
-        if self._positions_cache is None:
-            self._positions_cache = [
-                MapPosition(x=cue["position"]["x"], y=cue["position"]["y"])
-                for cue in self._all_cues
-            ]
-        return self._positions_cache
-
-    @property
-    def reachable_positions(self) -> List[MapPosition]:
-        """Get reachable positions as MapPosition objects (within build distance)."""
-        if self._reachable_positions_cache is None:
-            self._reachable_positions_cache = [
-                MapPosition(x=cue["position"]["x"], y=cue["position"]["y"])
-                for cue in self._reachable_cues
-            ]
-        return self._reachable_positions_cache
-
-    @property
-    def count(self) -> int:
-        """Total number of placement cues (all positions)."""
-        return len(self._all_cues)
-
-    @property
-    def reachable_count(self) -> int:
-        """Number of reachable placement cues."""
-        return len(self._reachable_cues)
-
-    def by_resource(self) -> Dict[str, List[MapPosition]]:
-        """Group all positions by resource name (for mining drills/pumpjacks)."""
-        groups: Dict[str, List[MapPosition]] = {}
-        for cue in self._all_cues:
-            resource = cue.get("resource_name", "any")
-            if resource not in groups:
-                groups[resource] = []
-            groups[resource].append(
-                MapPosition(x=cue["position"]["x"], y=cue["position"]["y"])
-            )
-        return groups
-
-    def reachable_by_resource(self) -> Dict[str, List[MapPosition]]:
-        """Group reachable positions by resource name."""
-        groups: Dict[str, List[MapPosition]] = {}
-        for cue in self._reachable_cues:
-            resource = cue.get("resource_name", "any")
-            if resource not in groups:
-                groups[resource] = []
-            groups[resource].append(
-                MapPosition(x=cue["position"]["x"], y=cue["position"]["y"])
-            )
-        return groups
-
-    def __len__(self) -> int:
-        return len(self._all_cues)
-
-    def __getitem__(self, index: int) -> Dict[str, Any]:
-        return self._all_cues[index]
-
-    def __iter__(self):
-        return iter(self._all_cues)
-
-    def __repr__(self) -> str:
-        """Smart repr that shows preview without spamming context."""
-        if not self._all_cues:
-            return f"PlacementCues(entity='{self.entity_name}', count=0, reachable=0)"
-
-        # Group by resource if available
-        by_resource = self.by_resource()
-
-        # Check if we have resource information (not just "any")
-        has_resources = len(by_resource) > 0 and "any" not in by_resource
-
-        if has_resources and len(by_resource) > 1:
-            # Multiple resources - show summary with resource breakdown
-            resource_summary = ", ".join(
-                [f"{k}: {len(v)}" for k, v in by_resource.items()]
-            )
-            return (
-                f"PlacementCues(entity='{self.entity_name}', count={self.count}, reachable={self.reachable_count}, "
-                f"by_resource={{{resource_summary}}})"
-            )
-        elif has_resources and len(by_resource) == 1:
-            # Single resource - show resource name in summary
-            resource_name = list(by_resource.keys())[0]
-            return (
-                f"PlacementCues(entity='{self.entity_name}', resource='{resource_name}', "
-                f"count={self.count}, reachable={self.reachable_count})"
-            )
-        else:
-            # No resource grouping (water, or generic entities)
-            return f"PlacementCues(entity='{self.entity_name}', count={self.count}, reachable={self.reachable_count})"
+        return result.success
 
 
-class PlacementCueMixin:
-    """Mixin for items that require placement cues (mining drills, pumpjack, offshore-pump).
-
-    **For Agents**: Use get_placement_cues() to find valid positions for resource-dependent entities.
-    """
-
-    def get_placement_cues(self, resource_name: Optional[str] = None) -> PlacementCues:
-        """Get valid placement positions for this item type.
-
-        Args:
-            resource_name: Optional resource name to filter by (e.g., "copper-ore", "iron-ore", "coal")
-
-        Returns PlacementCues object with:
-        - positions: All valid positions in scanned chunks
-        - reachable_positions: Valid positions within build distance
-
-        **IMPORTANT**: Placement cues are extremely granular and can contain thousands of positions.
-        Do not randomly pick positions - use them to verify planned positions are valid.
-        Always ensure you are in vicinity of the scanned area before using these cues.
-        """
-        data = self._factory.get_placement_cues(self.name, resource_name=resource_name)
-        return PlacementCues(data, self.name)
-
-
-class MiningDrillItem(PlaceableItem, PlacementCueMixin):
-    """Mining drill item (burner or electric) - requires placement cues.
-
-    Handles both "electric-mining-drill" and "burner-mining-drill" based on name.
-    """
-
-    pass
-
-
-class PumpjackItem(PlaceableItem, PlacementCueMixin):
-    """Pumpjack item - requires placement cues."""
-
-    pass
-
-
-class OffshorePumpItem(PlaceableItem, PlacementCueMixin):
-    """Offshore pump item - requires placement cues."""
-
-    pass
-
-
-class PlaceAsEntityItem(Item):
-    """Legacy class - use PlaceableItem instead."""
-
-    def __init__(
-        self, name: Union[ItemName, PlaceableItemName], place_result: PlaceableItemName
-    ):
-        super().__init__(name)
-        self.place_result = place_result
+# =============================================================================
+# ItemStack - Item + Count
+# =============================================================================
 
 
 class ItemStack:
@@ -488,24 +363,35 @@ class ItemStack:
 
     A stack is just an Item + count. Access individual items via indexing.
     Example: stack[0].place(position) to place one item from the stack.
+
+    Items are agent-owned references - when you have an ItemStack, those
+    items are guaranteed to be in the agent's inventory.
     """
 
     def __init__(
         self,
         name: str,
         count: int,
+        placement: Optional["PlacementAction"] = None,
         subgroup: Union[ItemSubgroup, PlaceableItemSubgroup, str] = "raw-material",
     ):
         self.name = name
         self.count = count
         self.subgroup = subgroup
-        self._item_cache: Optional[Item] = None
+        self._placement = placement
+        self._item_cache: Optional[Union[Item, PlaceableItem, Fuel]] = None
 
     @property
-    def item(self) -> Item:
-        """Get the Item object for this stack (cached)."""
+    def item(self) -> Union[Item, PlaceableItem, Fuel]:
+        """Get the Item object for this stack (cached).
+
+        Creates the item through factory logic with placement injected.
+        """
         if self._item_cache is None:
-            self._item_cache = get_item(self.name)
+            # Import here to avoid circular dependency
+            from FactoryVerse.factory.item.create_item import create_item
+
+            self._item_cache = create_item(self.name, self._placement)
         return self._item_cache
 
     @property
@@ -527,14 +413,14 @@ class ItemStack:
         """Simple, explicit representation of the item stack."""
         return f"{self.__class__.__name__}(name='{self.name}', count={self.count})"
 
-    def __getitem__(self, index: int) -> Item:
+    def __getitem__(self, index: int) -> Union[Item, PlaceableItem, Fuel]:
         """Get a single item from the stack.
 
         Args:
             index: Index of the item (must be < count)
 
         Returns:
-            The Item object
+            The Item object with placement injected
 
         Example:
             >>> stack = inventory.get_item("stone-furnace")
@@ -555,82 +441,4 @@ class ItemStack:
         """Get the count of items in the stack."""
         return self.count
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ItemStack":
-        """Create an ItemStack from a dictionary."""
-        return cls(data["name"], data["count"], data["subgroup"])
 
-
-class BeltLine(ItemStack):
-    """A belt line item stack with belt-specific operations.
-
-    **For Agents**: Use for placing lines of belts efficiently.
-
-    NOTE: Ghost line methods require action injection which is not yet implemented.
-    """
-
-    def place_ghost_line(
-        self, start: MapPosition, length: int, direction: Direction
-    ) -> int:
-        """Place a ghost line of belts.
-
-        Args:
-            start: Starting position
-            length: Number of belt segments
-            direction: Direction the belt faces
-
-        Returns:
-            Number of ghosts placed.
-
-        NOTE: Not implemented - use runtime.placement.place_ghost() in a loop.
-        """
-        raise NotImplementedError(
-            "BeltLine.place_ghost_line() requires action injection. "
-            "Use runtime.placement.place_ghost() in a loop instead."
-        )
-
-
-def get_item(name: str) -> Item:
-    """Factory function to create the appropriate Item subclass based on prototype data."""
-    # Note: We relax the strict input type hint to str to allow dynamic lookup,
-    # but we should ideally validate against known names if possible.
-
-    from FactoryVerse.factory.prototypes import (
-        get_item_prototypes,
-        get_entity_prototypes,
-    )
-
-    item_protos = get_item_prototypes()
-    place_result = item_protos.get_place_result(name)
-
-    if not place_result:
-        # Not placeable - return generic Item (or specialized if we had logic for that)
-        return Item(name=name)
-
-    # It is placeable
-    entity_protos = get_entity_prototypes()
-    entity_type = entity_protos.get_entity_type(place_result)
-
-    if entity_type == "mining-drill":
-        if name == "pumpjack":
-            return PumpjackItem(name=name)
-        return MiningDrillItem(name=name)
-
-    elif entity_type == "offshore-pump":
-        return OffshorePumpItem(name=name)
-
-    # Default placeable
-    return PlaceableItem(name=name)
-
-
-def create_item_stack(items: List[Dict[str, Any]]) -> List[ItemStack]:
-    """Create a list of item stacks from a list of dictionaries."""
-    # subgroup defaults to something if missing
-    return [
-        ItemStack(
-            name=item["name"],
-            count=item["count"],
-            subgroup=item.get("subgroup", "raw-material"),
-        )
-        for item in items
-    ]

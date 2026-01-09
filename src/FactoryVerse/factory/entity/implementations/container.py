@@ -1,73 +1,157 @@
 """Container entity implementations.
 
 Containers store items.
-Includes: WoodenChest, IronChest, SteelChest, ShipWreck (crash site chests)
 """
 
-from typing import Dict, Optional
-from FactoryVerse.factory.types import MapPosition, Direction
+from typing import Dict, Optional, List, TYPE_CHECKING
+
+from pydantic import BaseModel, Field
 from FactoryVerse.factory.entity.base_entity import BaseEntity
-from FactoryVerse.factory.entity.inspect import ContainerInspection
+
+if TYPE_CHECKING:
+    from FactoryVerse.factory.item.base import ItemStack
+    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
+
+
+class ContainerState(BaseModel):
+    """State for container entities.
+
+    Source: runtime_inspection.jsonl container inventory
+    """
+
+    contents: Dict[str, int] = Field(default_factory=dict)
+    inventory_size: int = 0
+    filters: Dict[int, str] = Field(default_factory=dict)  # slot -> item_name
+
+    @property
+    def is_empty(self) -> bool:
+        """Check if container has no items."""
+        return len(self.contents) == 0
+
+    @property
+    def total_items(self) -> int:
+        """Get total item count."""
+        return sum(self.contents.values())
 
 
 class Container(BaseEntity):
-    """A container entity (chest).
+    """Container (chest) - stores items.
 
-    **For Agents**: Containers store items. Use take_inventory_item() and put_inventory_item()
-    to transfer items.
+    **For Agents**: Use store_item/take_item to manage inventory.
     """
 
-    def _format_inspection(self, data: Dict) -> str:
-        """Format container inspection data.
+    _entity_ops: Optional["EntityOperationsAction"]
+
+    def _get_container_state(self, inspection_data: dict) -> ContainerState:
+        """Get container state from inspection data."""
+        if self._is_ghost:
+            return ContainerState()
+
+        # Parse inventory
+        inventory = inspection_data.get("inventories", {}).get("chest", {})
+        contents = {}
+        for item in inventory.get("contents", []):
+            contents[item["name"]] = item.get("count", 0)
+
+        # Parse filters
+        filters = {}
+        filter_data = inspection_data.get("filters", {})
+        if isinstance(filter_data, dict):
+            for slot, item_name in filter_data.items():
+                filters[int(slot)] = item_name
+
+        return ContainerState(
+            contents=contents,
+            inventory_size=inspection_data.get("inventory_size", 0),
+            filters=filters,
+        )
+
+    def get_item_count(self, item_name: str) -> int:
+        """Get count of a specific item in the container.
 
         Args:
-            data: Raw inspection data from Lua (matches inspect_container output)
+            item_name: Name of the item to count
 
         Returns:
-            Formatted string for agent consumption
+            Number of items in container, 0 if not present
         """
-        pos_data = data.get("position", {})
-        position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
+        if self._entity_ops is None:
+            raise RuntimeError("entity_ops not injected.")
 
-        inspection = ContainerInspection(
-            entity_name=data.get("entity_name", ""),
-            entity_type=data.get("entity_type", ""),
-            position=position,
-            direction=data.get("direction", 0),
-            tick=data.get("tick", 0),
-            health=data.get("health"),
-            max_health=data.get("max_health"),
-            status=data.get("status"),
-            contents=data.get("contents"),  # Direct from Lua
-            inventory_bar=data.get("inventory_bar"),
-            inventory_size_override=data.get("inventory_size_override"),
-            storage_filter=data.get("storage_filter"),
-            filter_slot_count=data.get("filter_slot_count"),
-            filters=data.get("filters"),
-            request_from_buffers=data.get("request_from_buffers"),
+        raw_data = self._entity_ops.inspect_entity(self.name, self.position)
+        state = self._get_container_state(raw_data)
+        return state.contents.get(item_name, 0)
+
+    def store_item(self, items: List["ItemStack"]) -> List:
+        """Store items into the container.
+
+        **For Agents**: Use this to put items into chests.
+
+        Args:
+            items: List of ItemStack to store
+
+        Returns:
+            List of results from storage operation
+        """
+        if self._entity_ops is None:
+            raise RuntimeError("entity_ops not injected.")
+
+        results = []
+        for item in items:
+            result = self._entity_ops.put_inventory_item(
+                self.name,
+                "chest",
+                item,
+                self.position,
+            )
+            results.append(result)
+        return results
+
+    def take_item(self, item_name: str, count: int) -> List["ItemStack"]:
+        """Take items from the container.
+
+        **For Agents**: Use this to retrieve items from chests.
+
+        Args:
+            item_name: Name of item to take
+            count: Number of items to take
+
+        Returns:
+            List of ItemStack taken from container
+        """
+        if self._entity_ops is None:
+            raise RuntimeError("entity_ops not injected.")
+
+
+        result = self._entity_ops.take_inventory_item(
+            self.name,
+            "chest",
+            item_name,
+            count,
+            self.position,
         )
-        return str(inspection)
+        return result.to_item_stacks(self._place_ops)
 
 
 class WoodenChest(Container):
-    """Wooden chest - basic storage."""
+    """Wooden chest - basic storage (16 slots)."""
 
     pass
 
 
 class IronChest(Container):
-    """Iron chest - medium storage."""
+    """Iron chest - medium storage (32 slots)."""
 
     pass
 
 
 class SteelChest(Container):
-    """Steel chest - large storage."""
+    """Steel chest - large storage (48 slots)."""
 
     pass
 
 
 class ShipWreck(Container):
-    """Ship wreck / crash site chest - special container from crashes."""
+    """Ship wreck / crash site chest."""
 
     pass
