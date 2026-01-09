@@ -10,11 +10,11 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from FactoryVerse.agent_runtime import FactoryVerseRuntime
-from FactoryVerse.llm.client import PrimeIntellectClient
-from FactoryVerse.llm.agent_orchestrator import FactorioAgentOrchestrator
-from FactoryVerse.llm.session_manager import SessionManager
-from FactoryVerse.llm.initial_state_generator import InitialStateGenerator
-from FactoryVerse.llm.console_output import ConsoleOutput
+from FactoryVerse.infra.llm.client import PrimeIntellectClient
+from FactoryVerse.infra.llm.agent_orchestrator import FactorioAgentOrchestrator
+from FactoryVerse.infra.llm.session_manager import SessionManager
+from FactoryVerse.infra.llm.initial_state_generator import InitialStateGenerator
+from FactoryVerse.infra.llm.console_output import ConsoleOutput
 from FactoryVerse.utils.rcon_utils import validate_rcon_connection
 
 # Configure logging - will be reconfigured per session
@@ -261,7 +261,7 @@ Examples:
     from FactoryVerse.utils.port_utils import validate_udp_port, find_process_using_port
 
     config = FactoryVerseConfig()
-    udp_port = config.agent_udp_port_start  # Default port that will be used
+    udp_port = config.agent_port_base  # Default port that will be used
 
     print(f"\n🔍 Validating UDP port {udp_port}...")
     success, error = validate_udp_port(udp_port)
