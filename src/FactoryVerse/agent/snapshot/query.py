@@ -3,14 +3,70 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import duckdb
-    from FactoryVerse.factory.resource.remote_view_resource import RemoteViewResource
+    from FactoryVerse.factory.resource.base import BaseResource
     from FactoryVerse.factory.entity.base_entity import BaseEntity
+    from FactoryVerse.agent.actions.walking import MovementAction
+    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.actions.mining import MiningAction
+    from FactoryVerse.agent.snapshot.sync import SyncService
 
 logger = logging.getLogger(__name__)
+
+
+def _preprocess_resource_sql(sql: str) -> str:
+    """Preprocess SQL queries to map agent-facing "rock" to game-facing "simple-entity".
+    
+    Converts SQL queries that use "rock" in entity_type comparisons to use "simple-entity"
+    instead, since the database stores the game-facing type.
+    
+    This allows agents to write natural queries like:
+        SELECT * FROM resource_entity WHERE entity_type = 'rock'
+    
+    Which gets converted to:
+        SELECT * FROM resource_entity WHERE entity_type = 'simple-entity'
+    
+    Args:
+        sql: SQL query string
+    
+    Returns:
+        Preprocessed SQL with "rock" -> "simple-entity" mapping applied
+    """
+    # Pattern to match entity_type = 'rock' or entity_type = "rock" in WHERE clauses
+    # Handles various SQL formats: =, !=, IN, etc.
+    # Uses word boundaries to avoid matching "rock" in other contexts
+    
+    # Replace 'rock' and "rock" in entity_type comparisons
+    # Pattern: entity_type = 'rock' or entity_type = "rock"
+    sql = re.sub(
+        r"entity_type\s*=\s*['\"]rock['\"]",
+        "entity_type = 'simple-entity'",
+        sql,
+        flags=re.IGNORECASE
+    )
+    
+    # Handle IN clauses: entity_type IN ('rock', 'tree')
+    sql = re.sub(
+        r"entity_type\s+IN\s*\([^)]*['\"]rock['\"][^)]*\)",
+        lambda m: m.group(0).replace("'rock'", "'simple-entity'").replace('"rock"', '"simple-entity"'),
+        sql,
+        flags=re.IGNORECASE
+    )
+    
+    # Handle != and <> operators
+    sql = re.sub(
+        r"entity_type\s*(!=|<>)\s*['\"]rock['\"]",
+        lambda m: f"entity_type {m.group(1)} 'simple-entity'",
+        sql,
+        flags=re.IGNORECASE
+    )
+    
+    return sql
 
 # SQL keywords that are not allowed in queries
 FORBIDDEN_KEYWORDS = frozenset(
@@ -47,18 +103,40 @@ class QueryExecutor:
     - Load data (loader.py does that)
     """
 
-    def __init__(self, db: "duckdb.DuckDBPyConnection"):
+    def __init__(
+        self,
+        db: "duckdb.DuckDBPyConnection",
+        entity_ops: "EntityOperationsAction",
+        place_ops: "PlacementAction",
+        walking_action: "MovementAction",
+        mining_action: "MiningAction",
+        sync_service: Optional["SyncService"] = None,
+        db_lock: Optional[threading.Lock] = None,
+    ):
         """Initialize query executor.
 
         Args:
             db: Active DuckDB connection with schema created
+            entity_ops: Entity operations action for inspection
+            place_ops: Placement action for ghost operations
+            walking_action: Movement action for navigation
+            mining_action: Mining action (required for resources)
+            sync_service: Sync service for flushing pending writes before reads
+            db_lock: Shared lock for thread-safe database access
         """
         self._db = db
+        self._entity_ops = entity_ops
+        self._place_ops = place_ops
+        self._walking_action = walking_action
+        self._mining_action = mining_action
+        self._sync_service = sync_service
+        self._db_lock = db_lock if db_lock is not None else threading.Lock()
 
     def query(self, sql: str) -> List[Dict[str, Any]]:
         """Execute raw SQL, return list of dicts.
 
         Validates query is read-only SELECT.
+        Flushes pending writes before reading to ensure consistency.
 
         Args:
             sql: SQL query string (must be SELECT)
@@ -71,10 +149,22 @@ class QueryExecutor:
         """
         self._validate_query(sql)
 
+        # CRITICAL: Flush pending writes before reading
+        print(
+            f"[QUERY] About to flush, sync_service exists: {self._sync_service is not None}"
+        )
+        if self._sync_service:
+            flushed = self._sync_service.flush_pending()
+            print(f"[QUERY] Flushed {flushed} operations")
+            if flushed > 0:
+                logger.info(f"Flushed {flushed} operations before query")
+
         try:
-            result = self._db.execute(sql)
-            columns = [desc[0] for desc in result.description]
-            rows = result.fetchall()
+            # Execute with lock to prevent concurrent writes
+            with self._db_lock:
+                result = self._db.execute(sql)
+                columns = [desc[0] for desc in result.description]
+                rows = result.fetchall()
 
             return [dict(zip(columns, row)) for row in rows]
         except Exception as e:
@@ -126,17 +216,23 @@ class QueryExecutor:
         entities = self.get_entities(sql)
         return entities[0] if entities else None
 
-    def get_resources(self, sql: str) -> List["RemoteViewResource"]:
-        """Execute SQL, construct RemoteViewResource instances.
+    def get_resources(self, sql: str) -> List["BaseResource"]:
+        """Execute SQL, construct resource instances with REMOTE view.
 
         Query should return rows from resource_tile or resource_entity tables.
+        Each row is converted to a resource object with REMOTE view.
+        
+        Note: You can use "rock" in entity_type filters - it will be automatically
+        converted to "simple-entity" (the database storage format).
 
         Args:
-            sql: SQL query against resource tables
+            sql: SQL query against resource tables (can use "rock" for entity_type)
 
         Returns:
-            List of RemoteViewResource instances
+            List of BaseResource instances with REMOTE view
         """
+        # Preprocess SQL to map "rock" -> "simple-entity" for entity_type filters
+        sql = _preprocess_resource_sql(sql)
         rows = self.query(sql)
         resources = []
 
@@ -225,13 +321,11 @@ class QueryExecutor:
         from FactoryVerse.factory.entity.create_entity import create_remote_view_entity
 
         try:
-            # Create a minimal entity_ops for inspection (RemoteView is read-only)
-            # Note: This is a limitation - RemoteView entities from map queries
-            # won't have full inspection capability without RCON access
             entity = create_remote_view_entity(
                 entity_data,
-                entity_ops=None,  # type: ignore  # Read-only, no ops needed
-                place_ops=None,
+                entity_ops=self._entity_ops,
+                place_ops=self._place_ops,
+                walking_action=self._walking_action,
                 is_ghost=entity_data.get("is_ghost", False),
             )
             return entity
@@ -242,7 +336,6 @@ class QueryExecutor:
     def _row_to_entity_data(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """Convert row columns to entity data dict."""
         return {
-            "key": row.get("entity_key"),
             "name": row.get("entity_name"),
             "position": {
                 "x": row.get("position_x", 0),
@@ -257,14 +350,9 @@ class QueryExecutor:
             },
         }
 
-    def _construct_resource(
-        self, row: Dict[str, Any]
-    ) -> Optional["RemoteViewResource"]:
-        """Create RemoteViewResource from row data."""
-        from FactoryVerse.factory.resource.remote_view_resource import (
-            RemoteViewResource,
-        )
-        from FactoryVerse.factory.resource.base import _create_resource_from_data
+    def _construct_resource(self, row: Dict[str, Any]) -> Optional["BaseResource"]:
+        """Create resource with REMOTE view from row data."""
+        from FactoryVerse.factory.resource.base import create_resource_from_db
 
         # Build resource data
         raw_data = row.get("raw_data")
@@ -277,8 +365,13 @@ class QueryExecutor:
             resource_data = self._row_to_resource_data(row)
 
         try:
-            resource = _create_resource_from_data(resource_data)
-            return RemoteViewResource(resource)
+            resource = create_resource_from_db(
+                resource_data,
+                mining_action=self._mining_action,
+                entity_ops=self._entity_ops,
+                walking_action=self._walking_action,
+            )
+            return resource
         except Exception as e:
             logger.debug(f"Could not create resource: {e}")
             return None
@@ -287,8 +380,10 @@ class QueryExecutor:
         """Convert row to resource data dict."""
         return {
             "name": row.get("name"),
-            "x": row.get("position_x", 0),
-            "y": row.get("position_y", 0),
+            "position": {
+                "x": row.get("position_x", 0),
+                "y": row.get("position_y", 0),
+            },
             "amount": row.get("amount"),
             "type": row.get("entity_type", "resource"),
         }
@@ -323,8 +418,9 @@ class QueryExecutor:
         try:
             entity = create_remote_view_entity(
                 entity_data,
-                entity_ops=None,  # type: ignore
-                place_ops=None,
+                entity_ops=self._entity_ops,
+                place_ops=self._place_ops,
+                walking_action=self._walking_action,
                 is_ghost=True,
             )
             return entity
@@ -335,7 +431,6 @@ class QueryExecutor:
     def _row_to_ghost_data(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """Convert row to ghost data dict."""
         return {
-            "key": row.get("entity_key"),
             "ghost_name": row.get("ghost_name"),
             "position": {
                 "x": row.get("position_x", 0),

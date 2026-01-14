@@ -37,9 +37,9 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
             for line in f:
                 if line.strip():
                     data = json.loads(line)
-                    entity_key = f"(water:{data['x']},{data['y']})"
                     water_data.append({
-                        "entity_key": entity_key,
+                        "position_x": float(data["x"]),
+                        "position_y": float(data["y"]),
                         "type": "water-tile",
                         "position": {"x": float(data["x"]), "y": float(data["y"])},
                     })
@@ -48,12 +48,13 @@ def load_water_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None
         print(f"  Loading {len(water_data)} water tiles into water_tile table (global, across all chunks)")
         con.executemany(
             """
-            INSERT INTO water_tile (entity_key, type, position)
-            VALUES (?, ?, ?)
+            INSERT INTO water_tile (position_x, position_y, type, position)
+            VALUES (?, ?, ?, ?)
             """,
             [
                 (
-                    w["entity_key"],
+                    w["position_x"],
+                    w["position_y"],
                     w["type"],
                     json.dumps(w["position"]),
                 )
@@ -76,10 +77,10 @@ def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> N
             for line in f:
                 if line.strip():
                     data = json.loads(line)
-                    entity_key = f"({data['kind']}:{data['x']},{data['y']})"
                     resource_data.append({
-                        "entity_key": entity_key,
                         "name": data["kind"],
+                        "position_x": float(data["x"]),
+                        "position_y": float(data["y"]),
                         "position": {"x": float(data["x"]), "y": float(data["y"])},
                         "amount": data.get("amount", 0),
                     })
@@ -87,13 +88,14 @@ def load_resource_tiles(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> N
     if resource_data:
         con.executemany(
             """
-            INSERT OR REPLACE INTO resource_tile (entity_key, name, position, amount)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO resource_tile (name, position_x, position_y, position, amount)
+            VALUES (?, ?, ?, ?, ?)
             """,
             [
                 (
-                    r["entity_key"],
                     r["name"],
+                    r["position_x"],
+                    r["position_y"],
                     json.dumps(r["position"]),
                     r["amount"],
                 )
@@ -124,23 +126,26 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, r
             for line in f:
                 if line.strip():
                     data = json.loads(line)
-                    entity_key = data.get("key") or f"({data['name']}:{data['position']['x']},{data['position']['y']})"
                     bbox = data.get("bounding_box", {})
+                    pos = data.get("position", {})
+                    px = float(pos.get("x", 0))
+                    py = float(pos.get("y", 0))
                     
                     # Store bounding box coordinates for BOX_2D construction
                     bbox_coords = None
                     if bbox:
-                        min_x = float(bbox.get("min_x", data["position"]["x"]))
-                        min_y = float(bbox.get("min_y", data["position"]["y"]))
-                        max_x = float(bbox.get("max_x", data["position"]["x"]))
-                        max_y = float(bbox.get("max_y", data["position"]["y"]))
+                        min_x = float(bbox.get("min_x", px))
+                        min_y = float(bbox.get("min_y", py))
+                        max_x = float(bbox.get("max_x", px))
+                        max_y = float(bbox.get("max_y", py))
                         bbox_coords = (min_x, min_y, max_x, max_y)
                     
                     entity_data.append({
-                        "entity_key": entity_key,
                         "name": data["name"],
+                        "position_x": px,
+                        "position_y": py,
                         "type": data.get("type", "unknown"),
-                        "position": {"x": float(data["position"]["x"]), "y": float(data["position"]["y"])},
+                        "position": {"x": px, "y": py},
                         "bbox": bbox_coords,
                     })
     
@@ -151,12 +156,13 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, r
                 min_x, min_y, max_x, max_y = e["bbox"]
                 con.execute(
                     """
-                    INSERT OR REPLACE INTO resource_entity (entity_key, name, type, position, bbox)
-                    VALUES (?, ?, ?, ?, ST_MakeEnvelope(?, ?, ?, ?))
+                    INSERT OR REPLACE INTO resource_entity (name, position_x, position_y, type, position, bbox)
+                    VALUES (?, ?, ?, ?, ?, ST_MakeEnvelope(?, ?, ?, ?))
                     """,
                     [
-                        e["entity_key"],
                         e["name"],
+                        e["position_x"],
+                        e["position_y"],
                         e["type"],
                         json.dumps(e["position"]),
                         min_x,
@@ -168,12 +174,13 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, r
             else:
                 con.execute(
                     """
-                    INSERT OR REPLACE INTO resource_entity (entity_key, name, type, position)
-                    VALUES (?, ?, ?, ?)
+                    INSERT OR REPLACE INTO resource_entity (name, position_x, position_y, type, position)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     [
-                        e["entity_key"],
                         e["name"],
+                        e["position_x"],
+                        e["position_y"],
                         e["type"],
                         json.dumps(e["position"]),
                     ],
@@ -189,12 +196,13 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, r
                         operation = json.loads(line)
                         op = operation.get("op")
                         if op == "remove":
-                            # Remove the entity from the database
-                            entity_key = operation.get("key")
-                            if entity_key:
+                            # Remove the entity from the database using composite key
+                            entity_name = operation.get("name", "")
+                            position = operation.get("position", {})
+                            if entity_name and position:
                                 con.execute(
-                                    "DELETE FROM resource_entity WHERE entity_key = ?",
-                                    [entity_key]
+                                    "DELETE FROM resource_entity WHERE name = ? AND position_x = ? AND position_y = ?",
+                                    [entity_name, float(position.get("x", 0)), float(position.get("y", 0))]
                                 )
 
 
@@ -217,16 +225,15 @@ def _process_entity_data(
     if valid_entities and entity_name not in valid_entities:
         return 1
     
-    entity_key = data.get("key")
-    if not entity_key:
-        return 0
-    
-    bbox = data.get("bounding_box", {})
     pos = data.get("position", {})
     px = float(pos.get("x", 0.0))
     py = float(pos.get("y", 0.0))
     
+    if not pos or (px == 0.0 and py == 0.0):
+        return 0
+    
     # Store bounding box coordinates for GEOMETRY construction
+    bbox = data.get("bounding_box", {})
     if bbox:
         min_x = float(bbox.get("min_x", px))
         min_y = float(bbox.get("min_y", py))
@@ -240,9 +247,10 @@ def _process_entity_data(
         bbox_coords = (min_x, min_y, max_x, max_y)
     
     entity_data.append({
-        "entity_key": entity_key,
-        "position": {"x": px, "y": py},
         "entity_name": entity_name,
+        "position_x": px,
+        "position_y": py,
+        "position": {"x": px, "y": py},
         "bbox": bbox_coords,
         "electric_network_id": data.get("electric_network_id"),
     })
@@ -299,17 +307,30 @@ def load_map_entities(
                                 entity_data_entry, entity_data, valid_entities
                             )
                     elif op_type == "remove":
-                        entity_key = op.get("key")
-                        if entity_key:
-                            # Remove from entity_data list
-                            entity_data[:] = [e for e in entity_data if e["entity_key"] != entity_key]
+                        entity_name = op.get("name", "")
+                        position = op.get("position", {})
+                        if entity_name and position:
+                            px = float(position.get("x", 0))
+                            py = float(position.get("y", 0))
+                            # Remove from entity_data list using composite key
+                            entity_data[:] = [
+                                e for e in entity_data 
+                                if not (e.get("entity_name") == entity_name and 
+                                        e.get("position_x") == px and 
+                                        e.get("position_y") == py)
+                            ]
                     elif op_type == "rotated":
-                        entity_key = op.get("key")
+                        entity_name = op.get("name", "")
+                        position = op.get("position", {})
                         direction = op.get("direction")
-                        if entity_key and direction is not None:
-                            # Update direction in entity_data list
+                        if entity_name and position and direction is not None:
+                            px = float(position.get("x", 0))
+                            py = float(position.get("y", 0))
+                            # Update direction in entity_data list using composite key
                             for entity in entity_data:
-                                if entity.get("entity_key") == entity_key:
+                                if (entity.get("entity_name") == entity_name and
+                                    entity.get("position_x") == px and
+                                    entity.get("position_y") == py):
                                     entity["direction"] = direction
                                     entity["direction_name"] = op.get("direction_name")
                                     break
@@ -326,13 +347,14 @@ def load_map_entities(
             min_x, min_y, max_x, max_y = e["bbox"]
             con.execute(
                 """
-                INSERT OR REPLACE INTO map_entity (entity_key, position, entity_name, bbox, electric_network_id)
-                VALUES (?, ?, ?, ST_MakeEnvelope(?, ?, ?, ?), ?)
+                INSERT OR REPLACE INTO map_entity (entity_name, position_x, position_y, position, bbox, electric_network_id)
+                VALUES (?, ?, ?, ?, ST_MakeEnvelope(?, ?, ?, ?), ?)
                 """,
                 [
-                    e["entity_key"],
-                    json.dumps(e["position"]),
                     e["entity_name"],
+                    e["position_x"],
+                    e["position_y"],
+                    json.dumps(e["position"]),
                     min_x,
                     min_y,
                     max_x,
@@ -368,7 +390,7 @@ def load_ghosts(
     
     con.execute("DELETE FROM ghost_layer;")
     
-    ghosts_by_key: Dict[str, Tuple] = {}
+    ghosts_by_key: Dict[Tuple[str, float, float], Tuple] = {}
     
     # Load initial state from chunk-wise ghosts-init.jsonl files
     ghost_init_files = list(snapshot_dir.rglob("ghosts-init.jsonl"))
@@ -379,15 +401,16 @@ def load_ghosts(
             px = float(pos.get("x", 0.0))
             py = float(pos.get("y", 0.0))
             
-            ghost_key = entry.get("key") or f"{ghost_name}:{px}:{py}"
-            
             chunk = entry.get("chunk") or {}
             chunk_x = chunk.get("x") if chunk else None
             chunk_y = chunk.get("y") if chunk else None
             
-            ghosts_by_key[ghost_key] = (
-                ghost_key,
+            # Use composite key (ghost_name, position_x, position_y) as dict key
+            composite_key = (ghost_name, px, py)
+            ghosts_by_key[composite_key] = (
                 ghost_name,
+                px,
+                py,
                 entry.get("force"),
                 px,
                 py,
@@ -410,13 +433,14 @@ def load_ghosts(
                         pos = ghost_data.get("position") or {}
                         px = float(pos.get("x", 0.0))
                         py = float(pos.get("y", 0.0))
-                        ghost_key = ghost_data.get("key") or f"{ghost_name}:{px}:{py}"
                         chunk = ghost_data.get("chunk") or {}
                         chunk_x = chunk.get("x") if chunk else None
                         chunk_y = chunk.get("y") if chunk else None
-                        ghosts_by_key[ghost_key] = (
-                            ghost_key,
+                        composite_key = (ghost_name, px, py)
+                        ghosts_by_key[composite_key] = (
                             ghost_name,
+                            px,
+                            py,
                             ghost_data.get("force"),
                             px,
                             py,
@@ -426,32 +450,40 @@ def load_ghosts(
                             chunk_y,
                         )
                 elif op_type == "remove":
-                    ghost_key = op.get("key")
-                    if ghost_key:
-                        ghosts_by_key.pop(ghost_key, None)
+                    ghost_name = op.get("ghost_name") or op.get("name", "")
+                    position = op.get("position", {})
+                    if ghost_name and position:
+                        px = float(position.get("x", 0))
+                        py = float(position.get("y", 0))
+                        composite_key = (ghost_name, px, py)
+                        ghosts_by_key.pop(composite_key, None)
                 elif op_type == "rotated":
-                    ghost_key = op.get("key")
+                    ghost_name = op.get("ghost_name") or op.get("name", "")
+                    position = op.get("position", {})
                     direction = op.get("direction")
-                    if ghost_key and direction is not None:
+                    if ghost_name and position and direction is not None:
+                        px = float(position.get("x", 0))
+                        py = float(position.get("y", 0))
+                        composite_key = (ghost_name, px, py)
                         # Update direction in ghosts_by_key if it exists
-                        if ghost_key in ghosts_by_key:
-                            ghost_data = list(ghosts_by_key[ghost_key])
+                        if composite_key in ghosts_by_key:
+                            ghost_data = list(ghosts_by_key[composite_key])
                             ghost_data[5] = direction  # direction is at index 5
                             ghost_data[6] = op.get("direction_name")  # direction_name is at index 6
-                            ghosts_by_key[ghost_key] = tuple(ghost_data)
+                            ghosts_by_key[composite_key] = tuple(ghost_data)
     
     # Insert into database
     if ghosts_by_key:
         con.executemany(
             """
             INSERT INTO ghost_layer (
-                ghost_key, ghost_name, force_name,
+                ghost_name, position_x, position_y, force_name,
                 map_position,
                 direction, direction_name,
                 chunk_x, chunk_y
             )
             VALUES (
-                ?, ?, ?,
+                ?, ?, ?, ?,
                 ST_Point(?, ?),
                 ?, ?,
                 ?, ?

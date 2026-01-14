@@ -87,7 +87,6 @@ class EntityOperation:
     tick: int
     sequence: int
     chunk: ChunkKey
-    entity_key: str
     entity_name: str
     position: Optional[Dict[str, float]] = None
     entity_data: Optional[Dict[str, Any]] = None  # Full entity for upsert
@@ -103,7 +102,6 @@ class EntityOperation:
             tick=data.get("tick", 0),
             sequence=data.get("sequence", 0),
             chunk=chunk,
-            entity_key=data.get("entity_key") or data.get("key", ""),
             entity_name=data.get("entity_name") or data.get("name", ""),
             position=data.get("position"),
             entity_data=data.get("entity"),

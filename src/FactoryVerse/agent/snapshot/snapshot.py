@@ -2,11 +2,16 @@ from enum import Enum
 import duckdb
 import asyncio
 import time
+import json
+import logging
 from pathlib import Path
 from typing import Optional, Union
 from factorio_rcon import RCONClient
 from .db.loader import load_all        
 from .db.schema import connect
+from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
+
+logger = logging.getLogger(__name__)
 
 class BootstrapStage(Enum):
     BOOTSTRAP = 1
@@ -236,9 +241,13 @@ class SnapshotHandler:
     async def _wait_for_bootstrap_complete(self, timeout: float = 120.0) -> None:
         """Wait for bootstrap phase to complete (INITIAL_SNAPSHOTTING → MAINTENANCE).
         
-        Polls the snapshot system's phase status and waits for transition to MAINTENANCE.
-        This is more reliable than waiting for individual chunks since it respects
-        the bootstrap waiting period (300 ticks) that allows async charting to complete.
+        Uses a dual approach for reliability:
+        1. Subscribes to UDP `system_phase_changed` events for immediate notification
+        2. Polls `get_snapshot_status` via RCON as a fallback (in case UDP is missed)
+        
+        This ensures we don't miss the critical transition from bootstrap to maintenance mode.
+        Note: UDP payloads for updates and update files can still be sent and written to disk
+        even during bootstrap mode - phases are NOT mutually exclusive for data flow.
         
         Args:
             timeout: Maximum time to wait for bootstrap (seconds, default 120s = 2 minutes)
@@ -249,72 +258,112 @@ class SnapshotHandler:
         start_time = time.time()
         check_interval = 1.0  # Check every second
         
-        logger.info("⏳ Waiting for snapshot system bootstrap to complete...")
-        print("⏳ Waiting for snapshot system bootstrap to complete...")
+        # Event to signal bootstrap completion
+        bootstrap_complete = asyncio.Event()
+        phase_received = {"phase": None, "stats": None}
         
-        while True:
-            # Check if timeout exceeded
-            elapsed = time.time() - start_time
-            if elapsed > timeout:
-                raise asyncio.TimeoutError(
-                    f"Bootstrap did not complete within {timeout}s. "
-                    "System may still be in INITIAL_SNAPSHOTTING phase."
-                )
+        # Subscribe to UDP system_phase_changed events for immediate notification
+        udp_dispatcher = get_udp_dispatcher()
+        if not udp_dispatcher.is_running():
+            await udp_dispatcher.start()
+        
+        def handle_phase_change(payload: dict) -> None:
+            """Handle system_phase_changed UDP event."""
+            phase = payload.get("phase")
+            if phase == "MAINTENANCE":
+                phase_received["phase"] = phase
+                phase_received["stats"] = payload.get("stats", {})
+                bootstrap_complete.set()
+                logger.info("📡 Received system_phase_changed UDP event: MAINTENANCE")
+        
+        # Subscribe to phase change events
+        udp_dispatcher.subscribe("system_phase_changed", handle_phase_change)
+        
+        try:
+            logger.info("⏳ Waiting for snapshot system bootstrap to complete...")
+            print("⏳ Waiting for snapshot system bootstrap to complete...")
             
-            # Query snapshot system status via RCON
-            try:
-                cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
-                result = self._rcon.send_command(cmd)
+            while True:
+                # Check if timeout exceeded
+                elapsed = time.time() - start_time
+                if elapsed > timeout:
+                    raise asyncio.TimeoutError(
+                        f"Bootstrap did not complete within {timeout}s. "
+                        "System may still be in INITIAL_SNAPSHOTTING phase."
+                    )
                 
-                # Handle None result (happens when command fails)
-                if result is None or result.strip() == "":
-                    logger.debug("Empty or None result from RCON, retrying...")
-                    await asyncio.sleep(check_interval)
-                    continue
-                    
-                status = json.loads(result)
-                
-                system_phase = status.get("system_phase")
-                
-                if system_phase == "MAINTENANCE":
-                    # Bootstrap complete!
-                    stats = status.get("bootstrap_wait", {})
-                    completed = status.get("completed_chunks", 0)
-                    logger.info(f"✅ Bootstrap complete! Transitioned to MAINTENANCE mode.")
+                # Check if UDP event already signaled completion
+                if bootstrap_complete.is_set():
+                    stats = phase_received.get("stats", {})
+                    completed = stats.get("chunks_snapshotted", 0) if stats else 0
+                    logger.info(f"✅ Bootstrap complete! Transitioned to MAINTENANCE mode (via UDP).")
                     logger.info(f"✅ {completed} chunks snapshotted during bootstrap.")
                     print(f"✅ Bootstrap complete! {completed} chunks snapshotted.")
                     return
                 
-                elif system_phase == "INITIAL_SNAPSHOTTING":
-                    # Still bootstrapping
-                    pending = status.get("pending_chunks", 0)
-                    completed = status.get("completed_chunks", 0)
-                    bootstrap_wait = status.get("bootstrap_wait", {})
-                    current_tick = bootstrap_wait.get("current_tick", 0)
-                    total_ticks = bootstrap_wait.get("total_ticks", 300)
-                    waiting = bootstrap_wait.get("waiting", False)
+                # Poll snapshot system status via RCON as fallback
+                try:
+                    cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
+                    result = self._rcon.send_command(cmd)
                     
-                    if waiting:
-                        logger.debug(
-                            f"Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
-                            f"{pending} pending chunks, {completed} completed"
-                        )
-                        if int(elapsed) % 5 == 0:  # Log every 5 seconds
-                            print(
-                                f"  ⏱️  Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
-                                f"{pending} pending, {completed} completed"
+                    # Handle None result (happens when command fails)
+                    if result is None or result.strip() == "":
+                        logger.debug("Empty or None result from RCON, retrying...")
+                        await asyncio.sleep(check_interval)
+                        continue
+                        
+                    status = json.loads(result)
+                    
+                    system_phase = status.get("system_phase")
+                    
+                    if system_phase == "MAINTENANCE":
+                        # Bootstrap complete! (detected via polling)
+                        stats = status.get("bootstrap_wait", {})
+                        completed = status.get("completed_chunks", 0)
+                        logger.info(f"✅ Bootstrap complete! Transitioned to MAINTENANCE mode (via polling).")
+                        logger.info(f"✅ {completed} chunks snapshotted during bootstrap.")
+                        print(f"✅ Bootstrap complete! {completed} chunks snapshotted.")
+                        return
+                    
+                    elif system_phase == "INITIAL_SNAPSHOTTING":
+                        # Still bootstrapping
+                        pending = status.get("pending_chunks", 0)
+                        completed = status.get("completed_chunks", 0)
+                        bootstrap_wait = status.get("bootstrap_wait", {})
+                        current_tick = bootstrap_wait.get("current_tick", 0)
+                        total_ticks = bootstrap_wait.get("total_ticks", 300)
+                        waiting = bootstrap_wait.get("waiting", False)
+                        
+                        if waiting:
+                            logger.debug(
+                                f"Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
+                                f"{pending} pending chunks, {completed} completed"
                             )
-                    else:
-                        logger.debug(
-                            f"Processing chunks: {pending} pending, {completed} completed"
-                        )
-                        if int(elapsed) % 5 == 0:
-                            print(f"  📦 Processing: {pending} pending, {completed} completed")
+                            if int(elapsed) % 5 == 0:  # Log every 5 seconds
+                                print(
+                                    f"  ⏱️  Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
+                                    f"{pending} pending, {completed} completed"
+                                )
+                        else:
+                            logger.debug(
+                                f"Processing chunks: {pending} pending, {completed} completed"
+                            )
+                            if int(elapsed) % 5 == 0:
+                                print(f"  📦 Processing: {pending} pending, {completed} completed")
+                    
+                except Exception as e:
+                    logger.warning(f"Error checking bootstrap status: {e}")
+                    # Continue waiting, don't fail on transient errors
                 
-            except Exception as e:
-                logger.warning(f"Error checking bootstrap status: {e}")
-                # Continue waiting, don't fail on transient errors
-            
-            # Wait before next check
-            await asyncio.sleep(check_interval)
+                # Wait before next check (or until UDP event)
+                try:
+                    await asyncio.wait_for(bootstrap_complete.wait(), timeout=check_interval)
+                    # If we get here, event was set
+                    continue
+                except asyncio.TimeoutError:
+                    # Timeout is expected - continue polling
+                    pass
+        finally:
+            # Unsubscribe from UDP events
+            udp_dispatcher.unsubscribe("system_phase_changed", handle_phase_change)
     

@@ -6,8 +6,8 @@ for accessing entities, ghosts, and resources across the entire map.
 Usage:
     from FactoryVerse.agent.snapshot import RemoteView
 
-    view = RemoteView(snapshot_dir)
-    view.load()
+    view = RemoteView(snapshot_dir, rcon_client=rcon)
+    await view.load()  # Waits for bootstrap to complete by default
     await view.start()
 
     entities = view.get_entities("SELECT * FROM map_entity LIMIT 10")

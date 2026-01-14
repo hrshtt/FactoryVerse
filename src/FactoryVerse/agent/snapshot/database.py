@@ -102,10 +102,9 @@ class SnapshotDatabase:
 
     def _create_tables(self, con: duckdb.DuckDBPyConnection) -> None:
         """Create all tables."""
-        # Core entity table
+        # Core entity table - using composite primary key
         con.execute("""
             CREATE TABLE IF NOT EXISTS map_entity (
-                entity_key VARCHAR PRIMARY KEY,
                 entity_name VARCHAR NOT NULL,
                 position_x DOUBLE NOT NULL,
                 position_y DOUBLE NOT NULL,
@@ -123,14 +122,14 @@ class SnapshotDatabase:
                 label VARCHAR,
                 placed_tick INTEGER,
                 -- Raw entity data for full reconstruction
-                raw_data VARCHAR
+                raw_data VARCHAR,
+                PRIMARY KEY (entity_name, position_x, position_y)
             );
         """)
 
         # Ghost table (entities with is_ghost=true behavior)
         con.execute("""
             CREATE TABLE IF NOT EXISTS ghost (
-                entity_key VARCHAR PRIMARY KEY,
                 ghost_name VARCHAR NOT NULL,
                 position_x DOUBLE NOT NULL,
                 position_y DOUBLE NOT NULL,
@@ -140,45 +139,46 @@ class SnapshotDatabase:
                 placed_tick INTEGER,
                 placed_by VARCHAR,
                 label VARCHAR,
-                raw_data VARCHAR
+                raw_data VARCHAR,
+                PRIMARY KEY (ghost_name, position_x, position_y)
             );
         """)
 
         # Resource tiles (ores)
         con.execute("""
             CREATE TABLE IF NOT EXISTS resource_tile (
-                entity_key VARCHAR PRIMARY KEY,
                 name VARCHAR NOT NULL,
                 position_x DOUBLE NOT NULL,
                 position_y DOUBLE NOT NULL,
                 chunk_x INTEGER NOT NULL,
                 chunk_y INTEGER NOT NULL,
-                amount INTEGER
+                amount INTEGER,
+                PRIMARY KEY (name, position_x, position_y)
             );
         """)
 
         # Water tiles
         con.execute("""
             CREATE TABLE IF NOT EXISTS water_tile (
-                entity_key VARCHAR PRIMARY KEY,
                 position_x DOUBLE NOT NULL,
                 position_y DOUBLE NOT NULL,
                 chunk_x INTEGER NOT NULL,
-                chunk_y INTEGER NOT NULL
+                chunk_y INTEGER NOT NULL,
+                PRIMARY KEY (position_x, position_y)
             );
         """)
 
         # Resource entities (trees, rocks)
         con.execute("""
             CREATE TABLE IF NOT EXISTS resource_entity (
-                entity_key VARCHAR PRIMARY KEY,
                 name VARCHAR NOT NULL,
                 entity_type VARCHAR NOT NULL,
                 position_x DOUBLE NOT NULL,
                 position_y DOUBLE NOT NULL,
                 chunk_x INTEGER NOT NULL,
                 chunk_y INTEGER NOT NULL,
-                raw_data VARCHAR
+                raw_data VARCHAR,
+                PRIMARY KEY (name, position_x, position_y)
             );
         """)
 
@@ -193,40 +193,52 @@ class SnapshotDatabase:
         # Component tables (inserter, belt, drill, etc.)
         con.execute("""
             CREATE TABLE IF NOT EXISTS inserter (
-                entity_key VARCHAR PRIMARY KEY,
+                entity_name VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
                 direction VARCHAR NOT NULL,
                 pickup_position_x DOUBLE,
                 pickup_position_y DOUBLE,
                 drop_position_x DOUBLE,
                 drop_position_y DOUBLE,
-                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+                PRIMARY KEY (entity_name, position_x, position_y),
+                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
             );
         """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS transport_belt (
-                entity_key VARCHAR PRIMARY KEY,
+                entity_name VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
                 direction VARCHAR NOT NULL,
                 belt_speed DOUBLE,
-                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+                PRIMARY KEY (entity_name, position_x, position_y),
+                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
             );
         """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS mining_drill (
-                entity_key VARCHAR PRIMARY KEY,
+                entity_name VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
                 direction VARCHAR NOT NULL,
                 mining_target VARCHAR,
-                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+                PRIMARY KEY (entity_name, position_x, position_y),
+                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
             );
         """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS assembler (
-                entity_key VARCHAR PRIMARY KEY,
+                entity_name VARCHAR NOT NULL,
+                position_x DOUBLE NOT NULL,
+                position_y DOUBLE NOT NULL,
                 recipe VARCHAR,
                 crafting_speed DOUBLE,
-                FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+                PRIMARY KEY (entity_name, position_x, position_y),
+                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
             );
         """)
 

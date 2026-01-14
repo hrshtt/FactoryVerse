@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Callable, Dict, Any, TYPE_CHECKING
+import queue
+import threading
+from typing import Callable, Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import duckdb
@@ -39,6 +41,10 @@ class SyncService:
     - Manage database connection (receives it)
     - Do initial load (loader.py does that)
     - Handle queries (query.py does that)
+
+    Important: This service processes updates regardless of system phase (bootstrap or maintenance).
+    UDP payloads for updates and update files can be sent and written to disk even during
+    bootstrap mode (INITIAL_SNAPSHOTTING). Phases are NOT mutually exclusive for data flow.
     """
 
     def __init__(
@@ -47,6 +53,7 @@ class SyncService:
         udp_dispatcher: "UDPDispatcher",
         on_rebuild: Callable[[], None],
         initial_sequence: int = 0,
+        db_lock: Optional[threading.Lock] = None,
     ):
         """Initialize sync service.
 
@@ -55,6 +62,7 @@ class SyncService:
             udp_dispatcher: UDP dispatcher for subscriptions
             on_rebuild: Called when full rebuild is needed (sequence gap)
             initial_sequence: Starting sequence number (from initial load)
+            db_lock: Shared lock for database access (creates new if None)
         """
         self._db = db
         self._udp = udp_dispatcher
@@ -62,6 +70,11 @@ class SyncService:
         self._last_sequence = initial_sequence
         self._running = False
         self._needs_rebuild = False
+
+        # Thread-safe write buffer
+        self._pending_operations = queue.Queue(maxsize=10000)
+        self._db_lock = db_lock if db_lock is not None else threading.Lock()
+        self._sequence_lock = threading.Lock()  # Separate lock for sequence checking
 
     @property
     def state(self) -> SyncState:
@@ -113,65 +126,55 @@ class SyncService:
     # =========================================================================
 
     def _handle_entity_operation(self, payload: Dict[str, Any]) -> None:
-        """Handle entity operation from UDP."""
+        """Handle entity operation from UDP.
+
+        Enqueues operation for later processing (flush-before-read pattern).
+        UDP thread does NOT access database directly.
+        """
         try:
-            # Check sequence
+            # Check sequence (with separate lock)
             sequence = payload.get("sequence", 0)
             if not self._check_sequence(sequence):
                 return  # Rebuild triggered
 
-            # Apply operation based on type
-            op = payload.get("op")
-            is_ghost = payload.get("is_ghost", False)
-
-            if op == "created" or op == "upsert":
-                if is_ghost:
-                    self._apply_ghost_upsert(payload)
-                else:
-                    self._apply_entity_upsert(payload)
-            elif op == "destroyed" or op == "remove":
-                if is_ghost:
-                    self._apply_ghost_remove(payload)
-                else:
-                    self._apply_entity_remove(payload)
-            elif op == "rotated":
-                if is_ghost:
-                    self._apply_ghost_rotation(payload)
-                else:
-                    self._apply_entity_rotation(payload)
-            elif op == "configuration_changed":
-                if is_ghost:
-                    self._apply_ghost_config_change(payload)
-                else:
-                    self._apply_entity_config_change(payload)
-            else:
-                logger.warning(f"Unknown entity operation: {op}")
+            # Enqueue operation for later processing (non-blocking)
+            try:
+                self._pending_operations.put_nowait(payload)
+                logger.debug(
+                    f"Enqueued entity_operation: op={payload.get('op')}, name={payload.get('name')}, position={payload.get('position')}"
+                )
+            except queue.Full:
+                logger.error(
+                    f"Write buffer full ({self._pending_operations.maxsize} operations)! "
+                    "Triggering rebuild to clear backlog."
+                )
+                self._needs_rebuild = True
+                self._on_rebuild()
 
         except Exception as e:
-            logger.error(f"Error handling entity operation: {e}", exc_info=True)
+            logger.error(f"Error enqueueing entity operation: {e}", exc_info=True)
 
     def _handle_ghost_operation(self, payload: Dict[str, Any]) -> None:
-        """Handle ghost operation from UDP."""
+        """Handle ghost operation from UDP.
+
+        Enqueues operation for later processing (flush-before-read pattern).
+        """
         try:
             sequence = payload.get("sequence", 0)
             if not self._check_sequence(sequence):
                 return
 
-            op = payload.get("op")
-
-            if op == "created" or op == "upsert":
-                self._apply_ghost_upsert(payload)
-            elif op == "destroyed" or op == "remove":
-                self._apply_ghost_remove(payload)
-            elif op == "rotated":
-                self._apply_ghost_rotation(payload)
-            elif op == "configuration_changed":
-                self._apply_ghost_config_change(payload)
-            else:
-                logger.warning(f"Unknown ghost operation: {op}")
+            # Enqueue for later processing
+            try:
+                self._pending_operations.put_nowait(payload)
+                logger.debug(f"Enqueued ghost_operation: op={payload.get('op')}")
+            except queue.Full:
+                logger.error("Write buffer full! Triggering rebuild.")
+                self._needs_rebuild = True
+                self._on_rebuild()
 
         except Exception as e:
-            logger.error(f"Error handling ghost operation: {e}", exc_info=True)
+            logger.error(f"Error enqueueing ghost operation: {e}", exc_info=True)
 
     def _handle_chunk_init(self, payload: Dict[str, Any]) -> None:
         """Handle chunk init complete notification.
@@ -189,35 +192,121 @@ class SyncService:
     def _check_sequence(self, sequence: int) -> bool:
         """Check if sequence is valid, trigger rebuild if gap detected.
 
+        Thread-safe sequence checking with dedicated lock.
+
         Returns:
             True if sequence is valid and processing should continue
             False if rebuild was triggered
         """
-        # First operation or sequence matches expected
-        if self._last_sequence == 0 or sequence == self._last_sequence + 1:
-            self._last_sequence = sequence
-            return True
+        with self._sequence_lock:
+            # First operation or sequence matches expected
+            if self._last_sequence == 0 or sequence == self._last_sequence + 1:
+                self._last_sequence = sequence
+                return True
 
-        # Sequence is older than what we've seen - duplicate, ignore
-        if sequence <= self._last_sequence:
-            logger.debug(
-                f"Ignoring old sequence {sequence} (last={self._last_sequence})"
+            # Sequence is older than what we've seen - duplicate, ignore
+            if sequence <= self._last_sequence:
+                logger.debug(
+                    f"Ignoring old sequence {sequence} (last={self._last_sequence})"
+                )
+                return False
+
+            # Gap detected - we missed some updates!
+            gap_size = sequence - self._last_sequence - 1
+            logger.warning(
+                f"Sequence gap detected! Expected {self._last_sequence + 1}, got {sequence}. "
+                f"Missing {gap_size} updates. Triggering rebuild."
             )
+
+            self._needs_rebuild = True
+            self._on_rebuild()
             return False
 
-        # Gap detected - we missed some updates!
-        gap_size = sequence - self._last_sequence - 1
-        logger.warning(
-            f"Sequence gap detected! Expected {self._last_sequence + 1}, got {sequence}. "
-            f"Missing {gap_size} updates. Triggering rebuild."
-        )
+    # =========================================================================
+    # Flush Mechanism (called before reads)
+    # =========================================================================
 
-        self._needs_rebuild = True
-        self._on_rebuild()
-        return False
+    def flush_pending(self) -> int:
+        """Flush all pending operations to database.
+
+        This is called before every query to ensure read consistency.
+        Drains the operation queue and applies all buffered writes.
+
+        Returns:
+            Number of operations flushed
+        """
+        queue_size = self._pending_operations.qsize()
+        print(f"[FLUSH] Called, queue size: {queue_size}")
+        logger.debug(f"flush_pending() called, queue size: {queue_size}")
+        operations_flushed = 0
+
+        with self._db_lock:
+            while not self._pending_operations.empty():
+                try:
+                    payload = self._pending_operations.get_nowait()
+                    print(
+                        f"[FLUSH] Processing operation: {payload.get('op')}, name={payload.get('name')}, position={payload.get('position')}"
+                    )
+                    self._apply_operation(payload)
+                    operations_flushed += 1
+                except queue.Empty:
+                    break
+                except Exception as e:
+                    print(f"[FLUSH] ERROR: {e}")
+                    logger.error(f"Error flushing operation: {e}", exc_info=True)
+                    # Continue processing remaining operations
+
+        if operations_flushed > 0:
+            # CRITICAL: Explicitly commit to ensure changes are persisted
+            # DuckDB auto-commit may not be reliable with multiple operations
+            try:
+                self._db.commit()
+                # Force DuckDB to start a new transaction for next read
+                self._db.begin()
+                print(
+                    f"[FLUSH] Committed {operations_flushed} operations, started new transaction"
+                )
+            except Exception as e:
+                print(f"[FLUSH] Commit/begin error: {e}")
+                logger.error(f"Error committing flush: {e}", exc_info=True)
+
+            logger.debug(f"Flushed {operations_flushed} pending operations")
+
+        return operations_flushed
+
+    def _apply_operation(self, payload: Dict[str, Any]) -> None:
+        """Apply a single buffered operation to database.
+
+        MUST be called with _db_lock held.
+        """
+        op = payload.get("op")
+        is_ghost = payload.get("is_ghost", False)
+
+        if op == "created" or op == "upsert":
+            if is_ghost:
+                self._apply_ghost_upsert(payload)
+            else:
+                self._apply_entity_upsert(payload)
+        elif op == "destroyed" or op == "remove":
+            if is_ghost:
+                self._apply_ghost_remove(payload)
+            else:
+                self._apply_entity_remove(payload)
+        elif op == "rotated":
+            if is_ghost:
+                self._apply_ghost_rotation(payload)
+            else:
+                self._apply_entity_rotation(payload)
+        elif op == "configuration_changed":
+            if is_ghost:
+                self._apply_ghost_config_change(payload)
+            else:
+                self._apply_entity_config_change(payload)
+        else:
+            logger.warning(f"Unknown operation type: {op}")
 
     # =========================================================================
-    # Apply Operations
+    # Database Write Operations (called by _apply_operation)
     # =========================================================================
 
     def _apply_entity_upsert(self, payload: Dict[str, Any]) -> None:
@@ -235,10 +324,7 @@ class SyncService:
         pos_x = float(position.get("x", 0))
         pos_y = float(position.get("y", 0))
 
-        entity_key = entity_data.get("key") or payload.get("entity_key")
-        if not entity_key:
-            entity_key = f"{entity_data.get('name', 'entity')}:{pos_x},{pos_y}"
-
+        entity_name = entity_data.get("name", "")
         bbox = entity_data.get("bounding_box", {})
 
         # Extract builder metadata
@@ -251,14 +337,13 @@ class SyncService:
         self._db.execute(
             """
             INSERT OR REPLACE INTO map_entity 
-            (entity_key, entity_name, position_x, position_y, chunk_x, chunk_y,
+            (entity_name, position_x, position_y, chunk_x, chunk_y,
              direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
              agent_id, player_id, label, placed_tick, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                entity_key,
-                entity_data.get("name", ""),
+                entity_name,
                 pos_x,
                 pos_y,
                 chunk_x,
@@ -276,17 +361,56 @@ class SyncService:
             ],
         )
 
-        logger.debug(f"Applied entity upsert: {entity_key}")
+        logger.debug(f"Applied entity upsert: ({entity_name}, {pos_x}, {pos_y})")
 
     def _apply_entity_remove(self, payload: Dict[str, Any]) -> None:
         """Apply entity remove to database."""
-        entity_key = payload.get("entity_key") or payload.get("key")
-        if not entity_key:
-            logger.warning("Entity remove missing entity_key")
+        # Extract entity name and position from payload
+        entity_name = payload.get("name", "")
+        position = payload.get("position", {})
+        pos_x = float(position.get("x", 0))
+        pos_y = float(position.get("y", 0))
+
+        if not entity_name:
+            logger.warning("Entity remove missing entity name")
             return
 
-        self._db.execute("DELETE FROM map_entity WHERE entity_key = ?", [entity_key])
-        logger.debug(f"Applied entity remove: {entity_key}")
+        # Delete from both tables since we don't know which one it's in
+        # Resources (trees, rocks) are in resource_entity
+        # Regular entities (furnaces, assemblers) are in map_entity
+        
+        # Check if entity exists before deleting (for better logging)
+        map_exists = self._db.execute(
+            "SELECT COUNT(*) FROM map_entity WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+            [entity_name, pos_x, pos_y],
+        ).fetchone()[0] > 0
+        
+        resource_exists = self._db.execute(
+            "SELECT COUNT(*) FROM resource_entity WHERE name = ? AND position_x = ? AND position_y = ?",
+            [entity_name, pos_x, pos_y],
+        ).fetchone()[0] > 0
+
+        # Perform deletions
+        self._db.execute(
+            "DELETE FROM map_entity WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+            [entity_name, pos_x, pos_y],
+        )
+        self._db.execute(
+            "DELETE FROM resource_entity WHERE name = ? AND position_x = ? AND position_y = ?",
+            [entity_name, pos_x, pos_y],
+        )
+        
+        # Log results
+        if map_exists or resource_exists:
+            print(f"[DELETE] Removed ({entity_name}, {pos_x}, {pos_y}) from {'map_entity' if map_exists else ''} {'resource_entity' if resource_exists else ''}")
+            logger.debug(f"Applied entity remove: ({entity_name}, {pos_x}, {pos_y})")
+        else:
+            # Entity didn't exist - this could indicate a duplicate remove event
+            print(f"[DELETE] WARNING: Attempted to delete non-existent entity ({entity_name}, {pos_x}, {pos_y})")
+            logger.warning(
+                f"Attempted to delete non-existent entity: {entity_name} at ({pos_x}, {pos_y}). "
+                "This may indicate a duplicate remove event or stale database state."
+            )
 
     def _apply_ghost_upsert(self, payload: Dict[str, Any]) -> None:
         """Apply ghost upsert to database."""
@@ -301,7 +425,6 @@ class SyncService:
         pos_y = float(position.get("y", 0))
 
         ghost_name = ghost_data.get("ghost_name") or ghost_data.get("name", "")
-        entity_key = ghost_data.get("key") or f"ghost:{ghost_name}@{pos_x},{pos_y}"
 
         chunk_x = math.floor(pos_x / 32)
         chunk_y = math.floor(pos_y / 32)
@@ -309,12 +432,11 @@ class SyncService:
         self._db.execute(
             """
             INSERT OR REPLACE INTO ghost
-            (entity_key, ghost_name, position_x, position_y, chunk_x, chunk_y,
+            (ghost_name, position_x, position_y, chunk_x, chunk_y,
              direction, placed_tick, placed_by, label, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                entity_key,
                 ghost_name,
                 pos_x,
                 pos_y,
@@ -328,49 +450,68 @@ class SyncService:
             ],
         )
 
-        logger.debug(f"Applied ghost upsert: {entity_key}")
+        logger.debug(f"Applied ghost upsert: ({ghost_name}, {pos_x}, {pos_y})")
 
     def _apply_ghost_remove(self, payload: Dict[str, Any]) -> None:
         """Apply ghost remove to database."""
-        ghost_key = payload.get("entity_key") or payload.get("key")
-        if not ghost_key:
-            logger.warning("Ghost remove missing entity_key/key")
+        ghost_name = payload.get("name", "")
+        position = payload.get("position", {})
+        pos_x = float(position.get("x", 0))
+        pos_y = float(position.get("y", 0))
+
+        if not ghost_name:
+            logger.warning("Ghost remove missing ghost name")
             return
 
-        self._db.execute("DELETE FROM ghost WHERE entity_key = ?", [ghost_key])
-        logger.debug(f"Applied ghost remove: {ghost_key}")
+        self._db.execute(
+            "DELETE FROM ghost WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
+            [ghost_name, pos_x, pos_y],
+        )
+        logger.debug(f"Applied ghost remove: ({ghost_name}, {pos_x}, {pos_y})")
 
     def _apply_entity_rotation(self, payload: Dict[str, Any]) -> None:
         """Apply entity rotation update to database."""
-        entity_key = payload.get("entity_key")
-        if not entity_key:
-            logger.warning("Entity rotation missing entity_key")
+        entity_name = payload.get("name", "")
+        position = payload.get("position", {})
+        pos_x = float(position.get("x", 0))
+        pos_y = float(position.get("y", 0))
+
+        if not entity_name:
+            logger.warning("Entity rotation missing entity name")
             return
 
         direction = payload.get("direction")
 
         # Update only the direction field
         self._db.execute(
-            "UPDATE map_entity SET direction = ? WHERE entity_key = ?",
-            [direction, entity_key],
+            "UPDATE map_entity SET direction = ? WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+            [direction, entity_name, pos_x, pos_y],
         )
-        logger.debug(f"Applied entity rotation: {entity_key} -> direction={direction}")
+        logger.debug(
+            f"Applied entity rotation: ({entity_name}, {pos_x}, {pos_y}) -> direction={direction}"
+        )
 
     def _apply_ghost_rotation(self, payload: Dict[str, Any]) -> None:
         """Apply ghost rotation update to database."""
-        entity_key = payload.get("entity_key")
-        if not entity_key:
-            logger.warning("Ghost rotation missing entity_key")
+        ghost_name = payload.get("name", "")
+        position = payload.get("position", {})
+        pos_x = float(position.get("x", 0))
+        pos_y = float(position.get("y", 0))
+
+        if not ghost_name:
+            logger.warning("Ghost rotation missing ghost name")
             return
 
         direction = payload.get("direction")
 
         # Update only the direction field
         self._db.execute(
-            "UPDATE ghost SET direction = ? WHERE entity_key = ?",
-            [direction, entity_key],
+            "UPDATE ghost SET direction = ? WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
+            [direction, ghost_name, pos_x, pos_y],
         )
-        logger.debug(f"Applied ghost rotation: {entity_key} -> direction={direction}")
+        logger.debug(
+            f"Applied ghost rotation: ({ghost_name}, {pos_x}, {pos_y}) -> direction={direction}"
+        )
 
     def _apply_entity_config_change(self, payload: Dict[str, Any]) -> None:
         """Apply entity configuration change to database.

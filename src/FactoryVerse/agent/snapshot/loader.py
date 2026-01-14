@@ -297,18 +297,25 @@ class SnapshotLoader:
             entity_data = data.get("entity", {})
             self._insert_entity(entity_data, chunk)
         elif op == "remove":
-            entity_key = data.get("key") or data.get("entity_key")
-            if entity_key:
+            entity_name = data.get("name", "")
+            position = data.get("position", {})
+            pos_x = float(position.get("x", 0))
+            pos_y = float(position.get("y", 0))
+            if entity_name:
                 self._db.execute(
-                    "DELETE FROM map_entity WHERE entity_key = ?", [entity_key]
+                    "DELETE FROM map_entity WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+                    [entity_name, pos_x, pos_y],
                 )
         elif op == "rotated":
-            entity_key = data.get("key") or data.get("entity_key")
+            entity_name = data.get("name", "")
+            position = data.get("position", {})
+            pos_x = float(position.get("x", 0))
+            pos_y = float(position.get("y", 0))
             direction = data.get("direction")
-            if entity_key and direction is not None:
+            if entity_name and direction is not None:
                 self._db.execute(
-                    "UPDATE map_entity SET direction = ? WHERE entity_key = ?",
-                    [direction, entity_key],
+                    "UPDATE map_entity SET direction = ? WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+                    [direction, entity_name, pos_x, pos_y],
                 )
 
     def _apply_ghost_operation(self, data: Dict[str, Any]) -> None:
@@ -319,16 +326,25 @@ class SnapshotLoader:
             ghost_data = data.get("ghost", {})
             self._insert_ghost(ghost_data)
         elif op == "remove":
-            ghost_key = data.get("key")
-            if ghost_key:
-                self._db.execute("DELETE FROM ghost WHERE entity_key = ?", [ghost_key])
-        elif op == "rotated":
-            ghost_key = data.get("key")
-            direction = data.get("direction")
-            if ghost_key and direction is not None:
+            ghost_name = data.get("name", "")
+            position = data.get("position", {})
+            pos_x = float(position.get("x", 0))
+            pos_y = float(position.get("y", 0))
+            if ghost_name:
                 self._db.execute(
-                    "UPDATE ghost SET direction = ? WHERE entity_key = ?",
-                    [direction, ghost_key],
+                    "DELETE FROM ghost WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
+                    [ghost_name, pos_x, pos_y],
+                )
+        elif op == "rotated":
+            ghost_name = data.get("name", "")
+            position = data.get("position", {})
+            pos_x = float(position.get("x", 0))
+            pos_y = float(position.get("y", 0))
+            direction = data.get("direction")
+            if ghost_name and direction is not None:
+                self._db.execute(
+                    "UPDATE ghost SET direction = ? WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
+                    [direction, ghost_name, pos_x, pos_y],
                 )
 
     def _apply_resource_entity_operation(self, data: Dict[str, Any]) -> None:
@@ -336,10 +352,14 @@ class SnapshotLoader:
         op = data.get("op")
 
         if op == "remove":
-            entity_key = data.get("key")
-            if entity_key:
+            entity_name = data.get("name", "")
+            position = data.get("position", {})
+            pos_x = float(position.get("x", 0))
+            pos_y = float(position.get("y", 0))
+            if entity_name:
                 self._db.execute(
-                    "DELETE FROM resource_entity WHERE entity_key = ?", [entity_key]
+                    "DELETE FROM resource_entity WHERE name = ? AND position_x = ? AND position_y = ?",
+                    [entity_name, pos_x, pos_y],
                 )
 
     # =========================================================================
@@ -348,13 +368,13 @@ class SnapshotLoader:
 
     def _insert_entity(self, data: Dict[str, Any], chunk: ChunkKey) -> None:
         """Insert or replace entity in map_entity table."""
-        entity_key = data.get("key") or self._make_entity_key(data)
         position = data.get("position", {})
         pos_x = float(position.get("x", 0))
         pos_y = float(position.get("y", 0))
+        entity_name = data.get("name", "")
 
         bbox = data.get("bounding_box", {})
-        
+
         # Extract builder metadata
         builder = data.get("builder", {})
         agent_id = builder.get("agent_id") if builder else None
@@ -365,14 +385,13 @@ class SnapshotLoader:
         self._db.execute(
             """
             INSERT OR REPLACE INTO map_entity 
-            (entity_key, entity_name, position_x, position_y, chunk_x, chunk_y,
+            (entity_name, position_x, position_y, chunk_x, chunk_y,
              direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
              agent_id, player_id, label, placed_tick, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                entity_key,
-                data.get("name", ""),
+                entity_name,
                 pos_x,
                 pos_y,
                 chunk.x,
@@ -396,22 +415,19 @@ class SnapshotLoader:
         pos_x = float(position.get("x", 0))
         pos_y = float(position.get("y", 0))
 
-        entity_key = (
-            data.get("key") or f"ghost:{data.get('ghost_name', '')}@{pos_x},{pos_y}"
-        )
+        ghost_name = data.get("ghost_name") or data.get("name", "")
         chunk_x = math.floor(pos_x / 32)
         chunk_y = math.floor(pos_y / 32)
 
         self._db.execute(
             """
             INSERT OR REPLACE INTO ghost
-            (entity_key, ghost_name, position_x, position_y, chunk_x, chunk_y,
+            (ghost_name, position_x, position_y, chunk_x, chunk_y,
              direction, placed_tick, placed_by, label, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                entity_key,
-                data.get("ghost_name") or data.get("name", ""),
+                ghost_name,
                 pos_x,
                 pos_y,
                 chunk_x,
@@ -429,30 +445,28 @@ class SnapshotLoader:
         pos_x = float(data.get("x", 0))
         pos_y = float(data.get("y", 0))
         name = data.get("kind") or data.get("name", "")
-        entity_key = f"{name}:{pos_x},{pos_y}"
 
         self._db.execute(
             """
             INSERT OR REPLACE INTO resource_tile
-            (entity_key, name, position_x, position_y, chunk_x, chunk_y, amount)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (name, position_x, position_y, chunk_x, chunk_y, amount)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            [entity_key, name, pos_x, pos_y, chunk.x, chunk.y, data.get("amount")],
+            [name, pos_x, pos_y, chunk.x, chunk.y, data.get("amount")],
         )
 
     def _insert_water_tile(self, data: Dict[str, Any], chunk: ChunkKey) -> None:
         """Insert water tile into water_tile table."""
         pos_x = float(data.get("x", 0))
         pos_y = float(data.get("y", 0))
-        entity_key = f"water:{pos_x},{pos_y}"
 
         self._db.execute(
             """
             INSERT OR REPLACE INTO water_tile
-            (entity_key, position_x, position_y, chunk_x, chunk_y)
-            VALUES (?, ?, ?, ?, ?)
+            (position_x, position_y, chunk_x, chunk_y)
+            VALUES (?, ?, ?, ?)
             """,
-            [entity_key, pos_x, pos_y, chunk.x, chunk.y],
+            [pos_x, pos_y, chunk.x, chunk.y],
         )
 
     def _insert_resource_entity(self, data: Dict[str, Any], chunk: ChunkKey) -> None:
@@ -461,16 +475,14 @@ class SnapshotLoader:
         pos_x = float(position.get("x", 0))
         pos_y = float(position.get("y", 0))
         name = data.get("name", "")
-        entity_key = data.get("key") or f"{name}:{pos_x},{pos_y}"
 
         self._db.execute(
             """
             INSERT OR REPLACE INTO resource_entity
-            (entity_key, name, entity_type, position_x, position_y, chunk_x, chunk_y, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (name, entity_type, position_x, position_y, chunk_x, chunk_y, raw_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                entity_key,
                 name,
                 data.get("type", "unknown"),
                 pos_x,
@@ -481,13 +493,6 @@ class SnapshotLoader:
             ],
         )
 
-    def _make_entity_key(self, data: Dict[str, Any]) -> str:
-        """Generate entity key from data."""
-        name = data.get("name", "entity")
-        position = data.get("position", {})
-        x = position.get("x", 0)
-        y = position.get("y", 0)
-        return f"{name}:{x},{y}"
 
     def _iter_jsonl(self, path: Path) -> Iterator[Dict[str, Any]]:
         """Iterate over JSONL file, yielding parsed dicts."""

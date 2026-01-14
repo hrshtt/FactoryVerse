@@ -213,52 +213,62 @@ def create_schema(
     # Create base tables
     con.execute("""
         CREATE TABLE IF NOT EXISTS water_tile (
-            entity_key VARCHAR PRIMARY KEY,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             type VARCHAR NOT NULL DEFAULT 'water-tile',
-            position map_position NOT NULL
+            position map_position NOT NULL,
+            PRIMARY KEY (position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS resource_tile (
-            entity_key VARCHAR PRIMARY KEY,
             name resource_tile NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             position map_position NOT NULL,
-            amount INTEGER
+            amount INTEGER,
+            PRIMARY KEY (name, position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS resource_entity (
-            entity_key VARCHAR PRIMARY KEY,
             name VARCHAR NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             type VARCHAR NOT NULL,
             position map_position NOT NULL,
-            bbox GEOMETRY
+            bbox GEOMETRY,
+            PRIMARY KEY (name, position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS map_entity (
-            entity_key VARCHAR PRIMARY KEY,
-            position map_position NOT NULL,
             entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
+            position map_position NOT NULL,
             bbox GEOMETRY NOT NULL,
-            electric_network_id INTEGER
+            electric_network_id INTEGER,
+            PRIMARY KEY (entity_name, position_x, position_y)
         );
     """)
 
     # Ghost layer table for tracking entity ghosts (blueprints)
     con.execute("""
         CREATE TABLE IF NOT EXISTS ghost_layer (
-            ghost_key VARCHAR PRIMARY KEY,
             ghost_name VARCHAR NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             force_name VARCHAR,
             map_position POINT_2D NOT NULL,
             direction INTEGER,
             direction_name direction,
             chunk_x INTEGER,
-            chunk_y INTEGER
+            chunk_y INTEGER,
+            PRIMARY KEY (ghost_name, position_x, position_y)
         );
     """)
 
@@ -267,66 +277,87 @@ def create_schema(
     # Use entity_status_latest view to query current status.
     con.execute("""
         CREATE TABLE IF NOT EXISTS entity_status (
-            entity_key VARCHAR PRIMARY KEY,
+            entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             tick INTEGER NOT NULL,
             status status NOT NULL,
-            FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            PRIMARY KEY (entity_name, position_x, position_y, tick),
+            FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 
     # Component tables
     con.execute("""
         CREATE TABLE IF NOT EXISTS inserter (
-            entity_key VARCHAR PRIMARY KEY,
+            entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             direction direction NOT NULL,
-            output STRUCT(position map_position, entity_key VARCHAR),
-            input STRUCT(position map_position, entity_key VARCHAR),
-            FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            output STRUCT(position map_position, entity_name VARCHAR, position_x DOUBLE, position_y DOUBLE),
+            input STRUCT(position map_position, entity_name VARCHAR, position_x DOUBLE, position_y DOUBLE),
+            PRIMARY KEY (entity_name, position_x, position_y),
+            FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS transport_belt (
-            entity_key VARCHAR PRIMARY KEY,
+            entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             direction direction NOT NULL,
-            output STRUCT(entity_key VARCHAR),
-            input STRUCT(entity_key VARCHAR)[],
-            FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            output STRUCT(entity_name VARCHAR, position_x DOUBLE, position_y DOUBLE),
+            input STRUCT(entity_name VARCHAR, position_x DOUBLE, position_y DOUBLE)[],
+            PRIMARY KEY (entity_name, position_x, position_y),
+            FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS electric_pole (
-            entity_key VARCHAR PRIMARY KEY,
+            entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             supply_area GEOMETRY,
             connected_poles VARCHAR[],
-            FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            PRIMARY KEY (entity_name, position_x, position_y),
+            FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS mining_drill (
-            entity_key VARCHAR PRIMARY KEY,
+            entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             direction direction NOT NULL,
             mining_area GEOMETRY,
-            output STRUCT(position map_position, entity_key VARCHAR),
-            FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            output STRUCT(position map_position, entity_name VARCHAR, position_x DOUBLE, position_y DOUBLE),
+            PRIMARY KEY (entity_name, position_x, position_y),
+            FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS pumpjack (
-            entity_key VARCHAR PRIMARY KEY,
-            output STRUCT(position map_position, entity_key VARCHAR)[],
-            FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
+            output STRUCT(position map_position, entity_name VARCHAR, position_x DOUBLE, position_y DOUBLE)[],
+            PRIMARY KEY (entity_name, position_x, position_y),
+            FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS assemblers (
-            entity_key VARCHAR PRIMARY KEY,
+            entity_name placeable_entity NOT NULL,
+            position_x DOUBLE NOT NULL,
+            position_y DOUBLE NOT NULL,
             recipe recipe,
-            FOREIGN KEY (entity_key) REFERENCES map_entity(entity_key)
+            PRIMARY KEY (entity_name, position_x, position_y),
+            FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 
@@ -373,11 +404,15 @@ def create_schema(
             belts VARCHAR[],
             upstream_segments INTEGER[],
             downstream_segments INTEGER[],
-            start_entity VARCHAR,
-            end_entity VARCHAR,
+            start_entity_name VARCHAR,
+            start_entity_x DOUBLE,
+            start_entity_y DOUBLE,
+            end_entity_name VARCHAR,
+            end_entity_x DOUBLE,
+            end_entity_y DOUBLE,
             FOREIGN KEY (line_id) REFERENCES belt_line(line_id),
-            FOREIGN KEY (start_entity) REFERENCES map_entity(entity_key),
-            FOREIGN KEY (end_entity) REFERENCES map_entity(entity_key)
+            FOREIGN KEY (start_entity_name, start_entity_x, start_entity_y) REFERENCES map_entity(entity_name, position_x, position_y),
+            FOREIGN KEY (end_entity_name, end_entity_x, end_entity_y) REFERENCES map_entity(entity_name, position_x, position_y)
         );
     """)
 

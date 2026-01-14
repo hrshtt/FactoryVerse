@@ -320,8 +320,9 @@ def generate_schema_doc(con: duckdb.DuckDBPyConnection, include_enum_details: bo
         for col in columns:
             constraints = []
             
-            # Check for primary key (heuristic: entity_key, patch_id, etc.)
-            if col["name"] in ("entity_key", "patch_id", "line_id", "segment_id"):
+            # Check for primary key (heuristic: composite keys, patch_id, etc.)
+            # Note: Composite keys are detected by PRIMARY KEY constraint, not by name
+            if col["name"] in ("patch_id", "line_id", "segment_id"):
                 constraints.append("PRIMARY KEY")
             
             if not col["nullable"]:
