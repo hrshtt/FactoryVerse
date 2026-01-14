@@ -152,7 +152,7 @@ class UDPDispatcher:
                 f"🔔 UDP Dispatcher: Received entity_operation - {len(handlers_to_call)} handlers"
             )
             print(
-                f"   Payload: op={payload.get('op')}, key={payload.get('entity_key')}, name={payload.get('entity_name')}"
+                f"   Payload: op={payload.get('op')}, name={payload.get('name')}, position={payload.get('position')}"
             )
 
         # Call handlers (outside lock to avoid deadlocks)

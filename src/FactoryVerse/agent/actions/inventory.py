@@ -22,15 +22,19 @@ class AgentInventory:
         """Get agent's main inventory contents.
 
         RCON Contract: RemoteInterface.lua get_inventory_items
+        Factorio 2.0: Returns array of {name, quality, count} objects
 
         Returns:
             List of ItemStack objects with placement action injected
         """
         cmd = self._rcon.build_command("get_inventory_items")
         response = self._rcon.execute_and_parse_json(cmd)
+        # Factorio 2.0: get_contents() returns array of {name, quality, count}
         return [
-            create_item_stack(name=k, count=v, placement=self._placement)
-            for k, v in response.items()
+            create_item_stack(
+                name=item["name"], count=item["count"], placement=self._placement
+            )
+            for item in response
         ]
 
     @property

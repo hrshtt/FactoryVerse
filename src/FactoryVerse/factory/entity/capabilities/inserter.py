@@ -55,7 +55,7 @@ class InserterMixin:
     position: Any  # MapPosition at runtime
     direction: "Direction"
     prototype: Any  # Dict[str, Any] at runtime
-    _entity_ops: Optional["EntityOperationsAction"]
+    _entity_ops: "EntityOperationsAction"
 
     def _get_inserter_state(self, inspection_data: dict) -> InserterState:
         """Get inserter state from inspection data.
@@ -161,9 +161,6 @@ class InserterMixin:
         Returns:
             True if filter was set successfully
         """
-        if self._entity_ops is None:
-            raise RuntimeError("entity_ops not injected.")
-
         result = self._entity_ops.set_entity_filter(
             self.name,
             self.position,

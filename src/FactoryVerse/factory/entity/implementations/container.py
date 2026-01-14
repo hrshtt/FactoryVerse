@@ -40,7 +40,7 @@ class Container(BaseEntity):
     **For Agents**: Use store_item/take_item to manage inventory.
     """
 
-    _entity_ops: Optional["EntityOperationsAction"]
+    _entity_ops: "EntityOperationsAction"
 
     def _get_container_state(self, inspection_data: dict) -> ContainerState:
         """Get container state from inspection data."""
@@ -75,9 +75,6 @@ class Container(BaseEntity):
         Returns:
             Number of items in container, 0 if not present
         """
-        if self._entity_ops is None:
-            raise RuntimeError("entity_ops not injected.")
-
         raw_data = self._entity_ops.inspect_entity(self.name, self.position)
         state = self._get_container_state(raw_data)
         return state.contents.get(item_name, 0)
@@ -93,9 +90,6 @@ class Container(BaseEntity):
         Returns:
             List of results from storage operation
         """
-        if self._entity_ops is None:
-            raise RuntimeError("entity_ops not injected.")
-
         results = []
         for item in items:
             result = self._entity_ops.put_inventory_item(
@@ -119,10 +113,6 @@ class Container(BaseEntity):
         Returns:
             List of ItemStack taken from container
         """
-        if self._entity_ops is None:
-            raise RuntimeError("entity_ops not injected.")
-
-
         result = self._entity_ops.take_inventory_item(
             self.name,
             "chest",

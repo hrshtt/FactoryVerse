@@ -289,18 +289,18 @@ class AsyncActionListener:
         and calculating timeouts based on estimated_ticks.
 
         Args:
-            response: Response dict from async action (should have action_id)
+            response: AsyncActionResponse from async action (should have action_id)
             timeout: Optional timeout in seconds (overrides calculated timeout)
 
         Returns:
             Completion payload from UDP
         """
-        if not response.get("queued"):
-            return response
+        if not response.queued:
+            return {"success": response.success, "reason": response.reason}
 
-        action_id = response.get("action_id")
+        action_id = response.action_id
         if not action_id:
-            return response
+            return {"success": response.success, "reason": response.reason}
 
         # Ensure listener is running
         if not self.running:
@@ -309,7 +309,7 @@ class AsyncActionListener:
         # Calculate timeout with buffer based on estimated_ticks
         calculated_timeout = timeout
         if timeout is None:
-            estimated_ticks = response.get("estimated_ticks")
+            estimated_ticks = response.estimated_ticks
             if estimated_ticks:
                 # Convert ticks to seconds: 1 tick = 1/60 seconds at game.speed = 1.0
                 # Add 1.5x buffer for safety (total 2.5x)

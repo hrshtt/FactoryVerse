@@ -106,10 +106,12 @@ class AgentRuntime:
 
         # Wire up actions with their dependencies
         self._entity_ops = EntityOperationsAction(self._rcon)
-        self._placement = PlacementAction(self._rcon)
+        self._walking = MovementAction(self._rcon, self._listener)
+        self._placement = PlacementAction(
+            self._rcon, entity_ops=self._entity_ops, walking_action=self._walking
+        )
 
         # Actions that need placement for item injection
-        self._walking = MovementAction(self._rcon, self._listener)
         self._mining = MiningAction(self._rcon, self._listener, self._placement)
         self._crafting = CraftingAction(self._rcon, self._listener, self._placement)
         self._research = ResearchAction(self._rcon)
@@ -122,7 +124,13 @@ class AgentRuntime:
 
         # Unified query object for both entities and resources
         # Single Reachable instance handles all get_entity/get_entities/get_resource/get_resources calls
-        self._reachable = Reachable(self._rcon, self._mining)
+        self._reachable = Reachable(
+            self._rcon,
+            self._entity_ops,
+            self._placement,
+            self._walking,
+            self._mining,
+        )
 
         # Placement hints - spatial reasoning for entity placement
         self._placement_hints = PlacementHints(self._rcon)
@@ -138,8 +146,13 @@ class AgentRuntime:
 
         self._remote_view = RemoteView(
             snapshot_dir=snapshot_dir,
+            entity_ops=self._entity_ops,
+            place_ops=self._placement,
+            walking_action=self._walking,
+            mining_action=self._mining,
             db_path=config.db_path,
             udp_dispatcher=get_udp_dispatcher(),  # Shared dispatcher
+            rcon_client=self._rcon_client,  # For bootstrap waiting
         )
 
     def _detect_snapshot_dir(self) -> Path:
@@ -156,13 +169,15 @@ class AgentRuntime:
         """Start the runtime (async listener, RemoteView sync, etc.).
 
         Must be called before using async actions like walking.
+        Blocks until snapshot bootstrap is complete before loading data.
         """
         if self._started:
             return
         await self._listener.start()
 
         # Load and start RemoteView sync
-        self._remote_view.load()
+        # This will wait for bootstrap to complete before loading
+        await self._remote_view.load(wait_for_bootstrap=True)
         await self._remote_view.start()
 
         self._started = True
@@ -187,6 +202,7 @@ class AgentRuntime:
 
         - await walking.walk_to(position) - Walk to a position
         - await walking.walk_to(position, timeout=30) - With custom timeout
+        - walking.stop() - Stop current walking action
 
         Returns:
             MovementAction instance

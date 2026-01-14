@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 def create_item(
     name: str,
-    placement: Optional["PlacementAction"] = None,
+    placement: "PlacementAction",
 ) -> Union[Item, PlaceableItem, Fuel]:
     """Create appropriate item type with injected dependencies.
 
@@ -55,7 +55,7 @@ def create_item(
 def create_item_stack(
     name: str,
     count: int,
-    placement: Optional["PlacementAction"] = None,
+    placement: "PlacementAction",
     subgroup: Optional[str] = None,
 ) -> ItemStack:
     """Create ItemStack with injected dependencies.
@@ -87,7 +87,7 @@ def create_item_stack(
 
 def create_item_stacks(
     items: List[Dict[str, Any]],
-    placement: Optional["PlacementAction"] = None,
+    placement: "PlacementAction",
 ) -> List[ItemStack]:
     """Create list of ItemStacks from dictionaries.
 

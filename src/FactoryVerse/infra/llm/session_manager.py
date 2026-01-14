@@ -100,6 +100,7 @@ class SessionManager:
             'chat_log': session_dir / 'chat.md',
             'trajectory': session_dir / 'trajectory.json',
             'initial_state': session_dir / 'initial_state.md',
+            'system_prompt': session_dir / 'system_prompt.md',  # Ephemeral consolidated prompt
             'map_screenshot': session_dir / 'map_overview.png'
         }
     

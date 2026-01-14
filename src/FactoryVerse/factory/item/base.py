@@ -18,6 +18,9 @@ if TYPE_CHECKING:
     from FactoryVerse.factory.entity.base_entity import BaseEntity
     from FactoryVerse.agent.actions.place_entity import PlacementAction
 
+# Import BaseEntity for runtime isinstance checks
+from FactoryVerse.factory.entity.base_entity import BaseEntity
+
 
 # =============================================================================
 # Type Literals - for filtering and research
@@ -230,7 +233,7 @@ class PlaceableItem(Item):
     Use tile_width and tile_height for spatial planning before placing.
     """
 
-    def __init__(self, name: str, placement: Optional["PlacementAction"] = None):
+    def __init__(self, name: str, placement: "PlacementAction"):
         super().__init__(name)
         self._placement = placement
         self._entity_prototype_cache: Optional[Dict[str, Any]] = None
@@ -295,27 +298,44 @@ class PlaceableItem(Item):
             The created entity instance with REACHABLE view
 
         Raises:
-            RuntimeError: If placement action is not injected
+            RuntimeError: If placement fails
         """
-        if self._placement is None:
-            raise RuntimeError(
-                f"Cannot place {self.name}: PlacementAction not injected. "
-                "Item must be created through proper factory functions."
-            )
-
+        # Place entity and request BaseEntity return if entity_ops is available
         result = self._placement.place(
             self.name,  # type: ignore
             position,
             direction,
             ghost=False,
+            return_entity=True,  # Request BaseEntity return
         )
 
+        # If we got a BaseEntity, return it directly
+        if isinstance(result, BaseEntity):
+            return result
+
+        # Otherwise, we got EntityPlaced - check if it succeeded
         if not result.success:
             raise RuntimeError(f"Failed to place {self.name}: {result.error}")
 
-        # Return the created entity (placement action should return it)
-        # For now, return the result object which has entity data
-        return result  # type: ignore
+        # Create entity from inspection
+        placed_pos = result.placed_position
+        if placed_pos is None:
+            raise RuntimeError("Placement succeeded but position is missing")
+
+        # Inspect the entity to get full entity data
+        entity_data = self._placement._entity_ops.inspect_entity(
+            self.name, placed_pos  # type: ignore
+        )
+
+        # Create BaseEntity from the inspection data
+        from FactoryVerse.factory.entity.create_entity import create_reachable_entity
+
+        return create_reachable_entity(
+            entity_data,
+            self._placement._entity_ops,
+            self._placement,
+            is_ghost=False,
+        )
 
     def place_ghost(
         self,
@@ -334,14 +354,8 @@ class PlaceableItem(Item):
             True if ghost was placed successfully.
 
         Raises:
-            RuntimeError: If placement action is not injected
+            RuntimeError: If placement fails
         """
-        if self._placement is None:
-            raise RuntimeError(
-                f"Cannot place ghost {self.name}: PlacementAction not injected. "
-                "Item must be created through proper factory functions."
-            )
-
         result = self._placement.place(
             self.name,  # type: ignore
             position,
@@ -372,7 +386,7 @@ class ItemStack:
         self,
         name: str,
         count: int,
-        placement: Optional["PlacementAction"] = None,
+        placement: "PlacementAction",
         subgroup: Union[ItemSubgroup, PlaceableItemSubgroup, str] = "raw-material",
     ):
         self.name = name

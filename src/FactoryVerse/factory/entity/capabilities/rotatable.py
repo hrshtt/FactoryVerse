@@ -22,7 +22,7 @@ class RotatableMixin:
     """
 
     direction: Direction  # This mixin owns direction
-    _entity_ops: Optional["EntityOperationsAction"]
+    _entity_ops: "EntityOperationsAction"
 
     def rotate(self, clockwise: bool = True) -> Direction:
         """Rotate entity 90 degrees.

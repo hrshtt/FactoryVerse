@@ -3,39 +3,69 @@
 This script is intended to be read as a file and executed directly
 within the agent's Jupyter kernel.
 
-Uses the new factory.py pattern with create_runtime().
+Uses the proper instance detection and configuration system to work
+seamlessly with both local Factorio client and Docker servers.
+
+Key env vars (all optional - will auto-detect if not set):
+- FV_INSTANCE: 'client' or 'server_N' to select instance explicitly
+- FV_AGENT_ID: Agent identifier (default: 'agent_1')
+- FV_AGENT_UDP_PORT: Explicit UDP port (auto-allocates if not set)
+- FV_SESSION_DIR: Session directory for artifacts (default: '.')
 """
 
 import os
 import json
 from pathlib import Path
-from FactoryVerse.config import get_runtime_config
+
+from FactoryVerse.config import FactoryVerseConfig, get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 from FactoryVerse.runtime import create_runtime
 from FactoryVerse.factory.types import MapPosition, Direction  # noqa: F401
 
-# Load per-agent runtime configuration
-# Session dir and agent ID injected by agent runtime via env vars
+# =============================================================================
+# Instance Detection (client vs server)
+# =============================================================================
+
+# Get global config and detect active Factorio instance
+config = get_config()
+instance = FactorioInstanceManager.from_env(config)
+
+print(f"🎮 Detected Factorio instance: {instance.name}")
+print(f"   RCON: {instance.rcon_host}:{instance.rcon_port}")
+print(f"   Script-output: {instance.script_output_dir}")
+
+# =============================================================================
+# Agent Configuration
+# =============================================================================
+
+# Session dir for agent artifacts (notebooks, trajectories, etc.)
 session_dir = Path(os.getenv("FV_SESSION_DIR", "."))
 agent_id = os.getenv("FV_AGENT_ID", "agent_1")
-udp_port_override = os.getenv("FV_AGENT_UDP_PORT")  # Optional explicit port
+udp_port_override = os.getenv("FV_AGENT_UDP_PORT")
 
-# Create runtime config (auto-allocates UDP port if not overridden)
-runtime_config = get_runtime_config(
-    session_dir=session_dir,
-    agent_id=agent_id,
-    udp_port=int(udp_port_override) if udp_port_override else None,
-)
+# Ensure session directory exists
+session_dir.mkdir(parents=True, exist_ok=True)
 
-# Connect to RCON
+# DB path in session dir for persistence
+db_path = session_dir / "map.duckdb"
+
+# =============================================================================
+# RCON Connection
+# =============================================================================
+
 from FactoryVerse.utils.rcon_utils import create_rcon_client  # noqa: E402
 
 rcon_client = create_rcon_client(
-    runtime_config.rcon_host,
-    runtime_config.rcon_port,
-    runtime_config.rcon_password,
+    instance.rcon_host,
+    instance.rcon_port,
+    instance.rcon_password,
     initialize=True,
 )
-print(f"✅ RCON connected to {runtime_config.rcon_host}:{runtime_config.rcon_port}")
+print(f"✅ RCON connected to {instance.rcon_host}:{instance.rcon_port}")
+
+# =============================================================================
+# Agent Creation/Reuse
+# =============================================================================
 
 # Check for existing agents in Factorio
 agents_result = rcon_client.send_command(
@@ -43,26 +73,36 @@ agents_result = rcon_client.send_command(
 )
 agents = json.loads(agents_result)
 
+# Determine UDP port
+if udp_port_override:
+    requested_udp_port = int(udp_port_override)
+else:
+    # Auto-allocate UDP port
+    from FactoryVerse.utils.port_utils import find_free_udp_port
+
+    requested_udp_port = find_free_udp_port(
+        start_port=config.agent_port_base, max_attempts=200, host=instance.rcon_host
+    )
+
 # Find or create agent with configured ID
-existing = next(
-    (a for a in agents if a.get("interface_name") == runtime_config.agent_id), None
-)
+existing = next((a for a in agents if a.get("interface_name") == agent_id), None)
 
 if existing:
-    actual_udp_port = existing.get("udp_port", runtime_config.udp_port)
-    print(f"✅ Reusing agent '{runtime_config.agent_id}' on UDP port {actual_udp_port}")
+    actual_udp_port = existing.get("udp_port", requested_udp_port)
+    print(f"✅ Reusing agent '{agent_id}' on UDP port {actual_udp_port}")
 else:
     # Create agent with initial inventory: burner mining drill, stone furnace, and wood
-    initial_inventory = (
-        '{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}'
-    )
+    # Create table as Lua variable first to avoid string interpolation issues
     rcon_client.send_command(
-        f"/c local res = remote.call('agent', 'create_agent', {runtime_config.udp_port}, true, false, nil, {initial_inventory})"
+        f'/c local inv = {{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}}; local res = remote.call(\'agent\', \'create_agent\', {requested_udp_port}, true, nil, inv); rcon.print(helpers.table_to_json(res))'
     )
-    actual_udp_port = runtime_config.udp_port
-    print(f"✅ Created agent '{runtime_config.agent_id}' on UDP port {actual_udp_port}")
+    actual_udp_port = requested_udp_port
+    print(f"✅ Created agent '{agent_id}' on UDP port {actual_udp_port}")
 
-# Sync filters to Lua mod
+# =============================================================================
+# Entity Filter Sync
+# =============================================================================
+
 from FactoryVerse.prototype_data import get_prototype_manager  # noqa: E402
 
 # Get filtered entity list from shared prototype manager
@@ -76,27 +116,49 @@ rcon_client.send_command(
 )
 print(f"✅ Synced {len(entity_list)} entities to Lua mod filter")
 
-# Create runtime using new factory pattern
-# Snapshot directory is under script-output in session dir
-snapshot_dir = runtime_config.session_dir / "script-output"
+# =============================================================================
+# Snapshot UDP Port Sync
+# =============================================================================
+
+# Configure the snapshot mod to send UDP updates to the correct port
+# This ensures Lua mod UDP port matches what Python's UDP dispatcher listens on
+snapshot_udp_port = config.get_snapshot_port(instance.name)
+rcon_client.send_command(
+    f"/c remote.call('snapshot', 'set_udp_port', {snapshot_udp_port})"
+)
+print(f"✅ Configured snapshot mod UDP port: {snapshot_udp_port}")
+
+# =============================================================================
+# Runtime Creation
+# =============================================================================
+
+# Use the detected instance's script-output directory for snapshots
+# SnapshotLoader._normalize_path() will handle finding /factoryverse/snapshots
+snapshot_dir = instance.script_output_dir
+
 runtime = create_runtime(
     rcon_client=rcon_client,
-    agent_id=runtime_config.agent_id,
+    agent_id=agent_id,
     udp_port=actual_udp_port,
     snapshot_dir=snapshot_dir,
-    db_path=runtime_config.db_path,
+    db_path=db_path,
 )
 
-# Start the runtime (enables async listener)
+# Start the runtime (enables async listener, loads RemoteView data)
 await runtime.start()  # noqa: E999  # type: ignore
 
 print(f"✅ Runtime created")
-print(f"   Agent: {runtime_config.agent_id}")
+print(f"   Instance: {instance.name}")
+print(f"   Agent: {agent_id}")
 print(f"   UDP Port: {actual_udp_port}")
-print(f"   DB: {runtime_config.db_path}")
-print(f"   Snapshots: {snapshot_dir}")
+print(f"   DB: {db_path}")
+print(f"   Snapshots: {instance.snapshot_dir}")
 
-# Convenience accessors - make these available in the notebook namespace
+# =============================================================================
+# Convenience Accessors
+# =============================================================================
+
+# Make these available in the notebook namespace
 walking = runtime.walking
 crafting = runtime.crafting
 research = runtime.research

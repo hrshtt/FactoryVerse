@@ -16,7 +16,10 @@ from .base_entity import EntityView
 if TYPE_CHECKING:
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.actions.walking import MovementAction
     from .base_entity import BaseEntity
+
+# ... (omitted)
 
 # Import entity implementations
 from .implementations import (
@@ -146,6 +149,9 @@ ENTITY_CLASS_MAP: Dict[str, type] = {
 
 def _create_base_entity(
     entity_data: Dict[str, Any],
+    entity_ops: "EntityOperationsAction",
+    place_ops: "PlacementAction",
+    walking_action: "MovementAction",
     is_ghost: bool = False,
     view: EntityView = EntityView.REMOTE,
 ) -> "BaseEntity":
@@ -153,6 +159,9 @@ def _create_base_entity(
 
     Args:
         entity_data: Raw entity data with 'name', 'position', 'direction', etc.
+        entity_ops: Entity operations action for game interactions
+        place_ops: Placement action for placement operations
+        walking_action: Movement action for navigation
         is_ghost: Whether this is a ghost entity
         view: Entity view type (default: REMOTE)
 
@@ -165,10 +174,15 @@ def _create_base_entity(
     # For ghosts, the actual entity name is in 'ghost_name', not 'name'
     # 'name' for ghosts is usually "entity-ghost"
     if is_ghost:
-        entity_name: str = entity_data.get("ghost_name") or entity_data["name"]
+        entity_name: str = entity_data.get("ghost_name") or entity_data.get("name", "")
         ghost_name: str | None = entity_name  # Store what entity this ghost represents
     else:
-        entity_name = entity_data["name"]
+        # Handle both 'name' and 'entity_name' fields (inspect_entity returns 'entity_name')
+        entity_name = entity_data.get("name") or entity_data.get("entity_name", "")
+        if not entity_name:
+            raise ValueError(
+                f"Entity data missing 'name' or 'entity_name' field: {list(entity_data.keys())}"
+            )
         ghost_name = None
 
     entity_class = ENTITY_CLASS_MAP.get(entity_name)
@@ -196,6 +210,9 @@ def _create_base_entity(
     return entity_class(
         name=entity_name,
         position=position,
+        entity_ops=entity_ops,
+        place_ops=place_ops,
+        walking_action=walking_action,
         direction=direction,
         is_ghost=is_ghost,
         ghost_name=ghost_name,
@@ -208,6 +225,7 @@ def create_reachable_entity(
     entity_data: Dict[str, Any],
     entity_ops: "EntityOperationsAction",
     place_ops: "PlacementAction",
+    walking_action: "MovementAction",
     is_ghost: bool = False,
 ) -> "BaseEntity":
     """Create an entity with REACHABLE view.
@@ -218,23 +236,27 @@ def create_reachable_entity(
         entity_data: Raw entity data from game
         entity_ops: Entity operations action for game interactions
         place_ops: Place entity action for placement operations
+        walking_action: Movement action for navigation
         is_ghost: Whether this is a ghost entity (default: False)
 
     Returns:
         BaseEntity instance with REACHABLE view
     """
-    base_entity = _create_base_entity(
-        entity_data, is_ghost=is_ghost, view=EntityView.REACHABLE
+    return _create_base_entity(
+        entity_data,
+        entity_ops=entity_ops,
+        place_ops=place_ops,
+        walking_action=walking_action,
+        is_ghost=is_ghost,
+        view=EntityView.REACHABLE,
     )
-    base_entity._entity_ops = entity_ops
-    base_entity._place_ops = place_ops
-    return base_entity
 
 
 def create_remote_view_entity(
     entity_data: Dict[str, Any],
-    entity_ops: "EntityOperationsAction | None" = None,
-    place_ops: "PlacementAction | None" = None,
+    entity_ops: "EntityOperationsAction",
+    place_ops: "PlacementAction",
+    walking_action: "MovementAction",
     is_ghost: bool = False,
 ) -> "BaseEntity":
     """Create an entity with REMOTE view.
@@ -243,18 +265,19 @@ def create_remote_view_entity(
 
     Args:
         entity_data: Raw entity data from game/database
-        entity_ops: Optional entity operations action for inspection
-        place_ops: Optional place ops for ghost removal
+        entity_ops: Entity operations action for inspection
+        place_ops: Placement action for ghost removal
+        walking_action: Movement action for navigation
         is_ghost: Whether this is a ghost entity (default: False)
 
     Returns:
         BaseEntity instance with REMOTE view
     """
-    base_entity = _create_base_entity(
-        entity_data, is_ghost=is_ghost, view=EntityView.REMOTE
+    return _create_base_entity(
+        entity_data,
+        entity_ops=entity_ops,
+        place_ops=place_ops,
+        walking_action=walking_action,
+        is_ghost=is_ghost,
+        view=EntityView.REMOTE,
     )
-    if entity_ops is not None:
-        base_entity._entity_ops = entity_ops
-    if place_ops is not None:
-        base_entity._place_ops = place_ops
-    return base_entity

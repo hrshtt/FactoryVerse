@@ -43,7 +43,7 @@ class CrafterMixin:
     """
 
     is_ghost: bool
-    _entity_ops: Optional["EntityOperationsAction"]
+    _entity_ops: "EntityOperationsAction"
     name: str
 
     def _get_crafter_state(self, inspection_data: dict) -> CrafterState:
@@ -93,9 +93,6 @@ class CrafterMixin:
         Returns:
             List of results from ingredient addition
         """
-        if self._entity_ops is None:
-            raise RuntimeError("entity_ops not injected.")
-
         result = self._entity_ops.put_inventory_item(
             self.name,
             "input",
@@ -117,9 +114,6 @@ class CrafterMixin:
         Returns:
             List of ItemStack taken from output
         """
-        if self._entity_ops is None:
-            raise RuntimeError("entity_ops not injected.")
-
         from FactoryVerse.factory.item.create_item import create_item_stack
 
         if items is None:
@@ -152,7 +146,7 @@ class SetRecipeMixin:
     Not used by furnaces (auto-detect recipe from input).
     """
 
-    _entity_ops: Optional["EntityOperationsAction"]
+    _entity_ops: "EntityOperationsAction"
     name: str
 
     def set_recipe(self, recipe: Union[str, Any]) -> Dict[str, Any]:
@@ -164,9 +158,6 @@ class SetRecipeMixin:
         Returns:
             Result dictionary with success status
         """
-        if self._entity_ops is None:
-            raise RuntimeError("entity_ops not injected.")
-
         # Handle string or Recipe object
         if recipe is None:
             recipe_name = None

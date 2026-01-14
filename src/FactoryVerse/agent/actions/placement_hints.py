@@ -17,7 +17,7 @@ No Side Effects: This module never mutates game state (validation only).
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Dict, Any, Tuple, Union, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, Tuple, Union, FrozenSet, TYPE_CHECKING
 import logging
 import uuid
 import time
@@ -49,6 +49,116 @@ class ConnectionType(Enum):
     INSERTER_REACH = "inserter"  # Inserter -> Source/Target
     BELT_FLOW = "belt_flow"  # Belt -> Belt
     ELECTRIC_WIRE = "wire"  # Pole -> Pole
+
+
+# =============================================================================
+# ENTITY METADATA - Documents and validates applicable entities per method
+# =============================================================================
+
+# Entities that support ITEM_DROP connection type (mining drills with output vector)
+ITEM_DROP_ENTITIES: FrozenSet[str] = frozenset(
+    [
+        "electric-mining-drill",
+        "burner-mining-drill",
+    ]
+)
+
+# Entities that support FLUID_PIPE connection type (entities with fluidboxes)
+FLUID_PIPE_ENTITIES: FrozenSet[str] = frozenset(
+    [
+        # Generators
+        "boiler",
+        "steam-engine",
+        "steam-turbine",
+        # Fluid machines
+        "chemical-plant",
+        "oil-refinery",
+        "pumpjack",
+        # Infrastructure
+        "pipe",
+        "pipe-to-ground",
+        "pump",
+        "offshore-pump",
+        "storage-tank",
+    ]
+)
+
+# Entities that require resource tiles for placement (via Lua get_placement_cues)
+RESOURCE_PLACEMENT_ENTITIES: FrozenSet[str] = frozenset(
+    [
+        "electric-mining-drill",
+        "burner-mining-drill",
+        "pumpjack",
+    ]
+)
+
+# Entities that require water tiles for placement
+WATER_PLACEMENT_ENTITIES: FrozenSet[str] = frozenset(
+    [
+        "offshore-pump",
+    ]
+)
+
+# Entities that support INSERTER_REACH connection type (all inserter types)
+INSERTER_ENTITIES: FrozenSet[str] = frozenset(
+    [
+        "inserter",
+        "long-handed-inserter",
+        "fast-inserter",
+        "filter-inserter",
+        "stack-inserter",
+        "stack-filter-inserter",
+        "bulk-inserter",
+        "burner-inserter",
+    ]
+)
+
+# Entities that support ELECTRIC_WIRE connection type (all pole types)
+ELECTRIC_POLE_ENTITIES: FrozenSet[str] = frozenset(
+    [
+        "small-electric-pole",
+        "medium-electric-pole",
+        "big-electric-pole",
+        "substation",
+    ]
+)
+
+
+class EntityValidationError(ValueError):
+    """Raised when a placement method is called with an incompatible entity.
+
+    This error indicates that the entity provided does not support the
+    requested connection type or placement operation.
+    """
+
+    pass
+
+
+def validate_entity_for_connection(
+    entity_name: str,
+    connection_type: ConnectionType,
+) -> None:
+    """Validate that an entity is compatible with a connection type.
+
+    Args:
+        entity_name: The prototype name of the entity
+        connection_type: The type of connection being established
+
+    Raises:
+        EntityValidationError: If entity is not compatible with connection_type
+    """
+    if connection_type == ConnectionType.ITEM_DROP:
+        if entity_name not in ITEM_DROP_ENTITIES:
+            raise EntityValidationError(
+                f"ITEM_DROP connection not applicable to '{entity_name}'. "
+                f"Valid entities: {sorted(ITEM_DROP_ENTITIES)}"
+            )
+    elif connection_type == ConnectionType.FLUID_PIPE:
+        if entity_name not in FLUID_PIPE_ENTITIES:
+            raise EntityValidationError(
+                f"FLUID_PIPE connection not applicable to '{entity_name}'. "
+                f"Valid entities: {sorted(FLUID_PIPE_ENTITIES)}"
+            )
 
 
 @dataclass
@@ -552,6 +662,10 @@ class PlacementHints:
     ) -> List[Tuple[MapPosition, Optional[Direction]]]:
         """Return all valid positions where 'target_entity' can connect to 'source_entity'.
 
+        Entity requirements by connection type:
+        - ITEM_DROP: source must be a mining drill (see ITEM_DROP_ENTITIES)
+        - FLUID_PIPE: source must have fluidboxes (see FLUID_PIPE_ENTITIES)
+
         Args:
             source_entity: The existing entity (e.g., OilRefinery at position)
             target_entity_name: What we want to place (e.g., "pipe")
@@ -560,6 +674,9 @@ class PlacementHints:
         Returns:
             List of (position, direction) tuples where target can be placed.
             All returned positions are pre-validated using PlacementValidator.
+
+        Raises:
+            EntityValidationError: If source_entity is not compatible with connection_type
 
         Example:
             source = OilRefinery at (10,10)
@@ -572,6 +689,9 @@ class PlacementHints:
                 ...
             ]
         """
+        # Validate entity compatibility before proceeding
+        validate_entity_for_connection(source_entity.name, connection_type)
+
         if connection_type == ConnectionType.ITEM_DROP:
             return self._get_item_drop_positions(source_entity, target_entity_name)
         elif connection_type == ConnectionType.FLUID_PIPE:
@@ -585,18 +705,17 @@ class PlacementHints:
     ) -> List[Tuple[MapPosition, Optional[Direction]]]:
         """Get positions where mining drill can drop items into target.
 
+        Applicable entities: electric-mining-drill, burner-mining-drill
+        (see ITEM_DROP_ENTITIES)
+
         For mining drills, calculates positions where drill can be placed
         so its output reaches the target entity (chest, belt, etc.).
+
+        Note: Entity validation is performed by get_connection_positions().
         """
         from FactoryVerse.factory.prototypes import apply_cardinal_vector
 
-        # Get source entity type
-        source_name = source_entity.name
-
-        # Check if source is a mining drill
-        if source_name not in ["electric-mining-drill", "burner-mining-drill"]:
-            logger.warning(f"Entity {source_name} is not a mining drill")
-            return []
+        # Entity type already validated by get_connection_positions()
 
         # Get output vector from prototype
         output_vec = tuple(source_entity.prototype["vector_to_place_result"])
@@ -642,8 +761,14 @@ class PlacementHints:
     ) -> List[Tuple[MapPosition, Optional[Direction]]]:
         """Get positions where pipes can connect to source entity's fluidboxes.
 
-        For fluid-handling entities (boilers, refineries, chemical plants),
-        calculates positions where pipes can connect based on fluidbox positions.
+        Applicable entities: boiler, steam-engine, steam-turbine, chemical-plant,
+        oil-refinery, pumpjack, pipe, pipe-to-ground, pump, offshore-pump, storage-tank
+        (see FLUID_PIPE_ENTITIES)
+
+        For fluid-handling entities, calculates positions where pipes can connect
+        based on fluidbox prototype data.
+
+        Note: Entity validation is performed by get_connection_positions().
         """
         # Check if source has FluidMixin and use its method
         from FactoryVerse.factory.entity.capabilities.fluid import FluidMixin
@@ -705,9 +830,7 @@ class PlacementHints:
             return valid_positions
 
         except Exception as e:
-            logger.error(
-                f"Error getting pipe positions for {source_entity.name}: {e}"
-            )
+            logger.error(f"Error getting pipe positions for {source_entity.name}: {e}")
             return []
 
     @staticmethod
@@ -754,3 +877,419 @@ class PlacementHints:
         timestamp = int(time.time())
         short_hash = str(uuid.uuid4())[:8]
         return f"plan:{entity_name}:{plan_type}:{timestamp}:{short_hash}"
+
+    # =========================================================================
+    # NEW PLACEMENT PRIMITIVES
+    # =========================================================================
+
+    def get_inserter_placement_positions(
+        self,
+        source_entity: "BaseEntity",
+        target_entity: "BaseEntity",
+        inserter_name: str = "inserter",
+    ) -> List[Tuple[MapPosition, Direction]]:
+        """Find valid inserter positions to transfer items from source to target.
+
+        Calculates positions where an inserter can be placed such that:
+        - Its pickup position reaches the source entity's output
+        - Its drop position reaches the target entity's center
+
+        Args:
+            source_entity: Entity to pick up items from (e.g., mining drill, chest)
+            target_entity: Entity to drop items to (e.g., furnace, chest)
+            inserter_name: Which inserter type to place (default: "inserter")
+
+        Returns:
+            List of (position, direction) tuples for valid placements
+
+        Example:
+            >>> drill = reachable.get_entity("electric-mining-drill")
+            >>> furnace = reachable.get_entity("stone-furnace")
+            >>> positions = placement_hints.get_inserter_placement_positions(
+            ...     source_entity=drill,
+            ...     target_entity=furnace,
+            ...     inserter_name="inserter"
+            ... )
+        """
+        from FactoryVerse.factory.prototypes import (
+            get_entity_prototypes,
+            apply_cardinal_vector,
+        )
+
+        prototypes = get_entity_prototypes()
+        inserter_proto = prototypes.get_prototype(inserter_name)
+        if not inserter_proto:
+            logger.warning(f"Inserter prototype not found: {inserter_name}")
+            return []
+
+        pickup_vec = tuple(inserter_proto.get("pickup_position", [0, -1]))
+        drop_vec = tuple(inserter_proto.get("insert_position", [0, 1]))
+
+        # Get source output position (use output vector for miners, center otherwise)
+        source_output = source_entity.position
+        if hasattr(source_entity, "get_output_position"):
+            try:
+                source_output = source_entity.get_output_position()
+            except Exception:
+                pass
+
+        # Target input is entity center
+        target_input = target_entity.position
+
+        valid_positions: List[Tuple[MapPosition, Direction]] = []
+
+        for direction in [
+            Direction.NORTH,
+            Direction.EAST,
+            Direction.SOUTH,
+            Direction.WEST,
+        ]:
+            # Calculate where inserter would need to be for its pickup to reach source
+            # pickup_pos = inserter_pos + rotated(pickup_vec)
+            # So inserter_pos = pickup_pos - rotated(pickup_vec)
+            rotated_pickup = self._rotate_vector(pickup_vec, direction)
+            rotated_drop = self._rotate_vector(drop_vec, direction)
+
+            # Check if from a position we can reach both source and target
+            # Inserter at pos: pickup = pos + rotated_pickup, drop = pos + rotated_drop
+            # We want: pickup ≈ source_output, drop ≈ target_input
+            # So pos = source_output - rotated_pickup (for pickup alignment)
+            # And we check if pos + rotated_drop ≈ target_input
+
+            inserter_pos_from_pickup = MapPosition(
+                x=source_output.x - rotated_pickup[0],
+                y=source_output.y - rotated_pickup[1],
+            )
+
+            # Verify drop reaches target
+            actual_drop = MapPosition(
+                x=inserter_pos_from_pickup.x + rotated_drop[0],
+                y=inserter_pos_from_pickup.y + rotated_drop[1],
+            )
+
+            # Check if drop is within target bounds (allow some tolerance)
+            if actual_drop.distance(target_input) <= 1.0:
+                # Validate placement
+                if self._validator.validate_placement(
+                    inserter_name, inserter_pos_from_pickup, direction, ghost=True
+                ):
+                    valid_positions.append((inserter_pos_from_pickup, direction))
+
+        return valid_positions
+
+    @staticmethod
+    def _rotate_vector(
+        vec: Tuple[float, float], direction: Direction
+    ) -> Tuple[float, float]:
+        """Rotate a vector based on direction (NORTH = no rotation)."""
+        vx, vy = vec
+        if direction == Direction.NORTH:
+            return (vx, vy)
+        elif direction == Direction.EAST:
+            return (-vy, vx)
+        elif direction == Direction.SOUTH:
+            return (-vx, -vy)
+        elif direction == Direction.WEST:
+            return (vy, -vx)
+        return (vx, vy)
+
+    def get_pole_line(
+        self,
+        start: MapPosition,
+        end: MapPosition,
+        pole_name: str = "medium-electric-pole",
+        validate: bool = True,
+    ) -> GhostPlan:
+        """Plan a line of poles from start to end at maximum wire distance intervals.
+
+        Places poles spaced by their maximum_wire_distance to minimize pole count
+        while maintaining connectivity.
+
+        Args:
+            start: Start position
+            end: End position
+            pole_name: Electric pole type (default: "medium-electric-pole")
+            validate: If True, validates each position
+
+        Returns:
+            GhostPlan with pole positions
+
+        Example:
+            >>> plan = placement_hints.get_pole_line(
+            ...     start=mining_area,
+            ...     end=factory_pos,
+            ...     pole_name="big-electric-pole"
+            ... )
+        """
+        from FactoryVerse.factory.prototypes import get_entity_prototypes
+
+        prototypes = get_entity_prototypes()
+        pole_proto = prototypes.get_prototype(pole_name)
+        if not pole_proto:
+            raise ValueError(f"Unknown pole type: {pole_name}")
+
+        max_wire_distance = pole_proto.get("maximum_wire_distance", 9)
+
+        # Calculate line length and number of poles needed
+        dx = end.x - start.x
+        dy = end.y - start.y
+        distance = (dx**2 + dy**2) ** 0.5
+
+        if distance == 0:
+            positions = [(start, None)]
+        else:
+            # Number of segments (poles = segments + 1)
+            num_segments = max(1, int(distance / max_wire_distance) + 1)
+            positions = []
+
+            for i in range(num_segments + 1):
+                t = i / num_segments
+                pos = MapPosition(
+                    x=start.x + t * dx,
+                    y=start.y + t * dy,
+                )
+                positions.append((pos, None))
+
+        label = self._generate_label(pole_name, "pole_line")
+        description = f"Line of {len(positions)} {pole_name} from ({start.x:.1f}, {start.y:.1f}) to ({end.x:.1f}, {end.y:.1f})"
+
+        plan = GhostPlan(
+            entity_name=pole_name,
+            positions=positions,
+            label=label,
+            description=description,
+            valid=False,
+        )
+
+        if validate:
+            plan.validate(self._validator)
+        else:
+            plan.valid = True
+
+        return plan
+
+    def get_pole_coverage_position(
+        self,
+        entities_to_power: List["BaseEntity"],
+        pole_name: str = "medium-electric-pole",
+    ) -> Optional[MapPosition]:
+        """Find a single pole position that covers ALL given entities.
+
+        Args:
+            entities_to_power: List of entities that need power
+            pole_name: Electric pole type
+
+        Returns:
+            MapPosition if single pole can cover all, None otherwise
+        """
+        from FactoryVerse.factory.prototypes import get_entity_prototypes
+
+        if not entities_to_power:
+            return None
+
+        prototypes = get_entity_prototypes()
+        pole_proto = prototypes.get_prototype(pole_name)
+        if not pole_proto:
+            return None
+
+        supply_distance = pole_proto.get("supply_area_distance", 3.5)
+
+        # Calculate bounding box of all entities
+        min_x = min(e.position.x for e in entities_to_power)
+        max_x = max(e.position.x for e in entities_to_power)
+        min_y = min(e.position.y for e in entities_to_power)
+        max_y = max(e.position.y for e in entities_to_power)
+
+        # Check if spread exceeds supply diameter
+        spread_x = max_x - min_x
+        spread_y = max_y - min_y
+        supply_diameter = supply_distance * 2
+
+        if spread_x > supply_diameter or spread_y > supply_diameter:
+            return None  # Cannot cover with single pole
+
+        # Center of entities
+        center = MapPosition(
+            x=(min_x + max_x) / 2,
+            y=(min_y + max_y) / 2,
+        )
+
+        # Validate pole can be placed at center
+        if self._validator.validate_placement(pole_name, center, None, ghost=True):
+            return center
+
+        # Try snapping to tile center
+        from FactoryVerse.factory.prototypes import snap_to_tile_center
+
+        snapped = snap_to_tile_center(center)
+        if self._validator.validate_placement(pole_name, snapped, None, ghost=True):
+            return snapped
+
+        return None
+
+    def get_pole_coverage_plan(
+        self,
+        entities_to_power: List["BaseEntity"],
+        pole_name: str = "medium-electric-pole",
+    ) -> Tuple[GhostPlan, List["BaseEntity"]]:
+        """Find minimum poles to cover all entities using greedy set cover.
+
+        Args:
+            entities_to_power: List of entities that need power
+            pole_name: Electric pole type
+
+        Returns:
+            Tuple of (GhostPlan, uncovered_entities)
+            uncovered_entities is empty if all were covered
+        """
+        from FactoryVerse.factory.prototypes import get_entity_prototypes
+
+        if not entities_to_power:
+            return GhostPlan(
+                entity_name=pole_name,
+                positions=[],
+                label=self._generate_label(pole_name, "coverage"),
+                description="Empty coverage plan",
+                valid=True,
+            ), []
+
+        prototypes = get_entity_prototypes()
+        pole_proto = prototypes.get_prototype(pole_name)
+        supply_distance = (
+            pole_proto.get("supply_area_distance", 3.5) if pole_proto else 3.5
+        )
+
+        uncovered = set(range(len(entities_to_power)))
+        pole_positions: List[Tuple[MapPosition, Optional[Direction]]] = []
+
+        while uncovered:
+            best_pos = None
+            best_covered: set = set()
+
+            # Try center of remaining uncovered entities
+            remaining = [entities_to_power[i] for i in uncovered]
+            center = MapPosition(
+                x=sum(e.position.x for e in remaining) / len(remaining),
+                y=sum(e.position.y for e in remaining) / len(remaining),
+            )
+
+            # Count which entities this position covers
+            covered = set()
+            for idx in uncovered:
+                entity = entities_to_power[idx]
+                if center.distance(entity.position) <= supply_distance:
+                    covered.add(idx)
+
+            if covered and self._validator.validate_placement(
+                pole_name, center, None, ghost=True
+            ):
+                best_pos = center
+                best_covered = covered
+
+            if best_pos:
+                pole_positions.append((best_pos, None))
+                uncovered -= best_covered
+            else:
+                # Cannot place more poles, remaining entities are uncovered
+                break
+
+        uncovered_entities = [entities_to_power[i] for i in uncovered]
+        label = self._generate_label(pole_name, "coverage")
+        description = f"Coverage plan: {len(pole_positions)} {pole_name} covering {len(entities_to_power) - len(uncovered)} entities"
+
+        plan = GhostPlan(
+            entity_name=pole_name,
+            positions=pole_positions,
+            label=label,
+            description=description,
+            valid=True,
+        )
+
+        return plan, uncovered_entities
+
+    def get_underground_segment(
+        self,
+        entity_name: str,
+        start: MapPosition,
+        end: MapPosition,
+        direction: Direction,
+    ) -> GhostPlan:
+        """Plan an underground segment (belt or pipe) between two points.
+
+        Places input entrance at start, output exit at end.
+        Validates that distance doesn't exceed max_underground_distance.
+
+        Args:
+            entity_name: "underground-belt" or "pipe-to-ground"
+            start: Input/entrance position
+            end: Output/exit position
+            direction: Direction the segment flows
+
+        Returns:
+            GhostPlan with 2 positions (entrance, exit)
+
+        Raises:
+            ValueError: If distance exceeds maximum or entity not supported
+        """
+        from FactoryVerse.factory.prototypes import get_entity_prototypes
+
+        prototypes = get_entity_prototypes()
+        proto = prototypes.get_prototype(entity_name)
+        if not proto:
+            raise ValueError(f"Unknown entity: {entity_name}")
+
+        # Get max distance
+        if "max_distance" in proto:
+            max_distance = proto["max_distance"]
+        elif "fluid_box" in proto:
+            # pipe-to-ground stores it in fluid_box.pipe_connections
+            connections = proto["fluid_box"].get("pipe_connections", [])
+            max_distance = 10  # default
+            for conn in connections:
+                if "max_underground_distance" in conn:
+                    max_distance = conn["max_underground_distance"]
+                    break
+        else:
+            raise ValueError(f"Entity {entity_name} doesn't support underground")
+
+        # Calculate distance
+        dx = end.x - start.x
+        dy = end.y - start.y
+        distance = max(abs(dx), abs(dy))  # Manhattan-ish for straight lines
+
+        if distance > max_distance:
+            raise ValueError(
+                f"Distance {distance:.1f} exceeds max_underground_distance {max_distance} for {entity_name}"
+            )
+
+        # Determine input/output directions
+        opposite_dir = {
+            Direction.NORTH: Direction.SOUTH,
+            Direction.SOUTH: Direction.NORTH,
+            Direction.EAST: Direction.WEST,
+            Direction.WEST: Direction.EAST,
+        }
+
+        positions: List[Tuple[MapPosition, Optional[Direction]]] = [
+            (start, direction),  # Input facing the direction
+            (end, opposite_dir.get(direction, direction)),  # Output facing opposite
+        ]
+
+        label = self._generate_label(entity_name, "underground")
+        description = f"Underground {entity_name} from ({start.x:.1f}, {start.y:.1f}) to ({end.x:.1f}, {end.y:.1f})"
+
+        plan = GhostPlan(
+            entity_name=entity_name,
+            positions=positions,
+            label=label,
+            description=description,
+            valid=False,
+        )
+
+        plan.validate(self._validator)
+        return plan
+
+    @property
+    def validator(self) -> PlacementValidator:
+        """Expose validator for direct access."""
+        return self._validator

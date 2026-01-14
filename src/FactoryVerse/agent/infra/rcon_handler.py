@@ -93,7 +93,10 @@ class RconHandler:
             remote_call += f", table.unpack(helpers.json_to_table('{args_json}'))"
 
         remote_call += ")"
-        return f"rcon.print(helpers.table_to_json({remote_call}))"
+        # Wrap in xpcall to catch errors and return them as JSON
+        # This ensures errors are always returned as JSON, not plain text
+        # xpcall returns (success, result) where result is the return value on success or error string on failure
+        return f"local success, result = xpcall(function() return {remote_call} end, debug.traceback); if success then rcon.print(helpers.table_to_json(result)) else rcon.print(helpers.table_to_json({{success=false, error=tostring(result)}})) end"
 
     def execute_and_parse_json(self, command: str) -> Dict[str, Any]:
         """Execute RCON command and parse JSON response.
@@ -105,7 +108,7 @@ class RconHandler:
             Parsed JSON response as dictionary
 
         Raises:
-            RuntimeError: If command returns empty response or invalid JSON
+            RuntimeError: If command returns empty response, invalid JSON, or if the command failed
         """
         result = self.execute(command)
         if not result or not result.strip():
@@ -114,9 +117,24 @@ class RconHandler:
             )
 
         try:
-            return json.loads(result)
+            parsed = json.loads(result)
         except json.JSONDecodeError as e:
             logger.error(f"JSON decode failed. Result: '{result}'")
+            # If result looks like an error message, wrap it
+            if "Error" in result or "error" in result.lower():
+                raise RuntimeError(
+                    f"RCON command failed: {result}"
+                ) from e
             raise RuntimeError(
                 f"Failed to decode JSON from RCON. Response: '{result}'. Error: {e}"
             ) from e
+
+        # Check if the response indicates an error
+        if isinstance(parsed, dict):
+            if parsed.get("success") is False:
+                error_msg = parsed.get("error", "Unknown error")
+                raise RuntimeError(f"RCON command failed: {error_msg}")
+            # If success is True or not present, return the parsed result
+            return parsed
+
+        return parsed

@@ -41,7 +41,7 @@ class BurnerMixin:
 
     # Type hints for required attributes (provided by BaseEntity)
     is_ghost: bool
-    _entity_ops: Optional["EntityOperationsAction"]
+    _entity_ops: "EntityOperationsAction"
     name: str
 
     def _get_burner_state(self, inspection_data: dict) -> BurnerState:
@@ -92,9 +92,6 @@ class BurnerMixin:
         Returns:
             List of results from fuel addition
         """
-        if self._entity_ops is None:
-            raise RuntimeError("Cannot add fuel: entity_ops not injected.")
-
         from FactoryVerse.factory.prototypes import get_item_prototypes
 
         results = []
@@ -137,9 +134,6 @@ class BurnerMixin:
         Returns:
             List of taken items
         """
-        if self._entity_ops is None:
-            raise RuntimeError("Cannot take fuel: entity_ops not injected.")
-
         result = self._entity_ops.take_inventory_item(
             self.name,
             "fuel",

@@ -12,6 +12,47 @@ if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import ItemStack
     from FactoryVerse.agent.actions.mining import MiningAction
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.actions.walking import MovementAction
+    from FactoryVerse.factory.entity.base_entity import EntityView
+
+# =============================================================================
+# RESOURCE TYPE MAPPING (Agent-facing <-> Game-facing)
+# =============================================================================
+# Rocks are represented as "simple-entity" in Factorio, but agents use "rock"
+# These utilities handle bidirectional mapping between agent and game representations
+
+def _agent_to_game_resource_type(resource_type: str) -> str:
+    """Convert agent-facing resource type to game-facing type.
+    
+    Maps "rock" -> "simple-entity" for game queries.
+    All other types pass through unchanged.
+    
+    Args:
+        resource_type: Agent-facing resource type (e.g., "rock", "tree", "resource")
+    
+    Returns:
+        Game-facing resource type (e.g., "simple-entity", "tree", "resource")
+    """
+    if resource_type == "rock":
+        return "simple-entity"
+    return resource_type
+
+
+def _game_to_agent_resource_type(resource_type: str) -> str:
+    """Convert game-facing resource type to agent-facing type.
+    
+    Maps "simple-entity" -> "rock" for agent representation.
+    All other types pass through unchanged.
+    
+    Args:
+        resource_type: Game-facing resource type (e.g., "simple-entity", "tree", "resource")
+    
+    Returns:
+        Agent-facing resource type (e.g., "rock", "tree", "resource")
+    """
+    if resource_type == "simple-entity":
+        return "rock"
+    return resource_type
 
 
 class ResourceOrePatch:
@@ -19,16 +60,23 @@ class ResourceOrePatch:
 
     Similar to ItemStack but for resources. Consolidates multiple resource
     entries with the same name into a single patch for cleaner agent interface.
-    
+
     Uses dependency injection pattern - receives MiningAction to enable mining.
+    Resources own their view (REMOTE or REACHABLE) like entities do.
     """
+
+    # Blocked methods by view
+    _REMOTE_ONLY = frozenset({"mine"})  # Block mine() when REMOTE
+    _REACHABLE_ONLY = frozenset({"walk_to"})  # Block walk_to() when REACHABLE
 
     def __init__(
         self,
         name: str,
         resource_data_list: List[Dict[str, Any]],
-        mining_action: Optional["MiningAction"] = None,
-        entity_ops: Optional["EntityOperationsAction"] = None,
+        mining_action: "MiningAction",
+        entity_ops: "EntityOperationsAction",
+        walking_action: "MovementAction",
+        view: "EntityView" = None,
     ):
         """Initialize ResourceOrePatch from a list of resource data dicts.
 
@@ -37,12 +85,18 @@ class ResourceOrePatch:
             resource_data_list: List of resource data dicts from get_reachable
             mining_action: Injected MiningAction for mining operations
             entity_ops: Injected EntityOperationsAction for inspection
+            walking_action: Injected MovementAction for navigation
+            view: Resource view type (REMOTE or REACHABLE). Defaults to REACHABLE.
         """
+        from FactoryVerse.factory.entity.base_entity import EntityView
+
         self.name = name
         self._resource_data_list = resource_data_list
         self._resource_instances: Optional[List["BaseResource"]] = None
         self._mining = mining_action
         self._entity_ops = entity_ops
+        self._walking_action = walking_action
+        self._view = view if view is not None else EntityView.REACHABLE
 
     @property
     def total(self) -> int:
@@ -60,9 +114,13 @@ class ResourceOrePatch:
 
     @property
     def resource_type(self) -> str:
-        """Get the resource type (resource, tree, simple-entity)."""
+        """Get the resource type (resource, tree, rock).
+        
+        Returns agent-facing representation: "rock" instead of "simple-entity".
+        """
         if self._resource_data_list:
-            return self._resource_data_list[0].get("type", "resource")
+            game_type = self._resource_data_list[0].get("type", "resource")
+            return _game_to_agent_resource_type(game_type)
         return "resource"
 
     @property
@@ -106,7 +164,9 @@ class ResourceOrePatch:
         for data in self._resource_data_list:
             pos_data = data.get("position", {})
             if pos_data.get("x") == position.x and pos_data.get("y") == position.y:
-                return _create_resource_from_data(data, self._mining, self._entity_ops)
+                return _create_resource_from_data(
+                    data, self._mining, self._entity_ops, self._walking_action, view=self._view
+                )
         return None
 
     def __getitem__(self, index: int) -> "BaseResource":
@@ -124,9 +184,13 @@ class ResourceOrePatch:
             )
 
         data = self._resource_data_list[index]
-        return _create_resource_from_data(data, self._mining, self._entity_ops)
+        return _create_resource_from_data(
+            data, self._mining, self._entity_ops, self._walking_action, view=self._view
+        )
 
-    def inspect(self, raw_data: bool = False, live: bool = False) -> Union[str, ResourcePatchData]:
+    def inspect(
+        self, raw_data: bool = False, live: bool = False
+    ) -> Union[str, ResourcePatchData]:
         """Return a representation of the resource patch.
 
         Args:
@@ -146,14 +210,16 @@ class ResourceOrePatch:
                 - tiles (list): List of tile data dicts (live if live=True)
         """
         tiles_data = self._resource_data_list
-        
+
         # If live inspection requested, fetch current amounts from game
         if live and self._entity_ops:
             tiles_data = self._inspect_tiles_batch()
-        
+
         # Calculate total from tiles
-        total_amount = sum(data.get("amount", 0) for data in tiles_data if "amount" in data)
-        
+        total_amount = sum(
+            data.get("amount", 0) for data in tiles_data if "amount" in data
+        )
+
         if raw_data:
             return {
                 "name": self.name,
@@ -174,31 +240,27 @@ class ResourceOrePatch:
 
         # Show amount range if applicable
         if tiles_data:
-            amounts = [
-                data.get("amount", 0)
-                for data in tiles_data
-                if "amount" in data
-            ]
+            amounts = [data.get("amount", 0) for data in tiles_data if "amount" in data]
             if amounts:
                 lines.append(
                     f"  Amount range: {min(amounts)} - {max(amounts)} per tile"
                 )
 
         return "\n".join(lines)
-    
+
     def _inspect_tiles_batch(self) -> List[Dict[str, Any]]:
         """Batch inspect all tiles in this patch using efficient Lua loop.
-        
+
         Similar to placement_hints batch validation pattern - generates Lua code
         that inspects multiple resources in one RCON call.
-        
+
         Returns:
             List of updated tile data dicts with current amounts
         """
         if not self._entity_ops:
             # Fallback to cached data if no entity_ops
             return self._resource_data_list
-        
+
         # Build Lua command for batch inspection
         lua_code = f"""
 local surface = game.surfaces[1]
@@ -206,52 +268,59 @@ local inspection = require("agent_actions.inspection")
 local results = {{}}
 
 """
-        
+
         # Add each tile inspection
         for i, tile_data in enumerate(self._resource_data_list):
             pos = tile_data.get("position", {})
             lua_code += f"""
-local entity_{i} = surface.find_entity("{self.name}", {{x = {pos.get('x', 0)}, y = {pos.get('y', 0)}}})
+local entity_{i} = surface.find_entity("{self.name}", {{x = {pos.get("x", 0)}, y = {pos.get("y", 0)}}})
 if entity_{i} and entity_{i}.valid then
     results[{i + 1}] = inspection.inspect_entity(entity_{i})
 else
     results[{i + 1}] = nil
 end
 """
-        
+
         lua_code += "\nrcon.print(helpers.table_to_json(results))"
-        
+
         try:
             import json
             from FactoryVerse.agent.infra.rcon_handler import RconHandler
-            
+
             # Execute batch inspection
             result = self._entity_ops._rcon.execute(lua_code)
             if not result:
                 return self._resource_data_list
-            
+
             # Parse results
             parsed = json.loads(result.strip())
-            
+
             # Update tile data with live inspection results
             updated_tiles = []
             for i, tile_data in enumerate(self._resource_data_list):
-                inspection_data = parsed.get(str(i + 1)) if isinstance(parsed, dict) else (parsed[i] if i < len(parsed) else None)
-                
+                inspection_data = (
+                    parsed.get(str(i + 1))
+                    if isinstance(parsed, dict)
+                    else (parsed[i] if i < len(parsed) else None)
+                )
+
                 if inspection_data:
                     # Merge inspection data with cached tile data
                     updated_tile = tile_data.copy()
-                    updated_tile["amount"] = inspection_data.get("amount", tile_data.get("amount", 0))
+                    updated_tile["amount"] = inspection_data.get(
+                        "amount", tile_data.get("amount", 0)
+                    )
                     updated_tiles.append(updated_tile)
                 else:
                     # Resource no longer exists or couldn't be inspected
                     updated_tiles.append(tile_data)
-            
+
             return updated_tiles
-            
+
         except Exception as e:
             # On error, return cached data
             import logging
+
             logger = logging.getLogger(__name__)
             logger.warning(f"Batch resource inspection failed: {e}, using cached data")
             return self._resource_data_list
@@ -280,7 +349,7 @@ end
                 f"Cannot mine {self.name}: MiningAction not injected. "
                 "Resource must be created through Reachable.get_resource() or Reachable.get_resources()."
             )
-        
+
         # Enforce 25-item limit per operation
         if max_count is not None and max_count > 25:
             raise ValueError(
@@ -298,7 +367,7 @@ end
         first_tile_data = self._resource_data_list[0]
         pos_data = first_tile_data.get("position", {})
         position = MapPosition(x=pos_data.get("x", 0), y=pos_data.get("y", 0))
-        
+
         # Delegate to injected MiningAction
         return await self._mining.mine(
             resource_name=self.name,
@@ -306,6 +375,29 @@ end
             position=position,
             timeout=timeout,
         )
+
+    def __getattribute__(self, name: str):
+        """Filter method access based on view."""
+        attr = super().__getattribute__(name)
+
+        if not callable(attr) or name.startswith("_"):
+            return attr
+
+        view = super().__getattribute__("_view")
+
+        if view.value == "remote" and name in ResourceOrePatch._REMOTE_ONLY:
+            raise AttributeError(
+                f"Cannot {name}() remotely. Resource not reachable. "
+                "Use reachable.get_resource() for full access."
+            )
+
+        if view.value == "reachable" and name in ResourceOrePatch._REACHABLE_ONLY:
+            raise AttributeError(
+                f"Cannot {name}() on reachable resource. "
+                "Resource is already within reach."
+            )
+
+        return attr
 
     def __repr__(self) -> str:
         """Clean summary of the resource patch."""
@@ -318,7 +410,8 @@ end
             )
 
         tiles_str = "\n".join(tiles_info) if tiles_info else "  (no tiles)"
-        return f"""ResourceOrePatch(name='{self.name}', type='{self.resource_type}', total={self.total}, tiles={self.count})
+        view_prefix = self._view.value.capitalize()
+        return f"""{view_prefix}[ResourceOrePatch](name='{self.name}', type='{self.resource_type}', total={self.total}, tiles={self.count})
 {tiles_str}"""
 
 
@@ -327,7 +420,12 @@ class BaseResource:
 
     Resources can be mined directly using the async mine() method.
     Uses dependency injection pattern - receives MiningAction to enable mining.
+    Resources own their view (REMOTE or REACHABLE) like entities do.
     """
+
+    # Blocked methods by view
+    _REMOTE_ONLY = frozenset({"mine"})  # Block mine() when REMOTE
+    _REACHABLE_ONLY = frozenset({"walk_to"})  # Block walk_to() when REACHABLE
 
     def __init__(
         self,
@@ -335,8 +433,10 @@ class BaseResource:
         position: MapPosition,
         resource_type: str,
         data: Dict[str, Any],
-        mining_action: Optional["MiningAction"] = None,
-        entity_ops: Optional["EntityOperationsAction"] = None,
+        mining_action: "MiningAction",
+        entity_ops: "EntityOperationsAction",
+        walking_action: "MovementAction",
+        view: "EntityView" = None,
     ):
         """Initialize BaseResource.
 
@@ -347,16 +447,31 @@ class BaseResource:
             data: Full resource data dict from get_reachable
             mining_action: Injected MiningAction for mining operations
             entity_ops: Injected EntityOperationsAction for inspection
+            walking_action: Injected MovementAction for navigation
+            view: Resource view type (REMOTE or REACHABLE). Defaults to REACHABLE.
         """
+        from FactoryVerse.factory.entity.base_entity import EntityView
+
         self.name = name
         self.position = position
-        self.resource_type = resource_type
+        # Store game-facing type internally, but expose agent-facing type via property
+        self._resource_type = resource_type
         self._data = data
         self._amount = data.get("amount")
         self._products: List[ProductData] = data.get("products", [])
         self._mining = mining_action
         self._entity_ops = entity_ops
+        self._walking_action = walking_action
+        self._view = view if view is not None else EntityView.REACHABLE
 
+    @property
+    def resource_type(self) -> str:
+        """Get the resource type (resource, tree, rock).
+        
+        Returns agent-facing representation: "rock" instead of "simple-entity".
+        """
+        return _game_to_agent_resource_type(self._resource_type)
+    
     @property
     def amount(self) -> Optional[int]:
         """Get resource amount (only for ore patches, None for trees/rocks)."""
@@ -370,7 +485,38 @@ class BaseResource:
         """
         return self._products
 
-    def inspect(self, raw_data: bool = False, live: bool = False) -> Union[str, EntityInspectionData]:
+    async def walk_to(self, timeout: Optional[int] = None) -> "MapPosition":
+        """Walk to this resource.
+
+        Delegates to the walking action to navigate to this resource.
+        After successful walk, changes view from REMOTE to REACHABLE to enable mining.
+
+        Args:
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Final position reached
+
+        Raises:
+            WalkingUnreachableError: If resource cannot be reached
+            WalkingEntityNotFoundError: If resource no longer exists
+        """
+        final_position = await self._walking_action.walk_to_entity(
+            entity_name=self.name,
+            entity_position=self.position,
+            timeout=timeout,
+        )
+        
+        # After successful walk, change view from REMOTE to REACHABLE to enable mining
+        if self._view.value == "remote":
+            from FactoryVerse.factory.entity.base_entity import EntityView
+            self._view = EntityView.REACHABLE
+        
+        return final_position
+
+    def inspect(
+        self, raw_data: bool = False, live: bool = False
+    ) -> Union[str, EntityInspectionData]:
         """Return a representation of the resource.
 
         Args:
@@ -384,9 +530,9 @@ class BaseResource:
             If raw_data=True: Dictionary with resource data (live if live=True)
         """
         data = self._data
-        
+
         # If live inspection requested, fetch current state from game
-        if live and self._entity_ops:
+        if live:
             try:
                 live_data = self._entity_ops.inspect_entity(self.name, self.position)
                 # Merge live data with cached data (live takes precedence)
@@ -397,9 +543,12 @@ class BaseResource:
             except Exception as e:
                 # On error, use cached data
                 import logging
+
                 logger = logging.getLogger(__name__)
-                logger.warning(f"Live resource inspection failed: {e}, using cached data")
-        
+                logger.warning(
+                    f"Live resource inspection failed: {e}, using cached data"
+                )
+
         if raw_data:
             return data
 
@@ -442,7 +591,7 @@ class BaseResource:
                 f"Cannot mine {self.name}: MiningAction not injected. "
                 "Resource must be created through Reachable.get_resource() or Reachable.get_resources()."
             )
-        
+
         # Enforce 25-item limit per operation
         if max_count is not None and max_count > 25:
             raise ValueError(
@@ -460,10 +609,34 @@ class BaseResource:
             timeout=timeout,
         )
 
+    def __getattribute__(self, name: str):
+        """Filter method access based on view."""
+        attr = super().__getattribute__(name)
+
+        if not callable(attr) or name.startswith("_"):
+            return attr
+
+        view = super().__getattribute__("_view")
+
+        if view.value == "remote" and name in BaseResource._REMOTE_ONLY:
+            raise AttributeError(
+                f"Cannot {name}() remotely. Resource not reachable. "
+                "Use reachable.get_resource() for full access."
+            )
+
+        if view.value == "reachable" and name in BaseResource._REACHABLE_ONLY:
+            raise AttributeError(
+                f"Cannot {name}() on reachable resource. "
+                "Resource is already within reach."
+            )
+
+        return attr
+
     def __repr__(self) -> str:
         """String representation of the resource."""
         amount_str = f", amount={self._amount}" if self._amount is not None else ""
-        return f"{self.__class__.__name__}(name='{self.name}', position=MapPosition({self.position.x}, {self.position.y}){amount_str})"
+        view_prefix = self._view.value.capitalize()
+        return f"{view_prefix}[{self.__class__.__name__}](name='{self.name}', position=MapPosition({self.position.x}, {self.position.y}){amount_str})"
 
 
 class RockEntity(BaseResource):
@@ -516,103 +689,130 @@ class CrudeOil(BaseResource):
 
 def _create_resource_from_data(
     data: Dict[str, Any],
-    mining_action: Optional["MiningAction"] = None,
-    entity_ops: Optional["EntityOperationsAction"] = None,
+    mining_action: "MiningAction",
+    entity_ops: "EntityOperationsAction",
+    walking_action: "MovementAction",
+    view: "EntityView" = None,
 ) -> BaseResource:
     """Create appropriate resource instance from data dict.
 
     Args:
         data: Resource data dict from get_reachable
-        mining_action: Optional MiningAction to inject for mining operations
-        entity_ops: Optional EntityOperationsAction to inject for inspection
+        mining_action: MiningAction to inject for mining operations
+        entity_ops: EntityOperationsAction to inject for inspection
+        walking_action: MovementAction to inject for navigation
+        view: Resource view type (REMOTE or REACHABLE). Defaults to REACHABLE.
 
     Returns:
         Appropriate BaseResource subclass instance with injected actions
     """
+    from FactoryVerse.factory.entity.base_entity import EntityView
+
     name = data.get("name", "")
+    # Keep game-facing type for internal operations
     resource_type = data.get("type", "resource")
     position_data = data.get("position", {})
     position = MapPosition(x=position_data.get("x", 0), y=position_data.get("y", 0))
+    resource_view = view if view is not None else EntityView.REACHABLE
 
-    # Map to specific resource classes - all receive mining_action and entity_ops
+    # Map to specific resource classes - all receive mining_action, entity_ops, walking_action, and view
+    # Use game-facing type for classification
     if resource_type == "simple-entity":
-        return RockEntity(name, position, resource_type, data, mining_action, entity_ops)
+        return RockEntity(
+            name, position, resource_type, data, mining_action, entity_ops, walking_action, view=resource_view
+        )
     elif resource_type == "tree":
-        return TreeEntity(name, position, resource_type, data, mining_action, entity_ops)
+        return TreeEntity(
+            name, position, resource_type, data, mining_action, entity_ops, walking_action, view=resource_view
+        )
     elif name == "copper-ore":
-        return CopperOre(name, position, resource_type, data, mining_action, entity_ops)
+        return CopperOre(name, position, resource_type, data, mining_action, entity_ops, walking_action, view=resource_view)
     elif name == "iron-ore":
-        return IronOre(name, position, resource_type, data, mining_action, entity_ops)
+        return IronOre(name, position, resource_type, data, mining_action, entity_ops, walking_action, view=resource_view)
     elif name == "coal":
-        return Coal(name, position, resource_type, data, mining_action, entity_ops)
+        return Coal(name, position, resource_type, data, mining_action, entity_ops, walking_action, view=resource_view)
     elif name == "crude-oil":
-        return CrudeOil(name, position, resource_type, data, mining_action, entity_ops)
+        return CrudeOil(name, position, resource_type, data, mining_action, entity_ops, walking_action, view=resource_view)
     else:
         # Default to BaseResource for unknown resources
-        return BaseResource(name, position, resource_type, data, mining_action, entity_ops)
+        return BaseResource(
+            name, position, resource_type, data, mining_action, entity_ops, walking_action, view=resource_view
+        )
 
 
 def create_resource_from_reachable(
     data: Dict[str, Any],
-    mining_action: Optional["MiningAction"] = None,
-    entity_ops: Optional["EntityOperationsAction"] = None,
+    mining_action: "MiningAction",
+    entity_ops: "EntityOperationsAction",
+    walking_action: "MovementAction",
 ):
-    """Create resource with full interface from reachable data.
+    """Create resource with REACHABLE view from reachable data.
 
-    Returns a resource instance with full capabilities:
+    Returns a resource instance with REACHABLE view:
     - Has spatial properties (position, amount)
-    - Can be mined (if mining_action provided)
-    - Can be inspected (if entity_ops provided)
+    - Can be mined
+    - Can be inspected
+    - Cannot walk_to (already reachable)
 
     Args:
         data: Resource data dict from get_reachable()
-        mining_action: Optional MiningAction to inject for mining operations
-        entity_ops: Optional EntityOperationsAction to inject for inspection
+        mining_action: MiningAction to inject for mining operations
+        entity_ops: EntityOperationsAction to inject for inspection
+        walking_action: MovementAction to inject for navigation
 
     Returns:
-        Resource instance (BaseResource subclass or ResourceOrePatch)
+        Resource instance (BaseResource subclass) with REACHABLE view
 
     Example:
-        >>> ore = create_resource_from_reachable(data, mining_action, entity_ops)
+        >>> ore = create_resource_from_reachable(data, mining_action, entity_ops, walking_action)
         >>> type(ore)
         <class 'IronOre'>
-        >>> await ore.mine(max_count=25)  # ✓ Works (if mining_action provided)
-        >>> ore.inspect(live=True)  # ✓ Works (if entity_ops provided)
+        >>> await ore.mine(max_count=25)  # ✓ Works
+        >>> ore.inspect(live=True)  # ✓ Works
+        >>> await ore.walk_to()  # ✗ AttributeError - already reachable
     """
-    # Create and return resource directly - has full interface
-    resource = _create_resource_from_data(data, mining_action, entity_ops)
+    from FactoryVerse.factory.entity.base_entity import EntityView
+
+    # Create resource with REACHABLE view
+    resource = _create_resource_from_data(data, mining_action, entity_ops, walking_action, view=EntityView.REACHABLE)
     return resource
 
 
-def create_resource_from_db(data: Dict[str, Any]):
-    """Create resource with read-only RemoteViewResource interface from DB data.
+def create_resource_from_db(
+    data: Dict[str, Any],
+    mining_action: "MiningAction",
+    entity_ops: "EntityOperationsAction",
+    walking_action: "MovementAction",
+):
+    """Create resource with REMOTE view from DB data.
 
-    Returns a wrapped resource that provides read-only access:
+    Returns a resource instance with REMOTE view:
     - Has all spatial properties and prototype data
     - Can be inspected (cached data only, no live inspection)
-    - Does NOT have mine() method
-
-    This is achieved by wrapping the resource in RemoteViewResource.
+    - Can walk_to
+    - Cannot mine (must walk to first, then get via reachable)
 
     Args:
         data: Resource data dict from DuckDB query
+        mining_action: MiningAction (required but mine() blocked by REMOTE view)
+        entity_ops: EntityOperationsAction (required but live inspection limited)
+        walking_action: MovementAction for navigation
 
     Returns:
-        RemoteViewResource wrapper instance
+        Resource instance (BaseResource subclass) with REMOTE view
 
     Example:
-        >>> db_ore = create_resource_from_db(data)
+        >>> db_ore = create_resource_from_db(data, mining_action, entity_ops, walking_action)
         >>> type(db_ore)
-        <class 'RemoteViewResource'>
+        <class 'IronOre'>
         >>> db_ore.position  # ✓ Works
         >>> db_ore.amount  # ✓ Works
         >>> db_ore.inspect()  # ✓ Works (cached data)
-        >>> await db_ore.mine()  # ✗ AttributeError - no mine() method
+        >>> await db_ore.walk_to()  # ✓ Works
+        >>> await db_ore.mine()  # ✗ AttributeError - REMOTE view blocks mine()
     """
-    from FactoryVerse.factory.resource.remote_view_resource import RemoteViewResource
+    from FactoryVerse.factory.entity.base_entity import EntityView
 
-    # Create the resource without mining_action or entity_ops (read-only)
-    resource = _create_resource_from_data(data, mining_action=None, entity_ops=None)
-
-    # Wrap in RemoteViewResource for read-only access
-    return RemoteViewResource(resource)
+    # Create resource with REMOTE view (blocks mine())
+    resource = _create_resource_from_data(data, mining_action, entity_ops, walking_action, view=EntityView.REMOTE)
+    return resource

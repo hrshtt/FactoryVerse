@@ -1,15 +1,25 @@
-"""Generate initial state summaries for agent sessions."""
+"""Generate initial state summaries for agent sessions.
+
+This module creates the initial state document that is injected as the first
+user message to orient the agent about its current situation. The document
+shows Python code that was executed and its output, establishing patterns
+for how the agent should query and interact with the game.
+"""
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from FactoryVerse.agent_runtime import FactoryVerseRuntime
 
 
 class InitialStateGenerator:
-    """Generate initial state summary for agent."""
+    """Generate initial state summary for agent.
+
+    The generated summary follows a "code + output" pattern to demonstrate
+    how to query the game state using the available accessors.
+    """
 
     def __init__(self, runtime: "FactoryVerseRuntime"):
         """
@@ -20,179 +30,278 @@ class InitialStateGenerator:
         """
         self.runtime = runtime
 
-    def _generate_database_summary(self) -> str:
-        """
-        Generate a summary showing what data exists in the database with actual query results.
+    def _execute_and_capture(self, code: str, description: str) -> tuple[str, str]:
+        """Execute code and return the code + output as formatted markdown.
+
+        Args:
+            code: Python code to execute
+            description: Human-readable description of what the code does
 
         Returns:
-            Markdown formatted database summary with query → result pairs
+            Tuple of (formatted_markdown, raw_output)
         """
-        summary_code = """
-with playing_factorio():
-    import json
-    con = map_db.connection
-    
-    results = {}
-    
-    # 1. What resource types and patches exist on the map?
-    try:
-        resource_patches = con.execute('''
-            SELECT resource_name, patch_id, total_amount, tile_count,
-                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).x as x,
-                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).y as y
-            FROM resource_patch
-            ORDER BY resource_name, patch_id
-        ''').fetchall()
-        results['resource_patches'] = [
-            {'name': r[0], 'patch_id': r[1], 'amount': r[2], 
-             'tiles': r[3], 'x': r[4], 'y': r[5]} 
-            for r in resource_patches
-        ]
-    except:
-        results['resource_patches'] = []
-    
-    # 2. What natural entities exist? (trees, rocks)
-    try:
-        entity_types = con.execute('''
-            SELECT type, COUNT(*) as count
-            FROM resource_entity
-            GROUP BY type
-            ORDER BY type
-        ''').fetchall()
-        results['entity_types'] = [
-            {'type': r[0], 'count': r[1]} 
-            for r in entity_types
-        ]
-    except:
-        results['entity_types'] = []
-    
-    # 3. How much water is on the map?
-    try:
-        water_patches = con.execute('''
-            SELECT patch_id, tile_count,
-                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).x as x,
-                   CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).y as y
-            FROM water_patch
-            ORDER BY patch_id
-        ''').fetchall()
-        results['water_patches'] = [
-            {'patch_id': r[0], 'tiles': r[1], 'x': r[2], 'y': r[3]}
-            for r in water_patches
-        ]
-        results['water'] = {
-            'patches': len(water_patches),
-            'tiles': sum(r[1] for r in water_patches) if water_patches else 0
-        }
-    except:
-        results['water_patches'] = []
-        results['water'] = {'patches': 0, 'tiles': 0}
-    
-    # 4. What entities have been placed?
-    try:
-        placed_entities = con.execute('''
-            SELECT entity_name, COUNT(*) as count
-            FROM map_entity
-            GROUP BY entity_name
-            ORDER BY entity_name
-        ''').fetchall()
-        results['placed_entities'] = [
-            {'name': r[0], 'count': r[1]} 
-            for r in placed_entities
-        ]
-    except:
-        results['placed_entities'] = []
-    
-    print(json.dumps(results))
+        try:
+            output = self.runtime.execute_code(code, compress_output=False)
+        except Exception as e:
+            output = f"Error: {e}"
+
+        # Clean up code for display (remove leading/trailing whitespace per line)
+        display_code = "\n".join(line for line in code.strip().split("\n"))
+
+        markdown = f"""### {description}
+
+**Code executed:**
+```python
+{display_code}
+```
+
+**Output:**
+```
+{output}
+```
 """
+        return markdown, output
+
+    def _generate_position_and_inventory(self) -> tuple[str, dict[str, Any]]:
+        """Generate agent position and inventory section.
+
+        Returns:
+            Tuple of (markdown, parsed_data)
+        """
+        code = """import json
+pos = walking.current_position
+inv_stacks = inventory.item_stacks
+inv_dict = {s.name: s.count for s in inv_stacks} if inv_stacks else {}
+print(json.dumps({
+    "position": {"x": pos.x, "y": pos.y},
+    "inventory": inv_dict
+}))"""
+
+        markdown, output = self._execute_and_capture(code, "Agent Position & Inventory")
 
         try:
-            result = self.runtime.execute_code(summary_code, compress_output=False)
-            data = json.loads(result)
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            data = {"position": {"x": 0, "y": 0}, "inventory": {}}
 
-            lines = []
-            lines.append("## Database Summary\n\n")
+        return markdown, data
 
-            # Resource patches with coordinates
-            if data.get("resource_patches"):
-                lines.append("**Query:** What resource patches exist on the map?\n")
-                lines.append("```sql\n")
-                lines.append(
-                    "SELECT resource_name, patch_id, total_amount, tile_count,\n"
-                )
-                lines.append("       centroid.x as x, centroid.y as y\n")
-                lines.append("FROM resource_patch\n")
-                lines.append("ORDER BY resource_name, patch_id\n")
-                lines.append("```\n\n")
-                lines.append("**Result:**\n\n")
-                lines.append("| Resource | Patch ID | Amount | Tiles | Coordinates |\n")
-                lines.append("|----------|----------|--------|-------|-------------|\n")
-                for r in data["resource_patches"]:
-                    amount_str = (
-                        f"{r['amount']:,}" if r["amount"] >= 1000 else str(r["amount"])
-                    )
-                    lines.append(
-                        f"| {r['name']} | #{r['patch_id']} | {amount_str} | {r['tiles']} | ({r['x']:.0f}, {r['y']:.0f}) |\n"
-                    )
-                lines.append("\n")
+    def _generate_resource_aggregates(self) -> tuple[str, list[dict]]:
+        """Generate resource aggregates from resource tiles.
 
-            # Natural entities
-            if data.get("entity_types"):
-                lines.append("**Query:** What natural entities exist? (trees, rocks)\n")
-                lines.append("```sql\n")
-                lines.append("SELECT type, COUNT(*) as count\n")
-                lines.append("FROM resource_entity\n")
-                lines.append("GROUP BY type\n")
-                lines.append("```\n\n")
-                lines.append("**Result:**\n\n")
-                lines.append("| Entity Type | Count |\n")
-                lines.append("|-------------|-------|\n")
-                for e in data["entity_types"]:
-                    lines.append(f"| {e['type']} | {e['count']:,} |\n")
-                lines.append("\n")
+        Returns:
+            Tuple of (markdown, parsed_data)
+        """
+        code = '''import json
 
-            # Water patches with coordinates
-            if data.get("water_patches"):
-                lines.append("**Query:** What water patches exist on the map?\n")
-                lines.append("```sql\n")
-                lines.append(
-                    "SELECT patch_id, tile_count, centroid.x as x, centroid.y as y\n"
-                )
-                lines.append("FROM water_patch\n")
-                lines.append("ORDER BY patch_id\n")
-                lines.append("```\n\n")
-                lines.append("**Result:**\n\n")
-                lines.append("| Patch ID | Tiles | Coordinates |\n")
-                lines.append("|----------|-------|-------------|\n")
-                for w in data["water_patches"]:
-                    lines.append(
-                        f"| #{w['patch_id']} | {w['tiles']} | ({w['x']:.0f}, {w['y']:.0f}) |\n"
-                    )
-                lines.append("\n")
+# Query resource aggregates from resource_tile table
+result = remote_view.query("""
+    SELECT 
+        name as resource_name,
+        COUNT(*) as tile_count,
+        SUM(amount) as total_amount,
+        AVG(position_x) as avg_x,
+        AVG(position_y) as avg_y
+    FROM resource_tile
+    GROUP BY name
+    ORDER BY total_amount DESC
+""")
 
-            # Placed entities
-            if data.get("placed_entities"):
-                lines.append("**Query:** What entities have been placed?\n")
-                lines.append("```sql\n")
-                lines.append("SELECT entity_name, COUNT(*) as count\n")
-                lines.append("FROM map_entity\n")
-                lines.append("GROUP BY entity_name\n")
-                lines.append("```\n\n")
-                lines.append("**Result:**\n\n")
-                lines.append("| Entity | Count |\n")
-                lines.append("|--------|-------|\n")
-                for e in data["placed_entities"]:
-                    lines.append(f"| {e['name']} | {e['count']} |\n")
-                lines.append("\n")
+aggregates = []
+for r in result:
+    aggregates.append({
+        "resource": r["resource_name"],
+        "tiles": r["tile_count"],
+        "total_ore": r["total_amount"],
+        "centroid": {"x": round(r["avg_x"], 1), "y": round(r["avg_y"], 1)}
+    })
+print(json.dumps(aggregates))'''
 
-            return "".join(lines)
+        markdown, output = self._execute_and_capture(
+            code, "Resource Overview (Aggregated)"
+        )
 
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            data = []
+
+        return markdown, data
+
+    def _generate_resource_locations(self) -> tuple[str, list[dict]]:
+        """Generate top resource locations with positions.
+
+        Returns:
+            Tuple of (markdown, parsed_data)
+        """
+        code = '''import json
+
+# Query top resource tiles by amount
+result = remote_view.query("""
+    SELECT 
+        name as resource_name,
+        position_x,
+        position_y,
+        amount
+    FROM resource_tile
+    ORDER BY amount DESC
+    LIMIT 30
+""")
+
+resources = []
+for r in result:
+    resources.append({
+        "resource": r["resource_name"],
+        "amount": r["amount"],
+        "position": {"x": round(r["position_x"], 1), "y": round(r["position_y"], 1)}
+    })
+print(json.dumps(resources))'''
+
+        markdown, output = self._execute_and_capture(code, "Top Resource Locations")
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            data = []
+
+        return markdown, data
+
+    def _generate_placed_entities(self) -> tuple[str, list[dict]]:
+        """Generate summary of placed entities.
+
+        Returns:
+            Tuple of (markdown, parsed_data)
+        """
+        code = '''import json
+
+# Query placed entities using remote_view
+result = remote_view.query("""
+    SELECT entity_name, COUNT(*) as count
+    FROM map_entity
+    GROUP BY entity_name
+    ORDER BY count DESC
+""")
+
+entities = [{"name": r["entity_name"], "count": r["count"]} for r in result]
+print(json.dumps(entities))'''
+
+        markdown, output = self._execute_and_capture(code, "Placed Entities on Map")
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            data = []
+
+        return markdown, data
+
+    def _generate_water_patches(self) -> tuple[str, list[dict]]:
+        """Generate water tile summary.
+
+        Returns:
+            Tuple of (markdown, parsed_data)
+        """
+        code = '''import json
+
+# Query water tiles using remote_view
+result = remote_view.query("""
+    SELECT 
+        COUNT(*) as tile_count,
+        AVG(position_x) as avg_x,
+        AVG(position_y) as avg_y,
+        MIN(position_x) as min_x,
+        MAX(position_x) as max_x,
+        MIN(position_y) as min_y,
+        MAX(position_y) as max_y
+    FROM water_tile
+""")
+
+if result and result[0]["tile_count"] > 0:
+    r = result[0]
+    water = [{
+        "tiles": r["tile_count"],
+        "centroid": {"x": round(r["avg_x"], 1), "y": round(r["avg_y"], 1)},
+        "bounds": {
+            "min": {"x": round(r["min_x"], 1), "y": round(r["min_y"], 1)},
+            "max": {"x": round(r["max_x"], 1), "y": round(r["max_y"], 1)}
+        }
+    }]
+else:
+    water = []
+print(json.dumps(water))'''
+
+        markdown, output = self._execute_and_capture(
+            code, "Water Areas (for offshore pumps)"
+        )
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            data = []
+
+        return markdown, data
+
+    def _generate_natural_entities(self) -> tuple[str, dict[str, int]]:
+        """Generate natural entity counts (trees, rocks).
+
+        Returns:
+            Tuple of (markdown, parsed_data)
+        """
+        code = '''import json
+
+# Query natural entities using remote_view
+result = remote_view.query("""
+    SELECT entity_type, COUNT(*) as count
+    FROM resource_entity
+    GROUP BY entity_type
+""")
+
+entities = {r["entity_type"]: r["count"] for r in result}
+print(json.dumps(entities))'''
+
+        markdown, output = self._execute_and_capture(
+            code, "Natural Entities (trees, rocks)"
+        )
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            data = {}
+
+        return markdown, data
+
+    def _generate_tech_and_recipes(
+        self, researched: list[str], enabled: list[str]
+    ) -> str:
+        """Generate technology and recipe section.
+
+        Args:
+            researched: List of researched technology names
+            enabled: List of enabled recipe names
+
+        Returns:
+            Markdown formatted section
+        """
+        try:
+            from FactoryVerse.infra.llm.tech_recipe_prompt import (
+                TechRecipePromptGenerator,
+            )
+
+            tech_recipe_gen = TechRecipePromptGenerator()
+            return tech_recipe_gen.generate_combined_prompt(
+                researched=researched,
+                enabled_recipes=enabled,
+                tech_limit=8,
+                recipe_limit=12,
+            )
         except Exception as e:
-            # Fallback if database summary fails
-            return f"## Database Summary\n\n*Database summary unavailable: {e}*\n\n"
+            return f"*Tech/recipe information unavailable: {e}*\n"
 
     def generate_summary(self, session_dir: Path) -> str:
         """
-        Generate markdown summary of current game state using DuckDB queries.
+        Generate markdown summary of current game state.
+
+        The summary shows Python code that was executed and its output,
+        demonstrating how to query the game state using the available accessors.
 
         Args:
             session_dir: Session directory to save summary to
@@ -200,145 +309,13 @@ with playing_factorio():
         Returns:
             Markdown summary text
         """
-        # Execute code to gather comprehensive state from DuckDB AND tech/recipe info
-        state_code = """
-with playing_factorio():
-    import json
-    
-    # Get agent position
-    pos = reachable.get_current_position()
-    
-    # Get inventory - debug what we're actually getting
-    inv_stacks = inventory.item_stacks
-    inv_items = {}
-    if inv_stacks:
-        for stack in inv_stacks:
-            inv_items[stack.name] = stack.count
-    
-    # Get technology and recipe information
-    researched_techs = research.get_technologies(researched_only=True)
-    researched_names = [t.name for t in researched_techs]
-    
-    # Get recipes - call without category to get all enabled recipes
-    enabled_recipes_data = crafting.get_recipes(enabled_only=True)
-    enabled_recipe_names = [r.name for r in enabled_recipes_data]
-    
-    # Query DuckDB for comprehensive map data
-    con = map_db.connection
-    
-    # All resource patches (no sorting, just list them all)
-    all_patches = con.execute('''
-        SELECT 
-            patch_id,
-            resource_name,
-            total_amount,
-            tile_count,
-            CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).x as x,
-            CAST(centroid AS STRUCT(x DOUBLE, y DOUBLE)).y as y
-        FROM resource_patch
-        ORDER BY resource_name, patch_id
-    ''').fetchall()
-    
-    # Resource summary by type
-    resource_summary = con.execute('''
-        SELECT 
-            resource_name,
-            COUNT(*) as patch_count,
-            SUM(total_amount) as total_amount,
-            SUM(tile_count) as total_tiles
-        FROM resource_patch
-        GROUP BY resource_name
-        ORDER BY resource_name
-    ''').fetchall()
-    
-    # Water patches summary
-    water_summary = con.execute('''
-        SELECT 
-            COUNT(*) as patch_count,
-            SUM(tile_count) as total_tiles
-        FROM water_patch
-    ''').fetchone()
-    
-    # Map bounds
-    map_bounds = con.execute('''
-        SELECT 
-            MIN(position.x) as min_x,
-            MAX(position.x) as max_x,
-            MIN(position.y) as min_y,
-            MAX(position.y) as max_y
-        FROM resource_tile
-    ''').fetchone()
-    
-    # Trees and rocks count
-    entities_count = con.execute('''
-        SELECT 
-            type,
-            COUNT(*) as count
-        FROM resource_entity
-        GROUP BY type
-    ''').fetchall()
-    
-    print(json.dumps({
-        'position': {'x': pos.x, 'y': pos.y},
-        'inventory': inv_items,
-        'researched_techs': researched_names,
-        'enabled_recipes': enabled_recipe_names,
-        'all_patches': [
-            {
-                'patch_id': r[0],
-                'name': r[1],
-                'amount': r[2],
-                'tiles': r[3],
-                'x': r[4],
-                'y': r[5]
-            } for r in all_patches
-        ],
-        'resource_summary': [
-            {
-                'name': r[0],
-                'patches': r[1],
-                'total_amount': r[2],
-                'total_tiles': r[3]
-            } for r in resource_summary
-        ],
-        'water': {
-            'patches': water_summary[0] if water_summary else 0,
-            'tiles': water_summary[1] if water_summary else 0
-        },
-        'map_bounds': {
-            'min_x': map_bounds[0] if map_bounds else 0,
-            'max_x': map_bounds[1] if map_bounds else 0,
-            'min_y': map_bounds[2] if map_bounds else 0,
-            'max_y': map_bounds[3] if map_bounds else 0
-        } if map_bounds else None,
-        'entities': {r[0]: r[1] for r in entities_count}
-    }))
-"""
-
-        try:
-            result = self.runtime.execute_code(state_code, compress_output=False)
-            state = json.loads(result)
-        except Exception as e:
-            # Fallback if state gathering fails
-            state = {
-                "position": {"x": 0, "y": 0},
-                "inventory": {},
-                "researched_techs": [],
-                "enabled_recipes": [],
-                "all_patches": [],
-                "resource_summary": [],
-                "water": {"patches": 0, "tiles": 0},
-                "map_bounds": None,
-                "entities": {},
-            }
-
-        # Build markdown summary
-        summary_lines = [
-            "# Initial Game State\n",
-            f"*Generated at session start*\n\n",
+        lines = [
+            "# Initial Game State\n\n",
+            "This document shows the Python code that was executed to understand ",
+            "your current situation. You can use similar patterns to query the game state.\n\n",
         ]
 
-        # Add categorical references at the beginning
+        # Add categorical references at the beginning (if available)
         try:
             from FactoryVerse.infra.llm.categorical_references import (
                 CategoricalReferenceGenerator,
@@ -346,83 +323,114 @@ with playing_factorio():
 
             cat_gen = CategoricalReferenceGenerator()
             categorical_refs = cat_gen.generate_combined_reference()
-            summary_lines.append(categorical_refs)
-            summary_lines.append("\n---\n\n")
-        except Exception as e:
-            # If categorical reference generation fails, continue without it
-            summary_lines.append(f"*Categorical references unavailable: {e}*\n\n")
+            lines.append(categorical_refs)
+            lines.append("\n---\n\n")
+        except Exception:
+            pass  # Skip if unavailable
 
-        # Add database summary with query→result pairs
-        database_summary = self._generate_database_summary()
-        summary_lines.append(database_summary)
-        summary_lines.append("\n")
+        lines.append("## Code Execution Results\n\n")
+        lines.append("The following code was executed at session start:\n\n")
 
-        # Add agent status
-        summary_lines.append("## Agent Status\n")
-        summary_lines.append(
-            f"**Position:** ({state['position']['x']:.1f}, {state['position']['y']:.1f})\n"
-        )
+        # Position and Inventory
+        pos_md, pos_data = self._generate_position_and_inventory()
+        lines.append(pos_md)
+        lines.append("\n")
 
-        # Inventory section
-        summary_lines.append("\n## Inventory\n")
-        if state["inventory"]:
-            for item, count in sorted(state["inventory"].items()):
-                summary_lines.append(f"- **{item}**: {count}\n")
-        else:
-            summary_lines.append("*Empty*\n")
+        # Resource Aggregates
+        agg_md, _ = self._generate_resource_aggregates()
+        lines.append(agg_md)
+        lines.append("\n")
 
-        # Map overview
-        if state["map_bounds"] and state["map_bounds"]["max_x"] is not None:
-            bounds = state["map_bounds"]
-            width = bounds["max_x"] - bounds["min_x"]
-            height = bounds["max_y"] - bounds["min_y"]
-            summary_lines.append("\n## Map Overview\n")
-            summary_lines.append(
-                f"**Explored area:** {width:.0f} × {height:.0f} tiles\n"
-            )
-            summary_lines.append(
-                f"**Bounds:** X=[{bounds['min_x']:.0f}, {bounds['max_x']:.0f}], Y=[{bounds['min_y']:.0f}, {bounds['max_y']:.0f}]\n"
-            )
+        # Top Resource Locations
+        resources_md, resources_data = self._generate_resource_locations()
+        lines.append(resources_md)
+        lines.append("\n")
 
-        # Natural entities (trees and rocks)
-        if state["entities"]:
-            summary_lines.append("\n## Natural Entities\n")
-            for entity_type, count in sorted(state["entities"].items()):
-                summary_lines.append(f"- **{entity_type.title()}:** {count:,}\n")
+        # Placed Entities
+        entities_md, entities_data = self._generate_placed_entities()
+        if entities_data:  # Only show if entities exist
+            lines.append(entities_md)
+            lines.append("\n")
+
+        # Water Patches
+        water_md, water_data = self._generate_water_patches()
+        if water_data:  # Only show if water exists
+            lines.append(water_md)
+            lines.append("\n")
+
+        # Natural Entities
+        natural_md, natural_data = self._generate_natural_entities()
+        if natural_data:  # Only show if natural entities exist
+            lines.append(natural_md)
+            lines.append("\n")
 
         # Technology & Recipes section
+        lines.append("---\n\n")
+
+        # Get tech/recipe data using actual available methods
+        # Note: research.get_technologies() and crafting.get_recipes() don't exist
+        # Use status() methods which are available
+        tech_code = """import json
+# Get research status (current research, queue, progress)
+research_status = research.status()
+
+# Extract research information
+research_info = {
+    "current_research": research_status.current_research,
+    "active": research_status.active,
+    "queued": research_status.queued,
+    "progress": research_status.progress,
+    "status": research_status.status,
+}
+# Add detailed progress if research is active
+if research_status.active and research_status.units_total:
+    research_info["units_completed"] = research_status.units_completed
+    research_info["units_total"] = research_status.units_total
+    research_info["units_remaining"] = research_status.units_remaining
+if research_status.queue_length > 0:
+    research_info["queue_length"] = research_status.queue_length
+
+# Get crafting status
+crafting_status = crafting.status()
+
+print(json.dumps({
+    "research": research_info,
+    "crafting_active": crafting_status.get("active", False) if crafting_status else False
+}))"""
+
         try:
-            from FactoryVerse.infra.llm.tech_recipe_prompt import (
-                TechRecipePromptGenerator,
-            )
+            self.runtime.execute_code(tech_code, compress_output=False)
+            # Pass empty lists since we can't easily enumerate all researched/enabled items
+            researched = []
+            enabled = []
+        except Exception:
+            researched = []
+            enabled = []
 
-            tech_recipe_gen = TechRecipePromptGenerator()
-            tech_recipe_section = tech_recipe_gen.generate_combined_prompt(
-                researched=state.get("researched_techs", []),
-                enabled_recipes=state.get("enabled_recipes", []),
-                tech_limit=8,  # Show top 8 available technologies
-                recipe_limit=12,  # Show top 12 enabled recipes
-            )
-            summary_lines.append("\n")
-            summary_lines.append(tech_recipe_section)
-            summary_lines.append("\n")
-        except Exception as e:
-            # If tech/recipe generation fails, continue without it
-            summary_lines.append("\n## Technology & Recipes\n")
-            summary_lines.append(f"*Tech/recipe information unavailable: {e}*\n")
+        tech_section = self._generate_tech_and_recipes(researched, enabled)
+        lines.append(tech_section)
+        lines.append("\n")
 
-        # Add guidance
-        summary_lines.append("\n## Next Steps\n")
-        summary_lines.append(
-            "Use the DSL to explore, gather resources, and build automation!\n"
-        )
-        summary_lines.append("Query the database for spatial analysis and planning.\n")
-        summary_lines.append(
-            "Use `research.enqueue('tech-name')` to start researching technologies.\n"
-        )
+        # Quick reference summary
+        lines.append("---\n\n")
+        lines.append("## Quick Reference\n\n")
+
+        # Position
+        pos = pos_data.get("position", {"x": 0, "y": 0})
+        lines.append(f"**Your position:** ({pos['x']:.1f}, {pos['y']:.1f})\n\n")
+
+        # Inventory summary
+        inv = pos_data.get("inventory", {})
+        if inv:
+            lines.append("**Inventory:**\n")
+            for item, count in sorted(inv.items()):
+                lines.append(f"- {item}: {count}\n")
+        else:
+            lines.append("**Inventory:** *Empty*\n")
+        lines.append("\n")
 
         # Combine and save
-        summary_text = "".join(summary_lines)
+        summary_text = "".join(lines)
         summary_path = session_dir / "initial_state.md"
         with open(summary_path, "w") as f:
             f.write(summary_text)

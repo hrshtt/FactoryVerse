@@ -250,11 +250,10 @@ class FactoryVerseRuntime:
     def execute_duckdb(
         self, query: str, metadata: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Execute DuckDB query."""
-        wrapped_code = f"""
-with playing_factorio():
-    result = map_db.connection.sql('''{query}''').show()
-    print(result)
+        """Execute DuckDB query using remote_view."""
+        wrapped_code = f"""result = remote_view.query('''{query}''')
+for row in result:
+    print(row)
 """
         return self.execute_code(wrapped_code, compress_output=True, metadata=metadata)
 
@@ -290,7 +289,7 @@ with playing_factorio():
                 "type": "function",
                 "function": {
                     "name": "execute_dsl",
-                    "description": "Execute Python code using FactoryVerse DSL. Code runs in ipykernel with autoawait - use 'await' directly for async functions. Must wrap DSL calls in 'with playing_factorio():' context.",
+                    "description": "Execute Python code using FactoryVerse DSL. Code runs in ipykernel with autoawait - use 'await' directly for async functions. All objects (walking, reachable, inventory, etc.) are pre-loaded.",
                     "parameters": {
                         "type": "object",
                         "properties": {

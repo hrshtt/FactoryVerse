@@ -3,8 +3,8 @@
 Handles all research-related operations synchronously via RconHandler.
 """
 
-from typing import TYPE_CHECKING, Dict, Any
-from dataclasses import dataclass
+from typing import TYPE_CHECKING, Dict, Any, Optional, List
+from dataclasses import dataclass, field
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
@@ -20,13 +20,86 @@ class ResearchQueueItem:
 
 
 @dataclass
-class ResearchStatus:
-    """Current research status."""
+class QueuedTechnology:
+    """Basic information about a queued technology.
+    
+    Used in ResearchStatus when technologies are queued.
+    """
 
-    queue: list["ResearchQueueItem"]
-    queue_length: int
-    current_research: str | None
+    position: int
+    """Position in the research queue (1-based)."""
+    name: str
+    """Technology name."""
+    is_current: bool
+    """True if this is the currently active research (position 1)."""
+
+
+@dataclass
+class ResearchStatus:
+    """Comprehensive research status with progressive detail levels.
+    
+    **For Agents**: Use this to check research state and progress.
+    
+    The status provides different levels of detail based on research state:
+    - **Minimal**: If no research is queued or active
+    - **Queued**: If research is queued but not active (includes queue info)
+    - **Active**: If research is actively progressing (includes full progress details)
+    
+    All status objects include:
+    - `queued`: Whether technologies are queued beyond current
+    - `active`: Whether research is actively being worked on
+    - `progress`: Current progress (0.0 to 1.0)
+    - `status`: Human-readable status message
+    - `tick`: Game tick when status was retrieved
+    
+    Additional fields are populated based on state:
+    - If queued: `queue_length`, `current_research`, `queue`
+    - If active: `units_completed`, `units_total`, `units_remaining`, 
+                 `research_unit_count`, `research_unit_energy`, 
+                 `research_unit_ingredients`, `saved_progress`
+    """
+
+    # Core fields (always present)
+    queued: bool
+    """True if technologies are queued beyond the current research."""
+    active: bool
+    """True if research is actively being worked on (labs consuming science packs)."""
+    progress: float
+    """Current research progress as a float from 0.0 (0%) to 1.0 (100%)."""
+    status: str
+    """Human-readable status message describing the research state."""
     tick: int
+    """Game tick when the status was retrieved."""
+
+    # Queue information (present if queued or active)
+    current_research: Optional[str] = None
+    """Name of currently researching technology, or None if no research is active."""
+    queue_length: int = 0
+    """Number of technologies in the research queue."""
+    queue: List[QueuedTechnology] = field(default_factory=list)
+    """Array of queued technologies with position and name (only if queued)."""
+
+    # Active research details (present only if active)
+    units_completed: Optional[int] = None
+    """Number of research units completed (only if active)."""
+    units_total: Optional[int] = None
+    """Total number of research units required (only if active)."""
+    units_remaining: Optional[int] = None
+    """Number of research units remaining (only if active)."""
+    research_unit_count: Optional[int] = None
+    """Total research unit count for the technology (only if active)."""
+    research_unit_energy: Optional[float] = None
+    """Energy required per research unit in seconds (only if active)."""
+    research_unit_ingredients: Optional[List[Dict[str, Any]]] = None
+    """Science pack ingredients required per research unit (only if active).
+    
+    Format: [{"name": "automation-science-pack", "amount": 1}, ...]
+    """
+    saved_progress: Optional[float] = None
+    """Saved progress from the technology object (0.0-1.0, only if active).
+    
+    This is more accurate than force.research_progress for the current technology.
+    """
 
 
 class ResearchAction:
@@ -69,40 +142,66 @@ class ResearchAction:
         return self._rcon.execute_and_parse_json(cmd)
 
     def status(self) -> ResearchStatus:
-        """Get current research status.
+        """Get comprehensive research status with progressive detail levels.
+
+        Returns different levels of detail based on research state:
+        - **Minimal**: If no research is queued or active (just queued/active flags)
+        - **Queued**: If research is queued but not active (includes queue information)
+        - **Active**: If research is actively progressing (includes full progress details)
+
+        **For Agents**: Use this to check:
+        - Whether research is queued or active
+        - Current progress (0.0 to 1.0)
+        - How many research units are completed/remaining
+        - What science packs are needed per research unit
+        - Queue information if multiple technologies are queued
 
         Returns:
-            ResearchStatus with current research and progress
+            ResearchStatus with progressive detail based on research state
+
+        Example:
+            ```python
+            status = research.status()
+            if status.active:
+                print(f"Researching {status.current_research}: {status.units_completed}/{status.units_total} units")
+                print(f"Progress: {status.progress * 100:.1f}%")
+            elif status.queued:
+                print(f"{status.queue_length} technologies queued")
+            else:
+                print("No research active")
+            ```
         """
-        cmd = self._rcon.build_command(
-            "get_technologies", False
-        )  # only_available=False
-        techs_data = self._rcon.execute_and_parse_json(cmd)
+        cmd = self._rcon.build_command("get_research_status")
+        data = self._rcon.execute_and_parse_json(cmd)
 
-        # Build research status
-        current_research = None
+        # Parse queue if present
         queue = []
-
-        # Note: get_technologies doesn't give the full queue order, but
-        # it gives the currently researching tech.
-        # For full queue, use get_queue()
-        for tech in techs_data.get("technologies", []):
-            if tech.get("researching", False):
-                current_research = tech.get("name")
+        if "queue" in data and isinstance(data["queue"], list):
+            for item in data["queue"]:
                 queue.append(
-                    ResearchQueueItem(
-                        technology=tech.get("name"),
-                        progress=tech.get("progress", 0.0),
-                        level=tech.get("level", 1),
+                    QueuedTechnology(
+                        position=item.get("position", 0),
+                        name=item.get("name", ""),
+                        is_current=item.get("is_current", False),
                     )
                 )
-                break  # Only one active
 
         return ResearchStatus(
+            queued=data.get("queued", False),
+            active=data.get("active", False),
+            progress=data.get("progress", 0.0),
+            status=data.get("status", "Unknown"),
+            tick=data.get("tick", 0),
+            current_research=data.get("current_research"),
+            queue_length=data.get("queue_length", 0),
             queue=queue,
-            queue_length=len(queue),
-            current_research=current_research,
-            tick=techs_data.get("tick", 0),
+            units_completed=data.get("units_completed"),
+            units_total=data.get("units_total"),
+            units_remaining=data.get("units_remaining"),
+            research_unit_count=data.get("research_unit_count"),
+            research_unit_energy=data.get("research_unit_energy"),
+            research_unit_ingredients=data.get("research_unit_ingredients"),
+            saved_progress=data.get("saved_progress"),
         )
 
     def get_queue(self) -> Dict[str, Any]:

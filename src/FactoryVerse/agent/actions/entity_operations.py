@@ -17,9 +17,11 @@ import logging
 from FactoryVerse.factory.types import MapPosition
 from FactoryVerse.agent.models import ActionResponse
 
+# Import ItemStack for runtime isinstance checks
+from FactoryVerse.factory.item.base import ItemStack
+
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
-    from FactoryVerse.factory.item.base import ItemStack
     from FactoryVerse.agent.actions.place_entity import PlacementAction
 
 logger = logging.getLogger(__name__)

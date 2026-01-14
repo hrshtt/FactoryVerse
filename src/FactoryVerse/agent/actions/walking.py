@@ -1,10 +1,14 @@
 """Walking action implementation with dataclass response types.
 
-Handles all walking-related operations: walk to position, stop walking.
+Handles all walking-related operations: walk to position, walk to entity, stop walking.
+
+Walking Modes:
+- Position-only: walk_to(goal) - walks to a map position
+- Entity-aware: walk_to_entity(name, position) - walks to entity with fallback logic
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING, Dict
+from typing import Optional, TYPE_CHECKING, Dict, Union
 import logging
 
 from FactoryVerse.factory.types import MapPosition
@@ -22,6 +26,62 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# ERROR TYPES
+# =============================================================================
+
+
+class WalkingError(RuntimeError):
+    """Base walking error."""
+
+    pass
+
+
+class WalkingUnreachableError(WalkingError):
+    """Target is definitively unreachable after exhausting all approach options.
+
+    This means:
+    - For entity-aware walking: all candidate tiles were tried, no path found
+    - For position-only walking: no path to position exists
+
+    The agent may need to destroy/deconstruct obstacles to reach the target.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        failure_type: str = "blocked_path",
+        candidates_tried: int = 1,
+    ):
+        super().__init__(message)
+        self.failure_type = failure_type
+        self.candidates_tried = candidates_tried
+
+
+class WalkingEntityNotFoundError(WalkingError):
+    """Entity reference is no longer valid.
+
+    The entity may have been destroyed, picked up, or moved.
+    Refresh the entity reference and try again.
+    """
+
+    def __init__(self, entity_name: str, position: MapPosition):
+        super().__init__(f"Entity '{entity_name}' not found at {position}")
+        self.entity_name = entity_name
+        self.position = position
+
+
+class WalkingNoStandableTilesError(WalkingError):
+    """No standable tiles exist within reach of the target entity.
+
+    The entity may be completely surrounded by obstacles.
+    """
+
+    def __init__(self, entity_name: str):
+        super().__init__(f"No standable tiles within reach of '{entity_name}'")
+        self.entity_name = entity_name
+
+
+# =============================================================================
 # ACTION RESPONSE TYPES
 # =============================================================================
 
@@ -34,9 +94,18 @@ class WalkingStarted(AsyncActionResponse):
 
     Returned immediately when walk() is called. If queued=True, the action
     is running asynchronously and completion will come via UDP.
+
+    If queued=False and success=True, agent was already at destination.
+    If queued=False and success=False, walking failed immediately (entity not found, etc).
     """
 
-    pass  # Inherits all fields from AsyncActionResponse
+    failure_type: Optional[str] = None
+    position: Optional[Dict[str, float]] = None  # Present if already at destination
+
+    @property
+    def already_at_destination(self) -> bool:
+        """True if agent was already at destination (no walking needed)."""
+        return self.success and not self.queued and self.position is not None
 
 
 @dataclass
@@ -53,7 +122,26 @@ class WalkingCompleted(AsyncActionCompletion):
     @property
     def final_position(self) -> MapPosition:
         """Get final position as MapPosition."""
+        if not self.position or "x" not in self.position:
+            raise ValueError(
+                f"WalkingCompleted has no position data. "
+                f"Current position value: {self.position!r}. "
+                f"Check if UDP payload includes 'position' field."
+            )
         return MapPosition(x=self.position["x"], y=self.position["y"])
+
+
+@dataclass
+class WalkingFailed(AsyncActionCompletion):
+    """Response when walking action fails.
+
+    Received via UDP when walking fails after exhausting all options.
+    """
+
+    failure_type: str = "blocked_path"
+    candidates_tried: int = 1
+    goal: Optional[Dict[str, float]] = None
+    message: Optional[str] = None
 
 
 @dataclass
@@ -77,7 +165,8 @@ class MovementAction:
     """Walking action implementation.
 
     Owns all walking logic:
-    - walk(): Walk to a target position
+    - walk_to(): Walk to a target position
+    - walk_to_entity(): Walk to an entity with fallback logic (internal)
     - stop(): Stop current walking action
 
     All methods return structured dataclass response types for type safety.
@@ -114,24 +203,123 @@ class MovementAction:
             Final MapPosition reached
 
         Raises:
-            RuntimeError: If walking fails to start or times out
+            WalkingUnreachableError: If position is unreachable
+            RuntimeError: If walking fails for other reasons
         """
+        return await self._walk_internal(
+            goal=goal,
+            strict_goal=strict_goal,
+            options=options,
+            entity_ref=None,
+            timeout=timeout,
+        )
+
+    async def walk_to_entity(
+        self,
+        entity_name: str,
+        entity_position: MapPosition,
+        timeout: Optional[int] = None,
+    ) -> MapPosition:
+        """Walk to an entity with fallback logic.
+
+        Uses entity-aware walking: computes candidate approach tiles around
+        the entity and tries each until path succeeds or all exhausted.
+
+        Args:
+            entity_name: Name of the entity (e.g., "stone-furnace")
+            entity_position: Position of the entity
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Final MapPosition reached
+
+        Raises:
+            WalkingEntityNotFoundError: If entity not found at position
+            WalkingNoStandableTilesError: If no standable tiles around entity
+            WalkingUnreachableError: If all approach paths are blocked
+        """
+        entity_ref = {
+            "name": entity_name,
+            "position": {"x": entity_position.x, "y": entity_position.y},
+        }
+        return await self._walk_internal(
+            goal=entity_position,
+            strict_goal=False,
+            options=None,
+            entity_ref=entity_ref,
+            timeout=timeout,
+        )
+
+    async def _walk_internal(
+        self,
+        goal: MapPosition,
+        strict_goal: bool,
+        options: Optional[Dict],
+        entity_ref: Optional[Dict],
+        timeout: Optional[int],
+    ) -> MapPosition:
+        """Internal walk implementation handling both position and entity modes."""
         if options is None:
             options = {}
 
         # Build and execute RCON command
-        cmd = self._rcon.build_command("walk_to", goal, strict_goal, options)
+        cmd = self._rcon.build_command(
+            "walk_to", goal, strict_goal, options, entity_ref
+        )
         response_dict = self._rcon.execute_and_parse_json(cmd)
         response = WalkingStarted.from_dict(response_dict)
 
-        # Check if walking started successfully
+        # Check for immediate failures
+        if not response.success:
+            failure_type = response_dict.get("failure_type", "unknown")
+            message = response_dict.get("message", "Walking failed")
+
+            if failure_type == "entity_not_found" and entity_ref:
+                raise WalkingEntityNotFoundError(entity_ref["name"], goal)
+            elif failure_type == "no_standable_tiles" and entity_ref:
+                raise WalkingNoStandableTilesError(entity_ref["name"])
+            else:
+                raise WalkingError(message)
+
+        # Check if already at destination
+        # Note: 'already_at_destination' and 'position' are fields on WalkingStarted dataclass
+        if isinstance(response, WalkingStarted) and response.already_at_destination:
+            pos = response.position
+            # Ensure pos is not None before accessing keys
+            if pos:
+                return MapPosition(x=pos["x"], y=pos["y"])
+
+        # Check if walking was queued
         if not response.is_queued:
             reason = response.reason or "unknown"
             raise RuntimeError(f"Failed to start walking: {reason}")
 
         # Wait for completion via UDP
         completion_dict = await self._listener.await_action(response, timeout=timeout)
+        logger.debug(f"Walking completion_dict: {completion_dict}")
+
+        # Check for failure status
+        status = completion_dict.get("status")
+        if status == "failed":
+            failure_type = completion_dict.get("failure_type", "blocked_path")
+            candidates_tried = completion_dict.get("candidates_tried", 1)
+            message = completion_dict.get("message", "Walking failed")
+
+            raise WalkingUnreachableError(
+                message=message,
+                failure_type=failure_type,
+                candidates_tried=candidates_tried,
+            )
+
+        # UDP payload nests action-specific data in 'result' field
+        # Flatten result dict into completion_dict for from_dict parsing
+        if "result" in completion_dict and isinstance(completion_dict["result"], dict):
+            for key, value in completion_dict["result"].items():
+                if key not in completion_dict:
+                    completion_dict[key] = value
+
         completion = WalkingCompleted.from_dict(completion_dict)
+        logger.debug(f"WalkingCompleted position: {completion.position}")
 
         # Return final position
         return completion.final_position

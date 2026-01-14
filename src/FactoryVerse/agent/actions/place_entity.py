@@ -18,6 +18,9 @@ from FactoryVerse.agent.models import ActionResponse
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
     from FactoryVerse.factory.item.base import PlaceableItemName
+    from FactoryVerse.factory.entity.base_entity import BaseEntity
+    from .entity_operations import EntityOperationsAction
+    from .walking import MovementAction
 
 logger = logging.getLogger(__name__)
 
@@ -102,13 +105,22 @@ class PlacementAction:
         No in-memory tracking needed. Query via remote_view.get_ghosts(sql).
     """
 
-    def __init__(self, rcon_handler: "RconHandler"):
+    def __init__(
+        self,
+        rcon_handler: "RconHandler",
+        entity_ops: "EntityOperationsAction",
+        walking_action: "MovementAction",
+    ):
         """Initialize placement action.
 
         Args:
             rcon_handler: RCON handler for command execution
+            entity_ops: EntityOperationsAction for creating BaseEntity after placement
+            walking_action: MovementAction for creating entities with navigation capability
         """
         self._rcon = rcon_handler
+        self._entity_ops = entity_ops
+        self._walking_action = walking_action
 
     def place(
         self,
@@ -117,7 +129,8 @@ class PlacementAction:
         direction: Optional[Direction] = None,
         ghost: bool = False,
         label: Optional[str] = None,
-    ) -> EntityPlaced:
+        return_entity: bool = False,
+    ) -> Union[EntityPlaced, "BaseEntity"]:
         """Place an entity on the map.
 
         Args:
@@ -126,12 +139,13 @@ class PlacementAction:
             direction: Optional direction for placement
             ghost: Whether to place as ghost entity (default: False)
             label: Optional label for tracking/grouping placed entities
+            return_entity: If True and entity_ops is available, return BaseEntity instead of EntityPlaced
 
         Returns:
-            EntityPlaced response with placement result and metadata
+            EntityPlaced response with placement result and metadata, or BaseEntity if return_entity=True
 
         Raises:
-            RuntimeError: If RCON command fails
+            RuntimeError: If RCON command fails or if return_entity=True but entity_ops is not available
 
         Note:
             Entity tracking is handled by fv_snapshot mod. The label is passed
@@ -145,7 +159,30 @@ class PlacementAction:
             "place_entity", entity_name, position, direction, ghost, label
         )
         response_dict = self._rcon.execute_and_parse_json(cmd)
-        return EntityPlaced.from_dict(response_dict)
+        result = EntityPlaced.from_dict(response_dict)
+
+        # If requested, return BaseEntity instead
+        if return_entity and not ghost:
+            # Get the placed position
+            placed_pos = result.placed_position
+            if placed_pos is None:
+                raise RuntimeError("Placement succeeded but position is missing")
+
+            # Inspect the entity to get full entity data
+            entity_data = self._entity_ops.inspect_entity(entity_name, placed_pos)
+
+            # Create BaseEntity from the inspection data
+            from FactoryVerse.factory.entity.create_entity import create_reachable_entity
+
+            return create_reachable_entity(
+                entity_data,
+                self._entity_ops,
+                self,  # self is PlacementAction, which is place_ops
+                self._walking_action,
+                is_ghost=False,
+            )
+
+        return result
 
     def remove_ghost(
         self, entity_name: str, position: Union[Dict[str, float], MapPosition]

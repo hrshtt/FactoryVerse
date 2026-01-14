@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import ItemStack
     from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
     from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.actions.walking import MovementAction
     from .inspection import EntityInspection
 
 
@@ -131,6 +132,9 @@ class BaseEntity:
         self,
         name: str,
         position: MapPosition,
+        entity_ops: "EntityOperationsAction",
+        place_ops: "PlacementAction",
+        walking_action: "MovementAction",
         is_ghost: bool = False,
         ghost_name: Optional[str] = None,
         view: EntityView = EntityView.REMOTE,
@@ -141,6 +145,9 @@ class BaseEntity:
         Args:
             name: Entity prototype name (e.g., "stone-furnace")
             position: Entity position in the world
+            entity_ops: Entity operations action for game interactions
+            place_ops: Placement action for placement operations
+            walking_action: Movement action for navigation
             is_ghost: Whether this is a ghost entity
             ghost_name: For ghosts, the entity prototype this ghost represents
             view: Entity view type (REMOTE or REACHABLE)
@@ -152,9 +159,10 @@ class BaseEntity:
         self._view = view
         self._prototype_cache: Optional[Dict[str, Any]] = None
 
-        # Action dependencies (injected during entity creation)
-        self._entity_ops: Optional["EntityOperationsAction"] = None
-        self._place_ops: Optional["PlacementAction"] = None
+        # Action dependencies (always required)
+        self._entity_ops: "EntityOperationsAction" = entity_ops
+        self._place_ops: "PlacementAction" = place_ops
+        self._walking_action: "MovementAction" = walking_action
 
     # =========================================================================
     # Properties (absorbed from SpatialPropertiesMixin and PrototypeMixin)
@@ -166,6 +174,35 @@ class BaseEntity:
         return EntityPosition(
             x=self._raw_position.x, y=self._raw_position.y, entity=self
         )
+
+    async def walk_to(self, timeout: Optional[int] = None) -> "MapPosition":
+        """Walk to this entity.
+
+        Delegates to the walking action to navigate to this entity.
+        Handles checking if the entity is already reachable.
+        After successful walk, changes view from REMOTE to REACHABLE to enable mutations.
+
+        Args:
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Final position reached
+
+        Raises:
+            WalkingUnreachableError: If entity cannot be reached
+            WalkingEntityNotFoundError: If entity no longer exists
+        """
+        final_position = await self._walking_action.walk_to_entity(
+            entity_name=self.name,
+            entity_position=self.position,
+            timeout=timeout,
+        )
+        
+        # After successful walk, change view from REMOTE to REACHABLE to enable mutations
+        if self._view == EntityView.REMOTE:
+            self._view = EntityView.REACHABLE
+        
+        return final_position
 
     @property
     def prototype(self) -> Dict[str, Any]:
@@ -248,11 +285,6 @@ class BaseEntity:
             )
 
         # Get live inspection data from game
-        if self._entity_ops is None:
-            raise RuntimeError(
-                f"Cannot inspect {self.__class__.__name__}: entity_ops not injected."
-            )
-
         raw_data = self._entity_ops.inspect_entity(self.name, self.position)
 
         # Build base inspection
@@ -343,9 +375,6 @@ class BaseEntity:
         if not self._is_ghost:
             raise RuntimeError(f"Cannot build {self.name}: not a ghost entity.")
 
-        if self._place_ops is None:
-            raise RuntimeError(f"Cannot build {self.name}: place_ops not injected.")
-
         entity_name = self._ghost_name or self.name
         result = self._place_ops.place(
             entity_name,  # type: ignore
@@ -362,19 +391,12 @@ class BaseEntity:
                 f"Cannot remove {self.name} via remove(): not a ghost. Use pickup()."
             )
 
-        if self._place_ops is None:
-            raise RuntimeError(f"Cannot remove {self.name}: place_ops not injected.")
-
         entity_name = self._ghost_name or self.name
         result = self._place_ops.remove_ghost(entity_name, self.position)
         return result.success
 
     def pickup(self) -> List["ItemStack"]:
         """Pick up the entity and return extracted items with placement injected."""
-        if self._entity_ops is None:
-            raise RuntimeError(
-                f"Cannot pickup {self.__class__.__name__}: entity_ops not injected."
-            )
         result = self._entity_ops.pickup_entity(self.name, self.position)
         from FactoryVerse.factory.item.create_item import create_item_stack
 

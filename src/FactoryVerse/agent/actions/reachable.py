@@ -42,23 +42,25 @@ class Reachable:
     def __init__(
         self,
         rcon_handler: "RconHandler",
-        mining_action: Optional[Any] = None,
+        entity_ops: "EntityOperationsAction",
+        place_ops: "PlacementAction",
+        walking_action: "MovementAction",
+        mining_action: Optional["MiningAction"] = None,
     ):
         """Initialize Reachable query interface.
 
         Args:
             rcon_handler: RCON handler for command execution
+            entity_ops: Entity operations action for entity interactions
+            place_ops: Placement action for placement operations
+            walking_action: Movement action for navigation
             mining_action: Optional MiningAction to inject into resources for mining operations
         """
         self._rcon = rcon_handler
+        self._entity_ops = entity_ops
+        self._place_ops = place_ops
+        self._walking_action = walking_action
         self._mining_action = mining_action
-        
-        # Initialize action dependencies for factory
-        from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
-        from FactoryVerse.agent.actions.place_entity import PlacementAction
-
-        self._entity_ops = EntityOperationsAction(rcon_handler)
-        self._place_ops = PlacementAction(rcon_handler)
 
     def _fetch_fresh_entities_data(self, include_ghosts: bool = True):
         """Fetch fresh entities data via RCON (no caching).
@@ -83,7 +85,7 @@ class Reachable:
         for entity_data in entities_data:
             try:
                 entity = create_reachable_entity(
-                    entity_data, self._entity_ops, self._place_ops, is_ghost=False
+                    entity_data, self._entity_ops, self._place_ops, self._walking_action, is_ghost=False
                 )
                 entities_instances.append(entity)
                 all_data.append(entity_data)
@@ -95,7 +97,7 @@ class Reachable:
         for ghost_data in ghosts_data:
             try:
                 entity = create_reachable_entity(
-                    ghost_data, self._entity_ops, self._place_ops, is_ghost=True
+                    ghost_data, self._entity_ops, self._place_ops, self._walking_action, is_ghost=True
                 )
                 entities_instances.append(entity)
                 all_data.append(ghost_data)
@@ -325,8 +327,10 @@ class Reachable:
             ]
 
         if matches:
-            # Inject MiningAction and EntityOperationsAction into resource
-            return _create_resource_from_data(matches[0], self._mining_action, self._entity_ops)
+            # Inject actions into resource
+            return _create_resource_from_data(
+                matches[0], self._mining_action, self._entity_ops, self._walking_action
+            )
         return None
 
     def get_resources(
@@ -345,7 +349,7 @@ class Reachable:
                 - "ore" or "resource" - filters to ore patches (type="resource")
                 - "entity" - filters to trees and rocks (type="tree" or "simple-entity")
                 - "tree" - filters to trees only
-                - "simple-entity" - filters to rocks only
+                - "rock" or "simple-entity" - filters to rocks only (both accepted)
                 - "resource" - filters to ore patches only (Factorio type)
 
         Returns:
@@ -370,6 +374,8 @@ class Reachable:
 
         # Filter by type if provided
         if resource_type is not None:
+            from FactoryVerse.factory.resource.base import _agent_to_game_resource_type
+            
             # Handle simplified aliases
             if resource_type == "ore":
                 resource_type = "resource"
@@ -381,9 +387,11 @@ class Reachable:
                     if data.get("type") in ("tree", "simple-entity")
                 ]
             else:
+                # Convert agent-facing type to game-facing type (e.g., "rock" -> "simple-entity")
+                game_resource_type = _agent_to_game_resource_type(resource_type)
                 # Direct type match (resource, tree, simple-entity)
                 matches = [
-                    data for data in matches if data.get("type") == resource_type
+                    data for data in matches if data.get("type") == game_resource_type
                 ]
 
         # Group by resource name
@@ -400,25 +408,43 @@ class Reachable:
         for name, data_list in resources_by_name.items():
             resource_type_val = data_list[0].get("type", "resource")
 
+            from FactoryVerse.factory.entity.base_entity import EntityView
+
             # Entities (trees, rocks) are always returned as BaseResource
             if resource_type_val in ("tree", "simple-entity"):
                 for data in data_list:
-                    # Inject MiningAction and EntityOperationsAction into each resource
-                    result.append(_create_resource_from_data(data, self._mining_action, self._entity_ops))
+                    # Inject actions into each resource with REACHABLE view
+                    result.append(
+                        _create_resource_from_data(
+                            data, self._mining_action, self._entity_ops, self._walking_action, view=EntityView.REACHABLE
+                        )
+                    )
             # Ore patches: consolidate if multiple, return single as BaseResource
             elif resource_type_val == "resource":
                 if len(data_list) > 1:
                     # Multiple tiles of same ore type -> ResourceOrePatch
-                    # Inject MiningAction and EntityOperationsAction into patch
-                    result.append(ResourceOrePatch(name, data_list, self._mining_action, self._entity_ops))
+                    # Inject actions into patch with REACHABLE view
+                    result.append(
+                        ResourceOrePatch(
+                            name, data_list, self._mining_action, self._entity_ops, self._walking_action, view=EntityView.REACHABLE
+                        )
+                    )
                 else:
                     # Single tile -> BaseResource
-                    # Inject MiningAction and EntityOperationsAction into resource
-                    result.append(_create_resource_from_data(data_list[0], self._mining_action, self._entity_ops))
+                    # Inject actions into resource with REACHABLE view
+                    result.append(
+                        _create_resource_from_data(
+                            data_list[0], self._mining_action, self._entity_ops, self._walking_action, view=EntityView.REACHABLE
+                        )
+                    )
             else:
                 # Unknown type, return as BaseResource
                 for data in data_list:
-                    # Inject MiningAction and EntityOperationsAction into each resource
-                    result.append(_create_resource_from_data(data, self._mining_action, self._entity_ops))
+                    # Inject actions into each resource with REACHABLE view
+                    result.append(
+                        _create_resource_from_data(
+                            data, self._mining_action, self._entity_ops, self._walking_action, view=EntityView.REACHABLE
+                        )
+                    )
 
         return result
