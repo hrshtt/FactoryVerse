@@ -252,18 +252,46 @@ function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
     end
     
     local entity_name = entity.name or "unknown"
-    local ent_key = utils.entity_key(entity_name, position.x, position.y)
     
-    if M.DEBUG then
-        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: entity_name=%s, ent_key=%s, chunk=(%d,%d), position={x=%f, y=%f}", 
-            game.tick, entity_name, ent_key, chunk_x, chunk_y, position.x, position.y))
+    -- IDEMPOTENCY CHECK: Prevent duplicate remove events for the same entity
+    -- Track recent removals in storage to avoid duplicate events within a short time window
+    storage.recent_tree_removals = storage.recent_tree_removals or {}
+    local removal_key = string.format("%s@%.2f,%.2f", entity_name, position.x, position.y)
+    local recent_removal = storage.recent_tree_removals[removal_key]
+    
+    -- Check if we've already created a remove operation for this entity recently (within last 100 ticks)
+    if recent_removal and (game.tick - recent_removal.tick) < 100 then
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: Skipping duplicate remove for %s at (%.2f, %.2f) - already removed at tick %d", 
+                game.tick, entity_name, position.x, position.y, recent_removal.tick))
+        end
+        log(string.format("[Resource] Skipping duplicate remove operation for %s at (%.2f, %.2f) - already removed at tick %d", 
+            entity_name, position.x, position.y, recent_removal.tick))
+        return false  -- Skip creating duplicate remove operation
     end
     
-    local operation = snapshot.make_remove_operation(ent_key, position, entity_name)
+    -- Record this removal
+    storage.recent_tree_removals[removal_key] = { tick = game.tick }
+    
+    -- Clean up old entries (older than 1000 ticks) to prevent storage bloat
+    if game.tick % 1000 == 0 then  -- Only cleanup periodically
+        for key, removal in pairs(storage.recent_tree_removals) do
+            if game.tick - removal.tick > 1000 then
+                storage.recent_tree_removals[key] = nil
+            end
+        end
+    end
     
     if M.DEBUG then
-        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: operation created: op=%s, tick=%s, key=%s", 
-            game.tick, tostring(operation.op), tostring(operation.tick), tostring(operation.key)))
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: entity_name=%s, chunk=(%d,%d), position={x=%f, y=%f}", 
+            game.tick, entity_name, chunk_x, chunk_y, position.x, position.y))
+    end
+    
+    local operation = snapshot.make_remove_operation(position, entity_name)
+    
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: operation created: op=%s, tick=%s", 
+            game.tick, tostring(operation.op), tostring(operation.tick)))
     end
     
     snapshot.append_trees_rocks_operation(chunk_x, chunk_y, operation)
@@ -275,8 +303,10 @@ function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
     
     -- Send UDP notification
     -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local chunk = { x = chunk_x, y = chunk_y }
-    local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity_name, position)
+    local payload = udp_payloads.entity_destroyed(chunk, entity_name, position)
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -286,7 +316,8 @@ end
 --- Called when resources are depleted or changed
 --- @param chunk_x number
 --- @param chunk_y number
-function M._rewrite_chunk_resources(chunk_x, chunk_y)
+--- @param exclude_entity LuaEntity|table|nil Optional entity to exclude from rewrite (e.g., entity being deleted)
+function M._rewrite_chunk_resources(chunk_x, chunk_y, exclude_entity)
     local chunk = {
         x = chunk_x,
         y = chunk_y,
@@ -299,6 +330,67 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
 
     -- Gather all resources for the chunk
     local gathered = M.gather_resources_for_chunk(chunk)
+
+    -- CRITICAL FIX: Exclude the entity being deleted from the gathered list
+    -- This prevents the deleted tree from being written back to the init file
+    local exclude_position = nil
+    local exclude_name = nil
+    if exclude_entity then
+        -- Handle both real entities and fake entities (with position table)
+        if exclude_entity.position then
+            local pos = exclude_entity.position
+            if type(pos) == "table" and pos.x and pos.y then
+                exclude_position = { x = pos.x, y = pos.y }
+                exclude_name = exclude_entity.name
+            elseif exclude_entity.valid and exclude_entity.position then
+                -- Real entity with position object
+                exclude_position = { x = exclude_entity.position.x, y = exclude_entity.position.y }
+                exclude_name = exclude_entity.name
+            end
+        end
+    end
+
+    -- Remove excluded entity from rocks if present
+    if exclude_position and exclude_name then
+        for i = #gathered.rocks, 1, -1 do
+            local rock = gathered.rocks[i]
+            if rock and rock.position then
+                local rock_x = rock.position.x
+                local rock_y = rock.position.y
+                -- Use small epsilon for floating point comparison
+                if math.abs(rock_x - exclude_position.x) < 0.01 and 
+                   math.abs(rock_y - exclude_position.y) < 0.01 and
+                   rock.name == exclude_name then
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: Excluding rock %s at (%.2f, %.2f) from rewrite", 
+                            game.tick, exclude_name, exclude_position.x, exclude_position.y))
+                    end
+                    table.remove(gathered.rocks, i)
+                end
+            end
+        end
+    end
+
+    -- Remove excluded entity from trees if present
+    if exclude_position and exclude_name then
+        for i = #gathered.trees, 1, -1 do
+            local tree = gathered.trees[i]
+            if tree and tree.position then
+                local tree_x = tree.position.x
+                local tree_y = tree.position.y
+                -- Use small epsilon for floating point comparison
+                if math.abs(tree_x - exclude_position.x) < 0.01 and 
+                   math.abs(tree_y - exclude_position.y) < 0.01 and
+                   tree.name == exclude_name then
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: Excluding tree %s at (%.2f, %.2f) from rewrite", 
+                            game.tick, exclude_name, exclude_position.x, exclude_position.y))
+                    end
+                    table.remove(gathered.trees, i)
+                end
+            end
+        end
+    end
 
     -- Write tiles.jsonl (resource tiles like ores) only if resources were found
     if #gathered.resources > 0 then

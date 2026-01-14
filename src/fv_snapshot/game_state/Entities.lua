@@ -400,9 +400,11 @@ function M.write_entity_snapshot(entity, is_ghost, label, agent_id, player_id)
         
         -- Send UDP notification for ghost operation
         -- TODO: Add ghost_created payload to udp_payloads.lua if needed
+        -- IMPORTANT: Use the SAME sequence number that was written to the file
         local chunk = { x = chunk_coords.x, y = chunk_coords.y }
         local payload = udp_payloads.entity_created(chunk, ghost_data)
         payload.is_ghost = true
+        payload.sequence = operation.sequence  -- Use sequence from file write
         udp_payloads.send_entity_operation(payload)
         
         return true
@@ -429,8 +431,10 @@ function M.write_entity_snapshot(entity, is_ghost, label, agent_id, player_id)
     
     -- Send UDP notification using payload module (best-effort, log is the source of truth)
     -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
     local payload = udp_payloads.entity_created(chunk, entity_data)
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -460,17 +464,16 @@ function M._delete_entity_snapshot(entity)
         return false
     end
 
-    -- Build entity key
-    local ent_key = entity_key(entity.name or "unknown", position.x, position.y)
-    
     -- Create remove operation and append to log
-    local operation = snapshot.make_remove_operation(ent_key, position, entity.name or "unknown")
+    local operation = snapshot.make_remove_operation(position, entity.name or "unknown")
     snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
     
     -- Send UDP notification using payload module (best-effort, log is the source of truth)
     -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
-    local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity.name or "unknown", position)
+    local payload = udp_payloads.entity_destroyed(chunk, entity.name or "unknown", position)
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -496,12 +499,11 @@ function M._delete_ghost_snapshot(entity)
         return false
     end
 
-    -- Build ghost key using ghost_name (the entity type this ghost represents)
+    -- Get ghost_name (the entity type this ghost represents)
     local ghost_name = entity.ghost_name or "unknown"
-    local ghost_key = entity_key(ghost_name, position.x, position.y)
     
     -- Create ghost remove operation and append to chunk-wise ghosts log
-    local operation = snapshot.make_ghost_remove_operation(ghost_key, position, ghost_name)
+    local operation = snapshot.make_ghost_remove_operation(position, ghost_name)
     snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
     
     if M.DEBUG then
@@ -511,9 +513,11 @@ function M._delete_ghost_snapshot(entity)
     
     -- Send UDP notification using payload module (best-effort, log is the source of truth)
     -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
-    local payload = udp_payloads.entity_destroyed(chunk, ghost_key, ghost_name, position)
+    local payload = udp_payloads.entity_destroyed(chunk, ghost_name, position)
     payload.is_ghost = true
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -603,9 +607,11 @@ local function _on_entity_destroyed(event)
                 game.print(string.format("[DEBUG Entities._on_entity_destroyed] Tick %d: Resource entity %s mined, rewriting chunk (%d,%d) resources and creating trees_rocks update entry", 
                     game.tick, entity.name or "unknown", chunk_coords.x, chunk_coords.y))
             end
-            -- 1. Rewrite resource files (trees_rocks-init.jsonl)
+            -- CRITICAL FIX: Pass entity to exclude it from rewrite
+            -- This prevents the deleted tree from being written back to the init file
+            -- 1. Rewrite resource files (trees_rocks-init.jsonl) - exclude the deleted entity
             if Resource and Resource._rewrite_chunk_resources then
-                Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y)
+                Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y, entity)
             end
             -- 2. Create trees/rocks update entry (trees_rocks-updates.jsonl) - handled by Resource.lua
             if Resource and Resource.create_trees_rocks_update_entry then
@@ -724,15 +730,14 @@ local function _on_entity_rotated(event)
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
     local is_ghost = entity.type == "entity-ghost"
     
-    -- Build entity key - use ghost_name for ghosts, name for regular entities
+    -- Get name - use ghost_name for ghosts, name for regular entities
     local name_for_key = is_ghost and entity.ghost_name or entity.name or "unknown"
-    local ent_key = entity_key(name_for_key, entity.position.x, entity.position.y)
     
     -- Write rotation operation to JSONL file
+    local operation
     if is_ghost then
         -- Create ghost rotate operation and append to chunk-wise ghosts log
-        local operation = snapshot.make_ghost_rotate_operation(
-            ent_key,
+        operation = snapshot.make_ghost_rotate_operation(
             entity.position,
             entity.direction,
             name_for_key
@@ -745,8 +750,7 @@ local function _on_entity_rotated(event)
         end
     else
         -- Create entity rotate operation and append to log
-        local operation = snapshot.make_rotate_operation(
-            ent_key,
+        operation = snapshot.make_rotate_operation(
             entity.position,
             entity.direction,
             name_for_key
@@ -760,9 +764,9 @@ local function _on_entity_rotated(event)
     end
     
     -- Send UDP notification for rotation
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local payload = udp_payloads.entity_rotated(
         chunk,
-        ent_key,
         name_for_key,
         entity.position,
         entity.direction,
@@ -774,6 +778,7 @@ local function _on_entity_rotated(event)
         payload.is_ghost = true
     end
     
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
 end
 
@@ -848,19 +853,7 @@ local function _on_agent_resource_mined(event)
                     game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Resource entity %s mined by agent, rewriting chunk (%d,%d) resources", 
                         game.tick, entity_name or "unknown", chunk_coords.x, chunk_coords.y))
                 end
-                -- 1. Rewrite resource files (trees_rocks-init.jsonl)
-                if Resource and Resource._rewrite_chunk_resources then
-                    if M.DEBUG then
-                        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Calling Resource._rewrite_chunk_resources", game.tick))
-                    end
-                    Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y)
-                else
-                    if M.DEBUG then
-                        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: WARNING - Resource or _rewrite_chunk_resources not available", game.tick))
-                    end
-                end
-                -- 2. Create trees/rocks update entry (trees_rocks-updates.jsonl)
-                -- Create a minimal entity-like object for Resource.create_trees_rocks_update_entry
+                -- Create a minimal entity-like object for Resource operations
                 -- Must match the structure expected: entity.position must be a table with x and y
                 local fake_entity = {
                     name = entity_name,
@@ -868,6 +861,20 @@ local function _on_agent_resource_mined(event)
                     position = position,  -- position is already {x, y} from event
                     valid = false,  -- Mark as invalid since it's destroyed
                 }
+                -- CRITICAL FIX: Pass fake_entity to exclude it from rewrite
+                -- This prevents the deleted tree from being written back to the init file
+                -- 1. Rewrite resource files (trees_rocks-init.jsonl) - exclude the deleted entity
+                if Resource and Resource._rewrite_chunk_resources then
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Calling Resource._rewrite_chunk_resources", game.tick))
+                    end
+                    Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y, fake_entity)
+                else
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: WARNING - Resource or _rewrite_chunk_resources not available", game.tick))
+                    end
+                end
+                -- 2. Create trees/rocks update entry (trees_rocks-updates.jsonl)
                 if Resource and Resource.create_trees_rocks_update_entry then
                     Resource.create_trees_rocks_update_entry(fake_entity, chunk_coords.x, chunk_coords.y)
                 end
@@ -913,15 +920,14 @@ local function _on_agent_entity_rotated(event)
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
     local is_ghost = entity.type == "entity-ghost" or event.is_ghost
     
-    -- Build entity key - use ghost_name for ghosts, name for regular entities
+    -- Get name - use ghost_name for ghosts, name for regular entities
     local name_for_key = is_ghost and entity.ghost_name or entity.name or "unknown"
-    local ent_key = entity_key(name_for_key, entity.position.x, entity.position.y)
     
     -- Write rotation operation to JSONL file
+    local operation
     if is_ghost then
         -- Create ghost rotate operation and append to chunk-wise ghosts log
-        local operation = snapshot.make_ghost_rotate_operation(
-            ent_key,
+        operation = snapshot.make_ghost_rotate_operation(
             entity.position,
             entity.direction,
             name_for_key
@@ -934,8 +940,7 @@ local function _on_agent_entity_rotated(event)
         end
     else
         -- Create entity rotate operation and append to log
-        local operation = snapshot.make_rotate_operation(
-            ent_key,
+        operation = snapshot.make_rotate_operation(
             entity.position,
             entity.direction,
             name_for_key
@@ -949,9 +954,9 @@ local function _on_agent_entity_rotated(event)
     end
     
     -- Send UDP notification for rotation
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local payload = udp_payloads.entity_rotated(
         chunk,
-        ent_key,
         name_for_key,
         entity.position,
         entity.direction,
@@ -963,6 +968,7 @@ local function _on_agent_entity_rotated(event)
         payload.is_ghost = true
     end
     
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
 end
 

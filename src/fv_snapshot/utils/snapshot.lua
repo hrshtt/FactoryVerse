@@ -478,16 +478,14 @@ function M.make_upsert_operation(entity_data)
 end
 
 --- Create a remove operation record
---- @param entity_key string - Entity key (e.g., "inserter@5,10")
 --- @param position table - {x, y}
 --- @param entity_name string
 --- @return table - Operation record
-function M.make_remove_operation(entity_key, position, entity_name)
+function M.make_remove_operation(position, entity_name)
     return {
         op = "remove",
         tick = game.tick,
         sequence = M.get_next_sequence(),
-        key = entity_key,
         position = position,
         name = entity_name,
     }
@@ -598,34 +596,30 @@ function M.make_ghost_upsert_operation(ghost_data)
 end
 
 --- Create a ghost remove operation record
---- @param ghost_key string - Ghost key (e.g., "inserter@5,10")
 --- @param position table - {x, y}
 --- @param ghost_name string - The entity name this ghost represents
 --- @return table - Operation record
-function M.make_ghost_remove_operation(ghost_key, position, ghost_name)
+function M.make_ghost_remove_operation(position, ghost_name)
     return {
         op = "remove",
         tick = game.tick,
         sequence = M.get_next_sequence(),
-        key = ghost_key,
         position = position,
         ghost_name = ghost_name,
     }
 end
 
 --- Create a rotate operation record
---- @param entity_key string - Entity key (e.g., "inserter@5,10")
---- @param position table - {x, y}
+ --- @param position table - {x, y}
 --- @param direction number|string - Direction
 --- @param entity_name string
 --- @return table - Operation record
-function M.make_rotate_operation(entity_key, position, direction, entity_name)
+function M.make_rotate_operation(position, direction, entity_name)
     local direction_name = utils.direction_to_name(direction and tonumber(tostring(direction)) or nil)
     return {
         op = "rotated",
         tick = game.tick,
         sequence = M.get_next_sequence(),
-        key = entity_key,
         position = position,
         direction = direction,
         direction_name = direction_name,
@@ -634,18 +628,16 @@ function M.make_rotate_operation(entity_key, position, direction, entity_name)
 end
 
 --- Create a ghost rotate operation record
---- @param ghost_key string - Ghost key (e.g., "inserter@5,10")
 --- @param position table - {x, y}
 --- @param direction number|string - Direction
 --- @param ghost_name string - The entity name this ghost represents
 --- @return table - Operation record
-function M.make_ghost_rotate_operation(ghost_key, position, direction, ghost_name)
+function M.make_ghost_rotate_operation(position, direction, ghost_name)
     local direction_name = utils.direction_to_name(direction and tonumber(tostring(direction)) or nil)
     return {
         op = "rotated",
         tick = game.tick,
         sequence = M.get_next_sequence(),
-        key = ghost_key,
         position = position,
         direction = direction,
         direction_name = direction_name,
@@ -698,17 +690,17 @@ function M.send_action_completion_udp(payload)
 end
 
 --- Send entity operation UDP notification
---- Notifies external systems of entity upsert/remove operations
+--- DEPRECATED: Use udp_payloads module instead (entity_created, entity_destroyed, etc.)
+--- This function is kept for backward compatibility but should not be used in new code.
 --- @param op_type string - "upsert" or "remove"
 --- @param chunk_x number - Chunk X coordinate
 --- @param chunk_y number - Chunk Y coordinate
---- @param entity_key string - Entity key (e.g., "inserter@5,10")
 --- @param entity_name string - Entity name
 --- @param position table - {x, y}
 --- @param entity_data table|nil - Full entity data (for upsert only)
 --- @return boolean - Success status
-function M.send_entity_operation_udp(op_type, chunk_x, chunk_y, entity_key, entity_name, position, entity_data)
-    if not op_type or not chunk_x or not chunk_y or not entity_key then
+function M.send_entity_operation_udp(op_type, chunk_x, chunk_y, entity_name, position, entity_data)
+    if not op_type or not chunk_x or not chunk_y then
         log("Invalid entity operation payload: missing required fields")
         return false
     end
@@ -719,7 +711,6 @@ function M.send_entity_operation_udp(op_type, chunk_x, chunk_y, entity_key, enti
         chunk = { x = chunk_x, y = chunk_y },
         tick = game.tick,
         sequence = M.get_current_sequence(),  -- Include current sequence for UDP sync
-        entity_key = entity_key,
         entity_name = entity_name,
         position = position and { x = utils.floor(position.x), y = utils.floor(position.y) } or nil,
     }
