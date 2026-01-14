@@ -42,7 +42,7 @@ class TestEntityInspection:
     async def test_get_reachable_entity(self, dsl_context):
         """reachable.get_entity() should find placed entities."""
         # Arrange
-        dsl_context.test_ground.place_entity("stone-furnace", 10, 10)
+        dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
 
         # Act - use runtime directly
         runtime = dsl_context.runtime
@@ -51,13 +51,13 @@ class TestEntityInspection:
         # Assert
         assert furnace is not None
         assert furnace.name == "stone-furnace"
-        assert furnace.position.x == 10
-        assert furnace.position.y == 10
+        assert furnace.position.x == 2
+        assert furnace.position.y == 2
 
     async def test_furnace_inspection(self, dsl_context):
         """Furnace inspection should return formatted string."""
         # Arrange
-        dsl_context.test_ground.place_entity("stone-furnace", 10, 10)
+        dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
 
         # Act
         furnace = dsl_context.reachable.get_entity("stone-furnace")
@@ -85,15 +85,15 @@ class TestInventoryOperations:
         assert isinstance(stacks, list)
 
 
-class TestReachableEntities:
+class TestReachable:
     """Tests for reachable entity queries."""
 
     async def test_get_entities_filter(self, dsl_context):
         """reachable.get_entities() should filter by name."""
         # Arrange
-        dsl_context.test_ground.place_entity("stone-furnace", 10, 10)
-        dsl_context.test_ground.place_entity("stone-furnace", 15, 15)
-        dsl_context.test_ground.place_entity("iron-chest", 20, 20)
+        dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
+        dsl_context.test_ground.place_entity("stone-furnace", 4, 4)
+        dsl_context.test_ground.place_entity("iron-chest", 6, 6)
 
         # Act
         furnaces = dsl_context.reachable.get_entities("stone-furnace")
@@ -105,18 +105,18 @@ class TestReachableEntities:
     async def test_get_entity_by_position(self, dsl_context):
         """reachable.get_entity() should filter by position."""
         # Arrange
-        dsl_context.test_ground.place_entity("stone-furnace", 10, 10)
-        dsl_context.test_ground.place_entity("stone-furnace", 15, 15)
+        dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
+        dsl_context.test_ground.place_entity("stone-furnace", 4, 4)
 
         # Act - get by name AND position
         furnace = dsl_context.reachable.get_entity(
-            "stone-furnace", position=MapPosition(15, 15)
+            "stone-furnace", position=MapPosition(4, 4)
         )
 
         # Assert
         assert furnace is not None
-        assert furnace.position.x == 15
-        assert furnace.position.y == 15
+        assert furnace.position.x == 4
+        assert furnace.position.y == 4
 
 
 class TestEntityViews:
@@ -125,7 +125,7 @@ class TestEntityViews:
     async def test_reachable_view_has_full_access(self, dsl_context):
         """Reachable view should allow all operations."""
         # Arrange
-        dsl_context.test_ground.place_entity("stone-furnace", 10, 10)
+        dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
 
         # Act
         furnace = dsl_context.reachable.get_entity("stone-furnace")
@@ -155,8 +155,10 @@ class TestPrototypes:
         entity_protos = get_entity_prototypes()
         item_protos = get_item_prototypes()
 
-        # Check some known entities/items - use get_tile_dimensions for entities
-        assert entity_protos.get_tile_dimensions("stone-furnace") is not None
+        # Check some known entities/items - use get_prototype for entities
+        stone_furnace_proto = entity_protos.get_prototype("stone-furnace")
+        assert stone_furnace_proto is not None
+        assert len(stone_furnace_proto) > 0
         # Items are stored in .items dict
         assert "iron-plate" in item_protos.items
 

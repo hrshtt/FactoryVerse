@@ -19,13 +19,16 @@ class ServerConfig:
     """Server connection configuration."""
 
     host: str = "localhost"
-    rcon_port: int = 27000
+    rcon_port: Optional[int] = None
     rcon_password: str = "factorio"
     container_name: str = "factorio_0"
     startup_timeout: int = 30
     compose_path: Optional[Path] = None
 
     def __post_init__(self):
+        if self.rcon_port is None:
+            from FactoryVerse.config import get_config
+            self.rcon_port = get_config().get_rcon_port("server_0")
         if self.compose_path is None:
             # Default to project root
             self.compose_path = (

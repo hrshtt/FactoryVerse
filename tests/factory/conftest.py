@@ -30,15 +30,21 @@ async def agent_runtime(rcon: RconConnection, agent_id: str) -> Generator:
     ```
     """
     from FactoryVerse.runtime import create_runtime
+    from FactoryVerse.config import get_config
+    from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 
-    # Create runtime with a test UDP port
-    # Use agent_id hash to get a somewhat unique port per agent
-    udp_port = 34200 + hash(agent_id) % 100
+    # Detect the Docker server's script-output directory for snapshots
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    snapshot_dir = instance.script_output_dir
 
+    # Create runtime with auto-allocated UDP port
+    # Dynamic port discovery ensures no conflicts
     runtime = create_runtime(
         rcon_client=rcon.client,  # Access underlying RCON client
         agent_id=agent_id,
-        udp_port=udp_port,
+        udp_port=None,  # Auto-allocate
+        snapshot_dir=snapshot_dir,  # Use Docker's script-output directory
     )
 
     # Start the runtime (starts async listener)
@@ -85,10 +91,6 @@ class DSLTestContext:
     @property
     def walking(self):
         return self.runtime.walking
-
-    @property
-    def mining(self):
-        return self.runtime.mining
 
     @property
     def crafting(self):
