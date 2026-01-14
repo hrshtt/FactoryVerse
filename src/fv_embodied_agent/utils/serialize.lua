@@ -4,9 +4,6 @@
 
 local utils = require("utils.utils")
 
--- Local reference to utility function for performance
-local entity_key = utils.entity_key
-
 local M = {}
 
 -- ============================================================================
@@ -60,7 +57,7 @@ local function _serialize_base_properties(entity, out)
     local orient = entity.orientation
 
     -- Base identity and spatial properties
-    out.key = entity_key(entity.name, pos.x, pos.y)
+    -- Key removed - using composite (name, position) in database
     out.name = entity.name
     out.type = entity.type
     out.force = (entity.force and entity.force.name) or nil
@@ -138,20 +135,20 @@ local function _serialize_belt_data(entity, out)
     end
 
     -- Belt neighbours (inputs/outputs)
-    local inputs_ids, outputs_ids = {}, {}
+    local inputs_refs, outputs_refs = {}, {}
     local bn = entity.belt_neighbours
     if bn then
         if bn.inputs then
             for _, n in ipairs(bn.inputs) do
                 if n and n.valid and n.name and n.position then
-                    inputs_ids[#inputs_ids + 1] = entity_key(n.name, n.position.x, n.position.y)
+                    inputs_refs[#inputs_refs + 1] = {name = n.name, position = {x = n.position.x, y = n.position.y}}
                 end
             end
         end
         if bn.outputs then
             for _, n in ipairs(bn.outputs) do
                 if n and n.valid and n.name and n.position then
-                    outputs_ids[#outputs_ids + 1] = entity_key(n.name, n.position.x, n.position.y)
+                    outputs_refs[#outputs_refs + 1] = {name = n.name, position = {x = n.position.x, y = n.position.y}}
                 end
             end
         end
@@ -165,15 +162,15 @@ local function _serialize_belt_data(entity, out)
         -- For underground belts, neighbours is the other end of the connection (LuaEntity or nil)
         local un = entity.neighbours
         if un and un.valid and un.name and un.position then
-            underground_other = entity_key("underground-belt", un.position.x, un.position.y)
+            underground_other = {name = un.name, position = {x = un.position.x, y = un.position.y}}
         end
     end
 
     out.belt_data = {
         item_lines = item_lines,
-        belt_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or nil,
+        belt_neighbours = ((#inputs_refs > 0 or #outputs_refs > 0) and { inputs = inputs_refs, outputs = outputs_refs }) or nil,
         belt_to_ground_type = belt_to_ground_type,
-        underground_neighbour_key = underground_other
+        underground_neighbour = underground_other
     }
 end
 
@@ -181,7 +178,7 @@ end
 --- @param entity LuaEntity
 --- @param out table Output table to populate
 local function _serialize_pipe_data(entity, out)
-    local inputs_ids, outputs_ids = {}, {}
+    local inputs_refs, outputs_refs = {}, {}
     local fb = entity.fluidbox
     if fb then
         for k = 1, #fb do
@@ -189,7 +186,7 @@ local function _serialize_pipe_data(entity, out)
             for _, conn in ipairs(connections) do
                 if conn.owner and conn.owner.valid and conn.owner.name and conn.owner.position then
                     local conn_entity = conn.owner
-                    local conn_key = entity_key(conn_entity.name, conn_entity.position.x, conn_entity.position.y)
+                    local conn_ref = {name = conn_entity.name, position = {x = conn_entity.position.x, y = conn_entity.position.y}}
 
                     -- Categorize connections based on entity type and relative position
                     if conn_entity.type == "pipe" or conn_entity.type == "pipe-to-ground" then
@@ -197,15 +194,15 @@ local function _serialize_pipe_data(entity, out)
                             local dx = conn_entity.position.x - entity.position.x
                             local dy = conn_entity.position.y - entity.position.y
                             if dx > 0 or dy > 0 then
-                                inputs_ids[#inputs_ids + 1] = conn_key
+                                inputs_refs[#inputs_refs + 1] = conn_ref
                             else
-                                outputs_ids[#outputs_ids + 1] = conn_key
+                                outputs_refs[#outputs_refs + 1] = conn_ref
                             end
                         else
-                            inputs_ids[#inputs_ids + 1] = conn_key
+                            inputs_refs[#inputs_refs + 1] = conn_ref
                         end
                     else
-                        inputs_ids[#inputs_ids + 1] = conn_key
+                        inputs_refs[#inputs_refs + 1] = conn_ref
                     end
                 end
             end
@@ -213,7 +210,7 @@ local function _serialize_pipe_data(entity, out)
     end
 
     out.pipe_data = {
-        pipe_neighbours = ((#inputs_ids > 0 or #outputs_ids > 0) and { inputs = inputs_ids, outputs = outputs_ids }) or nil
+        pipe_neighbours = ((#inputs_refs > 0 or #outputs_refs > 0) and { inputs = inputs_refs, outputs = outputs_refs }) or nil
     }
 end
 
@@ -227,11 +224,11 @@ local function _serialize_inserter_data(entity, out)
     }
     local pt = entity.pickup_target
     if pt and pt.valid and pt.name and pt.position then
-        ins.pickup_target_key = entity_key(pt.name, pt.position.x, pt.position.y)
+        ins.pickup_target = {name = pt.name, position = {x = pt.position.x, y = pt.position.y}}
     end
     local dt = entity.drop_target
     if dt and dt.valid and dt.name and dt.position then
-        ins.drop_target_key = entity_key(dt.name, dt.position.x, dt.position.y)
+        ins.drop_target = {name = dt.name, position = {x = dt.position.x, y = dt.position.y}}
     end
     if next(ins) ~= nil then out.inserter = ins end
 end
@@ -358,10 +355,8 @@ function M.serialize_ghost(ghost, builder_info)
         data.force = ghost.force.name
     end
     
-    -- Generate entity key for the ghost (using ghost_name as the entity name)
-    if ghost.ghost_name then
-        data.key = entity_key(ghost.ghost_name, ghost.position.x, ghost.position.y)
-    end
+    
+    -- Key removed - using composite (ghost_name, position) in database
     
     -- Add builder metadata if provided
     if builder_info then

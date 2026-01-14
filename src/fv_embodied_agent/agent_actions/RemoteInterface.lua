@@ -34,14 +34,17 @@ local INTERFACE_METHODS = {
     walk_to = {
         category = "movement",
         is_async = true,
-        doc = [[Walk the agent to a target position using pathfinding.
+        doc = [[Walk the agent to a target position or entity using pathfinding.
 The agent will navigate around obstacles. Returns immediately with an action_id;
-completion is signaled via UDP when the agent arrives or fails to reach the goal.]],
+completion is signaled via UDP when the agent arrives or fails to reach the goal.
+Supports entity-aware navigation: if 'options.entity_ref' is provided, the agent
+will attempt to reach any standable tile adjacent to the target entity, with
+smart fallback if the primary path is blocked.]],
         paramspec = {
             _param_order = { "goal", "strict_goal", "options" },
             goal = { type = "position", required = true, doc = "Target position {x, y}" },
-            strict_goal = { type = "boolean", default = false, doc = "If true, fail if exact position unreachable" },
-            options = { type = "table", default = {}, doc = "Additional pathfinding options" },
+            strict_goal = { type = "boolean", default = false, doc = "If true, fail if exact position unreachable (ignored for entity walking)" },
+            options = { type = "table", default = {}, doc = "Options: {entity_ref={name='...', position={x,y}}}" },
         },
         returns = {
             type = "async_action",
@@ -53,6 +56,8 @@ completion is signaled via UDP when the agent arrives or fails to reach the goal
                 success = { type = "boolean", doc = "True if agent reached goal" },
                 position = { type = "position", doc = "Final position of agent" },
                 elapsed_ticks = { type = "number", doc = "Game ticks elapsed" },
+                failure_type = { type = "string", doc = "Failure reason (if success=false)" },
+                candidates_tried = { type = "number", doc = "Number of approach candidates tried" },
             },
         },
         func = function(self, goal, strict_goal, options)
@@ -627,6 +632,39 @@ Returns the queue of technologies being researched, including current progress.]
         },
         func = function(self)
             return self:get_research_queue()
+        end,
+    },
+    get_research_status = {
+        category = "research",
+        is_async = false,
+        doc = [[Get comprehensive research status with progressive detail levels.
+Returns minimal info if no research, more details if queued, full details if actively researching.
+Includes progress, units completed, science pack requirements, and queue information.]],
+        paramspec = {
+            _param_order = {},
+        },
+        returns = {
+            type = "research_status",
+            schema = {
+                queued = { type = "boolean", doc = "True if technologies are queued beyond current" },
+                active = { type = "boolean", doc = "True if research is actively being worked on" },
+                progress = { type = "number", doc = "Current research progress (0.0 to 1.0)" },
+                status = { type = "string", doc = "Human-readable status message" },
+                current_research = { type = "string", doc = "Name of currently researching technology (nil if none)" },
+                queue_length = { type = "number", doc = "Number of technologies in research queue" },
+                queue = { type = "array", doc = "Array of queued technologies (only if queued)" },
+                units_completed = { type = "number", doc = "Research units completed (only if active)" },
+                units_total = { type = "number", doc = "Total research units required (only if active)" },
+                units_remaining = { type = "number", doc = "Research units remaining (only if active)" },
+                research_unit_count = { type = "number", doc = "Total research unit count (only if active)" },
+                research_unit_energy = { type = "number", doc = "Energy per research unit (only if active)" },
+                research_unit_ingredients = { type = "array", doc = "Science pack ingredients per unit (only if active)" },
+                saved_progress = { type = "number", doc = "Saved progress from tech object (only if active)" },
+                tick = { type = "number", doc = "Game tick when status was retrieved" },
+            },
+        },
+        func = function(self)
+            return self:get_research_status()
         end,
     },
 
