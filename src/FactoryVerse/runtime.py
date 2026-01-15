@@ -285,7 +285,7 @@ class AgentRuntime:
         return self._inventory
 
     @property
-    def reachable(self):
+    def reachable_view(self):
         """Unified reachable entity and resource queries.
 
         **For Agents**: Use to find entities and resources within interaction range.
