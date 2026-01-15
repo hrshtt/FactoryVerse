@@ -15,7 +15,7 @@ Usage in boilerplate:
 
     # Now use the affordances
     await runtime.walking.to(MapPosition(10, 10))
-    furnace = runtime.reachable.get_entity("stone-furnace")
+    furnace = runtime.reachable_view.get_entity("stone-furnace")
     furnace.inspect()
 
 Multi-agent: Each agent notebook creates its own runtime with dedicated UDP port.
@@ -60,14 +60,14 @@ class AgentRuntime:
     - runtime.walking - Movement actions
     - runtime.crafting - Crafting actions
     - runtime.inventory - Inventory queries
-    - runtime.reachable - Unified entity and resource queries
+    - runtime.reachable_view - Unified entity and resource queries
     - runtime.resources - Alias for reachable (backward compatibility)
     - runtime.research - Research actions
     - runtime.ghost_builder - Ghost building orchestration
     - runtime.remote_view - Map-wide entity queries (DuckDB)
 
     Note: Mining is done through resource objects, not a top-level action.
-    Get a resource via runtime.reachable.get_resource(), then call resource.mine().
+    Get a resource via runtime.reachable_view.get_resource(), then call resource.mine().
     """
 
     def __init__(
@@ -102,7 +102,7 @@ class AgentRuntime:
         from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
         from FactoryVerse.agent.ghost_builder import GhostBuilderAction
         from FactoryVerse.agent.placement_hints import PlacementHints
-        from FactoryVerse.agent.embodied_actions.reachable import Reachable
+        from FactoryVerse.agent.reachable_view import ReachableView
 
         # Wire up actions with their dependencies
         self._entity_ops = EntityOperationsAction(self._rcon)
@@ -123,8 +123,8 @@ class AgentRuntime:
         )
 
         # Unified query object for both entities and resources
-        # Single Reachable instance handles all get_entity/get_entities/get_resource/get_resources calls
-        self._reachable = Reachable(
+        # Single ReachableView instance handles all get_entity/get_entities/get_resource/get_resources calls
+        self._reachable_view = ReachableView(
             self._rcon,
             self._entity_ops,
             self._placement,
@@ -291,31 +291,31 @@ class AgentRuntime:
         **For Agents**: Use to find entities and resources within interaction range.
 
         Entity queries:
-        - reachable.get_entity(name) - Get first entity by name
-        - reachable.get_entities(name) - Get all entities by name
-        - reachable.get_entities() - Get all reachable entities
-        - reachable.get_ghosts() - Get ghost entities
+        - reachable_view.get_entity(name) - Get first entity by name
+        - reachable_view.get_entities(name) - Get all entities by name
+        - reachable_view.get_entities() - Get all reachable entities
+        - reachable_view.get_ghosts() - Get ghost entities
 
         Resource queries:
-        - reachable.get_resource(name) - Get specific resource
-        - reachable.get_resources() - Get all reachable resources
+        - reachable_view.get_resource(name) - Get specific resource
+        - reachable_view.get_resources() - Get all reachable resources
 
         Returns:
-            Reachable instance (unified interface for both entities and resources)
+            ReachableView instance (unified interface for both entities and resources)
         """
-        return self._reachable
+        return self._reachable_view
 
     @property
     def resources(self):
-        """Alias for reachable (backward compatibility).
+        """Alias for reachable_view (backward compatibility).
 
-        **For Agents**: This is the same object as 'reachable'.
-        Use either reachable.get_resource() or resources.get_resource().
+        **For Agents**: This is the same object as 'reachable_view'.
+        Use either reachable_view.get_resource() or resources.get_resource().
 
         Returns:
-            Reachable instance (same as reachable property)
+            ReachableView instance (same as reachable_view property)
         """
-        return self._reachable
+        return self._reachable_view
 
     @property
     def entity_ops(self):

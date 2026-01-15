@@ -14,11 +14,11 @@ from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 from FactoryVerse.factory.types import MapPosition
 
 if TYPE_CHECKING:
-    from ..infra.rcon_handler import RconHandler
+    from FactoryVerse.agent.infra.rcon_handler import RconHandler
     from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 
-class Reachable:
+class ReachableView:
     """Unified reachable entities and resources query interface.
 
     Provides a single top-level object for querying both entities and resources
@@ -47,7 +47,7 @@ class Reachable:
         walking_action: "MovementAction",
         mining_action: Optional["MiningAction"] = None,
     ):
-        """Initialize Reachable query interface.
+        """Initialize ReachableView query interface.
 
         Args:
             rcon_handler: RCON handler for command execution

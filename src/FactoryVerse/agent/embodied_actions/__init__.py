@@ -7,7 +7,7 @@ This module provides the public API for embodied agent actions including:
 - Entity operations (recipe setting, filters, etc.)
 - Crafting
 - Research
-- Reachable queries (unified entity and resource queries)
+- ReachableView queries (unified entity and resource queries, now at agent level)
 
 Note: 
 - Mining is not a top-level action. Resources have a .mine() method.
@@ -25,8 +25,6 @@ from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperatio
 # MiningAction is internal - not exported (used by resource objects)
 from FactoryVerse.agent.embodied_actions.crafting import CraftingAction
 from FactoryVerse.agent.embodied_actions.research import ResearchAction
-from FactoryVerse.agent.embodied_actions.reachable import Reachable
-
 __all__ = [
     # Core actions
     "MovementAction",
@@ -38,5 +36,5 @@ __all__ = [
     # MiningAction intentionally not exported - internal infrastructure
     "CraftingAction",
     "ResearchAction",
-    "Reachable",  # Unified entity and resource queries
+    # ReachableView is now at agent level (agent.reachable_view)
 ]

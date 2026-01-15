@@ -3,7 +3,7 @@
 This module handles building ghost entities by walking to them and placing
 real entities. It works with ghost entities from:
 - Remote queries (runtime.remote_view.get_ghosts())
-- Reachable queries (runtime.reachable.get_ghosts())
+- ReachableView queries (runtime.reachable_view.get_ghosts())
 - GhostPlan objects (from agent.placement_hints module)
 
 All ghost entities are represented as BaseEntity with is_ghost=True.
@@ -37,7 +37,7 @@ class GhostBuilderAction:
     This is an action class that coordinates movement and placement to
     build ghosts. It supports ghost entities from any source:
     - Remote ghosts: runtime.remote_view.get_ghosts(sql)
-    - Reachable ghosts: runtime.reachable.get_ghosts()
+    - ReachableView ghosts: runtime.reachable_view.get_ghosts()
 
     The GhostBuilderAction handles movement orchestration automatically.
 

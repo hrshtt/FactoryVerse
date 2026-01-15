@@ -362,7 +362,7 @@ _modules_to_reload = [
     'FactoryVerse.agent.embodied_actions.place_entity',
     'FactoryVerse.agent.ghost_builder',
     'FactoryVerse.agent.placement_hints',
-    'FactoryVerse.agent.embodied_actions.reachable',
+    'FactoryVerse.agent.reachable_view',
     'FactoryVerse.agent.remote_view',
     'FactoryVerse.agent.infra.snapshot',
     'FactoryVerse.factory.entity',

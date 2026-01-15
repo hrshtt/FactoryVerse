@@ -164,8 +164,8 @@ walking = runtime.walking
 crafting = runtime.crafting
 research = runtime.research
 inventory = runtime.inventory
-reachable = runtime.reachable
-resources = runtime.resources  # Alias for reachable (backward compatibility)
+reachable_view = runtime.reachable_view
+resources = runtime.resources  # Alias for reachable_view (backward compatibility)
 entity_ops = runtime.entity_ops
 placement = runtime.placement
 ghost_builder = runtime.ghost_builder
@@ -175,13 +175,13 @@ remote_view = runtime.remote_view
 print("\n💡 Tech/recipe info available in initial_state.md")
 print("   Use research.queue('tech-name') to start researching!")
 print("\n📦 Available affordances:")
-print("   reachable (unified entity & resource queries)")
-print("   resources (alias for reachable, for backward compatibility)")
+print("   reachable_view (unified entity & resource queries)")
+print("   resources (alias for reachable_view, for backward compatibility)")
 print("   walking, crafting, research, inventory")
 print(
     "   ghost_builder (build ghost entities), remote_view (map-wide queries via DuckDB)"
 )
-print("\n⛏️  Mining: Get resources via 'reachable' then call .mine() on them")
+print("\n⛏️  Mining: Get resources via 'reachable_view' then call .mine() on them")
 print(
     "   Example: iron = reachable.get_resource('iron-ore'); await iron.mine(max_count=25)"
 )
