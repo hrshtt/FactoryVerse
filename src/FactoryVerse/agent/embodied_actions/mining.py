@@ -63,6 +63,18 @@ class MiningCompleted(AsyncActionCompletion):
     def __post_init__(self):
         if self.actual_products is None:
             self.actual_products = {}
+        # Ensure actual_products is a dict (handle case where it might be a list or other type)
+        if not isinstance(self.actual_products, dict):
+            logger.warning(f"MiningCompleted.actual_products is not a dict: {type(self.actual_products)}, converting")
+            if isinstance(self.actual_products, list):
+                # Try to convert list of dicts to single dict
+                products_dict = {}
+                for item in self.actual_products:
+                    if isinstance(item, dict) and "name" in item and "count" in item:
+                        products_dict[item["name"]] = item["count"]
+                self.actual_products = products_dict
+            else:
+                self.actual_products = {}
 
     @property
     def has_products(self) -> bool:
@@ -90,13 +102,17 @@ class MiningCompleted(AsyncActionCompletion):
             logger.warning(f"MiningCompleted.actual_products is not a dict: {type(products)}, defaulting to empty dict")
             products = {}
         
+        # Log if products dict is empty but we expect items
+        if not products:
+            logger.debug("MiningCompleted.actual_products is empty - no items to convert to ItemStack")
+        
         # Convert each product to ItemStack
         for name, count in products.items():
             if not name or not isinstance(name, str):
-                logger.warning(f"Skipping invalid product name: {name}")
+                logger.warning(f"Skipping invalid product name: {name} (type: {type(name)})")
                 continue
             if not isinstance(count, (int, float)) or count <= 0:
-                logger.warning(f"Skipping invalid product count for {name}: {count}")
+                logger.warning(f"Skipping invalid product count for {name}: {count} (type: {type(count)})")
                 continue
                 
             try:
@@ -107,9 +123,16 @@ class MiningCompleted(AsyncActionCompletion):
                     subgroup="raw-resource",
                 )
                 items.append(item_stack)
+                logger.debug(f"Created ItemStack: {name} x{count}")
             except Exception as e:
                 logger.error(f"Failed to create ItemStack for {name} (count={count}): {e}")
                 # Continue processing other items even if one fails
+        
+        if products and not items:
+            logger.warning(
+                f"MiningCompleted had products {products} but no ItemStacks were created. "
+                "This may indicate a format issue with the product data."
+            )
         
         return items
 
@@ -209,12 +232,39 @@ class MiningAction:
         completion_dict = await self._listener.await_action(response, timeout=timeout)
         completion = MiningCompleted.from_dict(completion_dict)
 
+        # Log actual_products for debugging
+        if completion.actual_products:
+            logger.debug(f"Mining completed with products: {completion.actual_products}")
+        else:
+            logger.warning(
+                f"Mining completed but actual_products is empty or None. "
+                f"Completion dict keys: {list(completion_dict.keys()) if isinstance(completion_dict, dict) else 'N/A'}. "
+                f"Reason: {completion_dict.get('reason', 'unknown') if isinstance(completion_dict, dict) else 'N/A'}. "
+                f"Count: {completion_dict.get('count', 'N/A') if isinstance(completion_dict, dict) else 'N/A'}"
+            )
+            
+            # Try to infer products from count if available (for INCREMENTAL mode)
+            if isinstance(completion_dict, dict):
+                count = completion_dict.get('count')
+                entity_name = completion_dict.get('entity_name') or resource_name
+                if count and count > 0 and entity_name:
+                    logger.info(f"Inferring actual_products from count={count} for {entity_name}")
+                    completion.actual_products = {entity_name: count}
+
         # Return items as ItemStack list with placement injected
         # Always returns a list of ItemStack objects (never None, never empty dict)
         item_stacks = completion.to_item_stacks(self._placement)
         if not isinstance(item_stacks, list):
             logger.error(f"MiningCompleted.to_item_stacks() returned non-list: {type(item_stacks)}, returning empty list")
             return []
+        
+        # Log if we got items but list is empty (indicates filtering issue)
+        if completion.actual_products and not item_stacks:
+            logger.warning(
+                f"Mining had products {completion.actual_products} but to_item_stacks() returned empty list. "
+                "This may indicate invalid product format or filtering issue."
+            )
+        
         return item_stacks
 
     def cancel(self) -> MiningCancelled:

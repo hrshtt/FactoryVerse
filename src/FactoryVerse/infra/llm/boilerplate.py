@@ -183,7 +183,7 @@ print(
 )
 print("\n⛏️  Mining: Get resources via 'reachable_view' then call .mine() on them")
 print(
-    "   Example: iron = reachable.get_resource('iron-ore'); await iron.mine(max_count=25)"
+    "   Example: iron = reachable_view.get_resource('iron-ore'); await iron.mine(max_count=25)"
 )
 print(
     "   Or use: iron = resources.get_resource('iron-ore'); await iron.mine(max_count=25)"
