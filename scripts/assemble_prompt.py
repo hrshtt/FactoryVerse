@@ -11,16 +11,16 @@ from pathlib import Path
 
 # Determine project root (two levels up from this script)
 SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent
+PROJECT_ROOT = SCRIPT_DIR.parent
 
 include_examples = "--with-examples" in sys.argv
 
-# Read base prompt
-base_prompt = (SCRIPT_DIR / "factoryverse-system-prompt-v3.md").read_text()
+# Read base prompt template from docs/system-prompt/
+base_prompt = (PROJECT_ROOT / "docs" / "system-prompt" / "factoryverse-system-prompt-v3-template.md").read_text()
 
-# Read documentation from project root
-dsl_doc = (PROJECT_ROOT / "dsl_documentation.txt").read_text()
-duckdb_doc = (PROJECT_ROOT / "duckdb_documentation.txt").read_text()
+# Read documentation from generated markdown files
+dsl_doc = (PROJECT_ROOT / "docs" / "for-llms" / "api_reference.md").read_text()
+duckdb_doc = (PROJECT_ROOT / "docs" / "for-llms" / "schema_reference.md").read_text()
 
 # Handle examples
 if include_examples:
@@ -50,11 +50,33 @@ assembled = assembled.replace("{CODE_EXAMPLES}", code_examples)
 # {AVAILABLE_TECHNOLOGIES}
 # {CURRENT_RESEARCH}
 
-# Write assembled prompt
-output_path = SCRIPT_DIR / f"factoryverse-system-prompt-v3-{output_suffix}.md"
+# Parse arguments for output path
+output_path_arg = None
+for arg in sys.argv[1:]:
+    if arg == "--with-examples":
+        include_examples = True
+    elif not arg.startswith("--"):
+        # Assume it's an output path
+        output_path_arg = Path(arg)
+
+# Write assembled prompt (to specified path or default location)
+if output_path_arg:
+    output_path = output_path_arg
+else:
+    output_suffix = "with-examples" if include_examples else "core"
+    output_path = PROJECT_ROOT / "docs" / "system-prompt" / f"factoryverse-system-prompt-v3-{output_suffix}.md"
+
+output_path.parent.mkdir(parents=True, exist_ok=True)
 output_path.write_text(assembled)
 
-print(f"✅ Assembled prompt written to {output_path.relative_to(PROJECT_ROOT)}")
+# Show relative path if within project, absolute path otherwise
+try:
+    rel_path = output_path.relative_to(PROJECT_ROOT)
+    path_display = str(rel_path)
+except ValueError:
+    path_display = str(output_path)
+
+print(f"✅ Assembled prompt written to {path_display}")
 print(f"   Examples included: {include_examples}")
 print(f"   Total size: {len(assembled):,} characters")
 print(f"   Total lines: {len(assembled.splitlines()):,} lines")

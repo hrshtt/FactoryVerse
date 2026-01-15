@@ -12,8 +12,8 @@ from typing import Generator, Any, Dict, List, Optional
 from dataclasses import dataclass
 
 from FactoryVerse.config import FactoryVerseConfig
-from FactoryVerse.agent.snapshot.database import SnapshotDatabase
-from FactoryVerse.agent.snapshot.loader import SnapshotLoader
+from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
+from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
 
 
 @dataclass

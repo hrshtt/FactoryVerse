@@ -186,8 +186,8 @@ items = await iron.mine(max_count=25)
 **Example**:
 ```python
 # Objects are pre-loaded - just use them directly
-pos = reachable_view.get_current_position()
-await walking.to(MapPosition(x=10, y=20))
+pos = walking.current_position
+await walking.walk_to(MapPosition(x=10, y=20))
 drills = reachable_view.get_entities("burner-mining-drill")
 ```
 </dsl_reference>

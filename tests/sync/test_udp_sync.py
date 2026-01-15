@@ -17,8 +17,8 @@ import pytest
 import json
 from unittest.mock import MagicMock
 
-from FactoryVerse.agent.snapshot.database import SnapshotDatabase
-from FactoryVerse.agent.snapshot.sync import SyncService
+from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
+from FactoryVerse.agent.infra.snapshot.sync import SyncService
 
 
 class TestSyncServiceGhostHandling:
