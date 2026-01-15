@@ -240,14 +240,38 @@ function M.destroy_agent(agent_ref, remove_force)
 end
 
 --- Destroy multiple agents
---- @param agent_refs table<number|string> Array of agent IDs or tags to destroy
+--- @param agent_refs table<number|string>|number|string|0 Array of agent IDs or tags to destroy, or a single agent ID/tag, or 0 to destroy all agents
 --- @param remove_forces boolean|nil If true, merge forces with player force
 --- @return table {destroyed: table[], errors: table[]}
 function M.destroy_agents(agent_refs, remove_forces)
     local destroyed = {}
     local errors = {}
+    local refs_to_destroy = {}
     
-    for _, agent_ref in ipairs(agent_refs or {}) do
+    -- Special case: 0 means destroy all agents
+    if agent_refs == 0 or agent_refs == "0" then
+        -- Collect all agent IDs from storage
+        if storage.agents then
+            for agent_id, agent in pairs(storage.agents) do
+                if agent then
+                    local agent_id_value = agent.agent_id or agent_id
+                    table.insert(refs_to_destroy, agent_id_value)
+                end
+            end
+        end
+    else
+        -- Normalize input: if single value, wrap in table
+        if agent_refs == nil then
+            refs_to_destroy = {}
+        elseif type(agent_refs) == "table" then
+            refs_to_destroy = agent_refs
+        else
+            -- Single value (number or string)
+            refs_to_destroy = {agent_refs}
+        end
+    end
+    
+    for _, agent_ref in ipairs(refs_to_destroy) do
         local ok, err = pcall(function()
             return M.destroy_agent(agent_ref, remove_forces)
         end)
@@ -542,7 +566,7 @@ M.AdminApiSpecs = {
     },
     destroy_agents = {
         _param_order = {"agent_refs", "destroy_forces"},
-        agent_refs = {type = "table", required = true},
+        agent_refs = {type = "table|number|string|0", required = false, description = "Agent IDs/tags to destroy, or 0 to destroy all agents"},
         destroy_forces = {type = "boolean", required = false},
     },
     update_agent_friends = {
@@ -785,28 +809,118 @@ M.testing_api = {
 -- EVENT HANDLERS
 -- ============================================================================
 
+--- Handle path request failure with fallback logic
+--- @param agent Agent Agent instance
+--- @param event table on_script_path_request_finished event
+local function handle_path_failure(agent, event)
+    local walking = agent.walking
+    
+    -- Check if we have candidates to try
+    if walking.approach_candidates and walking.approach_index < #walking.approach_candidates then
+        -- Try next candidate
+        walking.approach_index = walking.approach_index + 1
+        local next_goal = walking.approach_candidates[walking.approach_index]
+        
+        if M.DEBUG then
+            game.print(string.format("Path failed, trying candidate %d/%d at (%.1f, %.1f)",
+                walking.approach_index, #walking.approach_candidates, next_goal.x, next_goal.y))
+        end
+        
+        -- Build path options for retry
+        local options = {
+            start = agent.character.position,
+            goal = next_goal,
+            bounding_box = walking.path_options.bounding_box,
+            collision_mask = walking.path_options.collision_mask,
+            force = walking.path_options.force,
+            entity_to_ignore = agent.character,
+        }
+        
+        -- Request new path
+        local job_id = agent.character.surface.request_path(options)
+        walking.path_id = job_id
+        walking.goal = next_goal
+        return
+    end
+    
+    -- All candidates exhausted or no candidates - send failure message
+    local failure_type = "blocked_path"
+    local candidates_tried = walking.approach_index or 1
+    
+    if walking.approach_candidates and #walking.approach_candidates > 0 then
+        failure_type = "blocked_path"  -- Had candidates but all paths failed
+    elseif walking.entity_ref then
+        failure_type = "no_standable_tiles"  -- Entity-aware but no candidates found
+    else
+        failure_type = "blocked_path"  -- Position-only walking failed
+    end
+    
+    agent:enqueue_message({
+        action = "walk_to",
+        agent_id = agent.agent_id,
+        action_id = walking.action_id,
+        success = false,
+        status = "failed",
+        tick = game.tick or 0,
+        failure_type = failure_type,
+        candidates_tried = candidates_tried,
+        goal = walking.original_goal,
+        message = string.format("No path found after trying %d approach(es)", candidates_tried),
+    }, "walking")
+    
+    -- Clear walking state
+    walking.action_id = nil
+    walking.start_tick = nil
+    walking.goal = nil
+    walking.original_goal = nil
+    walking.goal_entity = nil
+    walking.entity_ref = nil
+    walking.approach_candidates = nil
+    walking.approach_index = 0
+    walking.path_options = nil
+    walking.path_id = nil
+end
+
 --- Get events (defined events and nth_tick)
 --- @return table {defined_events = {}, nth_tick = {}}
 function M.get_events()
     return {
         defined_events = {
             [defines.events.on_script_path_request_finished] = function(event)
-                if not event.path then
-                    if M.DEBUG then
-                        game.print("path request for " .. event.id .. " failed")
-                    end
-                end
                 if not (storage.agents and event.id) then return end
 
                 local path_id = event.id
                 for _, agent in pairs(storage.agents) do
-                    if agent.walking.path_id == path_id then
-                        if not event.path then
+                    if agent.walking and agent.walking.path_id == path_id then
+                        if event.try_again_later then
+                            -- Pathfinder busy - rare but handle gracefully
+                            -- Just retry immediately (pathfinder will queue it)
                             if M.DEBUG then
-                                game.print("path request for " .. event.id .. " failed")
+                                game.print("Pathfinder busy, retrying...")
                             end
+                            local options = {
+                                start = agent.character.position,
+                                goal = agent.walking.goal,
+                                bounding_box = agent.walking.path_options.bounding_box,
+                                collision_mask = agent.walking.path_options.collision_mask,
+                                force = agent.walking.path_options.force,
+                                entity_to_ignore = agent.character,
+                            }
+                            local job_id = agent.character.surface.request_path(options)
+                            agent.walking.path_id = job_id
                             return
                         end
+                        
+                        if not event.path then
+                            -- Path failed - try fallback or report failure
+                            if M.DEBUG then
+                                game.print("Path request " .. event.id .. " failed")
+                            end
+                            handle_path_failure(agent, event)
+                            return
+                        end
+                        
+                        -- Success - assign path and start walking
                         agent.walking.path = event.path
                         agent.walking.progress = 1
                         break
@@ -817,6 +931,7 @@ function M.get_events()
         nth_tick = {}
     }
 end
+
 
 -- ============================================================================
 -- CUSTOM EVENT EXPORTS

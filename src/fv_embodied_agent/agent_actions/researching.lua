@@ -222,5 +222,87 @@ function ResearchActions.get_research_queue(self)
     }
 end
 
+--- Get comprehensive research status with progressive detail levels
+--- Returns minimal info if no research, more if queued, full details if active
+--- @return table Research status with progressive detail based on state
+function ResearchActions.get_research_status(self)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    local force = self.character.force
+    if not force then
+        error("Agent: Agent force is invalid")
+    end
+    
+    local current_tech = force.current_research
+    local research_queue = force.research_queue or {}
+    local research_progress = force.research_progress or 0.0
+    
+    -- Check if anything is queued (items in queue beyond the current one)
+    local is_queued = #research_queue > 1
+    
+    -- Check if actively researched (is a tech selected?)
+    local is_active = current_tech ~= nil
+    
+    -- Base response with minimal info
+    local status = {
+        queued = is_queued,
+        active = is_active,
+        progress = research_progress,
+        tick = game.tick,
+    }
+    
+    -- If nothing is queued and nothing is active, return minimal response
+    if not is_queued and not is_active then
+        status.current_research = nil
+        status.queue_length = 0
+        status.status = "No research queued or active"
+        return status
+    end
+    
+    -- Add queue information if anything is queued
+    if #research_queue > 0 then
+        status.queue_length = #research_queue
+        status.current_research = current_tech and current_tech.name or nil
+        
+        -- Build queue array with basic info
+        local queue = {}
+        for i, tech in ipairs(research_queue) do
+            table.insert(queue, {
+                position = i,
+                name = tech.name,
+                is_current = (i == 1),
+            })
+        end
+        status.queue = queue
+    end
+    
+    -- If research is active, add detailed progress information
+    if is_active and current_tech then
+        local total_units = current_tech.research_unit_count
+        local units_done = math.floor(research_progress * total_units)
+        local units_remaining = total_units - units_done
+        
+        status.status = string.format("%d / %d units completed", units_done, total_units)
+        status.units_completed = units_done
+        status.units_total = total_units
+        status.units_remaining = units_remaining
+        status.research_unit_count = total_units
+        status.research_unit_energy = current_tech.research_unit_energy
+        status.research_unit_ingredients = current_tech.research_unit_ingredients
+        
+        -- Add saved progress from the tech object (more accurate than force.research_progress)
+        if current_tech.saved_progress then
+            status.saved_progress = current_tech.saved_progress
+        end
+    elseif is_queued then
+        -- Research is queued but not active (no labs working or waiting for prerequisites)
+        status.status = "Research queued but not active"
+    end
+    
+    return status
+end
+
 return ResearchActions
 

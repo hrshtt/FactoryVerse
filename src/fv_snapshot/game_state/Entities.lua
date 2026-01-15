@@ -10,6 +10,11 @@
 -- Module-level local references for performance optimization
 local pairs = pairs
 local ipairs = ipairs
+local table_insert = table.insert
+local math_floor = math.floor
+local string_format = string.format
+-- Cache helpers functions for performance
+local table_to_json = helpers.table_to_json
 
 -- EntityInterface is from fv_embodied_agent mod (dependency)
 local EntityInterface = require("__fv_embodied_agent__.game_state.EntityInterface")
@@ -170,15 +175,22 @@ function M.collect_all_statuses_for_dump(charted_chunks)
     local surface = game.surfaces[1]
     local status_records = {}
     
-    for _, chunk in ipairs(charted_chunks) do
+    -- Cache ENTITY_NAME_ENUM locally for hot loop
+    local entity_name_enum = ENTITY_NAME_ENUM
+    local chunks_count = #charted_chunks
+    
+    for i = 1, chunks_count do
+        local chunk = charted_chunks[i]
+        local chunk_x = chunk.x
+        local chunk_y = chunk.y
         local chunk_area = {
             left_top = {
-                x = chunk.x * 32,
-                y = chunk.y * 32
+                x = chunk_x * 32,
+                y = chunk_y * 32
             },
             right_bottom = {
-                x = (chunk.x + 1) * 32,
-                y = (chunk.y + 1) * 32
+                x = (chunk_x + 1) * 32,
+                y = (chunk_y + 1) * 32
             }
         }
         
@@ -194,31 +206,34 @@ function M.collect_all_statuses_for_dump(charted_chunks)
             force = "player",
         }
         
-        for _, entity in ipairs(entities) do
+        -- Use numeric for loop for hot path
+        local entities_count = #entities
+        for j = 1, entities_count do
+            local entity = entities[j]
             if entity and entity.valid and entity.status then
                 -- Only track entities in our enum
-                if not is_trackable_entity(entity.name) then
-                    goto next_entity
-                end
-                
-                local entity_enum = ENTITY_NAME_ENUM[entity.name]
+                local entity_name = entity.name
+                local entity_enum = entity_name_enum[entity_name]
+                if entity_enum then
                 local status_enum = entity.status  -- Already a number from defines.entity_status
-                local pos_x = entity.position.x
-                local pos_y = entity.position.y
+                    local position = entity.position
+                    local pos_x = position.x
+                    local pos_y = position.y
                 
                 -- Convert position to integer (multiply by 2 since x%0.5 == 0 and y%0.5 == 0)
-                local pos_x_int = math.floor(pos_x * 2)
-                local pos_y_int = math.floor(pos_y * 2)
+                    local pos_x_int = math_floor(pos_x * 2)
+                    local pos_y_int = math_floor(pos_y * 2)
                 
                 -- Format: [entity_enum, status_enum, x, y]
-                table.insert(status_records, {
+                    -- Use direct array indexing for performance
+                    status_records[#status_records + 1] = {
                     entity_enum,
                     status_enum,
                     pos_x_int,
                     pos_y_int
-                })
+                    }
             end
-            ::next_entity::
+            end
         end
         ::continue::
     end
@@ -231,20 +246,24 @@ end
 function M.dump_status_to_disk(charted_chunks)
     local status_records = M.collect_all_statuses_for_dump(charted_chunks)
     
-    if #status_records == 0 then
+    local records_count = #status_records
+    if records_count == 0 then
         return
     end
     
     -- Build JSONL content: one JSON array per line [entity_enum, status_enum, x, y]
     local jsonl_lines = {}
-    for _, record in ipairs(status_records) do
-        local json_str = helpers.table_to_json(record)
+    -- Use numeric for loop for hot path
+    for i = 1, records_count do
+        local record = status_records[i]
+        local json_str = table_to_json(record)
         if json_str then
-            table.insert(jsonl_lines, json_str)
+            jsonl_lines[#jsonl_lines + 1] = json_str
         end
     end
     
-    if #jsonl_lines == 0 then
+    local lines_count = #jsonl_lines
+    if lines_count == 0 then
         return
     end
     
@@ -263,7 +282,7 @@ function M.dump_status_to_disk(charted_chunks)
     -- External systems are responsible for reading and managing their own memory
     
     if M.DEBUG and game and game.print then
-        game.print(string.format("[status_dump] Wrote status dump: %s (%d entities)", file_path, #status_records))
+        game.print(string_format("[status_dump] Wrote status dump: %s (%d entities)", file_path, records_count))
     end
 end
 
@@ -317,30 +336,87 @@ end
 
 --- Append entity created operation to the updates log and send UDP notification
 --- @param entity LuaEntity
+--- @param is_ghost boolean Whether this is a ghost entity
+--- @param label string|nil Optional label for tracking
+--- @param agent_id number|nil Optional agent ID that built this entity
+--- @param player_id number|nil Optional player ID that built this entity
 --- @return boolean Success status
-function M.write_entity_snapshot(entity, is_update)
+function M.write_entity_snapshot(entity, is_ghost, label, agent_id, player_id)
+
     if not (entity and entity.valid) then
         return false
     end
 
-    if M.DEBUG then
-        game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: serializing entity %s", 
-            game.tick, entity.name or "unknown"))
+    -- Ignore character entities
+    if entity.type == "character" then
+        return false
     end
 
-    -- Serialize entity using utils/serialize
-    local entity_data = serialize.serialize_entity(entity)
-    if not entity_data then
-        if M.DEBUG then
-            game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: serialization failed for %s", 
-                game.tick, entity.name or "unknown"))
-        end
-        return false
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: serializing entity %s (is_ghost=%s)", 
+            game.tick, entity.name or "unknown", tostring(is_ghost)))
+    end
+
+    -- Build builder_info if we have any builder metadata
+    local builder_info = nil
+    if agent_id or player_id or label then
+        builder_info = {
+            agent_id = agent_id,
+            player_id = player_id,
+            label = label,
+            placed_tick = game.tick,
+        }
     end
 
     -- Get chunk coordinates
     local chunk_coords = utils.to_chunk_coordinates(entity.position)
     if not chunk_coords then
+        return false
+    end
+
+    -- Handle ghosts separately from regular entities
+    if is_ghost or entity.type == "entity-ghost" then
+        -- Serialize ghost using ghost-specific serialization (with builder info)
+        local ghost_data = serialize.serialize_ghost(entity, builder_info)
+        if not ghost_data then
+            if M.DEBUG then
+                game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: ghost serialization failed for %s", 
+                    game.tick, entity.name or "unknown"))
+            end
+            return false
+        end
+        
+        -- Add chunk info to ghost data
+        ghost_data.chunk = { x = chunk_coords.x, y = chunk_coords.y }
+        
+        -- Create ghost upsert operation and append to chunk-wise ghosts log
+        local operation = snapshot.make_ghost_upsert_operation(ghost_data)
+        snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
+        
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: wrote ghost %s to chunk (%d,%d) ghosts-updates.jsonl", 
+                game.tick, ghost_data.ghost_name or "unknown", chunk_coords.x, chunk_coords.y))
+        end
+        
+        -- Send UDP notification for ghost operation
+        -- TODO: Add ghost_created payload to udp_payloads.lua if needed
+        -- IMPORTANT: Use the SAME sequence number that was written to the file
+        local chunk = { x = chunk_coords.x, y = chunk_coords.y }
+        local payload = udp_payloads.entity_created(chunk, ghost_data)
+        payload.is_ghost = true
+        payload.sequence = operation.sequence  -- Use sequence from file write
+        udp_payloads.send_entity_operation(payload)
+        
+        return true
+    end
+
+    -- Serialize regular entity using utils/serialize (with builder info)
+    local entity_data = serialize.serialize_entity(entity, builder_info)
+    if not entity_data then
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities.write_entity_snapshot] Tick %d: serialization failed for %s", 
+                game.tick, entity.name or "unknown"))
+        end
         return false
     end
 
@@ -355,8 +431,10 @@ function M.write_entity_snapshot(entity, is_update)
     
     -- Send UDP notification using payload module (best-effort, log is the source of truth)
     -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
     local payload = udp_payloads.entity_created(chunk, entity_data)
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -367,6 +445,11 @@ end
 --- @return boolean Success status
 function M._delete_entity_snapshot(entity)
     if not entity then
+        return false
+    end
+
+    -- Ignore character entities
+    if entity.type == "character" then
         return false
     end
 
@@ -381,17 +464,60 @@ function M._delete_entity_snapshot(entity)
         return false
     end
 
-    -- Build entity key
-    local ent_key = entity_key(entity.name or "unknown", position.x, position.y)
-    
     -- Create remove operation and append to log
-    local operation = snapshot.make_remove_operation(ent_key, position, entity.name or "unknown")
+    local operation = snapshot.make_remove_operation(position, entity.name or "unknown")
     snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
     
     -- Send UDP notification using payload module (best-effort, log is the source of truth)
     -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
-    local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity.name or "unknown", position)
+    local payload = udp_payloads.entity_destroyed(chunk, entity.name or "unknown", position)
+    payload.sequence = operation.sequence  -- Use sequence from file write
+    udp_payloads.send_entity_operation(payload)
+    
+    return true
+end
+
+--- Append ghost destroyed operation to the chunk-wise ghosts updates log and send UDP notification
+--- @param entity LuaEntity Ghost entity (type="entity-ghost")
+--- @return boolean Success status
+function M._delete_ghost_snapshot(entity)
+    if not entity then
+        return false
+    end
+
+    -- Get position (entity may be invalid)
+    local position = entity.position
+    if not position then
+        return false
+    end
+
+    -- Get chunk coordinates for chunk-wise ghost tracking
+    local chunk_coords = utils.to_chunk_coordinates(position)
+    if not chunk_coords then
+        return false
+    end
+
+    -- Get ghost_name (the entity type this ghost represents)
+    local ghost_name = entity.ghost_name or "unknown"
+    
+    -- Create ghost remove operation and append to chunk-wise ghosts log
+    local operation = snapshot.make_ghost_remove_operation(position, ghost_name)
+    snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
+    
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Entities._delete_ghost_snapshot] Tick %d: wrote ghost remove for %s to chunk (%d,%d) ghosts-updates.jsonl", 
+            game.tick, ghost_name, chunk_coords.x, chunk_coords.y))
+    end
+    
+    -- Send UDP notification using payload module (best-effort, log is the source of truth)
+    -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
+    local chunk = { x = chunk_coords.x, y = chunk_coords.y }
+    local payload = udp_payloads.entity_destroyed(chunk, ghost_name, position)
+    payload.is_ghost = true
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -407,7 +533,13 @@ local function _on_entity_built(event)
             entity and entity.position.x or 0, entity and entity.position.y or 0))
     end
     if entity and entity.valid then
-        M.write_entity_snapshot(entity, false)
+        -- Ignore character entities
+        if entity.type == "character" then
+            return
+        end
+        -- Player built entity - get player_id from event
+        local player_id = event.player_index
+        M.write_entity_snapshot(entity, false, nil, nil, player_id)
     end
 end
 
@@ -443,6 +575,16 @@ local function _on_entity_destroyed(event)
         return
     end
     
+    -- Handle ghost entities separately - write to ghosts-updates.jsonl
+    if entity.type == "entity-ghost" then
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities._on_entity_destroyed] Tick %d: Ghost %s destroyed", 
+                game.tick, entity.ghost_name or "unknown"))
+        end
+        M._delete_ghost_snapshot(entity)
+        return
+    end
+    
     -- Handle resource entities (trees, rocks) separately - trigger resource file rewrite
     -- Trees: type = "tree"
     -- Rocks: type = "simple-entity" with name matching "rock" or "stone"
@@ -457,19 +599,21 @@ local function _on_entity_destroyed(event)
     
     if is_resource_entity then
         -- Resource entities (trees/rocks) need both:
-        -- 1. Resource file rewrite (for trees_rocks_init.jsonl)
-        -- 2. Trees/rocks update entry (for trees_rocks-update.jsonl, NOT entities_updates.jsonl)
+        -- 1. Resource file rewrite (for trees_rocks-init.jsonl)
+        -- 2. Trees/rocks update entry (for trees_rocks-updates.jsonl, NOT entities-updates.jsonl)
         local chunk_coords = utils.to_chunk_coordinates(entity.position)
         if chunk_coords then
             if M.DEBUG then
                 game.print(string.format("[DEBUG Entities._on_entity_destroyed] Tick %d: Resource entity %s mined, rewriting chunk (%d,%d) resources and creating trees_rocks update entry", 
                     game.tick, entity.name or "unknown", chunk_coords.x, chunk_coords.y))
             end
-            -- 1. Rewrite resource files (trees_rocks_init.jsonl)
+            -- CRITICAL FIX: Pass entity to exclude it from rewrite
+            -- This prevents the deleted tree from being written back to the init file
+            -- 1. Rewrite resource files (trees_rocks-init.jsonl) - exclude the deleted entity
             if Resource and Resource._rewrite_chunk_resources then
-                Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y)
+                Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y, entity)
             end
-            -- 2. Create trees/rocks update entry (trees_rocks-update.jsonl) - handled by Resource.lua
+            -- 2. Create trees/rocks update entry (trees_rocks-updates.jsonl) - handled by Resource.lua
             if Resource and Resource.create_trees_rocks_update_entry then
                 Resource.create_trees_rocks_update_entry(entity, chunk_coords.x, chunk_coords.y)
             end
@@ -504,22 +648,28 @@ end
 local function _on_entity_settings_pasted(event)
     local entity = event.destination
     if entity and entity.valid then
-        M.write_entity_snapshot(entity, true)
+        -- Ignore character entities
+        if entity.type == "character" then
+            return
+        end
+        -- Settings paste by player - get player_id from event
+        local player_id = event.player_index
+        M.write_entity_snapshot(entity, false, nil, nil, player_id)
     end
 end
 
 --- Handle entity configuration changed event (from EntityInterface)
 --- Listens to EntityInterface's entity_configuration_changed event
+--- Supports both regular entities and ghosts
 --- @param event table Event data with entity and change_type fields
 local function _on_entity_configuration_changed(event)
     local entity = event.entity
     if not (entity and entity.valid) then
         return
     end
-    
-    -- Serialize entity to get updated configuration
-    local entity_data = serialize.serialize_entity(entity)
-    if not entity_data then
+
+    -- Ignore character entities
+    if entity.type == "character" then
         return
     end
     
@@ -529,20 +679,47 @@ local function _on_entity_configuration_changed(event)
         return
     end
     
-    -- Send UDP notification for configuration change (no file write needed, config is tracked via entity operation)
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
-    local payload = udp_payloads.entity_configuration_changed(chunk, entity_data)
-    udp_payloads.send_entity_operation(payload)
+    local is_ghost = entity.type == "entity-ghost"
+    
+    if is_ghost then
+        -- Serialize ghost to get updated configuration
+        local ghost_data = serialize.serialize_ghost(entity)
+        if not ghost_data then
+            return
+        end
+        
+        -- Send UDP notification for ghost configuration change
+        local payload = udp_payloads.entity_configuration_changed(chunk, ghost_data)
+        payload.is_ghost = true
+        udp_payloads.send_entity_operation(payload)
+    else
+        -- Serialize regular entity to get updated configuration
+        local entity_data = serialize.serialize_entity(entity)
+        if not entity_data then
+            return
+        end
+        
+        -- Send UDP notification for configuration change
+        local payload = udp_payloads.entity_configuration_changed(chunk, entity_data)
+        udp_payloads.send_entity_operation(payload)
+    end
 end
 
 --- Handle entity rotated event (from EntityInterface)
 --- Listens to EntityInterface's entity_rotated event
+--- Supports both regular entities and ghosts
 --- @param event table Event data with entity, old_direction, and new_direction fields
 local function _on_entity_rotated(event)
     local entity = event.entity
     if not (entity and entity.valid) then
         return
     end
+
+    -- Ignore character entities
+    if entity.type == "character" then
+        return
+    end
     
     -- Get chunk coordinates
     local chunk_coords = utils.to_chunk_coordinates(entity.position)
@@ -550,102 +727,133 @@ local function _on_entity_rotated(event)
         return
     end
     
-    -- Build entity key
-    local ent_key = entity_key(entity.name or "unknown", entity.position.x, entity.position.y)
-    
-    -- Send UDP notification for rotation (no file write needed, rotation is tracked via entity operation)
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
+    local is_ghost = entity.type == "entity-ghost"
+    
+    -- Get name - use ghost_name for ghosts, name for regular entities
+    local name_for_key = is_ghost and entity.ghost_name or entity.name or "unknown"
+    
+    -- Write rotation operation to JSONL file
+    local operation
+    if is_ghost then
+        -- Create ghost rotate operation and append to chunk-wise ghosts log
+        operation = snapshot.make_ghost_rotate_operation(
+            entity.position,
+            entity.direction,
+            name_for_key
+        )
+        snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
+        
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities._on_entity_rotated] Tick %d: wrote ghost rotate for %s to chunk (%d,%d) ghosts-updates.jsonl", 
+                game.tick, name_for_key, chunk_coords.x, chunk_coords.y))
+        end
+    else
+        -- Create entity rotate operation and append to log
+        operation = snapshot.make_rotate_operation(
+            entity.position,
+            entity.direction,
+            name_for_key
+        )
+        snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+        
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities._on_entity_rotated] Tick %d: wrote entity rotate for %s to chunk (%d,%d)", 
+                game.tick, name_for_key, chunk_coords.x, chunk_coords.y))
+        end
+    end
+    
+    -- Send UDP notification for rotation
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local payload = udp_payloads.entity_rotated(
         chunk,
-        ent_key,
-        entity.name or "unknown",
+        name_for_key,
         entity.position,
         entity.direction,
         game.tick
     )
+    
+    -- Set ghost flag if this is a ghost entity
+    if is_ghost then
+        payload.is_ghost = true
+    end
+    
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
 end
 
 --- Handle agent entity built event (from Agent custom events)
 --- Listens to Agent.on_agent_entity_built event
---- @param event table Event data with entity field
+--- @param event table Event data with entity, agent_id, is_ghost, label fields
 local function _on_agent_entity_built(event)
     local entity = event.entity
     if entity and entity.valid then
-        M.write_entity_snapshot(entity, false)
+        -- Ignore character entities
+        if entity.type == "character" then
+            return
+        end
+        -- Agent built entity - pass agent_id and label
+        M.write_entity_snapshot(entity, event.is_ghost, event.label, event.agent_id, nil)
     end
 end
 
---- Handle agent entity destroyed event (from Agent custom events)
---- Listens to Agent.on_agent_entity_destroyed event
---- Handles both resource entities (trees/rocks) and player-built entities
+--- Handle agent resource mined event (from Agent custom events)
+--- Listens to Agent.on_agent_resource_mined event
+--- This is specifically for resource entities (trees/rocks) destroyed by character mining
+--- Character mining doesn't raise Factorio's player events since agents are not players
 --- @param event table Event data with entity, entity_name, entity_type, position fields
-local function _on_agent_entity_destroyed(event)
+local function _on_agent_resource_mined(event)
     if M.DEBUG then
-        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Event received! entity_name=%s, entity_type=%s, position=%s", 
+        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Event received! entity_name=%s, entity_type=%s, position=%s", 
             game.tick, event.entity_name or "nil", event.entity_type or "nil",
             event.position and string.format("{%f,%f}", event.position.x, event.position.y) or "nil"))
     end
     
-    -- Entity may be nil if already destroyed (common for mining)
-    local entity = event.entity
+    -- Entity is always nil for this event (destroyed by Factorio engine during mining)
     local entity_name = event.entity_name
     local entity_type = event.entity_type
     local position = event.position
     
-    -- If we have entity info but no entity object, create a minimal entity-like object
     if M.DEBUG then
-        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Checking conditions - entity=%s, entity_name=%s, position=%s", 
-            game.tick, entity and "valid" or "nil", tostring(entity_name), position and "valid" or "nil"))
+        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Processing resource entity - entity_name=%s, position=%s", 
+            game.tick, tostring(entity_name), position and "valid" or "nil"))
     end
     
-    if not entity and entity_name and position then
+    if entity_name and position then
         -- Check if it's a resource entity (tree or rock)
         local is_resource_entity = false
         if entity_type == "tree" then
             is_resource_entity = true
             if M.DEBUG then
-                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Detected tree entity", game.tick))
+                game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Detected tree entity", game.tick))
             end
         elseif entity_type == "simple-entity" and entity_name then
             if entity_name:match("rock") or entity_name:match("stone") then
                 is_resource_entity = true
                 if M.DEBUG then
-                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Detected rock entity: %s", game.tick, entity_name))
+                    game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Detected rock entity: %s", game.tick, entity_name))
                 end
             end
         end
         
         if M.DEBUG then
-            game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: is_resource_entity=%s", game.tick, tostring(is_resource_entity)))
+            game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: is_resource_entity=%s", game.tick, tostring(is_resource_entity)))
         end
         
         if is_resource_entity then
             -- Handle resource entities (trees/rocks) - rewrite resource files and create update entry
             local chunk_coords = utils.to_chunk_coordinates(position)
             if M.DEBUG then
-                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: chunk_coords=%s", 
+                game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: chunk_coords=%s", 
                     game.tick, chunk_coords and string.format("{%d,%d}", chunk_coords.x, chunk_coords.y) or "nil"))
             end
             
             if chunk_coords then
                 if M.DEBUG then
-                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Resource entity %s mined by agent, rewriting chunk (%d,%d) resources", 
+                    game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Resource entity %s mined by agent, rewriting chunk (%d,%d) resources", 
                         game.tick, entity_name or "unknown", chunk_coords.x, chunk_coords.y))
                 end
-                -- 1. Rewrite resource files (trees_rocks_init.jsonl)
-                if Resource and Resource._rewrite_chunk_resources then
-                    if M.DEBUG then
-                        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Calling Resource._rewrite_chunk_resources", game.tick))
-                    end
-                    Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y)
-                else
-                    if M.DEBUG then
-                        game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: WARNING - Resource or _rewrite_chunk_resources not available", game.tick))
-                    end
-                end
-                -- 2. Create trees/rocks update entry (trees_rocks-update.jsonl)
-                -- Create a minimal entity-like object for Resource.create_trees_rocks_update_entry
+                -- Create a minimal entity-like object for Resource operations
                 -- Must match the structure expected: entity.position must be a table with x and y
                 local fake_entity = {
                     name = entity_name,
@@ -653,50 +861,55 @@ local function _on_agent_entity_destroyed(event)
                     position = position,  -- position is already {x, y} from event
                     valid = false,  -- Mark as invalid since it's destroyed
                 }
+                -- CRITICAL FIX: Pass fake_entity to exclude it from rewrite
+                -- This prevents the deleted tree from being written back to the init file
+                -- 1. Rewrite resource files (trees_rocks-init.jsonl) - exclude the deleted entity
+                if Resource and Resource._rewrite_chunk_resources then
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Calling Resource._rewrite_chunk_resources", game.tick))
+                    end
+                    Resource._rewrite_chunk_resources(chunk_coords.x, chunk_coords.y, fake_entity)
+                else
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: WARNING - Resource or _rewrite_chunk_resources not available", game.tick))
+                    end
+                end
+                -- 2. Create trees/rocks update entry (trees_rocks-updates.jsonl)
                 if Resource and Resource.create_trees_rocks_update_entry then
                     Resource.create_trees_rocks_update_entry(fake_entity, chunk_coords.x, chunk_coords.y)
                 end
             else
                 if M.DEBUG then
-                    game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: WARNING - chunk_coords is nil, cannot create update entry", game.tick))
+                    game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: WARNING - chunk_coords is nil, cannot create update entry", game.tick))
                 end
             end
-            return
         else
             if M.DEBUG then
-                game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: NOT a resource entity, skipping resource handling", game.tick))
+                game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: NOT a resource entity, ignoring event", game.tick))
             end
         end
     else
         if M.DEBUG then
-            game.print(string.format("[DEBUG Entities._on_agent_entity_destroyed] Tick %d: Condition not met - entity=%s, entity_name=%s, position=%s", 
-                game.tick, entity and "valid" or "nil", tostring(entity_name), position and "valid" or "nil"))
+            game.print(string.format("[DEBUG Entities._on_agent_resource_mined] Tick %d: Missing required data - entity_name=%s, position=%s", 
+                game.tick, tostring(entity_name), position and "valid" or "nil"))
         end
-    end
-    
-    -- Handle player-built entities (entity should be valid or we have entity info)
-    if entity and entity.valid then
-        M._delete_entity_snapshot(entity)
-    elseif entity_name and position then
-        -- Entity is destroyed but we have info - try to delete from snapshot
-        -- Create a minimal entity-like object
-        local fake_entity = {
-            name = entity_name,
-            position = position,
-            valid = false,
-        }
-        M._delete_entity_snapshot(fake_entity)
     end
 end
 
 --- Handle agent entity rotated event (from Agent custom events)
 --- Listens to Agent.on_agent_entity_rotated event
+--- Supports both regular entities and ghosts
 --- @param event table Event data with entity field
 local function _on_agent_entity_rotated(event)
     local entity = event.entity
     if not (entity and entity.valid) then
         return
     end
+
+    -- Ignore character entities
+    if entity.type == "character" then
+        return
+    end
     
     -- Get chunk coordinates
     local chunk_coords = utils.to_chunk_coordinates(entity.position)
@@ -704,34 +917,73 @@ local function _on_agent_entity_rotated(event)
         return
     end
     
-    -- Build entity key
-    local ent_key = entity_key(entity.name or "unknown", entity.position.x, entity.position.y)
+    local chunk = { x = chunk_coords.x, y = chunk_coords.y }
+    local is_ghost = entity.type == "entity-ghost" or event.is_ghost
+    
+    -- Get name - use ghost_name for ghosts, name for regular entities
+    local name_for_key = is_ghost and entity.ghost_name or entity.name or "unknown"
+    
+    -- Write rotation operation to JSONL file
+    local operation
+    if is_ghost then
+        -- Create ghost rotate operation and append to chunk-wise ghosts log
+        operation = snapshot.make_ghost_rotate_operation(
+            entity.position,
+            entity.direction,
+            name_for_key
+        )
+        snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
+        
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities._on_agent_entity_rotated] Tick %d: wrote ghost rotate for %s to chunk (%d,%d) ghosts-updates.jsonl", 
+                game.tick, name_for_key, chunk_coords.x, chunk_coords.y))
+        end
+    else
+        -- Create entity rotate operation and append to log
+        operation = snapshot.make_rotate_operation(
+            entity.position,
+            entity.direction,
+            name_for_key
+        )
+        snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+        
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Entities._on_agent_entity_rotated] Tick %d: wrote entity rotate for %s to chunk (%d,%d)", 
+                game.tick, name_for_key, chunk_coords.x, chunk_coords.y))
+        end
+    end
     
     -- Send UDP notification for rotation
-    local chunk = { x = chunk_coords.x, y = chunk_coords.y }
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local payload = udp_payloads.entity_rotated(
         chunk,
-        ent_key,
-        entity.name or "unknown",
+        name_for_key,
         entity.position,
         entity.direction,
         game.tick
     )
+    
+    -- Set ghost flag if this is a ghost entity
+    if is_ghost then
+        payload.is_ghost = true
+    end
+    
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
 end
 
 --- Handle agent entity configuration changed event (from Agent custom events)
 --- Listens to Agent.on_agent_entity_configuration_changed event
+--- Supports both regular entities and ghosts
 --- @param event table Event data with entity field
 local function _on_agent_entity_configuration_changed(event)
     local entity = event.entity
     if not (entity and entity.valid) then
         return
     end
-    
-    -- Serialize entity to get updated configuration
-    local entity_data = serialize.serialize_entity(entity)
-    if not entity_data then
+
+    -- Ignore character entities
+    if entity.type == "character" then
         return
     end
     
@@ -741,10 +993,31 @@ local function _on_agent_entity_configuration_changed(event)
         return
     end
     
-    -- Send UDP notification for configuration change
     local chunk = { x = chunk_coords.x, y = chunk_coords.y }
-    local payload = udp_payloads.entity_configuration_changed(chunk, entity_data)
-    udp_payloads.send_entity_operation(payload)
+    local is_ghost = entity.type == "entity-ghost" or event.is_ghost
+    
+    if is_ghost then
+        -- Serialize ghost to get updated configuration
+        local ghost_data = serialize.serialize_ghost(entity)
+        if not ghost_data then
+            return
+        end
+        
+        -- Send UDP notification for ghost configuration change
+        local payload = udp_payloads.entity_configuration_changed(chunk, ghost_data)
+        payload.is_ghost = true
+        udp_payloads.send_entity_operation(payload)
+    else
+        -- Serialize regular entity to get updated configuration
+        local entity_data = serialize.serialize_entity(entity)
+        if not entity_data then
+            return
+        end
+        
+        -- Send UDP notification for configuration change
+        local payload = udp_payloads.entity_configuration_changed(chunk, entity_data)
+        udp_payloads.send_entity_operation(payload)
+    end
 end
 
 --- Build disk write snapshot events table
@@ -787,6 +1060,7 @@ function M._build_disk_write_snapshot()
         [defines.events.on_entity_died] = _on_entity_destroyed,          -- Entity destroyed by damage
         [defines.events.script_raised_destroy] = _on_entity_destroyed,
         [defines.events.on_entity_settings_pasted] = _on_entity_settings_pasted,
+        [defines.events.on_player_rotated_entity] = _on_entity_rotated,  -- Player rotates entity (R key)
     }
     
     -- Add EntityInterface events (from fv_embodied_agent mod dependency)
@@ -802,8 +1076,8 @@ function M._build_disk_write_snapshot()
         if agent_events.on_agent_entity_built then
             events[agent_events.on_agent_entity_built] = _on_agent_entity_built
         end
-        if agent_events.on_agent_entity_destroyed then
-            events[agent_events.on_agent_entity_destroyed] = _on_agent_entity_destroyed
+        if agent_events.on_agent_resource_mined then
+            events[agent_events.on_agent_resource_mined] = _on_agent_resource_mined
         end
         if agent_events.on_agent_entity_rotated then
             events[agent_events.on_agent_entity_rotated] = _on_agent_entity_rotated

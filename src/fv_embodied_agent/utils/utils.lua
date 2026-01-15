@@ -173,10 +173,13 @@ function M.extract_position(obj)
 end
 
 --- Generate a unique key for an entity based on its name and position
+--- INTERNAL USE ONLY: This function is only used for internal Lua status tracking.
+--- It should NOT be used for database operations or UDP payloads.
+--- Database operations use composite keys (name, position_x, position_y) instead.
 --- @param entity_name string - Entity prototype name
 --- @param pos_x number - X coordinate
 --- @param pos_y number - Y coordinate
---- @return string - Key in format "entity_name..position.x..position.y"
+--- @return string - Key in format "(entity_name:pos_x,pos_y)"
 function M.entity_key(entity_name, pos_x, pos_y)
     return string.format("(%s:%s,%s)", entity_name, pos_x, pos_y)
 end

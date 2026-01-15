@@ -34,14 +34,17 @@ local INTERFACE_METHODS = {
     walk_to = {
         category = "movement",
         is_async = true,
-        doc = [[Walk the agent to a target position using pathfinding.
+        doc = [[Walk the agent to a target position or entity using pathfinding.
 The agent will navigate around obstacles. Returns immediately with an action_id;
-completion is signaled via UDP when the agent arrives or fails to reach the goal.]],
+completion is signaled via UDP when the agent arrives or fails to reach the goal.
+Supports entity-aware navigation: if 'options.entity_ref' is provided, the agent
+will attempt to reach any standable tile adjacent to the target entity, with
+smart fallback if the primary path is blocked.]],
         paramspec = {
             _param_order = { "goal", "strict_goal", "options" },
             goal = { type = "position", required = true, doc = "Target position {x, y}" },
-            strict_goal = { type = "boolean", default = false, doc = "If true, fail if exact position unreachable" },
-            options = { type = "table", default = {}, doc = "Additional pathfinding options" },
+            strict_goal = { type = "boolean", default = false, doc = "If true, fail if exact position unreachable (ignored for entity walking)" },
+            options = { type = "table", default = {}, doc = "Options: {entity_ref={name='...', position={x,y}}}" },
         },
         returns = {
             type = "async_action",
@@ -53,6 +56,8 @@ completion is signaled via UDP when the agent arrives or fails to reach the goal
                 success = { type = "boolean", doc = "True if agent reached goal" },
                 position = { type = "position", doc = "Final position of agent" },
                 elapsed_ticks = { type = "number", doc = "Game ticks elapsed" },
+                failure_type = { type = "string", doc = "Failure reason (if success=false)" },
+                candidates_tried = { type = "number", doc = "Number of approach candidates tried" },
             },
         },
         func = function(self, goal, strict_goal, options)
@@ -89,6 +94,7 @@ Returns immediately; completion signaled via UDP with items gained.]],
             _param_order = { "resource_name", "max_count" },
             resource_name = { type = "string", required = true, doc = "Resource prototype name (e.g., 'iron-ore', 'coal', 'stone')" },
             max_count = { type = "number", default = nil, doc = "Max items to mine (nil = deplete resource)" },
+            position = { type = "position", default = nil, doc = "Exact Position to mine (nil = nearest)" },
         },
         returns = {
             type = "async_action",
@@ -296,7 +302,7 @@ The agent must have the items in their inventory.]],
             },
         },
         func = function(self, entity_name, position, inventory_type, item_name, count)
-            return self:set_inventory_item(entity_name, position, inventory_type, item_name, count)
+            return self:put_inventory_item(entity_name, position, inventory_type, item_name, count)
         end,
     },
 
@@ -308,13 +314,15 @@ The agent must have the items in their inventory.]],
         is_async = false,
         doc = [[Place an entity from the agent's inventory onto the map.
 The agent must have the item in their inventory and be within build reach.
-Returns an entity reference for further operations on the placed entity.]],
+Returns an entity reference for further operations on the placed entity.
+An optional label can be provided for tracking/grouping placed entities.]],
         paramspec = {
-            _param_order = { "entity_name", "position", "direction", "ghost" },
+            _param_order = { "entity_name", "position", "direction", "ghost", "label" },
             entity_name = { type = "entity_name", required = true, doc = "Entity prototype name to place" },
             position = { type = "position", required = true, doc = "Position to place entity" },
             direction = { type = "number", default = nil, doc = "Direction (4=east, 6=west, 8=south, 10=north)" },
             ghost = { type = "boolean", default = false, doc = "Whether to place a ghost entity" },
+            label = { type = "string", default = nil, doc = "Optional label for tracking" },
         },
         returns = {
             type = "entity_ref",
@@ -325,8 +333,8 @@ Returns an entity reference for further operations on the placed entity.]],
                 entity_type = { type = "string", doc = "Entity type string" },
             },
         },
-        func = function(self, entity_name, position, direction, ghost)
-            return self:place_entity(entity_name, position, direction, ghost)
+        func = function(self, entity_name, position, direction, ghost, label)
+            return self:place_entity(entity_name, position, direction, ghost, label)
         end,
     },
     pickup_entity = {
@@ -369,6 +377,35 @@ The ghost entity must be within reach.]],
         },
         func = function(self, entity_name, position)
             return self:remove_ghost(entity_name, position)
+        end,
+    },
+    rotate_entity = {
+        category = "entity",
+        is_async = false,
+        doc = [[Rotate an entity or ghost to a specific direction.
+The entity must be within reach. Supports both regular entities and ghost entities.
+Note: Asymmetric entities (where tile_width != tile_height, like splitters) can only
+rotate in 180° increments, not 90°.]],
+        paramspec = {
+            _param_order = { "entity_name", "position", "direction", "is_ghost" },
+            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name (use ghost_name for ghosts)" },
+            position = { type = "position", default = nil, doc = "Entity position (nil = nearest within reach)" },
+            direction = { type = "number", default = nil, doc = "Direction to rotate to (nil = rotate 90° clockwise). Values: 0=north, 4=east, 8=south, 12=west" },
+            is_ghost = { type = "boolean", default = false, doc = "Whether to target a ghost entity" },
+        },
+        returns = {
+            type = "result",
+            schema = {
+                success = { type = "boolean", doc = "True if entity was rotated" },
+                entity_name = { type = "string", doc = "Entity name" },
+                position = { type = "position", doc = "Entity position" },
+                old_direction = { type = "number", doc = "Direction before rotation" },
+                new_direction = { type = "number", doc = "Direction after rotation" },
+                is_ghost = { type = "boolean", doc = "Whether a ghost was rotated" },
+            },
+        },
+        func = function(self, entity_name, position, direction, is_ghost)
+            return self:rotate_entity(entity_name, position, direction, is_ghost)
         end,
     },
 
@@ -595,6 +632,39 @@ Returns the queue of technologies being researched, including current progress.]
         },
         func = function(self)
             return self:get_research_queue()
+        end,
+    },
+    get_research_status = {
+        category = "research",
+        is_async = false,
+        doc = [[Get comprehensive research status with progressive detail levels.
+Returns minimal info if no research, more details if queued, full details if actively researching.
+Includes progress, units completed, science pack requirements, and queue information.]],
+        paramspec = {
+            _param_order = {},
+        },
+        returns = {
+            type = "research_status",
+            schema = {
+                queued = { type = "boolean", doc = "True if technologies are queued beyond current" },
+                active = { type = "boolean", doc = "True if research is actively being worked on" },
+                progress = { type = "number", doc = "Current research progress (0.0 to 1.0)" },
+                status = { type = "string", doc = "Human-readable status message" },
+                current_research = { type = "string", doc = "Name of currently researching technology (nil if none)" },
+                queue_length = { type = "number", doc = "Number of technologies in research queue" },
+                queue = { type = "array", doc = "Array of queued technologies (only if queued)" },
+                units_completed = { type = "number", doc = "Research units completed (only if active)" },
+                units_total = { type = "number", doc = "Total research units required (only if active)" },
+                units_remaining = { type = "number", doc = "Research units remaining (only if active)" },
+                research_unit_count = { type = "number", doc = "Total research unit count (only if active)" },
+                research_unit_energy = { type = "number", doc = "Energy per research unit (only if active)" },
+                research_unit_ingredients = { type = "array", doc = "Science pack ingredients per unit (only if active)" },
+                saved_progress = { type = "number", doc = "Saved progress from tech object (only if active)" },
+                tick = { type = "number", doc = "Game tick when status was retrieved" },
+            },
+        },
+        func = function(self)
+            return self:get_research_status()
         end,
     },
 

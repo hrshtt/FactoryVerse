@@ -24,7 +24,7 @@
 --- @field set_filter fun(self: EntityInterface, inventory_type: InventoryType, filter_index?: number, filter_item?: string): boolean
 --- @field set_inventory_limit fun(self: EntityInterface, inventory_type: InventoryType, limit?: number): boolean
 --- @field get_inventory_item fun(self: EntityInterface, inventory_type: InventoryType, item_name: string, count?: number): number
---- @field set_inventory_item fun(self: EntityInterface, inventory_type: InventoryType, item_name: string, count: number): number
+--- @field put_inventory_item fun(self: EntityInterface, inventory_type: InventoryType, item_name: string, count: number): number
 --- @field extract_inventory_items fun(self: EntityInterface): table<string, number>
 --- @field rotate fun(self: EntityInterface, direction?: defines.direction): boolean
 --- @field get_position fun(self: EntityInterface): Position
@@ -458,7 +458,7 @@ end
 --- @param item_name string Item name to insert
 --- @param count number Count to insert
 --- @return number Count actually inserted
-function EntityInterface:set_inventory_item(inventory_type, item_name, count)
+function EntityInterface:put_inventory_item(inventory_type, item_name, count)
     if not (self.entity and self.entity.valid) then
         error("EntityInterface: Entity is invalid")
     end

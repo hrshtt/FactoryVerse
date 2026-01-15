@@ -127,8 +127,11 @@ class FactoryVerseConfig(BaseSettings):
     agent_port_base: int = Field(
         default=34202, description="Base UDP port for agent action notifications"
     )
-    snapshot_port: int = Field(
-        default=34400, description="UDP port for snapshot/sync notifications"
+    snapshot_port_base: int = Field(
+        default=34400, description="Base UDP port for snapshot/sync notifications (server N uses base + N)"
+    )
+    client_snapshot_port: int = Field(
+        default=34500, description="UDP port for client snapshot/sync notifications"
     )
     enable_udp_port: int = Field(
         default=34200,
@@ -196,8 +199,59 @@ class FactoryVerseConfig(BaseSettings):
 
     @property
     def data_dump_path(self) -> Path:
-        """Get path to factorio-data-dump.json."""
+        """Get path to factorio-data-dump.json (runtime dump)."""
         return self.fv_output_dir / "factorio-data-dump.json"
+
+    @property
+    def prototype_api_path(self) -> Path:
+        """Get path to prototype-api.json (static API definitions).
+
+        This file contains static type definitions from Factorio's API:
+        - defines (enums like direction, entity_status)
+        - type structures (MapPosition, BoundingBox, etc.)
+
+        Downloaded from: https://lua-api.factorio.com/2.0.72/prototype-api.json
+        Use `fv data refresh-api` or call download_prototype_api() to fetch.
+        """
+        return self.fv_output_dir / "prototype-api.json"
+
+    @property
+    def prototype_api_url(self) -> str:
+        """URL to download prototype-api.json from Factorio developers."""
+        return "https://lua-api.factorio.com/2.0.72/prototype-api.json"
+
+    def download_prototype_api(self, force: bool = False) -> Path:
+        """Download prototype-api.json from Factorio API.
+
+        Args:
+            force: If True, re-download even if file exists.
+
+        Returns:
+            Path to the downloaded file.
+
+        Raises:
+            RuntimeError: If download fails.
+        """
+        import urllib.request
+
+        dest = self.prototype_api_path
+
+        if dest.exists() and not force:
+            return dest
+
+        # Ensure output dir exists
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            print(f"Downloading prototype-api.json from {self.prototype_api_url}...")
+            urllib.request.urlretrieve(self.prototype_api_url, dest)
+            print(f"Downloaded to {dest}")
+            return dest
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to download prototype-api.json: {e}\n"
+                f"You can manually download from: {self.prototype_api_url}"
+            ) from e
 
     @property
     def arch(self) -> str:
@@ -284,17 +338,61 @@ class FactoryVerseConfig(BaseSettings):
         """Get game UDP port for a server instance."""
         return self.game_port_base + server_index
 
-    def get_agent_port(self, agent_index: int) -> int:
-        """Get UDP port for a specific agent index."""
+    def get_snapshot_port(self, instance: str) -> int:
+        """Get snapshot UDP port for an instance.
+        
+        Args:
+            instance: 'client' or 'server_N' (e.g., 'server_0', 'server_1')
+            
+        Returns:
+            Snapshot UDP port number
+        """
+        if instance == "client":
+            return self.client_snapshot_port
+        if instance.startswith("server_"):
+            server_id = int(instance.split("_")[1])
+            return self.snapshot_port_base + server_id
+        raise ValueError(
+            f"Invalid instance: {instance}. Expected 'client' or 'server_N'"
+        )
+
+    def get_agent_port(self, agent_index: int, server_index: Optional[int] = None) -> int:
+        """Get UDP port for a specific agent.
+        
+        Args:
+            agent_index: Agent index (0-based)
+            server_index: Server index for per-server isolation. None means client.
+            
+        Returns:
+            Agent UDP port number
+        """
         if agent_index >= self.max_agents:
             raise ValueError(
                 f"Agent index {agent_index} exceeds max_agents {self.max_agents}"
             )
-        return self.agent_port_base + agent_index
+        
+        if server_index is not None:
+            # Each server gets its own range of max_agents ports
+            base_port = self.agent_port_base + (server_index * self.max_agents)
+            return base_port + agent_index
+        else:
+            # Client mode: simple increment from base
+            return self.agent_port_base + agent_index
 
-    def get_agent_port_range(self) -> List[int]:
-        """Get list of all agent ports."""
-        return [self.agent_port_base + i for i in range(self.max_agents)]
+    def get_agent_port_range(self, server_index: Optional[int] = None) -> List[int]:
+        """Get list of agent ports for a server or client.
+        
+        Args:
+            server_index: Server index for per-server isolation. None means client.
+            
+        Returns:
+            List of agent UDP ports
+        """
+        if server_index is not None:
+            base_port = self.agent_port_base + (server_index * self.max_agents)
+            return [base_port + i for i in range(self.max_agents)]
+        else:
+            return [self.agent_port_base + i for i in range(self.max_agents)]
 
     def get_script_output_dir(self, instance: str) -> Path:
         """Get script-output directory for an instance.
@@ -477,11 +575,26 @@ class AgentRuntimeConfig:
 
     def _allocate_udp_port(self) -> int:
         """Allocate UDP port for this agent.
+        
+        Uses dynamic port discovery to find an available UDP port.
+        This is safer than pre-allocating as it checks availability at runtime.
 
         Returns:
             Allocated UDP port number
         """
-        return self.global_config.agent_port_base
+        from FactoryVerse.utils.port_utils import find_free_udp_port
+        
+        try:
+            # Try to find a free port starting from the agent_port_base
+            return find_free_udp_port(
+                start_port=self.global_config.agent_port_base,
+                max_attempts=200,  # Search up to 200 ports
+                host=self.global_config.rcon_host
+            )
+        except RuntimeError as e:
+            # Fallback to base port if dynamic allocation fails
+            logger.warning(f"Dynamic port allocation failed: {e}. Using base port.")
+            return self.global_config.agent_port_base
 
     @property
     def rcon_host(self) -> str:

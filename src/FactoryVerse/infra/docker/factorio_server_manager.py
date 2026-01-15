@@ -314,14 +314,16 @@ class FactorioServerManager:
 
         # Add agent ports (Factorio sends OUT to these, Python listens)
         # These are exposed so Python on host can receive UDP from container
+        # Each server gets its own agent port range for isolation
         for agent_idx in range(self.effective_max_agents):
-            agent_port = cfg.get_agent_port(agent_idx)
+            agent_port = cfg.get_agent_port(agent_idx, server_index=instance_id)
             # Note: We expose on host, but Factorio sends to localhost:port inside container
             # This works because UDP from container can reach host's bound ports
             ports.append(f"{agent_port}:{agent_port}/udp")
 
-        # Add snapshot port
-        ports.append(f"{cfg.snapshot_port}:{cfg.snapshot_port}/udp")
+        # Add snapshot port (per-server)
+        snapshot_port = cfg.get_snapshot_port(f"server_{instance_id}")
+        ports.append(f"{snapshot_port}:{snapshot_port}/udp")
 
         # Optionally expose Factorio's incoming UDP listener
         if cfg.expose_incoming_udp:

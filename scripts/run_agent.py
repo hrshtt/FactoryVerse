@@ -10,11 +10,11 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from FactoryVerse.agent_runtime import FactoryVerseRuntime
-from FactoryVerse.llm.client import PrimeIntellectClient
-from FactoryVerse.llm.agent_orchestrator import FactorioAgentOrchestrator
-from FactoryVerse.llm.session_manager import SessionManager
-from FactoryVerse.llm.initial_state_generator import InitialStateGenerator
-from FactoryVerse.llm.console_output import ConsoleOutput
+from FactoryVerse.infra.llm.client import PrimeIntellectClient
+from FactoryVerse.infra.llm.agent_orchestrator import FactorioAgentOrchestrator
+from FactoryVerse.infra.llm.session_manager import SessionManager
+from FactoryVerse.infra.llm.initial_state_generator import InitialStateGenerator
+from FactoryVerse.infra.llm.console_output import ConsoleOutput
 from FactoryVerse.utils.rcon_utils import validate_rcon_connection
 
 # Configure logging - will be reconfigured per session
@@ -53,7 +53,9 @@ async def run_assisted(agent: FactorioAgentOrchestrator):
     global interrupt_count, should_stop
 
     print("\n🤖 Agent Online. Type 'exit' to quit.")
-    print("📊 Statistics available with 'stats' command.\n")
+    print("📊 Statistics available with 'stats' command.")
+    print("🔄 Reload boilerplate with '/reload_boilerplate' (add '--factorio' to also reload Factorio scripts).")
+    print("🔢 Set max turns with '/set_max_turns <number>' or '/set_max_turns unlimited'.\n")
 
     try:
         while True:
@@ -73,6 +75,49 @@ async def run_assisted(agent: FactorioAgentOrchestrator):
                         print(
                             f"  Success rate: {stats['success_count'] / stats['total_actions']:.1%}"
                         )
+                    continue
+
+                # Handle /reload_boilerplate command
+                if user_input.lower().startswith("/reload_boilerplate"):
+                    print("\n🔄 Reloading boilerplate modules...")
+                    try:
+                        reload_factorio = "--factorio" in user_input.lower() or "-f" in user_input.lower()
+                        result = runtime.reload_boilerplate(reload_factorio=reload_factorio)
+                        print("✅ Boilerplate reloaded successfully")
+                        print("   Runtime objects have been recreated with updated code")
+                        print("   RCON connection and UDP port preserved")
+                        if reload_factorio:
+                            print("   Factorio scripts have been reloaded")
+                    except Exception as e:
+                        print(f"❌ Failed to reload boilerplate: {e}")
+                        logger.exception("Error reloading boilerplate")
+                    continue
+
+                # Handle /set_max_turns command
+                if user_input.lower().startswith("/set_max_turns") or user_input.lower().startswith("/max_turns"):
+                    parts = user_input.split()
+                    if len(parts) < 2:
+                        current = agent.max_turns if agent.max_turns else "unlimited"
+                        print(f"\n📊 Current max turns: {current}")
+                        print("   Usage: /set_max_turns <number> or /set_max_turns unlimited")
+                        continue
+                    
+                    try:
+                        value = parts[1].lower()
+                        if value == "unlimited" or value == "none" or value == "inf":
+                            agent.set_max_turns(None)
+                            print(f"\n✅ Max turns set to: unlimited")
+                        else:
+                            max_turns = int(value)
+                            if max_turns < 0:
+                                print(f"\n❌ Max turns must be a non-negative integer or 'unlimited'")
+                                continue
+                            agent.set_max_turns(max_turns)
+                            remaining = max_turns - agent.turn_number
+                            print(f"\n✅ Max turns set to: {max_turns}")
+                            print(f"   Current turn: {agent.turn_number}, Remaining: {remaining}")
+                    except ValueError:
+                        print(f"\n❌ Invalid value: '{parts[1]}'. Must be a number or 'unlimited'")
                     continue
 
                 # Run agent turn
@@ -102,11 +147,25 @@ async def run_autonomous(agent: FactorioAgentOrchestrator, max_turns: int):
     """Run agent in autonomous mode (self-directed)."""
     global interrupt_count, should_stop
 
-    print(f"\n🤖 Agent running autonomously for up to {max_turns} turns...")
+    # Set initial max_turns on agent if not already set
+    if agent.max_turns is None:
+        agent.set_max_turns(max_turns)
+    
+    # Use agent's max_turns (which may have been changed via command)
+    effective_max_turns = agent.max_turns
+    max_turns_display = effective_max_turns if effective_max_turns is not None else "∞"
+    
+    print(f"\n🤖 Agent running autonomously for up to {max_turns_display} turns...")
     print("Press Ctrl+C once to pause, twice to exit.\n")
 
     try:
-        for turn in range(max_turns):
+        turn = 0
+        while True:
+            # Check if we've reached the limit
+            if not agent.has_turns_remaining():
+                print(f"\n⏹️  Max turns limit reached ({agent.max_turns} turns)")
+                break
+            
             if should_stop:
                 print("\n⏸️  Paused. Press Ctrl+C again to exit.")
                 try:
@@ -118,8 +177,11 @@ async def run_autonomous(agent: FactorioAgentOrchestrator, max_turns: int):
 
             try:
                 # TODO: Implement autonomous turn logic
-                print(f"Turn {turn + 1}/{max_turns}")
+                remaining = agent.max_turns - agent.turn_number if agent.max_turns is not None else "∞"
+                print(f"Turn {turn + 1}/{max_turns_display} (Remaining: {remaining})")
                 await asyncio.sleep(1)  # Placeholder
+                
+                turn += 1
 
             except KeyboardInterrupt:
                 interrupt_count += 1
@@ -261,7 +323,7 @@ Examples:
     from FactoryVerse.utils.port_utils import validate_udp_port, find_process_using_port
 
     config = FactoryVerseConfig()
-    udp_port = config.agent_udp_port_start  # Default port that will be used
+    udp_port = config.agent_port_base  # Default port that will be used
 
     print(f"\n🔍 Validating UDP port {udp_port}...")
     success, error = validate_udp_port(udp_port)
@@ -341,34 +403,55 @@ Examples:
     llm = PrimeIntellectClient(api_key=api_key, model=model_name)
 
     # Generate fresh system prompt from latest documentation
+    # Consolidated prompt is ephemeral and session-specific
     print("🔧 Generating system prompt from latest documentation...")
     import subprocess
 
+    # System prompt will be written to session directory (ephemeral)
+    system_prompt_path = str(paths["session_dir"] / "system_prompt.md")
+
     try:
-        # Generate documentation and assemble prompt version without examples
+        # Step 1: Generate API documentation via introspection
         subprocess.run(
-            ["uv", "run", "python", "scripts/generate_llm_docs.py"],
+            ["uv", "run", "python", "scripts/generate_docs.py"],
             check=True,
             capture_output=True,
         )
 
-        system_prompt_path = "docs/system-prompt/factoryverse-system-prompt-v3-core.md"
-        print(f"✅ Generated fresh system prompt")
+        # Step 2: Generate schema documentation
+        subprocess.run(
+            ["uv", "run", "python", "scripts/generate_schema_docs.py"],
+            check=True,
+            capture_output=True,
+        )
+
+        # Step 3: Assemble the system prompt in session directory (without examples - they're stale)
+        subprocess.run(
+            ["uv", "run", "python", "scripts/assemble_prompt.py", system_prompt_path],
+            check=True,
+            capture_output=True,
+        )
+
+        print(f"✅ Generated fresh system prompt for this session")
     except subprocess.CalledProcessError as e:
         print(f"❌ Failed to generate system prompt: {e}")
         if e.stderr:
             print(f"   Error: {e.stderr.decode().strip()}")
-        print("Falling back to existing prompt if available...")
-        system_prompt_path = "docs/system-prompt/factoryverse-system-prompt-v3-core.md"
+        print("⚠️  System prompt generation failed - agent may not work correctly")
+        # Don't set a fallback path - let the orchestrator handle the error
+        system_prompt_path = None
 
     # Create orchestrator
     print(f"🎯 Initializing Agent Orchestrator...")
-    print(f"📄 System prompt: {system_prompt_path}")
+    if system_prompt_path:
+        print(f"📄 System prompt: {system_prompt_path}")
+    else:
+        print(f"⚠️  No system prompt available - using fallback")
     console = ConsoleOutput(enabled=True)
     agent = FactorioAgentOrchestrator(
         llm_client=llm,
         runtime=runtime,
-        system_prompt_path=system_prompt_path,
+        system_prompt_path=system_prompt_path or "docs/system-prompt/factoryverse-system-prompt-v3-template.md",  # Fallback to template if generation failed
         chat_log_path=str(paths["chat_log"]),
         console_output=console,
         initial_state_path=str(paths["initial_state"]),

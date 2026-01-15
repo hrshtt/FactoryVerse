@@ -191,8 +191,7 @@ function M.entity_created(chunk, entity_data, tick)
         op = M.ENTITY_OP.CREATED,
         chunk = { x = chunk.x, y = chunk.y },
         tick = tick or game.tick,
-        entity_key = entity_data.key,
-        entity_name = entity_data.name or "unknown",
+        name = entity_data.name or "unknown",
         position = entity_data.position and { x = entity_data.position.x, y = entity_data.position.y } or nil,
         entity = entity_data,
     }
@@ -200,39 +199,35 @@ end
 
 --- Create entity destroyed payload
 --- @param chunk table Chunk coordinates {x, y}
---- @param entity_key string Entity key
 --- @param entity_name string Entity name
 --- @param position table Position {x, y}
 --- @param tick number|nil Game tick (default: game.tick)
 --- @return table Payload
-function M.entity_destroyed(chunk, entity_key, entity_name, position, tick)
+function M.entity_destroyed(chunk, entity_name, position, tick)
     return {
         event_type = "entity_operation",
         op = M.ENTITY_OP.DESTROYED,
         chunk = { x = chunk.x, y = chunk.y },
         tick = tick or game.tick,
-        entity_key = entity_key,
-        entity_name = entity_name,
+        name = entity_name,
         position = position and { x = position.x, y = position.y } or nil,
     }
 end
 
 --- Create entity rotated payload
 --- @param chunk table Chunk coordinates {x, y}
---- @param entity_key string Entity key
 --- @param entity_name string Entity name
 --- @param position table Position {x, y}
 --- @param direction number|string Direction
 --- @param tick number|nil Game tick (default: game.tick)
 --- @return table Payload
-function M.entity_rotated(chunk, entity_key, entity_name, position, direction, tick)
+function M.entity_rotated(chunk, entity_name, position, direction, tick)
     return {
         event_type = "entity_operation",
         op = M.ENTITY_OP.ROTATED,
         chunk = { x = chunk.x, y = chunk.y },
         tick = tick or game.tick,
-        entity_key = entity_key,
-        entity_name = entity_name,
+        name = entity_name,
         position = position and { x = position.x, y = position.y } or nil,
         direction = direction,
     }
@@ -249,8 +244,7 @@ function M.entity_configuration_changed(chunk, entity_data, tick)
         op = M.ENTITY_OP.CONFIGURATION_CHANGED,
         chunk = { x = chunk.x, y = chunk.y },
         tick = tick or game.tick,
-        entity_key = entity_data.key,
-        entity_name = entity_data.name or "unknown",
+        name = entity_data.name or "unknown",
         position = entity_data.position and { x = entity_data.position.x, y = entity_data.position.y } or nil,
         entity = entity_data,
     }
@@ -411,10 +405,15 @@ function M.send_snapshot_state(payload)
 end
 
 --- Send entity operation payload
---- @param payload table Entity operation payload
+--- @param payload table Entity operation payload (may already have sequence from file write)
 --- @return boolean Success status
 function M.send_entity_operation(payload)
-    return snapshot.send_udp_notification(add_sequence(payload))
+    -- If payload already has a sequence (from file write), use it
+    -- Otherwise, generate a new sequence (for backwards compatibility)
+    if not payload.sequence then
+        payload = add_sequence(payload)
+    end
+    return snapshot.send_udp_notification(payload)
 end
 
 --- Send file IO payload

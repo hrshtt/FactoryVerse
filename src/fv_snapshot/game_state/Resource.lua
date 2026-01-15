@@ -4,6 +4,12 @@
 
 -- Module-level local references for global lookups (performance optimization)
 local pairs = pairs
+local ipairs = ipairs
+local table_insert = table.insert
+local string_match = string.match
+local string_format = string.format
+-- Cache helpers functions for performance
+local table_to_json = helpers.table_to_json
 
 local GameStateError = require("utils.Error")
 local utils = require("utils.utils")
@@ -114,48 +120,61 @@ function M.gather_resources_for_chunk(chunk)
         return { resources = {}, rocks = {}, trees = {}, water = {} }
     end
 
-    local gathered = {
-        resources = {}, -- Mineable resources (iron, copper, coal, crude-oil, etc.)
-        rocks = {},     -- Simple entities (rock-huge, rock-big, etc.)
-        trees = {},     -- Tree entities
-        water = {}      -- Water tiles
-    }
+    -- Pre-allocate result tables
+    local gathered_resources = {}
+    local gathered_rocks = {}
+    local gathered_trees = {}
+    local gathered_water = {}
+    
+    local chunk_area = chunk.area
 
     -- Resources (including crude oil) - PERFORMANCE: count before find (fast C++ check)
     local resource_count = surface.count_entities_filtered {
-        area = chunk.area,
+        area = chunk_area,
         type = "resource"
     }
     if resource_count > 0 then
         local resource_entities = surface.find_entities_filtered {
-            area = chunk.area,
+            area = chunk_area,
             type = "resource"
         }
-        for _, entity in ipairs(resource_entities) do
+        -- Use numeric for loop for hot path
+        local entity_count = #resource_entities
+        for i = 1, entity_count do
+            local entity = resource_entities[i]
             if entity and entity.valid then
-                table.insert(gathered.resources, M.serialize_resource_tile(entity, entity.name))
+                gathered_resources[#gathered_resources + 1] = M.serialize_resource_tile(entity, entity.name)
             end
         end
     end
 
     -- Rocks - check count first
-    local rock_count = surface.count_entities_filtered({ area = chunk.area, type = "simple-entity" })
+    local rock_count = surface.count_entities_filtered({ area = chunk_area, type = "simple-entity" })
     if rock_count > 0 then
-        local rock_entities = surface.find_entities_filtered({ area = chunk.area, type = "simple-entity" })
-        for _, entity in ipairs(rock_entities) do
-            if entity and entity.valid and entity.name and (entity.name:match("rock") or entity.name:match("stone")) then
-                table.insert(gathered.rocks, M.serialize_rock(entity, chunk))
+        local rock_entities = surface.find_entities_filtered({ area = chunk_area, type = "simple-entity" })
+        -- Use numeric for loop for hot path
+        local entity_count = #rock_entities
+        for i = 1, entity_count do
+            local entity = rock_entities[i]
+            if entity and entity.valid then
+                local entity_name = entity.name
+                if entity_name and (string_match(entity_name, "rock") or string_match(entity_name, "stone")) then
+                    gathered_rocks[#gathered_rocks + 1] = M.serialize_rock(entity, chunk)
+                end
             end
         end
     end
 
     -- Trees - check count first
-    local tree_count = surface.count_entities_filtered({ area = chunk.area, type = "tree" })
+    local tree_count = surface.count_entities_filtered({ area = chunk_area, type = "tree" })
     if tree_count > 0 then
-        local tree_entities = surface.find_entities_filtered({ area = chunk.area, type = "tree" })
-        for _, entity in ipairs(tree_entities) do
+        local tree_entities = surface.find_entities_filtered({ area = chunk_area, type = "tree" })
+        -- Use numeric for loop for hot path
+        local entity_count = #tree_entities
+        for i = 1, entity_count do
+            local entity = tree_entities[i]
             if entity and entity.valid then
-                table.insert(gathered.trees, M.serialize_tree(entity, chunk))
+                gathered_trees[#gathered_trees + 1] = M.serialize_tree(entity, chunk)
             end
         end
     end
@@ -165,18 +184,21 @@ function M.gather_resources_for_chunk(chunk)
     local water_tile_names = { "water", "deepwater", "water-green", "deepwater-green" }
 
     local water_count = surface.count_tiles_filtered {
-        area = chunk.area,
+        area = chunk_area,
         name = water_tile_names
     }
     if water_count > 0 then
         local tiles = surface.find_tiles_filtered {
-            area = chunk.area,
+            area = chunk_area,
             name = water_tile_names
         }
-        for _, tile in ipairs(tiles) do
+        -- Use numeric for loop for hot path
+        local tiles_count = #tiles
+        for i = 1, tiles_count do
+            local tile = tiles[i]
             local x, y = utils.extract_position(tile)
             if x and y then
-                table.insert(gathered.water, { kind = "water", x = x, y = y, amount = 0 })
+                gathered_water[#gathered_water + 1] = { kind = "water", x = x, y = y, amount = 0 }
             end
         end
     end
@@ -184,15 +206,20 @@ function M.gather_resources_for_chunk(chunk)
     local end_tick = game.tick
     if M.DEBUG then
         local duration = end_tick - start_tick
-        local total = #gathered.resources + #gathered.rocks + #gathered.trees + #gathered.water
-        game.print(string.format("[PERF Resource] Chunk (%d,%d) gather complete: %d items in %d ticks",
+        local total = #gathered_resources + #gathered_rocks + #gathered_trees + #gathered_water
+        game.print(string_format("[PERF Resource] Chunk (%d,%d) gather complete: %d items in %d ticks",
             chunk.x, chunk.y, total, duration))
         if duration > 0 then
-            game.print(string.format("[PERF Resource] ⚠️  WARNING: gather took %d ticks - should be instant!", duration))
+            game.print(string_format("[PERF Resource] ⚠️  WARNING: gather took %d ticks - should be instant!", duration))
         end
     end
     
-    return gathered
+    return {
+        resources = gathered_resources,
+        rocks = gathered_rocks,
+        trees = gathered_trees,
+        water = gathered_water
+    }
 end
 
 --- Create a trees/rocks update entry when a tree or rock is mined
@@ -225,18 +252,46 @@ function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
     end
     
     local entity_name = entity.name or "unknown"
-    local ent_key = utils.entity_key(entity_name, position.x, position.y)
     
-    if M.DEBUG then
-        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: entity_name=%s, ent_key=%s, chunk=(%d,%d), position={x=%f, y=%f}", 
-            game.tick, entity_name, ent_key, chunk_x, chunk_y, position.x, position.y))
+    -- IDEMPOTENCY CHECK: Prevent duplicate remove events for the same entity
+    -- Track recent removals in storage to avoid duplicate events within a short time window
+    storage.recent_tree_removals = storage.recent_tree_removals or {}
+    local removal_key = string.format("%s@%.2f,%.2f", entity_name, position.x, position.y)
+    local recent_removal = storage.recent_tree_removals[removal_key]
+    
+    -- Check if we've already created a remove operation for this entity recently (within last 100 ticks)
+    if recent_removal and (game.tick - recent_removal.tick) < 100 then
+        if M.DEBUG then
+            game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: Skipping duplicate remove for %s at (%.2f, %.2f) - already removed at tick %d", 
+                game.tick, entity_name, position.x, position.y, recent_removal.tick))
+        end
+        log(string.format("[Resource] Skipping duplicate remove operation for %s at (%.2f, %.2f) - already removed at tick %d", 
+            entity_name, position.x, position.y, recent_removal.tick))
+        return false  -- Skip creating duplicate remove operation
     end
     
-    local operation = snapshot.make_remove_operation(ent_key, position, entity_name)
+    -- Record this removal
+    storage.recent_tree_removals[removal_key] = { tick = game.tick }
+    
+    -- Clean up old entries (older than 1000 ticks) to prevent storage bloat
+    if game.tick % 1000 == 0 then  -- Only cleanup periodically
+        for key, removal in pairs(storage.recent_tree_removals) do
+            if game.tick - removal.tick > 1000 then
+                storage.recent_tree_removals[key] = nil
+            end
+        end
+    end
     
     if M.DEBUG then
-        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: operation created: op=%s, tick=%s, key=%s", 
-            game.tick, tostring(operation.op), tostring(operation.tick), tostring(operation.key)))
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: entity_name=%s, chunk=(%d,%d), position={x=%f, y=%f}", 
+            game.tick, entity_name, chunk_x, chunk_y, position.x, position.y))
+    end
+    
+    local operation = snapshot.make_remove_operation(position, entity_name)
+    
+    if M.DEBUG then
+        game.print(string.format("[DEBUG Resource.create_trees_rocks_update_entry] Tick %d: operation created: op=%s, tick=%s", 
+            game.tick, tostring(operation.op), tostring(operation.tick)))
     end
     
     snapshot.append_trees_rocks_operation(chunk_x, chunk_y, operation)
@@ -248,8 +303,10 @@ function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
     
     -- Send UDP notification
     -- CRITICAL: Always send UDP regardless of write success to maintain Factorio determinism
+    -- IMPORTANT: Use the SAME sequence number that was written to the file
     local chunk = { x = chunk_x, y = chunk_y }
-    local payload = udp_payloads.entity_destroyed(chunk, ent_key, entity_name, position)
+    local payload = udp_payloads.entity_destroyed(chunk, entity_name, position)
+    payload.sequence = operation.sequence  -- Use sequence from file write
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -259,7 +316,8 @@ end
 --- Called when resources are depleted or changed
 --- @param chunk_x number
 --- @param chunk_y number
-function M._rewrite_chunk_resources(chunk_x, chunk_y)
+--- @param exclude_entity LuaEntity|table|nil Optional entity to exclude from rewrite (e.g., entity being deleted)
+function M._rewrite_chunk_resources(chunk_x, chunk_y, exclude_entity)
     local chunk = {
         x = chunk_x,
         y = chunk_y,
@@ -272,6 +330,67 @@ function M._rewrite_chunk_resources(chunk_x, chunk_y)
 
     -- Gather all resources for the chunk
     local gathered = M.gather_resources_for_chunk(chunk)
+
+    -- CRITICAL FIX: Exclude the entity being deleted from the gathered list
+    -- This prevents the deleted tree from being written back to the init file
+    local exclude_position = nil
+    local exclude_name = nil
+    if exclude_entity then
+        -- Handle both real entities and fake entities (with position table)
+        if exclude_entity.position then
+            local pos = exclude_entity.position
+            if type(pos) == "table" and pos.x and pos.y then
+                exclude_position = { x = pos.x, y = pos.y }
+                exclude_name = exclude_entity.name
+            elseif exclude_entity.valid and exclude_entity.position then
+                -- Real entity with position object
+                exclude_position = { x = exclude_entity.position.x, y = exclude_entity.position.y }
+                exclude_name = exclude_entity.name
+            end
+        end
+    end
+
+    -- Remove excluded entity from rocks if present
+    if exclude_position and exclude_name then
+        for i = #gathered.rocks, 1, -1 do
+            local rock = gathered.rocks[i]
+            if rock and rock.position then
+                local rock_x = rock.position.x
+                local rock_y = rock.position.y
+                -- Use small epsilon for floating point comparison
+                if math.abs(rock_x - exclude_position.x) < 0.01 and 
+                   math.abs(rock_y - exclude_position.y) < 0.01 and
+                   rock.name == exclude_name then
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: Excluding rock %s at (%.2f, %.2f) from rewrite", 
+                            game.tick, exclude_name, exclude_position.x, exclude_position.y))
+                    end
+                    table.remove(gathered.rocks, i)
+                end
+            end
+        end
+    end
+
+    -- Remove excluded entity from trees if present
+    if exclude_position and exclude_name then
+        for i = #gathered.trees, 1, -1 do
+            local tree = gathered.trees[i]
+            if tree and tree.position then
+                local tree_x = tree.position.x
+                local tree_y = tree.position.y
+                -- Use small epsilon for floating point comparison
+                if math.abs(tree_x - exclude_position.x) < 0.01 and 
+                   math.abs(tree_y - exclude_position.y) < 0.01 and
+                   tree.name == exclude_name then
+                    if M.DEBUG then
+                        game.print(string.format("[DEBUG Resource._rewrite_chunk_resources] Tick %d: Excluding tree %s at (%.2f, %.2f) from rewrite", 
+                            game.tick, exclude_name, exclude_position.x, exclude_position.y))
+                    end
+                    table.remove(gathered.trees, i)
+                end
+            end
+        end
+    end
 
     -- Write tiles.jsonl (resource tiles like ores) only if resources were found
     if #gathered.resources > 0 then

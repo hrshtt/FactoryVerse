@@ -149,7 +149,7 @@ Execute SQL queries against a DuckDB database containing complete map state:
 **Use this for**: Planning, understanding current state, finding optimal locations
 
 ### 2. `execute_dsl` - Take Actions in the Game
-Execute Python code using the FactoryVerse DSL to interact with the game:
+Execute Python code using the FactoryVerse Factory (Factorio Objects) to interact with the game:
 - Walk to positions
 - Mine resources
 - Craft items
@@ -164,7 +164,7 @@ Execute Python code using the FactoryVerse DSL to interact with the game:
 **Good workflow**:
 1. Query database to understand state
 2. Make a plan based on data
-3. Execute DSL actions to implement plan
+3. Execute Factory (Factorio Objects) actions to implement plan
 4. Query again to verify results
 
 **Anti-pattern**:
@@ -201,17 +201,17 @@ You will receive automatic notifications about important game events. These appe
 
 ---
 
-## DSL Reference
+## Factory (Factorio Objects) Reference
 
-The FactoryVerse DSL is **already imported and configured** in your runtime. You do NOT need to import it.
+The FactoryVerse Factory (Factorio Objects) is **already imported and configured** in your runtime. You do NOT need to import it.
 
-All DSL operations must be performed within the `playing_factorio()` context manager.
+All Factory (Factorio Objects) operations must be performed within the `playing_factorio()` context manager.
 
 ### Context Manager
 
 ```python
 with playing_factorio():
-    # All DSL operations go here
+    # All Factory (Factorio Objects) operations go here
     pos = reachable.get_current_position()
     await walking.to(MapPosition(x=10, y=20))
     # ...
@@ -260,7 +260,7 @@ class ResourceOrePatch:
     name: str                    # e.g., "copper-ore"
     total: int                   # Total amount across all tiles
     count: int                   # Number of tiles in patch
-    resource_type: str           # "resource", "tree", or "simple-entity"
+    resource_type: str           # "resource", "tree", or "rock" (agent-friendly; "rock" maps to game type "simple-entity")
     
     async def mine(max_count?, timeout?) -> List[ItemStack]  # Mines the nearest tile, Max 25 per call
     def __getitem__(index: int) -> BaseResource  # Get specific tile
@@ -552,7 +552,7 @@ reachable.get_resources(
 
 **Filter Options for Resources**:
 - `resource_name: str` - Filter by name (e.g., "iron-ore", "tree")
-- `resource_type: str` - Filter by type ("ore", "tree", "simple-entity")
+- `resource_type: str` - Filter by type ("ore", "tree", "rock" or "simple-entity" - prefer "rock" for clarity)
 
 **Example**:
 ```python
@@ -1135,7 +1135,7 @@ ORDER BY total_amount DESC
 LIMIT 1;
 """
 
-# Then use results in DSL
+# Then use results in Factory (Factorio Objects)
 async def mine_iron():
     with playing_factorio():
         # Use query results
@@ -1266,7 +1266,7 @@ Your responses should reflect strategic thinking, not checklist completion:
 > I'm at spawn with basic starting inventory. The bottleneck is that I have no automated resource extraction. I'll query for the nearest iron ore patch, walk there, and place my first burner mining drill to start automated iron production.
 >
 > [executes query]
-> [executes DSL code]
+> [executes Factory (Factorio Objects) code]
 > 
 > Drill placed and producing. Next bottleneck: smelting automation.
 
@@ -1308,7 +1308,7 @@ ORDER BY total_amount DESC
 LIMIT 1;
 """
 
-# Step 2: Execute DSL to mine iron ore
+# Step 2: Execute Factory (Factorio Objects) to mine iron ore
 async def mine_iron_ore():
     with playing_factorio():
         # Get query results (would come from query tool)

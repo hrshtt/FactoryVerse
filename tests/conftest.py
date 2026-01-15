@@ -11,7 +11,14 @@ Server Fixture Hierarchy:
 """
 
 import pytest
-from typing import Generator, Any
+import sys
+from pathlib import Path
+from typing import Generator, Any, Optional
+
+# Add tests directory to path for helper imports
+tests_dir = Path(__file__).parent
+if str(tests_dir) not in sys.path:
+    sys.path.insert(0, str(tests_dir))
 
 from helpers.server import FactorioServer, RconConnection, ServerConfig
 from helpers.test_ground import TestGround
@@ -31,13 +38,23 @@ def server_config() -> ServerConfig:
 @pytest.fixture(scope="session")
 def factorio_server(
     server_config: ServerConfig,
-) -> Generator[FactorioServer, None, None]:
+) -> Generator[Optional[FactorioServer], None, None]:
     """
     Session-scoped Factorio server.
 
     Starts Docker container if not running.
     Stops on session end if we started it.
+    
+    Returns None if FV_INSTANCE=client (uses local client instead).
     """
+    import os
+    
+    # Skip Docker if using client
+    if os.getenv("FV_INSTANCE") == "client":
+        # Return None - rcon fixture will handle client connection
+        yield None
+        return
+    
     server = FactorioServer(server_config)
     server.ensure_running()
 
@@ -52,12 +69,36 @@ def factorio_server(
 
 
 @pytest.fixture(scope="function")
-def rcon(factorio_server: FactorioServer) -> RconConnection:
+def rcon(factorio_server) -> RconConnection:
     """
     Function-scoped RCON connection.
 
-    Ensures server is running and returns connection.
+    Uses FV_INSTANCE env var to determine connection:
+    - If FV_INSTANCE=client: Connects to local Factorio client (no Docker)
+    - Otherwise: Uses Docker server (factorio_server fixture)
     """
+    import os
+    from FactoryVerse.config import get_config
+    from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+    from factorio_rcon import RCONClient
+    
+    instance_name = os.getenv("FV_INSTANCE")
+    
+    # If client is explicitly requested, connect to client (skip Docker)
+    if instance_name == "client":
+        config = get_config()
+        instance = FactorioInstanceManager.get_client(config)
+        client = RCONClient(
+            instance.rcon_host,
+            instance.rcon_port,
+            instance.rcon_password,
+        )
+        client.connect()
+        return RconConnection(client)
+    
+    # Otherwise use Docker server
+    if factorio_server is None:
+        raise RuntimeError("factorio_server fixture returned None but FV_INSTANCE is not 'client'")
     return factorio_server.rcon
 
 
@@ -112,7 +153,7 @@ def agent_id(rcon: RconConnection) -> Generator[str, None, None]:
     yield interface_name
 
     # Cleanup: destroy all agents
-    rcon.call("agent", "destroy_agents")
+    rcon.call("agent", "destroy_agents", 0)
 
 
 @pytest.fixture(scope="function")

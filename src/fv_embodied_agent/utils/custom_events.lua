@@ -17,9 +17,13 @@ M.on_chunk_charted = script.generate_event_name()
 -- Agent entity operation events (for entity operations independent of actions)
 -- These mirror in-game events but are raised by agent actions
 M.on_agent_entity_built = script.generate_event_name()
-M.on_agent_entity_destroyed = script.generate_event_name()
 M.on_agent_entity_rotated = script.generate_event_name()
 M.on_agent_entity_configuration_changed = script.generate_event_name()
+
+-- Agent resource mining event (for character-based mining that doesn't raise player events)
+-- This is specifically for trees/rocks destroyed by agent mining
+-- Regular entities should use script_raised_destroy via destroy({raise_destroy=true})
+M.on_agent_resource_mined = script.generate_event_name()
 
 -- ============================================================================
 -- STORAGE INITIALIZATION
@@ -36,9 +40,9 @@ function M.initialize_storage()
     storage.custom_events.on_agent_removed = M.on_agent_removed
     storage.custom_events.on_chunk_charted = M.on_chunk_charted
     storage.custom_events.on_agent_entity_built = M.on_agent_entity_built
-    storage.custom_events.on_agent_entity_destroyed = M.on_agent_entity_destroyed
     storage.custom_events.on_agent_entity_rotated = M.on_agent_entity_rotated
     storage.custom_events.on_agent_entity_configuration_changed = M.on_agent_entity_configuration_changed
+    storage.custom_events.on_agent_resource_mined = M.on_agent_resource_mined
     log("Custom events storage initialized")
 end
 

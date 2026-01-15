@@ -2,26 +2,146 @@
 --- Methods operate directly on Agent instances (self)
 --- State is stored in self.walking (path, path_id, progress)
 --- These methods are mixed into the Agent class at module level
+---
+--- Entity-aware walking:
+--- When entity_ref is provided, computes candidate approach tiles around entity
+--- and tries each until path succeeds or all candidates exhausted.
 
 local WalkingActions = {}
 
 DEBUG = false
 
+-- ============================================================================
+-- TILE CANDIDATE COMPUTATION
+-- ============================================================================
+
+--- Check if a tile position is valid for agent to stand on
+--- @param surface LuaSurface
+--- @param tile_pos {x:number, y:number} Tile center position
+--- @param agent LuaEntity Agent character
+--- @return boolean True if tile is standable
+local function is_tile_standable(surface, tile_pos, agent)
+    -- Check tile itself (water, cliffs, etc.)
+    local tile = surface.get_tile(tile_pos.x, tile_pos.y)
+    if not tile or not tile.valid then
+        return false
+    end
+    
+    -- Check if tile has collision (water, cliffs, etc.)
+    local tile_proto = tile.prototype
+    if tile_proto and tile_proto.collision_mask then
+        -- If tile collides with player-layer, skip it
+        for layer, _ in pairs(tile_proto.collision_mask.layers or {}) do
+            if layer == "player" or layer == "water_tile" or layer == "object" then
+                return false
+            end
+        end
+    end
+    
+    -- Check for entities on the tile that would block standing
+    local entities_on_tile = surface.find_entities_filtered({
+        position = tile_pos,
+        radius = 0.4,  -- Slightly less than half a tile
+    })
+    
+    for _, entity in pairs(entities_on_tile) do
+        if entity.valid and entity ~= agent then
+            local entity_type = entity.type
+            -- Skip transport belts - don't want to stand on moving belts
+            if entity_type == "transport-belt" or 
+               entity_type == "underground-belt" or 
+               entity_type == "splitter" or
+               entity_type == "loader" or
+               entity_type == "loader-1x1" then
+                return false
+            end
+            -- Skip if entity has collision that would block agent
+            if entity.prototype and entity.prototype.collision_mask then
+                for layer, _ in pairs(entity.prototype.collision_mask.layers or {}) do
+                    if layer == "player" or layer == "object" then
+                        return false
+                    end
+                end
+            end
+        end
+    end
+    
+    return true
+end
+
+--- Compute candidate approach tiles around an entity
+--- @param surface LuaSurface
+--- @param target_entity LuaEntity Target entity to approach
+--- @param agent LuaEntity Agent character
+--- @return table Array of {x, y} tile positions
+local function compute_approach_candidates(surface, target_entity, agent)
+    local candidates = {}
+    local reach_distance = agent.reach_distance or 6
+    local entity_pos = target_entity.position
+    local entity_bb = target_entity.bounding_box
+    
+    -- Calculate entity bounds in tiles
+    local min_x = math.floor(entity_bb.left_top.x)
+    local max_x = math.ceil(entity_bb.right_bottom.x)
+    local min_y = math.floor(entity_bb.left_top.y)
+    local max_y = math.ceil(entity_bb.right_bottom.y)
+    
+    -- Search tiles around entity within reach distance
+    -- Use integer tile coordinates with 0.5 offset for tile centers
+    local search_radius = math.ceil(reach_distance) + 1
+    
+    for dx = -search_radius, search_radius do
+        for dy = -search_radius, search_radius do
+            local tile_x = math.floor(entity_pos.x) + dx + 0.5
+            local tile_y = math.floor(entity_pos.y) + dy + 0.5
+            local tile_pos = {x = tile_x, y = tile_y}
+            
+            -- Skip tiles inside entity bounding box
+            if tile_x > min_x and tile_x < max_x and
+               tile_y > min_y and tile_y < max_y then
+                goto continue
+            end
+            
+            -- Check if agent at this tile could reach the entity
+            local dist_to_entity = math.sqrt(
+                (tile_x - entity_pos.x)^2 + (tile_y - entity_pos.y)^2
+            )
+            if dist_to_entity > reach_distance then
+                goto continue
+            end
+            
+            -- Check if tile is standable
+            if not is_tile_standable(surface, tile_pos, agent) then
+                goto continue
+            end
+            
+            table.insert(candidates, tile_pos)
+            
+            ::continue::
+        end
+    end
+    
+    if DEBUG then
+        game.print(string.format("Found %d candidate approach tiles for %s", 
+            #candidates, target_entity.name))
+    end
+    
+    return candidates
+end
+
+-- ============================================================================
+-- DEPRECATED: Single perimeter goal (kept for position-only walking)
+-- ============================================================================
+
 --- Calculate a perimeter goal point outside an entity's collision box
---- Returns a point on the edge of the entity closest to the start position
---- @param start_pos {x:number, y:number} Starting position
---- @param target_entity LuaEntity Target entity
---- @param agent_collision_box BoundingBox|nil Agent's collision box (centered at 0,0)
---- @return {x:number, y:number} Perimeter goal position
+--- @deprecated Use compute_approach_candidates for entity-aware walking
 local function get_perimeter_goal(start_pos, target_entity, agent_collision_box)
-    -- Get the radius of the target (approximate from bounding box)
     local bb = target_entity.bounding_box
     local target_radius = math.max(
         bb.right_bottom.x - bb.left_top.x,
         bb.right_bottom.y - bb.left_top.y
     ) / 2
     
-    -- Calculate agent's collision box size
     local agent_size = 0
     if agent_collision_box then
         agent_size = math.max(
@@ -30,48 +150,33 @@ local function get_perimeter_goal(start_pos, target_entity, agent_collision_box)
         ) / 2
     end
     
-    -- Add agent size + safety buffer so agent can stand outside the entity
-    -- This ensures the agent can actually stand at the goal position
     local safe_distance = target_radius + agent_size + 0.5
     
-    -- Get vector from target to start
     local vec = {
         x = start_pos.x - target_entity.position.x,
         y = start_pos.y - target_entity.position.y
     }
     
-    -- Normalize and scale
     local distance = math.sqrt(vec.x * vec.x + vec.y * vec.y)
     if distance < 0.001 then
-        -- If start and target are at same position, use a default direction
         vec = {x = 1.0, y = 0.0}
         distance = 1.0
     end
     
-    local offset_x = (vec.x / distance) * safe_distance
-    local offset_y = (vec.y / distance) * safe_distance
-    
-    -- New valid goal outside the entity
     return {
-        x = target_entity.position.x + offset_x,
-        y = target_entity.position.y + offset_y
+        x = target_entity.position.x + (vec.x / distance) * safe_distance,
+        y = target_entity.position.y + (vec.y / distance) * safe_distance
     }
 end
 
 --- Find entities at goal position and calculate perimeter goal if needed
---- @param surface LuaSurface Surface to search
---- @param goal {x:number, y:number} Goal position
---- @param start_pos {x:number, y:number} Starting position
---- @param agent_collision_box BoundingBox|nil Agent's collision box (centered at 0,0)
---- @return {x:number, y:number}|nil Adjusted goal (nil if no entities found)
---- @return LuaEntity|nil Entity found at goal (nil if none)
+--- @deprecated Use entity_ref parameter for entity-aware walking
 local function find_and_adjust_goal(surface, goal, start_pos, agent_collision_box)
     local entities = surface.find_entities_filtered({ position = goal })
     if #entities == 0 then
         return nil, nil
     end
     
-    -- Use the first valid entity found
     local target_entity = nil
     for _, entity in pairs(entities) do
         if entity and entity.valid then
@@ -84,16 +189,21 @@ local function find_and_adjust_goal(surface, goal, start_pos, agent_collision_bo
         return nil, nil
     end
     
-    -- Calculate perimeter goal with agent collision box
     local perimeter_goal = get_perimeter_goal(start_pos, target_entity, agent_collision_box)
     return perimeter_goal, target_entity
 end
 
+-- ============================================================================
+-- WALK TO ACTION
+-- ============================================================================
 
----@param self Agent
----@param goal {x:number, y:number}
----@param options table|nil
-WalkingActions.walk_to = function(self, goal, strict_goal, options)
+--- Walk to a goal position or entity
+--- @param self Agent
+--- @param goal {x:number, y:number} Goal position
+--- @param strict_goal boolean If true, fail if exact position unreachable
+--- @param options table|nil Additional pathfinding options
+--- @param entity_ref {name:string, position:{x:number,y:number}}|nil Entity reference for entity-aware walking
+WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
 
     if self.character.walking_state["walking"] then
         error("Agent is already walking")
@@ -107,47 +217,153 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options)
     options = options or {}
     options.start = self.character.position
     options.bounding_box = self.character.prototype.collision_box
-    options.collision_mask = self.character.prototype.collision_mask
-    options.force = self.character.force.name
-    options.entity_to_ignore = self.character -- entity pathfinding has to ignore itself 
+    -- Prepare collision mask - explicitly include layers to avoid shipwrecks/obstacles
+    -- request_path sometimes needs explicit layers even if character prototype has them
+    local collision_mask = { layers = {} }
     
-    -- Check if goal is inside an entity's collision box and calculate perimeter goal
-    local adjusted_goal, goal_entity = find_and_adjust_goal(
-        self.character.surface,
-        goal,
-        self.character.position,
-        self.character.prototype.collision_box
-    )
-    
-    if adjusted_goal and goal_entity then
-        if strict_goal then
-            error(
-                "There are entities at the goal position. " ..
-                "Provide strict_goal=false to approximate to non-colliding position.")
+    -- 1. Start with character's base layers
+    if self.character.prototype.collision_mask and self.character.prototype.collision_mask.layers then
+        for layer, _ in pairs(self.character.prototype.collision_mask.layers) do
+            collision_mask.layers[layer] = true
         end
-        -- Use the perimeter goal for pathfinding
-        options.goal = adjusted_goal
-        -- Store original goal and entity for completion checking
-        self.walking.original_goal = goal
-        self.walking.goal_entity = goal_entity
-    else
-        -- No entities at goal, use goal as-is
-        options.goal = goal
-        self.walking.original_goal = nil
-        self.walking.goal_entity = nil
     end
+    
+    -- 2. Explicitly force common obstacle layers (fixes issues with shipwrecks/debris)
+    local force_layers = {
+        "object",           -- Most entities
+        "player",           -- Character/Player
+        "water_tile",       -- Water
+        "cliff",            -- Cliffs
+        "train",            -- Trains
+        "transport_belt"    -- Belts (optional but good for avoidance)
+    }
+    
+    for _, layer in ipairs(force_layers) do
+        collision_mask.layers[layer] = true
+    end
+    
+    options.collision_mask = collision_mask
+    options.force = self.character.force.name
+    options.entity_to_ignore = self.character
+    
+    -- Generate action ID
+    local action_id = string.format("walk_to_%d_%d", game.tick, self.agent_id)
+    local rcon_tick = game.tick
+    
+    -- Initialize walking state
+    self.walking.action_id = action_id
+    self.walking.start_tick = rcon_tick
+    self.walking.original_goal = goal
+    self.walking.entity_ref = entity_ref
+    self.walking.approach_candidates = nil
+    self.walking.approach_index = 0
+    self.walking.goal_entity = nil
+    
+    -- Entity-aware walking: resolve entity and compute candidates
+    if entity_ref and entity_ref.name and entity_ref.position then
+        local surface = self.character.surface
+        local target_entity = surface.find_entity(entity_ref.name, entity_ref.position)
+        
+        if not target_entity or not target_entity.valid then
+            -- Entity not found - immediate failure
+            return {
+                success = false,
+                queued = false,
+                action_id = action_id,
+                tick = rcon_tick,
+                failure_type = "entity_not_found",
+                message = string.format("Entity '%s' not found at position (%.1f, %.1f)", 
+                    entity_ref.name, entity_ref.position.x, entity_ref.position.y)
+            }
+        end
+        
+        -- Check if already in reach
+        if self.character.can_reach_entity(target_entity) then
+            -- Already reachable, no need to walk
+            return {
+                success = true,
+                queued = false,
+                action_id = action_id,
+                tick = rcon_tick,
+                position = {x = self.character.position.x, y = self.character.position.y},
+                message = "Already in reach of entity"
+            }
+        end
+        
+        -- Compute candidate approach tiles
+        local candidates = compute_approach_candidates(surface, target_entity, self.character)
+        
+        if #candidates == 0 then
+            -- No standable tiles around entity
+            return {
+                success = false,
+                queued = false,
+                action_id = action_id,
+                tick = rcon_tick,
+                failure_type = "no_standable_tiles",
+                message = string.format("No standable tiles within reach of '%s'", entity_ref.name)
+            }
+        end
+        
+        -- Store for fallback on path failure
+        self.walking.goal_entity = target_entity
+        self.walking.approach_candidates = candidates
+        self.walking.approach_index = 1
+        
+        -- Use first candidate as goal
+        options.goal = candidates[1]
+        self.walking.goal = candidates[1]
+        
+        if DEBUG then
+            game.print(string.format("Entity-aware walk: trying candidate 1/%d at (%.1f, %.1f)",
+                #candidates, candidates[1].x, candidates[1].y))
+        end
+    else
+        -- Position-only walking: use old perimeter goal logic
+        local adjusted_goal, goal_entity = find_and_adjust_goal(
+            self.character.surface,
+            goal,
+            self.character.position,
+            self.character.prototype.collision_box
+        )
+        
+        if adjusted_goal and goal_entity then
+            if strict_goal then
+                error(
+                    "There are entities at the goal position. " ..
+                    "Provide strict_goal=false to approximate to non-colliding position.")
+            end
+            options.goal = adjusted_goal
+            self.walking.goal_entity = goal_entity
+        else
+            options.goal = goal
+            self.walking.goal_entity = nil
+        end
+        self.walking.goal = options.goal
+    end
+    
+    -- Store options for potential retry
+    self.walking.path_options = {
+        bounding_box = options.bounding_box,
+        collision_mask = options.collision_mask,
+        force = options.force,
+        entity_to_ignore = self.character,
+    }
+    
+    -- Request path
     local job_id = self.character.surface.request_path(options)
     self.walking.path_id = job_id
     
-    -- Generate action ID and store for completion tracking
-    local action_id = string.format("walk_to_%d_%d", game.tick, self.agent_id)
-    local rcon_tick = game.tick
-    self.walking.action_id = action_id
-    self.walking.start_tick = rcon_tick
-    -- Store the actual goal used for pathfinding (may be adjusted perimeter goal)
-    self.walking.goal = options.goal
+    -- Serialize entity_to_ignore for response
+    local options_for_response = {}
+    for k, v in pairs(options) do
+        if k == "entity_to_ignore" then
+            options_for_response[k] = v.name .. "_" .. (v.name_tag or "")
+        else
+            options_for_response[k] = v
+        end
+    end
     
-    options.entity_to_ignore = options.entity_to_ignore.name .. "_" .. options.entity_to_ignore.name_tag
     return {
         success = true,
         queued = true,
@@ -155,10 +371,12 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options)
         tick = rcon_tick,
         result = {
             path_id = job_id,
-            options_used = options,
+            options_used = options_for_response,
+            candidates_count = self.walking.approach_candidates and #self.walking.approach_candidates or 0,
         }
     }
 end
+
 
 -- Add to WalkingActions
 WalkingActions.process_walking = function(self)

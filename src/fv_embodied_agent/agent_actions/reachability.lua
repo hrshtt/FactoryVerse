@@ -105,13 +105,11 @@ local function serialize_entity_full(entity)
     end
     
     -- Add input/output contents for machines
-    if entity.type == "assembling-machine" or entity.type == "furnace" then
-        data.input_contents = get_inventory_contents(entity, defines.inventory.assembling_machine_input)
-            or get_inventory_contents(entity, defines.inventory.furnace_source)
-            or {}
-        data.output_contents = get_inventory_contents(entity, defines.inventory.assembling_machine_output)
-            or get_inventory_contents(entity, defines.inventory.furnace_result)
-            or {}
+    -- Factorio 2.0+: Use crafter_input/crafter_output for all crafting machines
+    if entity.type == "assembling-machine" or entity.type == "furnace" or 
+       entity.type == "chemical-plant" or entity.type == "oil-refinery" then
+        data.input_contents = get_inventory_contents(entity, defines.inventory.crafter_input) or {}
+        data.output_contents = get_inventory_contents(entity, defines.inventory.crafter_output) or {}
     end
     
     -- Add chest contents
