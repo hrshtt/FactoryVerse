@@ -21,7 +21,7 @@ from FactoryVerse.config import FactoryVerseConfig, get_config
 from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 from FactoryVerse.runtime import create_runtime
 from FactoryVerse.factory.types import MapPosition, Direction  # noqa: F401
-
+from FactoryVerse.agent.actions.placement_hints import ConnectionType  # noqa: F401
 # =============================================================================
 # Instance Detection (client vs server)
 # =============================================================================
@@ -92,9 +92,10 @@ if existing:
     print(f"✅ Reusing agent '{agent_id}' on UDP port {actual_udp_port}")
 else:
     # Create agent with initial inventory: burner mining drill, stone furnace, and wood
-    # Create table as Lua variable first to avoid string interpolation issues
+    # set_unique_forces=false ensures agent uses the 'player' force, which is required
+    # for entity status tracking (status dumps filter on force='player')
     rcon_client.send_command(
-        f'/c local inv = {{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}}; local res = remote.call(\'agent\', \'create_agent\', {requested_udp_port}, true, nil, inv); rcon.print(helpers.table_to_json(res))'
+        f'/c local inv = {{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}}; local res = remote.call(\'agent\', \'create_agent\', {requested_udp_port}, false, "player", inv); rcon.print(helpers.table_to_json(res))'
     )
     actual_udp_port = requested_udp_port
     print(f"✅ Created agent '{agent_id}' on UDP port {actual_udp_port}")

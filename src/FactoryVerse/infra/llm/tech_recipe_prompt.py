@@ -217,14 +217,46 @@ class TechRecipePromptGenerator:
         
         lines = [f"## Available Recipes ({len(recipes)} total)\n"]
         
-        # Show up to limit
-        for recipe in recipes[:limit]:
-            ing_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.ingredients])
-            prod_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.products])
-            lines.append(f"- **{recipe.name}**: {ing_str} → {prod_str} ({recipe.time}s)")
+        # Separate recipes by category for better organization
+        handcraftable = []
+        smelting = []
+        other_machine = []
         
-        if len(recipes) > limit:
-            lines.append(f"\n*...and {len(recipes) - limit} more recipes*\n")
+        for recipe in recipes:
+            if recipe.category == "crafting":
+                handcraftable.append(recipe)
+            elif recipe.category == "smelting":
+                smelting.append(recipe)
+            else:
+                other_machine.append(recipe)
+        
+        # Show handcraftable recipes first
+        if handcraftable:
+            lines.append("### Handcraftable Recipes\n")
+            for recipe in handcraftable:
+                ing_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.ingredients])
+                prod_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.products])
+                lines.append(f"- **{recipe.name}** [🖐️ handcraftable]: {ing_str} → {prod_str} ({recipe.time}s)")
+            lines.append("\n")
+        
+        # Show smelting recipes with special note
+        if smelting:
+            lines.append("### Smelting Recipes\n")
+            lines.append("*Note: Smelting requires a furnace (stone-furnace, steel-furnace, or electric-furnace)*\n\n")
+            for recipe in smelting:
+                ing_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.ingredients])
+                prod_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.products])
+                lines.append(f"- **{recipe.name}** [🔥 smelting - requires furnace]: {ing_str} → {prod_str} ({recipe.time}s)")
+            lines.append("\n")
+        
+        # Show other machine-only recipes
+        if other_machine:
+            lines.append("### Machine-Only Recipes\n")
+            for recipe in other_machine:
+                ing_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.ingredients])
+                prod_str = " + ".join([f"{amt}x {name}" for name, amt in recipe.products])
+                lines.append(f"- **{recipe.name}** [⚙️ {recipe.category}]: {ing_str} → {prod_str} ({recipe.time}s)")
+            lines.append("\n")
         
         return "\n".join(lines)
     

@@ -152,109 +152,103 @@ class Direction(enum.Enum):
 
 
 class EntityStatus(enum.Enum):
-    """Entity status codes from defines.entity_status.
+    """Entity status codes from defines.entity_status (Factorio 2.0).
 
     These represent the operational state of entities in the game.
-    Values are ordered by Factorio's internal defines.entity_status.
+    Values match Factorio 2.0's internal defines.entity_status exactly.
 
     Common statuses:
-    - WORKING (0): Entity is actively working
-    - NO_POWER (4): Entity lacks electrical power
-    - NO_FUEL (6): Burner entity lacks fuel
-    - NO_RECIPE (21): Crafter has no recipe set
-    - FULL_OUTPUT (29): Output inventory is full
+    - WORKING (1): Entity is actively working
+    - NO_POWER (54): Entity lacks electrical power
+    - NO_FUEL (53): Burner entity lacks fuel
+    - NO_RECIPE (19): Crafter has no recipe set
+    - FULL_OUTPUT (27): Output inventory is full
+
+    Note: Factorio 2.0 completely reorganized these values compared to 1.x.
     """
 
-    # Core states
-    WORKING = 0
-    NORMAL = 1
-    GHOST = 2
-    BROKEN = 3
+    # Core states (1-4)
+    WORKING = 1
+    NORMAL = 2
+    GHOST = 3
+    BROKEN = 4
 
-    # Power states
-    NO_POWER = 4
-    LOW_POWER = 5
-    NO_FUEL = 6
-    FROZEN = 7
+    # Electric network states (5-15)
+    NOT_PLUGGED_IN_ELECTRIC_NETWORK = 5
+    NETWORKS_CONNECTED = 6
+    NETWORKS_DISCONNECTED = 7
+    CHARGING = 8
+    DISCHARGING = 9
+    FULLY_CHARGED = 10
+    TURNED_OFF_DURING_DAYTIME = 11
+    CANT_DIVIDE_SEGMENTS = 12
+    NOT_CONNECTED_TO_RAIL = 13
+    LOW_POWER = 14
+    OUT_OF_LOGISTIC_NETWORK = 15
 
-    # Control states
-    DISABLED_BY_CONTROL_BEHAVIOR = 8
-    OPENED_BY_CIRCUIT_NETWORK = 9
-    CLOSED_BY_CIRCUIT_NETWORK = 10
-    DISABLED_BY_SCRIPT = 11
-    MARKED_FOR_DECONSTRUCTION = 12
-    PAUSED = 13
+    # Agriculture/growth states (16-17)
+    WAITING_FOR_PLANTS_TO_GROW = 16
+    NO_SPOT_SEEDABLE_BY_INPUTS = 17
 
-    # Electric network states
-    NOT_PLUGGED_IN_ELECTRIC_NETWORK = 14
-    NETWORKS_CONNECTED = 15
-    NETWORKS_DISCONNECTED = 16
-    CHARGING = 17
-    DISCHARGING = 18
-    FULLY_CHARGED = 19
+    # Recipe/ingredient states (18-31)
+    NO_INGREDIENTS = 18
+    NO_RECIPE = 19
+    NO_RESEARCH_IN_PROGRESS = 20
+    NO_MINABLE_RESOURCES = 21
+    NOT_CONNECTED_TO_HUB_OR_PAD = 22
+    LOW_INPUT_FLUID = 23
+    NO_INPUT_FLUID = 24
+    FLUID_INGREDIENT_SHORTAGE = 25
+    ITEM_INGREDIENT_SHORTAGE = 26
+    FULL_OUTPUT = 27
+    NOT_ENOUGH_SPACE_IN_OUTPUT = 28
+    FULL_BURNT_RESULT_OUTPUT = 29
+    MISSING_REQUIRED_FLUID = 30
+    MISSING_SCIENCE_PACKS = 31
 
-    # Logistics states
-    OUT_OF_LOGISTIC_NETWORK = 20
+    # Waiting states (32-34)
+    WAITING_FOR_SOURCE_ITEMS = 32
+    WAITING_FOR_MORE_ITEMS = 33
+    WAITING_FOR_SPACE_IN_DESTINATION = 34
 
-    # Recipe/ingredient states
-    NO_RECIPE = 21
-    NO_INGREDIENTS = 22
-    NO_INPUT_FLUID = 23
-    NO_RESEARCH_IN_PROGRESS = 24
-    NO_MINABLE_RESOURCES = 25
-    NOT_CONNECTED_TO_HUB_OR_PAD = 26
-    LOW_INPUT_FLUID = 27
-    FLUID_INGREDIENT_SHORTAGE = 28
-    FULL_OUTPUT = 29
-    NOT_ENOUGH_SPACE_IN_OUTPUT = 30
-    FULL_BURNT_RESULT_OUTPUT = 31
-    ITEM_INGREDIENT_SHORTAGE = 32
-    MISSING_REQUIRED_FLUID = 33
-    MISSING_SCIENCE_PACKS = 34
+    # Rocket/space states (35-49)
+    PREPARING_ROCKET_FOR_LAUNCH = 35
+    WAITING_TO_LAUNCH_ROCKET = 36
+    WAITING_FOR_SPACE_IN_PLATFORM_HUB = 37
+    LAUNCHING_ROCKET = 38
+    THRUST_NOT_REQUIRED = 39
+    ON_THE_WAY = 40
+    WAITING_IN_ORBIT = 41
+    WAITING_AT_STOP = 42
+    WAITING_FOR_ROCKETS_TO_ARRIVE = 43
+    NOT_ENOUGH_THRUST = 44
+    DESTINATION_STOP_FULL = 45
+    NO_PATH = 46
+    NO_MODULES_TO_TRANSMIT = 47
+    RECHARGING_AFTER_POWER_OUTAGE = 48
+    WAITING_FOR_TARGET_TO_BE_BUILT = 49
 
-    # Waiting states
-    WAITING_FOR_SOURCE_ITEMS = 35
-    WAITING_FOR_MORE_ITEMS = 36
-    WAITING_FOR_SPACE_IN_DESTINATION = 37
+    # Train/power/control states (50-62)
+    WAITING_FOR_TRAIN = 50
+    NO_AMMO = 51
+    LOW_TEMPERATURE = 52
+    NO_FUEL = 53
+    NO_POWER = 54
+    DISABLED_BY_CONTROL_BEHAVIOR = 55
+    CLOSED_BY_CIRCUIT_NETWORK = 56
+    OPENED_BY_CIRCUIT_NETWORK = 57
+    FROZEN = 58
+    PAUSED = 59
+    DISABLED_BY_SCRIPT = 60
+    DISABLED = 61
+    MARKED_FOR_DECONSTRUCTION = 62
 
-    # Rocket/space states
-    PREPARING_ROCKET_FOR_LAUNCH = 38
-    WAITING_TO_LAUNCH_ROCKET = 39
-    WAITING_FOR_SPACE_IN_PLATFORM_HUB = 40
-    LAUNCHING_ROCKET = 41
-    THRUST_NOT_REQUIRED = 42
-    ON_THE_WAY = 43
-    WAITING_IN_ORBIT = 44
-    WAITING_AT_STOP = 45
-    WAITING_FOR_ROCKETS_TO_ARRIVE = 46
-    NOT_ENOUGH_THRUST = 47
-    DESTINATION_STOP_FULL = 48
-    NO_PATH = 49
-
-    # Module/transmit states
-    NO_MODULES_TO_TRANSMIT = 50
-    RECHARGING_AFTER_POWER_OUTAGE = 51
-    WAITING_FOR_TARGET_TO_BE_BUILT = 52
-    WAITING_FOR_TRAIN = 53
-
-    # Combat/other states
-    NO_AMMO = 54
-    LOW_TEMPERATURE = 55
-    DISABLED = 56
-    TURNED_OFF_DURING_DAYTIME = 57
-    NOT_CONNECTED_TO_RAIL = 58
-    CANT_DIVIDE_SEGMENTS = 59
-
-    # Farming/agriculture states
-    NO_FILTER = 60
-    NO_SPOT_SEEDABLE_BY_INPUTS = 61
-    WAITING_FOR_PLANTS_TO_GROW = 62
-
-    # Navigation/misc states
+    # Navigation/misc states (63-67)
     COMPUTING_NAVIGATION = 63
-    PIPELINE_OVEREXTENDED = 64
-    RECIPE_NOT_RESEARCHED = 65
-    RECIPE_IS_PARAMETER = 66
+    NO_FILTER = 64
+    PIPELINE_OVEREXTENDED = 65
+    RECIPE_NOT_RESEARCHED = 66
+    RECIPE_IS_PARAMETER = 67
 
     def to_lua_name(self) -> str:
         """Get Lua-style name (e.g., 'working', 'no_power')."""

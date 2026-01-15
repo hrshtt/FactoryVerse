@@ -70,3 +70,55 @@ class EntityInspection(BaseModel):
     class Config:
         use_enum_values = True
         extra = "forbid"  # Strict schema - no unknown fields
+
+    def __repr__(self) -> str:
+        """Show inspection with status name instead of enum value."""
+        # Build base representation
+        parts = [
+            f"name='{self.name}'",
+            f"position={{'x': {self.position['x']}, 'y': {self.position['y']}}}",
+        ]
+
+        if self.direction is not None:
+            # Handle both enum objects and raw int values (use_enum_values=True)
+            if isinstance(self.direction, int):
+                try:
+                    parts.append(f"direction={Direction(self.direction).name}")
+                except (ValueError, TypeError):
+                    parts.append(f"direction={self.direction}")
+            else:
+                parts.append(f"direction={self.direction.name}")
+
+        if self.status is not None:
+            # Handle both enum objects and raw int values (use_enum_values=True)
+            if isinstance(self.status, int):
+                try:
+                    parts.append(f"status={EntityStatus(self.status).name}")
+                except (ValueError, TypeError):
+                    parts.append(f"status={self.status}")
+            else:
+                parts.append(f"status={self.status.name}")
+
+        if self.is_ghost:
+            parts.append("is_ghost=True")
+
+        # Add capability slots that are present
+        capability_slots = [
+            "burner",
+            "electric",
+            "crafter",
+            "miner",
+            "inserter",
+            "fluid",
+            "belt",
+            "container",
+            "lab",
+            "accumulator",
+            "electric_pole",
+            "generator",
+        ]
+        for slot in capability_slots:
+            if getattr(self, slot, None) is not None:
+                parts.append(f"{slot}={getattr(self, slot)}")
+
+        return f"EntityInspection({', '.join(parts)})"

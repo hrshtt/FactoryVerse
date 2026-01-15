@@ -7,7 +7,7 @@ with capability slots populated based on isinstance checks.
 
 from enum import Enum
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
-from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.factory.types import MapPosition, Direction, EntityStatus
 from FactoryVerse.factory.prototypes import get_entity_prototypes, get_width_height
 import math
 
@@ -287,12 +287,23 @@ class BaseEntity:
         # Get live inspection data from game
         raw_data = self._entity_ops.inspect_entity(self.name, self.position)
 
+        # Convert status to EntityStatus enum if present
+        status_value = raw_data.get("status")
+        status_enum = None
+        if status_value is not None:
+            # Status comes as integer (enum value) from Lua
+            try:
+                status_enum = EntityStatus(status_value)
+            except (ValueError, TypeError):
+                # If conversion fails, leave as None
+                status_enum = None
+
         # Build base inspection
         inspection = EntityInspection(
             name=self.name,
             position={"x": self.position.x, "y": self.position.y},
             direction=getattr(self, "direction", None),
-            status=raw_data.get("status"),
+            status=status_enum,
             is_ghost=False,
         )
 
@@ -418,4 +429,22 @@ class BaseEntity:
         )
         direction = getattr(self, "direction", None)
         dir_str = f", dir={direction.name}" if direction else ""
-        return f"{prefix}[{entity_name}]('{self.name}', ({pos.x}, {pos.y}){dir_str})"
+        
+        # Try to get status from inspection if available (for non-ghosts)
+        status_str = ""
+        if not self._is_ghost:
+            try:
+                # Get status from inspection without triggering full inspection
+                raw_data = self._entity_ops.inspect_entity(self.name, self.position)
+                status_value = raw_data.get("status")
+                if status_value is not None:
+                    try:
+                        status_enum = EntityStatus(status_value)
+                        status_str = f", status={status_enum.name}"
+                    except (ValueError, TypeError):
+                        pass
+            except Exception:
+                # If inspection fails, just skip status
+                pass
+        
+        return f"{prefix}[{entity_name}]('{self.name}', ({pos.x}, {pos.y}){dir_str}{status_str})"

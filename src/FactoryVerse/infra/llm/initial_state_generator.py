@@ -367,45 +367,70 @@ print(json.dumps(entities))'''
         # Technology & Recipes section
         lines.append("---\n\n")
 
-        # Get tech/recipe data using actual available methods
-        # Note: research.get_technologies() and crafting.get_recipes() don't exist
-        # Use status() methods which are available
-        tech_code = """import json
-# Get research status (current research, queue, progress)
-research_status = research.status()
+        # Get tech/recipe data via RCON
+        # Access rcon_client and agent_id from boilerplate's global namespace
+        tech_recipe_code = """import json
 
-# Extract research information
-research_info = {
-    "current_research": research_status.current_research,
-    "active": research_status.active,
-    "queued": research_status.queued,
-    "progress": research_status.progress,
-    "status": research_status.status,
-}
-# Add detailed progress if research is active
-if research_status.active and research_status.units_total:
-    research_info["units_completed"] = research_status.units_completed
-    research_info["units_total"] = research_status.units_total
-    research_info["units_remaining"] = research_status.units_remaining
-if research_status.queue_length > 0:
-    research_info["queue_length"] = research_status.queue_length
+# Initialize defaults
+enabled_recipe_names = []
+researched_tech_names = []
 
-# Get crafting status
-crafting_status = crafting.status()
+# Access rcon_client and agent_id from boilerplate globals
+# These are set up in boilerplate.py and available in the notebook namespace
+try:
+    # Get enabled recipes via agent interface
+    recipes_cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_recipes')))"
+    recipes_result = rcon_client.send_command(recipes_cmd)
+    
+    if recipes_result:
+        recipes = json.loads(recipes_result)
+        # Extract recipe names from the result
+        if isinstance(recipes, list):
+            for r in recipes:
+                if isinstance(r, dict) and r.get("name"):
+                    enabled_recipe_names.append(r["name"])
+except Exception as e:
+    print(f"Error getting recipes: {e}")
+
+try:
+    # Get researched technologies
+    techs_cmd = f"/c rcon.print(helpers.table_to_json(remote.call('{agent_id}', 'get_technologies')))"
+    techs_result = rcon_client.send_command(techs_cmd)
+    
+    if techs_result:
+        techs = json.loads(techs_result)
+        # Extract researched tech names
+        if isinstance(techs, dict):
+            for tech_name, tech_data in techs.items():
+                if isinstance(tech_data, dict) and tech_data.get("researched", False):
+                    researched_tech_names.append(tech_name)
+        elif isinstance(techs, list):
+            # Handle list format (actual return type)
+            for tech in techs:
+                if isinstance(tech, dict) and tech.get("researched", False):
+                    researched_tech_names.append(tech.get("name", ""))
+except Exception as e:
+    print(f"Error getting technologies: {e}")
 
 print(json.dumps({
-    "research": research_info,
-    "crafting_active": crafting_status.get("active", False) if crafting_status else False
+    "enabled_recipes": enabled_recipe_names,
+    "researched_technologies": researched_tech_names
 }))"""
 
         try:
-            self.runtime.execute_code(tech_code, compress_output=False)
-            # Pass empty lists since we can't easily enumerate all researched/enabled items
-            researched = []
-            enabled = []
+            output = self.runtime.execute_code(tech_recipe_code, compress_output=False)
+            # Parse the JSON output
+            try:
+                data = json.loads(output)
+                enabled = data.get("enabled_recipes", [])
+                researched = data.get("researched_technologies", [])
+            except (json.JSONDecodeError, ValueError):
+                # Fallback: try to extract from output
+                enabled = []
+                researched = []
         except Exception:
-            researched = []
             enabled = []
+            researched = []
 
         tech_section = self._generate_tech_and_recipes(researched, enabled)
         lines.append(tech_section)
