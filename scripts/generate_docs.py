@@ -89,6 +89,7 @@ from FactoryVerse.agent.actions.placement_hints import (
     PlacementHints,
     PlacementValidator,
     GhostPlan,
+    ConnectionPosition,
     ConnectionType,
     ITEM_DROP_ENTITIES,
     FLUID_PIPE_ENTITIES,
@@ -518,6 +519,14 @@ def generate_response_types() -> str:
         "A validated placement plan returned by `placement_hints` methods.",
     )
 
+    # ConnectionPosition
+    doc += generate_dataclass_docs(
+        ConnectionPosition,
+        "ConnectionPosition",
+        "A valid position for placing a target entity to connect to a source entity. "
+        "Returned by `get_connection_positions()` with alignment information.",
+    )
+
     # ResearchStatus
     doc += generate_dataclass_docs(
         ResearchStatus,
@@ -678,7 +687,13 @@ def generate_resource_types() -> str:
     doc += "# await resource.mine()   # ✗ AttributeError - REMOTE view blocks mine()\n"
     doc += "```\n\n"
 
-    doc += "**To mine:** Use `await resource.walk_to()` to navigate, then use `reachable.get_resource(name, position)` to get a REACHABLE view resource.\n\n"
+    doc += "**To mine:** Use `await resource.walk_to()` to navigate. After walking, the resource **automatically becomes REACHABLE** and you can mine it directly - no need to get it again via `reachable.get_resource()`.\n\n"
+    doc += "```python\n"
+    doc += "# Preferred pattern:\n"
+    doc += "iron_ore = remote_view.get_resources(\"SELECT * FROM resource_tile WHERE name = 'iron-ore' LIMIT 1\")[0]\n"
+    doc += "await iron_ore.walk_to()  # Automatically converts to REACHABLE\n"
+    doc += "items = await iron_ore.mine(max_count=25)  # Use directly\n"
+    doc += "```\n\n"
 
     # Common confusion clarification
     doc += "### Patch vs Tile Distinction\n\n"
@@ -719,22 +734,31 @@ items = await coal.mine(max_count=25)  # -> List[ItemStack]
 
 Query entities anywhere via SQL. Cannot mutate - walk to them first.
 
+**IMPORTANT**: Use `entity.walk_to()` or `resource.walk_to()` on remote objects. After walking, the entity/resource **automatically becomes REACHABLE** and you can use it directly - no need to get it again via `reachable.get_entity()` or `reachable.get_resource()`.
+
 ```python
 # Entities
 drills = remote_view.get_entities("SELECT * FROM map_entity WHERE entity_name = 'electric-mining-drill'")  # -> List[BaseEntity]
-entity = remote_view.get_entity("SELECT * FROM map_entity LIMIT 1")  # -> Optional[BaseEntity]
+drill = drills[0]
 
-# Walk to remote entities
-await entity.walk_to()  # Navigate to entity (entity-aware pathfinding)
+# Walk to the drill - it automatically becomes REACHABLE
+await drill.walk_to()  # Entity-aware pathfinding
+
+# Now you can use it directly - no need to get it again!
+drill.add_fuel(inventory.create_item_stacks("coal", 5))
 
 # Ghosts  
 ghosts = remote_view.get_ghosts("SELECT * FROM ghost")  # -> List[BaseEntity]
 
 # Resources
 resources = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore'")  # -> List[BaseResource] (REMOTE view)
+iron_ore = resources[0]
 
-# Walk to remote resources
-await resources[0].walk_to()  # Navigate to resource (entity-aware pathfinding)
+# Walk to the resource - it automatically becomes REACHABLE
+await iron_ore.walk_to()  # Entity-aware pathfinding
+
+# Now you can mine it directly!
+items = await iron_ore.mine(max_count=25)
 
 # Counts
 count = remote_view.count_entities("stone-furnace")  # -> int
@@ -880,12 +904,22 @@ pipe_positions = placement_hints.get_connection_positions(
     source_entity=boiler,
     target_entity_name="pipe",
     connection_type=ConnectionType.FLUID_PIPE
-)  # -> List[Tuple[MapPosition, Optional[Direction]]]
+)  # -> List[ConnectionPosition]
 
 # Place pipes at valid positions
-for pos, direction in pipe_positions:
-    inventory.get_item("pipe").place(pos, direction)
+# Positions are sorted by alignment (lower perpendicular_offset = better aligned)
+for conn_pos in pipe_positions:
+    inventory.get_item("pipe").place(conn_pos.position, conn_pos.direction)
+    # conn_pos.perpendicular_offset tells you how well-aligned this position is
 ```
+
+**Return Value:**
+- Returns `List[ConnectionPosition]` - structured objects with `.position`, `.direction`, and `.perpendicular_offset`
+- Positions are sorted by alignment (lower `perpendicular_offset` = better aligned with source entity)
+- `perpendicular_offset`: Distance from source entity perpendicular to flow direction (0.0 = perfectly aligned)
+- `direction`: May be `None` if the target entity doesn't require explicit direction
+- Entities like pipes, chests can be placed without direction (Factorio auto-determines it)
+- Always pass `conn_pos.direction` directly to `place()` - it handles `None` gracefully
 
 ### Validation API
 
@@ -1105,18 +1139,21 @@ def generate_examples() -> str:
 ore_deposits = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore' LIMIT 5")
 target_resource = ore_deposits[0]
 
-# 2. Walk to the resource (entity-aware pathfinding)
-await target_resource.walk_to()  # Or: await walking.walk_to(target_resource.position)
+# 2. Walk to the resource - it automatically becomes REACHABLE
+await target_resource.walk_to()  # Entity-aware pathfinding
 
-# 3. Get reachable resources (now in range)
-iron_ore = reachable.get_resource("iron-ore")
+# 3. Use it directly - no need to get it again!
+items = await target_resource.mine(max_count=25)
 
-# 4. Manual mining for bootstrap resources
-coal = await reachable.get_resource("coal").mine(max_count=10)
+# 4. Manual mining for bootstrap resources (if needed)
+coal_resources = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'coal' LIMIT 1")
+if coal_resources:
+    await coal_resources[0].walk_to()
+    coal_items = await coal_resources[0].mine(max_count=10)
 
 # 5. Place automated mining
 drill_item = inventory.get_item("burner-mining-drill")
-drill = drill_item.place(iron_ore.position, Direction.SOUTH)
+drill = drill_item.place(target_resource.position, Direction.SOUTH)
 
 # 6. Fuel the drill
 fuel = inventory.create_item_stacks("coal", 5)
@@ -1154,19 +1191,16 @@ drills = remote_view.get_entities(
 )
 
 for remote_drill in drills:
-    # 2. Walk to each drill (entity-aware pathfinding)
-    await remote_drill.walk_to()  # Or: await walking.walk_to(remote_drill.position)
+    # 2. Walk to the drill - it automatically becomes REACHABLE
+    await remote_drill.walk_to()  # Entity-aware pathfinding
     
-    # 3. Get reachable version for full access
-    drill = reachable.get_entity("burner-mining-drill", remote_drill.position)
-    
-    # 4. Check if it needs fuel
-    state = drill.inspect()
+    # 3. Use it directly - no need to get it again!
+    state = remote_drill.inspect()
     if state.burner.fuel_inventory.get("coal", 0) < 5:
         fuel = inventory.create_item_stacks("coal", 10)
-        drill.add_fuel(fuel)
+        remote_drill.add_fuel(fuel)
 
-# 5. Stop walking when done
+# 4. Stop walking when done
 walking.stop()
 ```
 

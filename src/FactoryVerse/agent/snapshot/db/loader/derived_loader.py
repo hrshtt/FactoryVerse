@@ -36,7 +36,7 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
 
     # Get all electric poles from map_entity
     poles = con.execute("""
-        SELECT entity_key, entity_name, position
+        SELECT entity_name, position_x, position_y, position
         FROM map_entity
         WHERE entity_name IN (
             SELECT DISTINCT entity_name FROM map_entity
@@ -49,20 +49,14 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
 
     # Process each pole
     for row in poles:
-        entity_key = row[0]
-        entity_name = row[1]
-        position_data = row[2]  # This is already a dict (STRUCT from DuckDB)
+        entity_name = row[0]
+        px = float(row[1])
+        py = float(row[2])
+        position_data = row[3]  # This is already a dict (STRUCT from DuckDB)
 
-        # Handle both dict (STRUCT) and JSON string cases
-        if isinstance(position_data, dict):
-            position = position_data
-        elif isinstance(position_data, str):
-            position = json.loads(position_data)
-        else:
-            continue
-
-        x = float(position.get("x", 0))
-        y = float(position.get("y", 0))
+        # Use position from composite key columns
+        x = px
+        y = py
 
         # Get supply area distance from prototype
         pole_proto = prototypes.get_prototype(entity_name)
@@ -86,45 +80,38 @@ def derive_electric_poles(con: duckdb.DuckDBPyConnection) -> None:
         # First get all other poles
         all_poles = con.execute(
             """
-            SELECT entity_key, position
+            SELECT entity_name, position_x, position_y
             FROM map_entity
-            WHERE entity_key != ?
+            WHERE NOT (entity_name = ? AND position_x = ? AND position_y = ?)
             AND entity_name IN (
                 SELECT DISTINCT entity_name FROM map_entity
                 WHERE entity_name LIKE '%electric-pole%' OR entity_name LIKE '%pole%'
             )
         """,
-            [entity_key],
+            [entity_name, px, py],
         ).fetchall()
 
         # Filter by distance in Python (DuckDB spatial functions need proper geometry types)
         connected = []
         for other_row in all_poles:
-            other_key = other_row[0]
-            other_pos_data = other_row[1]  # Already a dict (STRUCT from DuckDB)
-
-            # Handle both dict (STRUCT) and JSON string cases
-            if isinstance(other_pos_data, dict):
-                other_pos = other_pos_data
-            elif isinstance(other_pos_data, str):
-                other_pos = json.loads(other_pos_data)
-            else:
-                continue
-
-            other_x, other_y = other_pos.get("x", 0), other_pos.get("y", 0)
+            other_name = other_row[0]
+            other_x = float(other_row[1])
+            other_y = float(other_row[2])
             distance = ((x - other_x) ** 2 + (y - other_y) ** 2) ** 0.5
             if distance <= max_wire_distance:
-                connected.append(other_key)
+                # Store as entity_key string for backward compatibility with connected_poles array
+                # This is just a reference array, not a foreign key
+                connected.append(f"({other_name}:{other_x},{other_y})")
 
         connected_poles = connected
 
         # Insert or update (use ST_MakeEnvelope to create GEOMETRY)
         con.execute(
             """
-            INSERT OR REPLACE INTO electric_pole (entity_key, supply_area, connected_poles)
-            VALUES (?, ST_MakeEnvelope(?, ?, ?, ?), ?)
+            INSERT OR REPLACE INTO electric_pole (entity_name, position_x, position_y, supply_area, connected_poles)
+            VALUES (?, ?, ?, ST_MakeEnvelope(?, ?, ?, ?), ?)
             """,
-            [entity_key, min_x, min_y, max_x, max_y, json.dumps(connected_poles)],
+            [entity_name, px, py, min_x, min_y, max_x, max_y, json.dumps(connected_poles)],
         )
 
 
@@ -160,10 +147,10 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection) -> None:
         # This query fetches ALL tiles from ALL chunks in one go - no chunk filtering
         tiles = con.execute(
             """
-            SELECT entity_key, position, amount
+            SELECT name, position_x, position_y, position, amount
             FROM resource_tile
             WHERE name = ?
-            ORDER BY entity_key
+            ORDER BY name, position_x, position_y
         """,
             [resource_name],
         ).fetchall()
@@ -180,20 +167,15 @@ def derive_resource_patches(con: duckdb.DuckDBPyConnection) -> None:
         tile_keys = []
         amounts = []
         for row in tiles:
-            tile_key = row[0]
-            position_data = row[1]  # This is already a dict (STRUCT from DuckDB)
-            amount = row[2]
+            tile_name = row[0]
+            px = float(row[1])
+            py = float(row[2])
+            amount = row[4] if len(row) > 4 else row[3]  # Handle different row structures
 
-            # Handle both dict (STRUCT) and JSON string cases
-            if isinstance(position_data, dict):
-                pos = position_data
-            elif isinstance(position_data, str):
-                pos = json.loads(position_data)
-            else:
-                continue
-
-            positions.append([pos.get("x", 0), pos.get("y", 0)])
-            tile_keys.append(tile_key)
+            positions.append([px, py])
+            # Store as entity_key string for backward compatibility with tiles array
+            # This is just a reference array, not a foreign key
+            tile_keys.append(f"({tile_name}:{px},{py})")
             amounts.append(amount)
 
         if len(positions) < 2:
@@ -275,9 +257,9 @@ def derive_water_patches(con: duckdb.DuckDBPyConnection) -> None:
     # Get ALL water tiles GLOBALLY (across all chunks)
     # This query should return tiles from ALL chunks, not filtered by chunk
     tiles = con.execute("""
-        SELECT entity_key, position
+        SELECT position_x, position_y, position
         FROM water_tile
-        ORDER BY entity_key
+        ORDER BY position_x, position_y
     """).fetchall()
 
     if not tiles:
@@ -292,27 +274,20 @@ def derive_water_patches(con: duckdb.DuckDBPyConnection) -> None:
     ] = {}  # Store original positions for centroid
 
     for row in tiles:
-        tile_key = row[0]
-        position_data = row[1]  # This is already a dict (STRUCT from DuckDB)
-
-        # Handle both dict (STRUCT) and JSON string cases
-        if isinstance(position_data, dict):
-            pos = position_data
-        elif isinstance(position_data, str):
-            pos = json.loads(position_data)
-        else:
-            continue
-
+        px = float(row[0])
+        py = float(row[1])
+        
         # Get tile coordinates - use floor to ensure we get the correct tile
         # Water tiles are typically at integer positions, but we floor to be safe
-        x = pos.get("x", 0)
-        y = pos.get("y", 0)
-        tile_x = int(math.floor(x))
-        tile_y = int(math.floor(y))
+        tile_x = int(math.floor(px))
+        tile_y = int(math.floor(py))
 
         tile_coord = (tile_x, tile_y)
+        # Store as entity_key string for backward compatibility with tiles array
+        # This is just a reference array, not a foreign key
+        tile_key = f"(water:{px},{py})"
         tile_map[tile_coord] = tile_key
-        position_map[tile_coord] = (float(x), float(y))
+        position_map[tile_coord] = (float(px), float(py))
 
     # Union-Find for 8-connectivity
     parent: Dict[Tuple[int, int], Tuple[int, int]] = {}
@@ -427,45 +402,36 @@ def derive_belt_network(con: duckdb.DuckDBPyConnection) -> None:
     # Get all belts with their connections
     belts = con.execute("""
         SELECT 
-            tb.entity_key,
+            tb.entity_name,
+            tb.position_x,
+            tb.position_y,
             tb.direction,
             tb.output,
-            tb.input,
-            me.position
+            tb.input
         FROM transport_belt tb
-        JOIN map_entity me ON tb.entity_key = me.entity_key
     """).fetchall()
 
     if not belts:
         return
 
-    # Build graph
-    belt_graph: Dict[str, List[str]] = defaultdict(
-        list
-    )  # entity_key -> [connected_keys]
-    belt_positions: Dict[str, Tuple[float, float]] = {}
-    belt_directions: Dict[str, str] = {}
+    # Build graph using composite keys
+    belt_graph: Dict[Tuple[str, float, float], List[Tuple[str, float, float]]] = defaultdict(list)
+    belt_positions: Dict[Tuple[str, float, float], Tuple[float, float]] = {}
+    belt_directions: Dict[Tuple[str, float, float], str] = {}
 
     for row in belts:
-        entity_key = row[0]
-        direction = row[1]
-        output_json = row[2]
-        input_json = row[3]
-        position_data = row[4]  # This is already a dict (STRUCT from DuckDB)
+        entity_name = row[0]
+        px = float(row[1])
+        py = float(row[2])
+        direction = row[3]
+        output_json = row[4]
+        input_json = row[5]
 
-        # Handle both dict (STRUCT) and JSON string cases
-        if isinstance(position_data, dict):
-            pos = position_data
-        elif isinstance(position_data, str):
-            pos = json.loads(position_data)
-        else:
-            continue
-
-        belt_positions[entity_key] = (float(pos.get("x", 0)), float(pos.get("y", 0)))
-        belt_directions[entity_key] = direction
+        composite_key = (entity_name, px, py)
+        belt_positions[composite_key] = (px, py)
+        belt_directions[composite_key] = direction
 
         # Add output connections
-        # Handle both dict (STRUCT) and JSON string cases
         if output_json:
             if isinstance(output_json, dict):
                 output = output_json
@@ -475,12 +441,14 @@ def derive_belt_network(con: duckdb.DuckDBPyConnection) -> None:
                 output = None
 
             if output:
-                output_key = output.get("entity_key")
-                if output_key:
-                    belt_graph[entity_key].append(output_key)
+                out_name = output.get("entity_name")
+                out_x = output.get("position_x")
+                out_y = output.get("position_y")
+                if out_name and out_x is not None and out_y is not None:
+                    out_key = (out_name, float(out_x), float(out_y))
+                    belt_graph[composite_key].append(out_key)
 
         # Add input connections
-        # Handle both list/array and JSON string cases
         if input_json:
             if isinstance(input_json, (list, tuple)):
                 inputs = input_json
@@ -491,24 +459,20 @@ def derive_belt_network(con: duckdb.DuckDBPyConnection) -> None:
 
             if inputs:
                 for inp in inputs:
-                    # Handle both dict and string cases
                     if isinstance(inp, dict):
-                        input_key = inp.get("entity_key")
-                    elif isinstance(inp, str):
-                        # If it's a string, it might be the entity_key directly
-                        input_key = inp
-                    else:
-                        continue
-
-                    if input_key:
-                        belt_graph[input_key].append(entity_key)
+                        inp_name = inp.get("entity_name")
+                        inp_x = inp.get("position_x")
+                        inp_y = inp.get("position_y")
+                        if inp_name and inp_x is not None and inp_y is not None:
+                            inp_key = (inp_name, float(inp_x), float(inp_y))
+                            belt_graph[inp_key].append(composite_key)
 
     # Find connected components (belt lines)
-    visited: Set[str] = set()
+    visited: Set[Tuple[str, float, float]] = set()
     line_id = 1
     segment_id = 1
 
-    def dfs(belt_key: str, component: List[str]):
+    def dfs(belt_key: Tuple[str, float, float], component: List[Tuple[str, float, float]]):
         if belt_key in visited:
             return
         visited.add(belt_key)
@@ -537,26 +501,31 @@ def derive_belt_network(con: duckdb.DuckDBPyConnection) -> None:
             # Create buffer polygon for geom
             geom_wkt = f"POLYGON(({min(x for x, _ in positions)} {min(y for _, y in positions)}, {max(x for x, _ in positions)} {min(y for _, y in positions)}, {max(x for x, _ in positions)} {max(y for _, y in positions)}, {min(x for x, _ in positions)} {max(y for _, y in positions)}, {min(x for x, _ in positions)} {min(y for _, y in positions)}))"
 
+            # Convert composite keys to entity_key strings for belts array (backward compatibility)
+            belt_key_strings = [f"({name}:{x},{y})" for name, x, y in belt_keys]
+            
             con.execute(
                 """
                 INSERT OR REPLACE INTO belt_line (line_id, geom, line_segments, belts)
                 VALUES (?, ST_GeomFromText(?), ST_GeomFromText(?), ?)
             """,
-                [line_id, geom_wkt, line_wkt, json.dumps(belt_keys)],
+                [line_id, geom_wkt, line_wkt, json.dumps(belt_key_strings)],
             )
 
             # Create segments (simplified - one segment per line for now)
             # In reality, segments should be split at merges/splits
-            start_entity = belt_keys[0]
-            end_entity = belt_keys[-1]
+            start_key = belt_keys[0]  # (entity_name, x, y)
+            end_key = belt_keys[-1]  # (entity_name, x, y)
 
             con.execute(
                 """
                 INSERT OR REPLACE INTO belt_line_segment (
                     segment_id, line_id, segment_order, geom, line, belts,
-                    upstream_segments, downstream_segments, start_entity, end_entity
+                    upstream_segments, downstream_segments, 
+                    start_entity_name, start_entity_x, start_entity_y,
+                    end_entity_name, end_entity_x, end_entity_y
                 )
-                VALUES (?, ?, ?, ST_GeomFromText(?), ST_GeomFromText(?), ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ST_GeomFromText(?), ST_GeomFromText(?), ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 [
                     segment_id,
@@ -564,11 +533,15 @@ def derive_belt_network(con: duckdb.DuckDBPyConnection) -> None:
                     0,
                     geom_wkt,
                     line_wkt,
-                    json.dumps(belt_keys),
+                    json.dumps(belt_key_strings),
                     json.dumps([]),
                     json.dumps([]),
-                    start_entity,
-                    end_entity,
+                    start_key[0],  # entity_name
+                    start_key[1],  # x
+                    start_key[2],  # y
+                    end_key[0],    # entity_name
+                    end_key[1],    # x
+                    end_key[2],    # y
                 ],
             )
 

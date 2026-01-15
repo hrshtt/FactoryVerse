@@ -5,8 +5,11 @@ Handles all crafting-related operations with async support via RconHandler and A
 
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
+import logging
 
 from FactoryVerse.agent.models import AsyncActionResponse, AsyncActionCompletion
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
@@ -39,6 +42,14 @@ class CraftingCompleted(AsyncActionCompletion):
 
     items: Optional[Dict[str, int]] = None
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CraftingCompleted":
+        """Create instance from dict, mapping 'products' to 'items' for compatibility."""
+        # Handle both 'products' (from Lua) and 'items' (preferred)
+        if "products" in data and "items" not in data:
+            data = {**data, "items": data["products"]}
+        return super().from_dict(data)
+
     def __post_init__(self):
         if self.items is None:
             self.items = {}
@@ -51,21 +62,45 @@ class CraftingCompleted(AsyncActionCompletion):
     def to_item_stacks(self, placement: Optional["PlacementAction"] = None) -> List["ItemStack"]:
         """Convert crafted items to ItemStack list with placement injected.
         
+        Always returns a list of ItemStack objects, even if empty.
+        
         Args:
             placement: PlacementAction to inject into items (required for .place() to work)
+            
+        Returns:
+            List of ItemStack objects (never None, never empty dict, always a list)
         """
         from FactoryVerse.factory.item.create_item import create_item_stack
         
         stacks = []
-        for name, count in (self.items or {}).items():
-            stacks.append(
-                create_item_stack(
+        
+        # Ensure items is a dict (handle None, empty dict, etc.)
+        items = self.items or {}
+        if not isinstance(items, dict):
+            logger.warning(f"CraftingCompleted.items is not a dict: {type(items)}, defaulting to empty dict")
+            items = {}
+        
+        # Convert each item to ItemStack
+        for name, count in items.items():
+            if not name or not isinstance(name, str):
+                logger.warning(f"Skipping invalid item name: {name}")
+                continue
+            if not isinstance(count, (int, float)) or count <= 0:
+                logger.warning(f"Skipping invalid item count for {name}: {count}")
+                continue
+                
+            try:
+                item_stack = create_item_stack(
                     name=name,
-                    count=count,
+                    count=int(count),
                     placement=placement,
                     subgroup="intermediate-product",
                 )
-            )
+                stacks.append(item_stack)
+            except Exception as e:
+                logger.error(f"Failed to create ItemStack for {name} (count={count}): {e}")
+                # Continue processing other items even if one fails
+        
         return stacks
 
 
@@ -127,7 +162,12 @@ class CraftingAction:
         completion = CraftingCompleted.from_dict(completion_dict)
 
         # Return items as ItemStack list
-        return completion.to_item_stacks(self._placement)
+        # Always returns a list of ItemStack objects (never None, never empty dict)
+        item_stacks = completion.to_item_stacks(self._placement)
+        if not isinstance(item_stacks, list):
+            logger.error(f"CraftingCompleted.to_item_stacks() returned non-list: {type(item_stacks)}, returning empty list")
+            return []
+        return item_stacks
 
     def enqueue(self, recipe: str, count: int = 1) -> Dict[str, Any]:
         """Enqueue a recipe for crafting.

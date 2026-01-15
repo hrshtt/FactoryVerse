@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+from pathlib import Path
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -112,6 +113,7 @@ class QueryExecutor:
         mining_action: "MiningAction",
         sync_service: Optional["SyncService"] = None,
         db_lock: Optional[threading.Lock] = None,
+        status_dir: Optional["Path"] = None,
     ):
         """Initialize query executor.
 
@@ -123,6 +125,7 @@ class QueryExecutor:
             mining_action: Mining action (required for resources)
             sync_service: Sync service for flushing pending writes before reads
             db_lock: Shared lock for thread-safe database access
+            status_dir: Optional path to status directory for on-demand status loading
         """
         self._db = db
         self._entity_ops = entity_ops
@@ -131,12 +134,14 @@ class QueryExecutor:
         self._mining_action = mining_action
         self._sync_service = sync_service
         self._db_lock = db_lock if db_lock is not None else threading.Lock()
+        self._status_dir = status_dir
 
     def query(self, sql: str) -> List[Dict[str, Any]]:
         """Execute raw SQL, return list of dicts.
 
         Validates query is read-only SELECT.
         Flushes pending writes before reading to ensure consistency.
+        Automatically loads status data if query references entity_status_latest.
 
         Args:
             sql: SQL query string (must be SELECT)
@@ -149,13 +154,15 @@ class QueryExecutor:
         """
         self._validate_query(sql)
 
+        # Check if query references entity_status_latest view
+        # If so, ensure status is loaded before executing query
+        sql_upper = sql.upper()
+        if "ENTITY_STATUS_LATEST" in sql_upper or "TEMP_ENTITY_STATUS" in sql_upper:
+            self._ensure_status_loaded()
+
         # CRITICAL: Flush pending writes before reading
-        print(
-            f"[QUERY] About to flush, sync_service exists: {self._sync_service is not None}"
-        )
         if self._sync_service:
             flushed = self._sync_service.flush_pending()
-            print(f"[QUERY] Flushed {flushed} operations")
             if flushed > 0:
                 logger.info(f"Flushed {flushed} operations before query")
 
@@ -441,6 +448,44 @@ class QueryExecutor:
             "placed_by": row.get("placed_by"),
             "label": row.get("label"),
         }
+
+    # =========================================================================
+    # Status Loading
+    # =========================================================================
+
+    def _ensure_status_loaded(self) -> None:
+        """Ensure status data is loaded into temp_entity_status table.
+        
+        Loads the latest status file on-demand when queries reference
+        entity_status_latest or temp_entity_status. This allows queries to
+        join status with map entities without requiring a persistent service.
+        """
+        if not self._status_dir:
+            logger.warning(
+                "Query references entity_status_latest but status_dir not provided. "
+                "Status data will not be available."
+            )
+            return
+        
+        status_dir = Path(self._status_dir)
+        if not status_dir.exists():
+            logger.debug(f"Status directory does not exist: {status_dir}")
+            return
+        
+        # Check if temp_entity_status table already exists and has data
+        # If it does, we can skip loading (status is loaded fresh on each query)
+        # Actually, we want to always load the latest status file to ensure freshness
+        try:
+            from .db.loader.status_loader import load_latest_status
+            
+            with self._db_lock:
+                count = load_latest_status(self._db, status_dir)
+                if count > 0:
+                    logger.debug(f"Loaded {count} status records for query")
+                else:
+                    logger.debug("No status records found to load")
+        except Exception as e:
+            logger.warning(f"Failed to load status data: {e}")
 
 
 __all__ = ["QueryExecutor"]

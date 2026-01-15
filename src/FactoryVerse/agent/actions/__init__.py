@@ -29,6 +29,7 @@ from FactoryVerse.agent.actions.placement_hints import (
     PlacementHints,
     PlacementValidator,
     GhostPlan,
+    ConnectionPosition,
     ConnectionType,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "PlacementHints",
     "PlacementValidator",
     "GhostPlan",
+    "ConnectionPosition",
     "ConnectionType",
 ]

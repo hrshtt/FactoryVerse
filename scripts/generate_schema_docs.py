@@ -2,7 +2,7 @@
 """Generate DuckDB schema documentation for LLMs.
 
 This script generates comprehensive schema documentation for the FactoryVerse
-DuckDB database, including table schemas, query constraints, and usage examples.
+DuckDB database by introspecting the schema definitions module.
 
 Usage:
     # From project root:
@@ -11,171 +11,23 @@ Usage:
     # Output: docs/for-llms/schema_reference.md
 """
 
+import sys
 import argparse
 from pathlib import Path
 from datetime import datetime
 
-# =============================================================================
-# PATHS
-# =============================================================================
-
+# Add src to path for imports
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-
-# =============================================================================
-# SCHEMA DEFINITIONS
-# =============================================================================
-
-# Table schemas derived from database.py
-TABLES = {
-    "map_entity": {
-        "purpose": "Core entity table containing all placed entities on the map",
-        "primary_key": "entity_key",
-        "columns": [
-            ("entity_key", "VARCHAR", "Unique identifier for the entity"),
-            (
-                "entity_name",
-                "VARCHAR",
-                "Factorio internal name (e.g., 'burner-mining-drill')",
-            ),
-            ("position_x", "DOUBLE", "X coordinate on the map"),
-            ("position_y", "DOUBLE", "Y coordinate on the map"),
-            ("chunk_x", "INTEGER", "Chunk X coordinate (for spatial queries)"),
-            ("chunk_y", "INTEGER", "Chunk Y coordinate (for spatial queries)"),
-            (
-                "direction",
-                "VARCHAR",
-                "Entity direction (NORTH, EAST, SOUTH, WEST, etc.)",
-            ),
-            ("bbox_min_x", "DOUBLE", "Bounding box minimum X"),
-            ("bbox_min_y", "DOUBLE", "Bounding box minimum Y"),
-            ("bbox_max_x", "DOUBLE", "Bounding box maximum X"),
-            ("bbox_max_y", "DOUBLE", "Bounding box maximum Y"),
-            (
-                "electric_network_id",
-                "INTEGER",
-                "Electric network this entity belongs to",
-            ),
-            ("agent_id", "INTEGER", "ID of agent that placed this entity (if any)"),
-            ("player_id", "INTEGER", "ID of player that placed this entity (if any)"),
-            ("label", "VARCHAR", "Optional user-defined label"),
-            ("placed_tick", "INTEGER", "Game tick when entity was placed"),
-            ("raw_data", "VARCHAR", "JSON blob with full entity data"),
-        ],
-        "example_query": "SELECT * FROM map_entity WHERE entity_name = 'burner-mining-drill'",
-    },
-    "ghost": {
-        "purpose": "Ghost entities - planned placements that haven't been built yet",
-        "primary_key": "entity_key",
-        "columns": [
-            ("entity_key", "VARCHAR", "Unique identifier for the ghost"),
-            ("ghost_name", "VARCHAR", "Entity name this ghost will become when built"),
-            ("position_x", "DOUBLE", "X coordinate on the map"),
-            ("position_y", "DOUBLE", "Y coordinate on the map"),
-            ("chunk_x", "INTEGER", "Chunk X coordinate"),
-            ("chunk_y", "INTEGER", "Chunk Y coordinate"),
-            ("direction", "VARCHAR", "Entity direction"),
-            ("placed_tick", "INTEGER", "Game tick when ghost was created"),
-            ("placed_by", "VARCHAR", "Who placed this ghost (agent/player)"),
-            ("label", "VARCHAR", "Optional label"),
-            ("raw_data", "VARCHAR", "JSON blob with full ghost data"),
-        ],
-        "example_query": "SELECT * FROM ghost WHERE ghost_name = 'assembling-machine-1'",
-    },
-    "resource_tile": {
-        "purpose": "Ore deposits (iron-ore, copper-ore, coal, stone, uranium-ore)",
-        "primary_key": "entity_key",
-        "columns": [
-            ("entity_key", "VARCHAR", "Unique identifier"),
-            ("name", "VARCHAR", "Resource type (e.g., 'iron-ore', 'coal')"),
-            ("position_x", "DOUBLE", "X coordinate"),
-            ("position_y", "DOUBLE", "Y coordinate"),
-            ("chunk_x", "INTEGER", "Chunk X coordinate"),
-            ("chunk_y", "INTEGER", "Chunk Y coordinate"),
-            ("amount", "INTEGER", "Remaining ore amount in this tile"),
-        ],
-        "example_query": "SELECT * FROM resource_tile WHERE name = 'iron-ore' AND amount > 1000",
-    },
-    "resource_entity": {
-        "purpose": "Natural resources like trees, rocks, and other minable objects",
-        "primary_key": "entity_key",
-        "columns": [
-            ("entity_key", "VARCHAR", "Unique identifier"),
-            ("name", "VARCHAR", "Entity name (e.g., 'tree-01', 'rock-big')"),
-            ("entity_type", "VARCHAR", "Type category (tree, simple-entity for rocks, etc.)"),
-            ("position_x", "DOUBLE", "X coordinate"),
-            ("position_y", "DOUBLE", "Y coordinate"),
-            ("chunk_x", "INTEGER", "Chunk X coordinate"),
-            ("chunk_y", "INTEGER", "Chunk Y coordinate"),
-            ("raw_data", "VARCHAR", "JSON blob with full data"),
-        ],
-        "example_queries": [
-            "SELECT * FROM resource_entity WHERE entity_type = 'tree'",
-            "-- Query rocks (use 'rock' - automatically converted to 'simple-entity' in database)",
-            "SELECT * FROM resource_entity WHERE entity_type = 'rock'",
-            "-- Or use 'simple-entity' directly (database storage format)",
-            "SELECT * FROM resource_entity WHERE entity_type = 'simple-entity'",
-        ],
-        "notes": (
-            "**Note on entity_type for rocks:** The database stores 'simple-entity' for rocks "
-            "(Factorio's internal type), but you can use 'rock' in SQL queries via `get_resources()` - "
-            "it will be automatically converted. Both work: `WHERE entity_type = 'rock'` or "
-            "`WHERE entity_type = 'simple-entity'`."
-        ),
-    },
-    "water_tile": {
-        "purpose": "Water tiles on the map",
-        "primary_key": "entity_key",
-        "columns": [
-            ("entity_key", "VARCHAR", "Unique identifier"),
-            ("position_x", "DOUBLE", "X coordinate"),
-            ("position_y", "DOUBLE", "Y coordinate"),
-            ("chunk_x", "INTEGER", "Chunk X coordinate"),
-            ("chunk_y", "INTEGER", "Chunk Y coordinate"),
-        ],
-        "example_query": "SELECT * FROM water_tile WHERE chunk_x = 0 AND chunk_y = 0",
-    },
-}
-
-# Component tables (joined via entity_key FK)
-COMPONENT_TABLES = {
-    "inserter": {
-        "purpose": "Inserter-specific data",
-        "columns": [
-            ("entity_key", "VARCHAR", "FK to map_entity"),
-            ("direction", "VARCHAR", "Inserter direction"),
-            ("pickup_position_x", "DOUBLE", "Pickup position X"),
-            ("pickup_position_y", "DOUBLE", "Pickup position Y"),
-            ("drop_position_x", "DOUBLE", "Drop position X"),
-            ("drop_position_y", "DOUBLE", "Drop position Y"),
-        ],
-    },
-    "transport_belt": {
-        "purpose": "Transport belt data",
-        "columns": [
-            ("entity_key", "VARCHAR", "FK to map_entity"),
-            ("direction", "VARCHAR", "Belt direction"),
-            ("belt_speed", "DOUBLE", "Belt speed"),
-        ],
-    },
-    "mining_drill": {
-        "purpose": "Mining drill data",
-        "columns": [
-            ("entity_key", "VARCHAR", "FK to map_entity"),
-            ("direction", "VARCHAR", "Drill direction"),
-            ("mining_target", "VARCHAR", "What resource this drill is mining"),
-        ],
-    },
-    "assembler": {
-        "purpose": "Assembling machine data",
-        "columns": [
-            ("entity_key", "VARCHAR", "FK to map_entity"),
-            ("recipe", "VARCHAR", "Currently set recipe"),
-            ("crafting_speed", "DOUBLE", "Crafting speed multiplier"),
-        ],
-    },
-}
+# Import schema definitions (single source of truth)
+from FactoryVerse.agent.snapshot.schema_definitions import (
+    CORE_TABLES,
+    COMPONENT_TABLES,
+    TableDefinition,
+    ColumnDefinition,
+)
 
 # Forbidden SQL keywords
 FORBIDDEN_KEYWORDS = [
@@ -285,6 +137,7 @@ class BaseEntity:
     
     # Available methods (read-only on REMOTE view):
     def inspect() -> EntityInspection  # Get current state
+    async def walk_to() -> MapPosition  # Navigate to entity (entity-aware pathfinding)
     
     # Blocked on REMOTE view (must walk to entity first):
     # - add_fuel(), take_fuel()
@@ -293,7 +146,14 @@ class BaseEntity:
     # - pickup()
 ```
 
-To interact with a remote entity, use `walking.walk_to(entity.position)` then get it via `reachable.get_entity()`.
+**IMPORTANT**: To interact with a remote entity, use `await entity.walk_to()`. After walking, the entity **automatically becomes REACHABLE** and you can use it directly - no need to get it again via `reachable.get_entity()`.
+
+```python
+# Preferred pattern:
+drill = remote_view.get_entity("SELECT * FROM map_entity WHERE entity_name = 'burner-mining-drill' LIMIT 1")
+await drill.walk_to()  # Automatically converts to REACHABLE
+drill.add_fuel(inventory.create_item_stacks("coal", 5))  # Use directly
+```
 
 ### `BaseResource` (from `get_resources`)
 
@@ -314,7 +174,14 @@ class BaseResource:
     # - mine()  # Raises AttributeError - must walk to first
 ```
 
-To mine a remote resource: navigate to it using `await resource.walk_to()`, then use `reachable.get_resource(name, position)` to get a REACHABLE view resource that can be mined.
+**IMPORTANT**: To mine a remote resource, use `await resource.walk_to()`. After walking, the resource **automatically becomes REACHABLE** and you can mine it directly - no need to get it again via `reachable.get_resource()`.
+
+```python
+# Preferred pattern:
+iron_ore = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore' LIMIT 1")[0]
+await iron_ore.walk_to()  # Automatically converts to REACHABLE
+items = await iron_ore.mine(max_count=25)  # Use directly
+```
 
 ### `Dict[str, Any]` (from `query`)
 
@@ -335,44 +202,45 @@ results = remote_view.query("SELECT entity_name, COUNT(*) as cnt FROM map_entity
 
 
 def generate_table_reference() -> str:
+    """Generate table reference documentation by introspecting schema definitions."""
     doc = "## Table Reference\n\n"
 
     # Main tables
     doc += "### Core Tables\n\n"
-    for table_name, table_info in TABLES.items():
-        doc += f"#### `{table_name}`\n\n"
-        doc += f"{table_info['purpose']}\n\n"
+    for table in CORE_TABLES:
+        doc += f"#### `{table.name}`\n\n"
+        doc += f"{table.purpose}\n\n"
         doc += "| Column | Type | Description |\n"
         doc += "|--------|------|-------------|\n"
-        for col_name, col_type, col_desc in table_info["columns"]:
-            doc += f"| `{col_name}` | `{col_type}` | {col_desc} |\n"
+        for col in table.columns:
+            doc += f"| `{col.name}` | `{col.type}` | {col.description} |\n"
         
         # Add notes if present
-        if "notes" in table_info:
-            doc += f"\n{table_info['notes']}\n"
+        if table.notes:
+            doc += f"\n{table.notes}\n"
         
         # Handle multiple example queries if present
-        if "example_queries" in table_info:
+        if table.example_queries:
             doc += "\n**Examples:**\n```sql\n"
-            doc += "\n".join(table_info["example_queries"])
+            doc += "\n".join(table.example_queries)
             doc += "\n```\n"
-        else:
-            doc += f"\n**Example:**\n```sql\n{table_info['example_query']}\n```\n"
+        elif table.example_query:
+            doc += f"\n**Example:**\n```sql\n{table.example_query}\n```\n"
         doc += "\n"
 
     # Component tables
     doc += "### Component Tables\n\n"
     doc += (
-        "These tables contain entity-specific data and are joined via `entity_key`.\n\n"
+        "These tables contain entity-specific data and are joined via foreign keys to `map_entity`.\n\n"
     )
 
-    for table_name, table_info in COMPONENT_TABLES.items():
-        doc += f"#### `{table_name}`\n\n"
-        doc += f"{table_info['purpose']}\n\n"
+    for table in COMPONENT_TABLES:
+        doc += f"#### `{table.name}`\n\n"
+        doc += f"{table.purpose}\n\n"
         doc += "| Column | Type | Description |\n"
         doc += "|--------|------|-------------|\n"
-        for col_name, col_type, col_desc in table_info["columns"]:
-            doc += f"| `{col_name}` | `{col_type}` | {col_desc} |\n"
+        for col in table.columns:
+            doc += f"| `{col.name}` | `{col.type}` | {col.description} |\n"
         doc += "\n"
 
     doc += "---\n\n"
@@ -490,28 +358,24 @@ iron_deposits = remote_view.get_resources('''
     LIMIT 5
 ''')
 
-# 2. NAVIGATE: Walk to the best deposit
+# 2. NAVIGATE: Walk to the best deposit - it automatically becomes REACHABLE
 target = iron_deposits[0]
-await walking.walk_to(target.position)
+await target.walk_to()  # Entity-aware pathfinding
 
-# 3. QUERY: Get reachable version for full access
-iron = reachable.get_resource("iron-ore")
+# 3. MINE: Use it directly - no need to get it again!
+items = await target.mine(max_count=50)
 
-# 4. MINE: Now you can mine
-items = await iron.mine(max_count=50)
-
-# 5. QUERY: Find existing infrastructure
+# 4. QUERY: Find existing infrastructure
 drills = remote_view.get_entities('''
     SELECT * FROM map_entity 
     WHERE entity_name = 'burner-mining-drill'
     AND chunk_x = 0 AND chunk_y = 0
 ''')
 
-# 6. NAVIGATE & INTERACT: Fuel the drills
+# 5. NAVIGATE & INTERACT: Fuel the drills
 for drill in drills:
-    await walking.walk_to(drill.position)
-    local_drill = reachable.get_entity("burner-mining-drill")
-    local_drill.add_fuel(inventory.create_item_stacks("coal", 5))
+    await drill.walk_to()  # Automatically becomes REACHABLE
+    drill.add_fuel(inventory.create_item_stacks("coal", 5))  # Use directly
 ```
 
 """

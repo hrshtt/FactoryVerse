@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, Tuple
 
 import duckdb
 
@@ -35,7 +35,7 @@ def load_inserters(
     except:
         valid_entities = None
     
-    inserter_data: Dict[str, Dict[str, Any]] = {}
+    inserter_data: Dict[Tuple[str, float, float], Dict[str, Any]] = {}
     
     def process_inserter_entity(data: Dict[str, Any]) -> None:
         """Process a single entity and add to inserter_data if it's an inserter."""
@@ -45,33 +45,52 @@ def load_inserters(
         if data.get("type") == "inserter" and "inserter" in data:
             inserter_info = data["inserter"]
             direction_name = data.get("direction_name", "north")
+            pos = data.get("position", {})
+            entity_name = data.get("name", "")
+            px = float(pos.get("x", 0))
+            py = float(pos.get("y", 0))
             
-            # Build output struct
-            drop_pos = inserter_info.get("drop_position", {})
+            if not entity_name or (px == 0 and py == 0):
+                return
+            
+            # Build output struct with composite key
+            drop_target = inserter_info.get("drop_target")
             output_struct = None
-            if drop_pos:
-                output_struct = {
-                    "position": {"x": drop_pos.get("x", 0), "y": drop_pos.get("y", 0)},
-                    "entity_key": inserter_info.get("drop_target_key"),
-                }
+            if drop_target:
+                drop_pos = drop_target.get("position", {})
+                drop_name = drop_target.get("name", "")
+                if drop_pos and drop_name:
+                    output_struct = {
+                        "position": {"x": float(drop_pos.get("x", 0)), "y": float(drop_pos.get("y", 0))},
+                        "entity_name": drop_name,
+                        "position_x": float(drop_pos.get("x", 0)),
+                        "position_y": float(drop_pos.get("y", 0)),
+                    }
             
-            # Build input struct
-            pickup_pos = inserter_info.get("pickup_position", {})
+            # Build input struct with composite key
+            pickup_target = inserter_info.get("pickup_target")
             input_struct = None
-            if pickup_pos:
-                input_struct = {
-                    "position": {"x": pickup_pos.get("x", 0), "y": pickup_pos.get("y", 0)},
-                    "entity_key": inserter_info.get("pickup_target_key"),
-                }
+            if pickup_target:
+                pickup_pos = pickup_target.get("position", {})
+                pickup_name = pickup_target.get("name", "")
+                if pickup_pos and pickup_name:
+                    input_struct = {
+                        "position": {"x": float(pickup_pos.get("x", 0)), "y": float(pickup_pos.get("y", 0))},
+                        "entity_name": pickup_name,
+                        "position_x": float(pickup_pos.get("x", 0)),
+                        "position_y": float(pickup_pos.get("y", 0)),
+                    }
             
-            entity_key = data.get("key")
-            if entity_key:
-                inserter_data[entity_key] = {
-                    "entity_key": entity_key,
-                    "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
-                    "output": output_struct,
-                    "input": input_struct,
-                }
+            # Use composite key as dictionary key
+            composite_key = (entity_name, px, py)
+            inserter_data[composite_key] = {
+                "entity_name": entity_name,
+                "position_x": px,
+                "position_y": py,
+                "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
+                "output": output_struct,
+                "input": input_struct,
+            }
     
     # Load initial state
     for entity_file in entity_files:
@@ -90,26 +109,37 @@ def load_inserters(
                         if entity_data:
                             process_inserter_entity(entity_data)
                     elif op_type == "remove":
-                        entity_key = op.get("key")
-                        if entity_key:
-                            inserter_data.pop(entity_key, None)
+                        entity_name = op.get("name", "")
+                        position = op.get("position", {})
+                        if entity_name and position:
+                            px = float(position.get("x", 0))
+                            py = float(position.get("y", 0))
+                            composite_key = (entity_name, px, py)
+                            inserter_data.pop(composite_key, None)
                     elif op_type == "rotated":
-                        entity_key = op.get("key")
+                        entity_name = op.get("name", "")
+                        position = op.get("position", {})
                         direction = op.get("direction")
-                        if entity_key and direction is not None and entity_key in inserter_data:
-                            # Update direction in inserter_data
-                            inserter_data[entity_key]["direction"] = direction
+                        if entity_name and position and direction is not None:
+                            px = float(position.get("x", 0))
+                            py = float(position.get("y", 0))
+                            composite_key = (entity_name, px, py)
+                            if composite_key in inserter_data:
+                                # Update direction in inserter_data
+                                inserter_data[composite_key]["direction"] = direction
     
     if inserter_data:
         for i in inserter_data.values():
             # Cast string to ENUM type explicitly
             con.execute(
                 """
-                INSERT OR REPLACE INTO inserter (entity_key, direction, output, input)
-                VALUES (?, ?::direction, ?, ?)
+                INSERT OR REPLACE INTO inserter (entity_name, position_x, position_y, direction, output, input)
+                VALUES (?, ?, ?, ?::direction, ?, ?)
                 """,
                 [
-                    i["entity_key"],
+                    i["entity_name"],
+                    i["position_x"],
+                    i["position_y"],
                     i["direction"],
                     json.dumps(i["output"]) if i["output"] else None,
                     json.dumps(i["input"]) if i["input"] else None,
@@ -139,7 +169,7 @@ def load_transport_belts(
     except:
         valid_entities = None
     
-    belt_data: Dict[str, Dict[str, Any]] = {}
+    belt_data: Dict[Tuple[str, float, float], Dict[str, Any]] = {}
     
     def process_belt_entity(data: Dict[str, Any]) -> None:
         """Process a single entity and add to belt_data if it's a transport belt."""
@@ -150,25 +180,49 @@ def load_transport_belts(
             belt_info = data["belt_data"]
             neighbours = belt_info.get("belt_neighbours", {})
             direction_name = data.get("direction_name", "north")
+            pos = data.get("position", {})
+            entity_name = data.get("name", "")
+            px = float(pos.get("x", 0))
+            py = float(pos.get("y", 0))
             
-            # Output is a single struct
+            if not entity_name or (px == 0 and py == 0):
+                return
+            
+            # Output is a single struct with composite key
             outputs = neighbours.get("outputs", [])
             output_struct = None
-            if outputs:
-                output_struct = {"entity_key": outputs[0]}
+            if outputs and len(outputs) > 0:
+                output = outputs[0]
+                if isinstance(output, dict) and output.get("name") and output.get("position"):
+                    out_pos = output.get("position", {})
+                    output_struct = {
+                        "entity_name": output.get("name", ""),
+                        "position_x": float(out_pos.get("x", 0)),
+                        "position_y": float(out_pos.get("y", 0)),
+                    }
             
-            # Input is an array of structs
+            # Input is an array of structs with composite keys
             inputs = neighbours.get("inputs", [])
-            input_array = [{"entity_key": inp} for inp in inputs] if inputs else []
+            input_array = []
+            for inp in inputs:
+                if isinstance(inp, dict) and inp.get("name") and inp.get("position"):
+                    inp_pos = inp.get("position", {})
+                    input_array.append({
+                        "entity_name": inp.get("name", ""),
+                        "position_x": float(inp_pos.get("x", 0)),
+                        "position_y": float(inp_pos.get("y", 0)),
+                    })
             
-            entity_key = data.get("key")
-            if entity_key:
-                belt_data[entity_key] = {
-                    "entity_key": entity_key,
-                    "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
-                    "output": output_struct,
-                    "input": input_array,
-                }
+            # Use composite key as dictionary key
+            composite_key = (entity_name, px, py)
+            belt_data[composite_key] = {
+                "entity_name": entity_name,
+                "position_x": px,
+                "position_y": py,
+                "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
+                "output": output_struct,
+                "input": input_array,
+            }
     
     # Load initial state
     for entity_file in entity_files:
@@ -187,27 +241,38 @@ def load_transport_belts(
                         if entity_data:
                             process_belt_entity(entity_data)
                     elif op_type == "remove":
-                        entity_key = op.get("key")
-                        if entity_key:
-                            belt_data.pop(entity_key, None)
+                        entity_name = op.get("name", "")
+                        position = op.get("position", {})
+                        if entity_name and position:
+                            px = float(position.get("x", 0))
+                            py = float(position.get("y", 0))
+                            composite_key = (entity_name, px, py)
+                            belt_data.pop(composite_key, None)
                     elif op_type == "rotated":
-                        entity_key = op.get("key")
+                        entity_name = op.get("name", "")
+                        position = op.get("position", {})
                         direction = op.get("direction")
                         direction_name = op.get("direction_name")
-                        if entity_key and direction is not None and entity_key in belt_data:
-                            # Update direction in belt_data
-                            belt_data[entity_key]["direction"] = direction_name.upper() if direction_name else None
+                        if entity_name and position and direction is not None:
+                            px = float(position.get("x", 0))
+                            py = float(position.get("y", 0))
+                            composite_key = (entity_name, px, py)
+                            if composite_key in belt_data:
+                                # Update direction in belt_data
+                                belt_data[composite_key]["direction"] = direction_name.upper() if direction_name else None
     
     if belt_data:
         for b in belt_data.values():
             # Cast string to ENUM type explicitly
             con.execute(
                 """
-                INSERT OR REPLACE INTO transport_belt (entity_key, direction, output, input)
-                VALUES (?, ?::direction, ?, ?)
+                INSERT OR REPLACE INTO transport_belt (entity_name, position_x, position_y, direction, output, input)
+                VALUES (?, ?, ?, ?::direction, ?, ?)
                 """,
                 [
-                    b["entity_key"],
+                    b["entity_name"],
+                    b["position_x"],
+                    b["position_y"],
                     b["direction"],
                     json.dumps(b["output"]) if b["output"] else None,
                     json.dumps(b["input"]) if b["input"] else None,
@@ -241,6 +306,13 @@ def load_mining_drills(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> No
                     if data.get("type") == "mining-drill" and "mining_area" in data:
                         mining_area = data["mining_area"]
                         direction_name = data.get("direction_name", "north")
+                        pos = data.get("position", {})
+                        entity_name = data.get("name", "")
+                        px = float(pos.get("x", 0))
+                        py = float(pos.get("y", 0))
+                        
+                        if not entity_name or (px == 0 and py == 0):
+                            continue
                         
                         # Store mining area coordinates for BOX_2D construction
                         left_top = mining_area.get("left_top", {})
@@ -255,7 +327,9 @@ def load_mining_drills(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> No
                         # TODO: Get actual output position from prototype
                         
                         drill_data.append({
-                            "entity_key": data["key"],
+                            "entity_name": entity_name,
+                            "position_x": px,
+                            "position_y": py,
                             "direction": direction_name.upper(),  # Convert to uppercase to match ENUM
                             "mining_area": (min_x, min_y, max_x, max_y),
                             "output": output_struct,
@@ -268,11 +342,13 @@ def load_mining_drills(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> No
             # Cast string to ENUM type explicitly
             con.execute(
                 """
-                INSERT OR REPLACE INTO mining_drill (entity_key, direction, mining_area, output)
-                VALUES (?, ?::direction, ST_MakeEnvelope(?, ?, ?, ?), ?)
+                INSERT OR REPLACE INTO mining_drill (entity_name, position_x, position_y, direction, mining_area, output)
+                VALUES (?, ?, ?, ?::direction, ST_MakeEnvelope(?, ?, ?, ?), ?)
                 """,
                 [
-                    d["entity_key"],
+                    d["entity_name"],
+                    d["position_x"],
+                    d["position_y"],
                     d["direction"],
                     min_x,
                     min_y,
@@ -319,12 +395,22 @@ def load_assemblers(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
                     # Assembling machines can have recipes
                     if data.get("type") in ("assembling-machine", "furnace") and "recipe" in data:
                         recipe = data.get("recipe")
+                        pos = data.get("position", {})
+                        entity_name = data.get("name", "")
+                        px = float(pos.get("x", 0))
+                        py = float(pos.get("y", 0))
+                        
+                        if not entity_name or (px == 0 and py == 0):
+                            continue
+                        
                         # Filter out recipes not in our recipe ENUM
                         if recipe and valid_recipes and recipe not in valid_recipes:
                             skipped_recipes += 1
                             continue
                         assembler_data.append({
-                            "entity_key": data["key"],
+                            "entity_name": entity_name,
+                            "position_x": px,
+                            "position_y": py,
                             "recipe": recipe,
                         })
     
@@ -337,21 +423,23 @@ def load_assemblers(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
             if a["recipe"]:
                 con.execute(
                     """
-                    INSERT OR REPLACE INTO assemblers (entity_key, recipe)
-                    VALUES (?, ?::recipe)
+                    INSERT OR REPLACE INTO assemblers (entity_name, position_x, position_y, recipe)
+                    VALUES (?, ?, ?, ?::recipe)
                     """,
                     [
-                        a["entity_key"],
+                        a["entity_name"],
+                        a["position_x"],
+                        a["position_y"],
                         a["recipe"],
                     ],
                 )
             else:
                 con.execute(
                     """
-                    INSERT OR REPLACE INTO assemblers (entity_key, recipe)
-                    VALUES (?, NULL)
+                    INSERT OR REPLACE INTO assemblers (entity_name, position_x, position_y, recipe)
+                    VALUES (?, ?, ?, NULL)
                     """,
-                    [a["entity_key"]],
+                    [a["entity_name"], a["position_x"], a["position_y"]],
                 )
 
 
@@ -379,10 +467,20 @@ def load_pumpjacks(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
                     if valid_entities and data.get("name") not in valid_entities:
                         continue
                     if data.get("name") == "pumpjack":
+                        pos = data.get("position", {})
+                        entity_name = data.get("name", "")
+                        px = float(pos.get("x", 0))
+                        py = float(pos.get("y", 0))
+                        
+                        if not entity_name or (px == 0 and py == 0):
+                            continue
+                        
                         # TODO: Extract output positions from prototype
                         # For now, just create entry
                         pumpjack_data.append({
-                            "entity_key": data["key"],
+                            "entity_name": entity_name,
+                            "position_x": px,
+                            "position_y": py,
                             "output": [],
                         })
     
@@ -390,11 +488,13 @@ def load_pumpjacks(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> None:
         for p in pumpjack_data:
             con.execute(
                 """
-                INSERT OR REPLACE INTO pumpjack (entity_key, output)
-                VALUES (?, ?)
+                INSERT OR REPLACE INTO pumpjack (entity_name, position_x, position_y, output)
+                VALUES (?, ?, ?, ?)
                 """,
                 [
-                    p["entity_key"],
+                    p["entity_name"],
+                    p["position_x"],
+                    p["position_y"],
                     json.dumps(p["output"]),
                 ],
             )

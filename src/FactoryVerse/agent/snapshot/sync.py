@@ -236,7 +236,6 @@ class SyncService:
             Number of operations flushed
         """
         queue_size = self._pending_operations.qsize()
-        print(f"[FLUSH] Called, queue size: {queue_size}")
         logger.debug(f"flush_pending() called, queue size: {queue_size}")
         operations_flushed = 0
 
@@ -244,15 +243,11 @@ class SyncService:
             while not self._pending_operations.empty():
                 try:
                     payload = self._pending_operations.get_nowait()
-                    print(
-                        f"[FLUSH] Processing operation: {payload.get('op')}, name={payload.get('name')}, position={payload.get('position')}"
-                    )
                     self._apply_operation(payload)
                     operations_flushed += 1
                 except queue.Empty:
                     break
                 except Exception as e:
-                    print(f"[FLUSH] ERROR: {e}")
                     logger.error(f"Error flushing operation: {e}", exc_info=True)
                     # Continue processing remaining operations
 
@@ -263,11 +258,7 @@ class SyncService:
                 self._db.commit()
                 # Force DuckDB to start a new transaction for next read
                 self._db.begin()
-                print(
-                    f"[FLUSH] Committed {operations_flushed} operations, started new transaction"
-                )
             except Exception as e:
-                print(f"[FLUSH] Commit/begin error: {e}")
                 logger.error(f"Error committing flush: {e}", exc_info=True)
 
             logger.debug(f"Flushed {operations_flushed} pending operations")

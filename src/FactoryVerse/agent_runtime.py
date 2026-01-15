@@ -238,6 +238,162 @@ class FactoryVerseRuntime:
         logger.info(f"Boilerplate complete")
         return result
 
+    def reload_boilerplate(self, reload_factorio: bool = False):
+        """Reload boilerplate modules and recreate runtime.
+        
+        This method:
+        1. Extracts current state (agent_id, udp_port, session_dir, etc.)
+        2. Stops old runtime gracefully
+        3. Reloads Python modules
+        4. Optionally reloads Factorio scripts (if reload_factorio=True)
+        5. Re-executes boilerplate to create new runtime objects
+        
+        Args:
+            reload_factorio: If True, also triggers Factorio script reload via RCON
+        
+        Returns:
+            Result string from boilerplate execution
+        """
+        logger.info("Reloading boilerplate...")
+        
+        # Step 1: Extract current state from kernel
+        extract_code = """
+import os
+import json
+from pathlib import Path
+
+# Extract state that we need to preserve
+_state = {
+    'agent_id': os.getenv('FV_AGENT_ID', 'agent_1'),
+    'session_dir': os.getenv('FV_SESSION_DIR', '.'),
+    'udp_port': os.getenv('FV_AGENT_UDP_PORT'),
+}
+
+# Try to get runtime state if it exists
+try:
+    if 'runtime' in globals():
+        _state['udp_port'] = runtime._config.udp_port if hasattr(runtime, '_config') else _state['udp_port']
+        _state['agent_id'] = runtime.agent_id if hasattr(runtime, 'agent_id') else _state['agent_id']
+except:
+    pass
+
+json.dumps(_state)
+"""
+        
+        try:
+            state_json = self.execute_code(extract_code, compress_output=False)
+            import json
+            state = json.loads(state_json.strip())
+        except Exception as e:
+            logger.warning(f"Could not extract state: {e}, using defaults")
+            state = {
+                'agent_id': 'agent_1',
+                'session_dir': '.',
+                'udp_port': None,
+            }
+        
+        # Step 2: Stop old runtime gracefully
+        stop_code = """
+try:
+    if 'runtime' in globals() and hasattr(runtime, 'stop'):
+        import asyncio
+        # Try to stop runtime if it's started
+        if hasattr(runtime, '_started') and runtime._started:
+            try:
+                # Try to get running loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    # If we have a running loop, we can't use run_until_complete
+                    # Just mark as stopped - cleanup will happen on GC
+                    runtime._started = False
+                    print("Runtime marked for cleanup (event loop is running)")
+                except RuntimeError:
+                    # No running loop, we can stop synchronously
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(runtime.stop())
+                        print("Runtime stopped gracefully")
+                    finally:
+                        loop.close()
+            except Exception as e:
+                print(f"Note: Could not stop old runtime gracefully: {e}")
+                # Force cleanup
+                if hasattr(runtime, '_started'):
+                    runtime._started = False
+except Exception as e:
+    print(f"Note: Could not access runtime: {e}")
+"""
+        
+        self.execute_code(stop_code, compress_output=False)
+        
+        # Step 3: Optionally reload Factorio scripts
+        if reload_factorio:
+            reload_factorio_code = """
+try:
+    if 'rcon_client' in globals():
+        rcon_client.send_command("/c game.reload_script();game.print('Scripts reloaded');rcon.print('Scripts reloaded')")
+        print("✅ Triggered Factorio script reload")
+    else:
+        print("⚠️  RCON client not available, skipping Factorio reload")
+except Exception as e:
+    print(f"⚠️  Could not reload Factorio scripts: {e}")
+"""
+            self.execute_code(reload_factorio_code, compress_output=False)
+        
+        # Step 4: Reload Python modules
+        reload_code = """
+import importlib
+import sys
+
+# Modules to reload (from boilerplate.py imports)
+_modules_to_reload = [
+    'FactoryVerse.config',
+    'FactoryVerse.infra.instance_manager',
+    'FactoryVerse.runtime',
+    'FactoryVerse.agent.infra.rcon_handler',
+    'FactoryVerse.agent.infra.async_listener',
+    'FactoryVerse.agent.actions.walking',
+    'FactoryVerse.agent.actions.mining',
+    'FactoryVerse.agent.actions.crafting',
+    'FactoryVerse.agent.actions.research',
+    'FactoryVerse.agent.actions.inventory',
+    'FactoryVerse.agent.actions.entity_operations',
+    'FactoryVerse.agent.actions.place_entity',
+    'FactoryVerse.agent.actions.ghost_builder',
+    'FactoryVerse.agent.actions.placement_hints',
+    'FactoryVerse.agent.actions.reachable',
+    'FactoryVerse.agent.snapshot',
+    'FactoryVerse.factory.entity',
+    'FactoryVerse.factory.item',
+]
+
+_reloaded = []
+_failed = []
+
+for _mod_name in _modules_to_reload:
+    if _mod_name in sys.modules:
+        try:
+            importlib.reload(sys.modules[_mod_name])
+            _reloaded.append(_mod_name)
+        except Exception as e:
+            _failed.append(f"{_mod_name}: {e}")
+
+print(f"Reloaded {len(_reloaded)} modules")
+if _failed:
+    print(f"Failed to reload {len(_failed)} modules:")
+    for _f in _failed:
+        print(f"  - {_f}")
+
+del _modules_to_reload, _reloaded, _failed, _mod_name
+"""
+        
+        self.execute_code(reload_code, compress_output=False)
+        
+        # Step 5: Re-execute boilerplate
+        logger.info("Re-executing boilerplate...")
+        return self.setup_boilerplate()
+
     def load_map_database(self):
         """Map database is now loaded as part of setup_boilerplate."""
         logger.info("Map database loaded via boilerplate")

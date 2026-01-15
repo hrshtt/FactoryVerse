@@ -72,21 +72,45 @@ class MiningCompleted(AsyncActionCompletion):
     def to_item_stacks(self, placement: Optional["PlacementAction"] = None) -> List["ItemStack"]:
         """Convert products to ItemStack list with placement injected.
         
+        Always returns a list of ItemStack objects, even if empty.
+        
         Args:
             placement: PlacementAction to inject into items (required for .place() to work)
+            
+        Returns:
+            List of ItemStack objects (never None, never empty dict, always a list)
         """
         from FactoryVerse.factory.item.create_item import create_item_stack
         
         items = []
-        for name, count in (self.actual_products or {}).items():
-            items.append(
-                create_item_stack(
+        
+        # Ensure actual_products is a dict (handle None, empty dict, etc.)
+        products = self.actual_products or {}
+        if not isinstance(products, dict):
+            logger.warning(f"MiningCompleted.actual_products is not a dict: {type(products)}, defaulting to empty dict")
+            products = {}
+        
+        # Convert each product to ItemStack
+        for name, count in products.items():
+            if not name or not isinstance(name, str):
+                logger.warning(f"Skipping invalid product name: {name}")
+                continue
+            if not isinstance(count, (int, float)) or count <= 0:
+                logger.warning(f"Skipping invalid product count for {name}: {count}")
+                continue
+                
+            try:
+                item_stack = create_item_stack(
                     name=name,
-                    count=count,
+                    count=int(count),
                     placement=placement,
                     subgroup="raw-resource",
                 )
-            )
+                items.append(item_stack)
+            except Exception as e:
+                logger.error(f"Failed to create ItemStack for {name} (count={count}): {e}")
+                # Continue processing other items even if one fails
+        
         return items
 
 
@@ -186,7 +210,12 @@ class MiningAction:
         completion = MiningCompleted.from_dict(completion_dict)
 
         # Return items as ItemStack list with placement injected
-        return completion.to_item_stacks(self._placement)
+        # Always returns a list of ItemStack objects (never None, never empty dict)
+        item_stacks = completion.to_item_stacks(self._placement)
+        if not isinstance(item_stacks, list):
+            logger.error(f"MiningCompleted.to_item_stacks() returned non-list: {type(item_stacks)}, returning empty list")
+            return []
+        return item_stacks
 
     def cancel(self) -> MiningCancelled:
         """Cancel current mining action.

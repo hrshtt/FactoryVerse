@@ -162,6 +162,25 @@ def validate_entity_for_connection(
 
 
 @dataclass
+class ConnectionPosition:
+    """A valid position for placing a target entity to connect to a source entity.
+
+    Returned by `get_connection_positions()` to provide structured placement hints
+    with alignment information for optimal positioning.
+    """
+
+    position: MapPosition  # Position where target entity can be placed
+    direction: Optional[Direction]  # Direction for placement (None if not required)
+    perpendicular_offset: float  # Distance from source entity perpendicular to flow direction
+    # Lower values indicate better alignment (0.0 = perfectly aligned)
+
+    def __post_init__(self):
+        """Validate perpendicular_offset is non-negative."""
+        if self.perpendicular_offset < 0:
+            raise ValueError("perpendicular_offset must be non-negative")
+
+
+@dataclass
 class GhostPlan:
     """A complete plan ready for commitment.
 
@@ -659,7 +678,7 @@ class PlacementHints:
         source_entity: "BaseEntity",
         target_entity_name: str,
         connection_type: ConnectionType,
-    ) -> List[Tuple[MapPosition, Optional[Direction]]]:
+    ) -> List[ConnectionPosition]:
         """Return all valid positions where 'target_entity' can connect to 'source_entity'.
 
         Entity requirements by connection type:
@@ -672,7 +691,12 @@ class PlacementHints:
             connection_type: Type of connection to solve
 
         Returns:
-            List of (position, direction) tuples where target can be placed.
+            List of ConnectionPosition objects, sorted by alignment (best aligned first).
+            Each ConnectionPosition contains:
+            - position: MapPosition where target can be placed
+            - direction: Optional[Direction] for placement (None if not required)
+            - perpendicular_offset: float distance from source perpendicular to flow
+              (0.0 = perfectly aligned, lower values = better alignment)
             All returned positions are pre-validated using PlacementValidator.
 
         Raises:
@@ -684,8 +708,16 @@ class PlacementHints:
             type = FLUID_PIPE
 
             Returns: [
-                (MapPosition(9, 10), Direction.EAST),   # Left input
-                (MapPosition(12, 10), Direction.WEST), # Right input
+                ConnectionPosition(
+                    position=MapPosition(9, 10),
+                    direction=None,
+                    perpendicular_offset=0.0
+                ),
+                ConnectionPosition(
+                    position=MapPosition(12, 10),
+                    direction=None,
+                    perpendicular_offset=0.0
+                ),
                 ...
             ]
         """
@@ -703,62 +735,193 @@ class PlacementHints:
     def _get_item_drop_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
     ) -> List[Tuple[MapPosition, Optional[Direction]]]:
-        """Get positions where mining drill can drop items into target.
+        """Get positions where target entity can be placed to receive items from source.
 
         Applicable entities: electric-mining-drill, burner-mining-drill
         (see ITEM_DROP_ENTITIES)
 
-        For mining drills, calculates positions where drill can be placed
-        so its output reaches the target entity (chest, belt, etc.).
+        For mining drills, calculates positions where target entity (furnace, chest, etc.)
+        can be placed to receive items from the drill's output.
+
+        Uses discrete tile-based algorithm:
+        1. Calculate source entity's output position (drop tile)
+        2. Get source and target entity tile footprints
+        3. Iterate over all possible tile offsets where target could intersect drop tile
+        4. Check for grid overlap - reject positions where footprints collide
+        5. Sort by alignment preference (perpendicular to flow direction)
+        6. Validate all candidate positions
 
         Note: Entity validation is performed by get_connection_positions().
         """
-        from FactoryVerse.factory.prototypes import apply_cardinal_vector
+        import math
+        from FactoryVerse.factory.prototypes import (
+            get_entity_prototypes,
+            get_width_height,
+            snap_to_tile_center,
+        )
 
         # Entity type already validated by get_connection_positions()
 
-        # Get output vector from prototype
-        output_vec = tuple(source_entity.prototype["vector_to_place_result"])
+        # 1. Get source entity's output position
+        # Try using get_output_position() if available (MinerMixin)
+        if hasattr(source_entity, "get_output_position"):
+            try:
+                drop_pos = source_entity.get_output_position()
+            except Exception:
+                # Fallback: calculate from prototype and direction
+                output_vec = tuple(source_entity.prototype["vector_to_place_result"])
+                from FactoryVerse.factory.prototypes import apply_cardinal_vector
 
-        # Calculate positions where drill can be placed to output to target
-        target_pos = source_entity.position
-        valid_positions: List[Tuple[MapPosition, Optional[Direction]]] = []
+                source_dir = getattr(source_entity, "direction", Direction.NORTH)
+                raw_drop_pos = apply_cardinal_vector(
+                    source_entity.position, output_vec, source_dir
+                )
+                drop_pos = snap_to_tile_center(raw_drop_pos)
+        else:
+            # Calculate from prototype
+            output_vec = tuple(source_entity.prototype["vector_to_place_result"])
+            from FactoryVerse.factory.prototypes import apply_cardinal_vector
 
-        for direction in [
-            Direction.NORTH,
-            Direction.EAST,
-            Direction.SOUTH,
-            Direction.WEST,
-        ]:
-            # Reverse the output_position calculation
-            # If output_position(drill_center, dir) = target_pos
-            # Then drill_center = target_pos - rotated_vector
-            # Apply rotation to get the actual offset
-            vx, vy = output_vec
-            if direction == Direction.EAST:
-                vx, vy = -vy, vx
-            elif direction == Direction.SOUTH:
-                vx, vy = -vx, -vy
-            elif direction == Direction.WEST:
-                vx, vy = vy, -vx
-
-            # Drill center = target - offset
-            drill_center = MapPosition(
-                x=target_pos.x - vx,
-                y=target_pos.y - vy,
+            source_dir = getattr(source_entity, "direction", Direction.NORTH)
+            raw_drop_pos = apply_cardinal_vector(
+                source_entity.position, output_vec, source_dir
             )
+            drop_pos = snap_to_tile_center(raw_drop_pos)
 
-            # Validate this position
+        # 2. Determine source entity tile footprint
+        s_width = source_entity.tile_width
+        s_height = source_entity.tile_height
+        s_half_w = s_width / 2.0
+        s_half_h = s_height / 2.0
+
+        src_left = source_entity.position.x - s_half_w
+        src_right = source_entity.position.x + s_half_w
+        src_top = source_entity.position.y - s_half_h
+        src_bottom = source_entity.position.y + s_half_h
+
+        # 3. Get target entity prototype and dimensions
+        prototypes = get_entity_prototypes()
+        target_proto = prototypes.get_prototype(target_entity_name)
+        if not target_proto:
+            logger.warning(
+                f"Target entity prototype not found: {target_entity_name}"
+            )
+            return []
+
+        # Get target tile dimensions
+        if "tile_width" in target_proto and "tile_height" in target_proto:
+            t_width = int(target_proto["tile_width"])
+            t_height = int(target_proto["tile_height"])
+        elif "collision_box" in target_proto:
+            EPSILON = 0.001
+            w, h = get_width_height(target_proto["collision_box"])
+            t_width = int(math.ceil(w - EPSILON))
+            t_height = int(math.ceil(h - EPSILON))
+        else:
+            logger.warning(
+                f"Target entity {target_entity_name} has no tile dimensions"
+            )
+            return []
+
+        t_half_w = t_width / 2.0
+        t_half_h = t_height / 2.0
+
+        # 4. Identify drop tile (discrete tile coordinates)
+        drop_tile_x = math.floor(drop_pos.x)
+        drop_tile_y = math.floor(drop_pos.y)
+
+        # 5. Generate candidate positions
+        candidates: List[MapPosition] = []
+
+        # Iterate over every relative tile offset the target could have
+        for dx in range(t_width):
+            for dy in range(t_height):
+                # Calculate target footprint if target's (dx, dy) tile is at drop tile
+                target_left = drop_tile_x - dx
+                target_top = drop_tile_y - dy
+
+                target_right = target_left + t_width
+                target_bottom = target_top + t_height
+
+                # 6. Strict grid overlap check (AABB)
+                # If bounding boxes don't overlap, entities won't collide
+                is_disjoint = (
+                    target_right <= src_left  # Target fully to the left
+                    or target_left >= src_right  # Target fully to the right
+                    or target_bottom <= src_top  # Target fully above
+                    or target_top >= src_bottom  # Target fully below
+                )
+
+                if is_disjoint:
+                    # No overlap - calculate center position
+                    center_x = target_left + t_half_w
+                    center_y = target_top + t_half_h
+                    candidates.append(MapPosition(center_x, center_y))
+
+        if not candidates:
+            return []
+
+        # 7. Calculate alignment (perpendicular offset) for each candidate
+        source_dir = getattr(source_entity, "direction", Direction.NORTH)
+
+        def calculate_perpendicular_offset(pos: MapPosition) -> float:
+            """Calculate perpendicular offset from source entity.
+
+            For vertical flow (NORTH/SOUTH): measures horizontal (X) offset
+            For horizontal flow (EAST/WEST): measures vertical (Y) offset
+            Returns 0.0 for perfect alignment.
+            """
+            if source_dir in (Direction.NORTH, Direction.SOUTH):
+                # Vertical flow: measure horizontal (X) offset
+                return abs(pos.x - source_entity.position.x)
+            elif source_dir in (Direction.EAST, Direction.WEST):
+                # Horizontal flow: measure vertical (Y) offset
+                return abs(pos.y - source_entity.position.y)
+            return 0.0
+
+        # Create candidate list with alignment info
+        candidates_with_alignment = [
+            (pos, calculate_perpendicular_offset(pos)) for pos in candidates
+        ]
+
+        # Sort by alignment (lower perpendicular_offset = better alignment)
+        candidates_with_alignment.sort(key=lambda x: x[1])
+
+        # 8. Validate positions and return ConnectionPosition objects
+        valid_positions: List[ConnectionPosition] = []
+        for candidate_pos, perpendicular_offset in candidates_with_alignment:
+            # Target entities may or may not need direction
+            # Try without direction first (most entities don't need it)
+            direction: Optional[Direction] = None
             if self._validator.validate_placement(
-                target_entity_name, drill_center, direction, ghost=True
+                target_entity_name, candidate_pos, None, ghost=True
             ):
-                valid_positions.append((drill_center, direction))
+                direction = None
+            else:
+                # Try with source direction if entity requires direction
+                if self._entity_requires_direction(target_entity_name):
+                    if self._validator.validate_placement(
+                        target_entity_name, candidate_pos, source_dir, ghost=True
+                    ):
+                        direction = source_dir
+                    else:
+                        continue  # Skip if validation fails with direction
+                else:
+                    continue  # Skip if validation fails and no direction needed
+
+            valid_positions.append(
+                ConnectionPosition(
+                    position=candidate_pos,
+                    direction=direction,
+                    perpendicular_offset=perpendicular_offset,
+                )
+            )
 
         return valid_positions
 
     def _get_fluid_pipe_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
-    ) -> List[Tuple[MapPosition, Optional[Direction]]]:
+    ) -> List[ConnectionPosition]:
         """Get positions where pipes can connect to source entity's fluidboxes.
 
         Applicable entities: boiler, steam-engine, steam-turbine, chemical-plant,
@@ -819,13 +982,20 @@ class PlacementHints:
                                 )
                             )
 
-            # Validate all positions
-            valid_positions: List[Tuple[MapPosition, Optional[Direction]]] = []
+            # Validate all positions and create ConnectionPosition objects
+            # For fluid pipes, alignment is less critical, so we use 0.0 as default
+            valid_positions: List[ConnectionPosition] = []
             for pipe_pos in pipe_positions:
                 if self._validator.validate_placement(
                     target_entity_name, pipe_pos, None, ghost=True
                 ):
-                    valid_positions.append((pipe_pos, None))
+                    valid_positions.append(
+                        ConnectionPosition(
+                            position=pipe_pos,
+                            direction=None,
+                            perpendicular_offset=0.0,  # Pipes don't need alignment sorting
+                        )
+                    )
 
             return valid_positions
 

@@ -489,6 +489,21 @@ def cmd_instance_active(args):
         sys.exit(1)
 
 
+def cmd_mcp_server(args):
+    """Start MCP server for IDE integration."""
+    import asyncio
+    from .mcp_server import run_mcp_server
+
+    print("Starting FactoryVerse MCP server...")
+    print("Connect your IDE (Cursor, Claude Desktop, etc.) to use FactoryVerse tools.")
+    print("Press Ctrl+C to stop.")
+    try:
+        asyncio.run(run_mcp_server())
+    except KeyboardInterrupt:
+        print("\nMCP server stopped.")
+        sys.exit(0)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="FactoryVerse: Run multiple Factorio servers with Jupyter",
@@ -676,6 +691,12 @@ def main():
         "active", help="Show active instance"
     )
     instance_active_parser.set_defaults(func=cmd_instance_active)
+
+    # ========== MCP COMMAND ==========
+    mcp_parser = subparsers.add_parser(
+        "mcp", help="Start MCP server for IDE integration"
+    )
+    mcp_parser.set_defaults(func=cmd_mcp_server)
 
     args = parser.parse_args()
 

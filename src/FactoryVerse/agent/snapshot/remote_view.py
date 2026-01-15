@@ -162,6 +162,10 @@ class RemoteView:
             self._database.connection,
             self._snapshot_dir,
         )
+        
+        # Status directory is at snapshot_dir/factoryverse/status
+        status_dir = self._snapshot_dir / "factoryverse" / "status"
+        
         self._query = QueryExecutor(
             self._database.connection,
             entity_ops=self._entity_ops,
@@ -170,6 +174,7 @@ class RemoteView:
             mining_action=self._mining_action,
             sync_service=self._sync,
             db_lock=self._db_lock,
+            status_dir=status_dir,
         )
 
         # Load data (with lock to prevent concurrent access)
@@ -207,6 +212,20 @@ class RemoteView:
                 self._loader = SnapshotLoader(
                     self._database.connection,
                     self._snapshot_dir,
+                )
+            
+            # Re-initialize query executor if needed (with status_dir)
+            if self._query is None:
+                status_dir = self._snapshot_dir / "factoryverse" / "status"
+                self._query = QueryExecutor(
+                    self._database.connection,
+                    entity_ops=self._entity_ops,
+                    place_ops=self._place_ops,
+                    walking_action=self._walking_action,
+                    mining_action=self._mining_action,
+                    sync_service=self._sync,
+                    db_lock=self._db_lock,
+                    status_dir=status_dir,
                 )
 
             # Load data synchronously (already holding lock)

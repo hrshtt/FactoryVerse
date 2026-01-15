@@ -12,6 +12,8 @@ from typing import Optional, List
 
 import duckdb
 
+from .schema_definitions import CORE_TABLES, COMPONENT_TABLES, TABLE_BY_NAME
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,88 +103,59 @@ class SnapshotDatabase:
         )
 
     def _create_tables(self, con: duckdb.DuckDBPyConnection) -> None:
-        """Create all tables."""
-        # Core entity table - using composite primary key
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS map_entity (
-                entity_name VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                chunk_x INTEGER NOT NULL,
-                chunk_y INTEGER NOT NULL,
-                direction VARCHAR,
-                bbox_min_x DOUBLE,
-                bbox_min_y DOUBLE,
-                bbox_max_x DOUBLE,
-                bbox_max_y DOUBLE,
-                electric_network_id INTEGER,
-                -- Builder metadata (who placed this entity)
-                agent_id INTEGER,
-                player_id INTEGER,
-                label VARCHAR,
-                placed_tick INTEGER,
-                -- Raw entity data for full reconstruction
-                raw_data VARCHAR,
-                PRIMARY KEY (entity_name, position_x, position_y)
-            );
-        """)
+        """Create all tables from schema definitions."""
+        from .schema_definitions import TableDefinition, ColumnDefinition
 
-        # Ghost table (entities with is_ghost=true behavior)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS ghost (
-                ghost_name VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                chunk_x INTEGER NOT NULL,
-                chunk_y INTEGER NOT NULL,
-                direction VARCHAR,
-                placed_tick INTEGER,
-                placed_by VARCHAR,
-                label VARCHAR,
-                raw_data VARCHAR,
-                PRIMARY KEY (ghost_name, position_x, position_y)
-            );
-        """)
+        def _generate_create_table_sql(table: TableDefinition) -> str:
+            """Generate CREATE TABLE SQL from a TableDefinition."""
+            column_defs = []
+            for col in table.columns:
+                col_def = f"{col.name} {col.type}"
+                if not col.nullable:
+                    col_def += " NOT NULL"
+                if col.default:
+                    col_def += f" DEFAULT {col.default}"
+                column_defs.append(col_def)
 
-        # Resource tiles (ores)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS resource_tile (
-                name VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                chunk_x INTEGER NOT NULL,
-                chunk_y INTEGER NOT NULL,
-                amount INTEGER,
-                PRIMARY KEY (name, position_x, position_y)
-            );
-        """)
+            # Add primary key constraint
+            if table.primary_key:
+                pk_cols = ", ".join(table.primary_key)
+                column_defs.append(f"PRIMARY KEY ({pk_cols})")
 
-        # Water tiles
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS water_tile (
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                chunk_x INTEGER NOT NULL,
-                chunk_y INTEGER NOT NULL,
-                PRIMARY KEY (position_x, position_y)
-            );
-        """)
+            # Add foreign key constraints
+            if table.foreign_keys:
+                # Group foreign keys by target table
+                # All FKs in the list should reference the same table
+                fk_table = table.foreign_keys[0][1]  # Get target table name
+                ref_table = TABLE_BY_NAME.get(fk_table)
+                
+                if ref_table and ref_table.primary_key:
+                    # Build mapping from referenced column to local column
+                    ref_to_local = {ref_col: local_col for local_col, _, ref_col in table.foreign_keys}
+                    # Order columns to match the referenced primary key order
+                    local_cols = [ref_to_local[ref_pk_col] for ref_pk_col in ref_table.primary_key if ref_pk_col in ref_to_local]
+                    ref_cols = [ref_pk_col for ref_pk_col in ref_table.primary_key if ref_pk_col in ref_to_local]
+                    
+                    if local_cols:
+                        local_cols_str = ", ".join(local_cols)
+                        ref_cols_str = ", ".join(ref_cols)
+                        fk_def = f"FOREIGN KEY ({local_cols_str}) REFERENCES {fk_table}({ref_cols_str})"
+                        column_defs.append(fk_def)
+                else:
+                    # Fallback: single column FK
+                    col_name, _, ref_col = table.foreign_keys[0]
+                    fk_def = f"FOREIGN KEY ({col_name}) REFERENCES {fk_table}({ref_col})"
+                    column_defs.append(fk_def)
 
-        # Resource entities (trees, rocks)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS resource_entity (
-                name VARCHAR NOT NULL,
-                entity_type VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                chunk_x INTEGER NOT NULL,
-                chunk_y INTEGER NOT NULL,
-                raw_data VARCHAR,
-                PRIMARY KEY (name, position_x, position_y)
-            );
-        """)
+            columns_sql = ",\n                ".join(column_defs)
+            return f"""CREATE TABLE IF NOT EXISTS {table.name} (
+                {columns_sql}
+            );"""
 
-        # Sync state table (for tracking sequence)
+        # Create all core and component tables
+        all_tables = CORE_TABLES + COMPONENT_TABLES
+
+        # Also create sync_state table (not in schema_definitions, but needed)
         con.execute("""
             CREATE TABLE IF NOT EXISTS sync_state (
                 key VARCHAR PRIMARY KEY,
@@ -190,57 +163,9 @@ class SnapshotDatabase:
             );
         """)
 
-        # Component tables (inserter, belt, drill, etc.)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS inserter (
-                entity_name VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                direction VARCHAR NOT NULL,
-                pickup_position_x DOUBLE,
-                pickup_position_y DOUBLE,
-                drop_position_x DOUBLE,
-                drop_position_y DOUBLE,
-                PRIMARY KEY (entity_name, position_x, position_y),
-                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
-            );
-        """)
-
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS transport_belt (
-                entity_name VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                direction VARCHAR NOT NULL,
-                belt_speed DOUBLE,
-                PRIMARY KEY (entity_name, position_x, position_y),
-                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
-            );
-        """)
-
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS mining_drill (
-                entity_name VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                direction VARCHAR NOT NULL,
-                mining_target VARCHAR,
-                PRIMARY KEY (entity_name, position_x, position_y),
-                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
-            );
-        """)
-
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS assembler (
-                entity_name VARCHAR NOT NULL,
-                position_x DOUBLE NOT NULL,
-                position_y DOUBLE NOT NULL,
-                recipe VARCHAR,
-                crafting_speed DOUBLE,
-                PRIMARY KEY (entity_name, position_x, position_y),
-                FOREIGN KEY (entity_name, position_x, position_y) REFERENCES map_entity(entity_name, position_x, position_y)
-            );
-        """)
+        for table in all_tables:
+            sql = _generate_create_table_sql(table)
+            con.execute(sql)
 
     def _create_indexes(self, con: duckdb.DuckDBPyConnection) -> None:
         """Create indexes for common queries."""
@@ -294,18 +219,8 @@ class SnapshotDatabase:
         Use this for rebuild operations.
         """
         con = self.connection
-        tables = [
-            "map_entity",
-            "ghost",
-            "resource_tile",
-            "water_tile",
-            "resource_entity",
-            "sync_state",
-            "inserter",
-            "transport_belt",
-            "mining_drill",
-            "assembler",
-        ]
+        # Get table names from schema definitions
+        tables = [table.name for table in CORE_TABLES + COMPONENT_TABLES] + ["sync_state"]
         for table in tables:
             try:
                 con.execute(f"DELETE FROM {table};")
