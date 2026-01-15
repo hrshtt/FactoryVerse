@@ -1,6 +1,6 @@
 # FactoryVerse LLM Reference
 
-> Auto-generated via introspection on 2026-01-15 14:46
+> Auto-generated via introspection on 2026-01-15 15:54
 
 You are an embodied agent in Factorio. You have a physical presence, inventory, and can walk, craft, mine, and interact with entities.
 
@@ -436,7 +436,7 @@ Some entities have special placement requirements:
 
 ```python
 # Find where a pipe can connect to a boiler
-from FactoryVerse.agent.placement_hints import ConnectionType
+# Note: placement_hints and ConnectionType are pre-loaded as global variables, no import needed
 
 boiler = reachable_view.get_entity("boiler")
 pipe_positions = placement_hints.get_connection_positions(
