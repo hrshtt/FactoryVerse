@@ -27,6 +27,67 @@ local function get_inventory_contents(entity, inventory_type)
     return contents
 end
 
+--- Format inventory data with proper structure for inspection response
+--- @param entity LuaEntity
+--- @param inventory_type defines.inventory
+--- @param inventory_name string Name of the inventory (e.g., "crafter_input", "fuel")
+--- @return table|nil Formatted inventory data with contents array
+local function format_inventory_data(entity, inventory_type, inventory_name)
+    local inv = entity.get_inventory(inventory_type)
+    if not inv then
+        return nil
+    end
+    
+    -- Safely get inventory size (not all inventories have bars)
+    local inv_size = nil
+    local success, bar = pcall(function() return inv.get_bar() end)
+    if success and bar then
+        inv_size = bar
+    else
+        -- Fallback to inventory length (works for most inventories)
+        success, inv_size = pcall(function() return #inv end)
+        if not success then
+            -- Last resort: use a default size
+            inv_size = 1
+        end
+    end
+    
+    local contents_raw = inv.get_contents()
+    if not contents_raw or next(contents_raw) == nil then
+        return {
+            name = inventory_name,
+            size = inv_size,
+            is_empty = true,
+            contents = {}
+        }
+    end
+    
+    -- Convert contents to array format
+    local contents = {}
+    local slot = 1
+    for _, item in pairs(contents_raw) do
+        local item_name = item.name or item[1]
+        local count = item.count or item[2]
+        local quality = item.quality or "normal"
+        if item_name and count then
+            table.insert(contents, {
+                slot = slot,
+                name = item_name,
+                count = count,
+                quality = quality
+            })
+            slot = slot + 1
+        end
+    end
+    
+    return {
+        name = inventory_name,
+        size = inv_size,
+        is_empty = false,
+        contents = contents
+    }
+end
+
 --- Inspect burner component
 --- @param burner LuaBurner
 --- @return table|nil BurnerData
@@ -70,6 +131,39 @@ local function inspect_burner(burner, entity)
                 end
             end
         end
+    end
+    
+    -- Populate fuel_inventory (required by Python BurnerMixin)
+    local fuel_inv = entity.get_inventory(defines.inventory.fuel)
+    if fuel_inv then
+        local fuel_contents = fuel_inv.get_contents()
+        if fuel_contents and next(fuel_contents) ~= nil then
+            -- Convert to array format matching format_inventory_data structure
+            local contents = {}
+            local slot = 1
+            for item_name, count in pairs(fuel_contents) do
+                table.insert(contents, {
+                    slot = slot,
+                    name = item_name,
+                    count = count,
+                    quality = "normal"  -- Default quality
+                })
+                slot = slot + 1
+            end
+            data.fuel_inventory = {
+                contents = contents
+            }
+        else
+            -- Empty fuel inventory
+            data.fuel_inventory = {
+                contents = {}
+            }
+        end
+    else
+        -- No fuel inventory (shouldn't happen for burner entities, but handle gracefully)
+        data.fuel_inventory = {
+            contents = {}
+        }
     end
     
     if next(data) == nil then
@@ -131,18 +225,49 @@ local function inspect_crafting_machine(entity)
     end
     
     -- Inventories (type-specific)
+    -- Factorio 2.0+: Use crafter_input/crafter_output for all crafting machines
+    -- Structure inventories properly for Python parsing
+    data.inventories = {}
+    
     if entity.type == "assembling-machine" then
-        data.input = get_inventory_contents(entity, defines.inventory.assembling_machine_input)
-        data.output = get_inventory_contents(entity, defines.inventory.assembling_machine_output)
-        data.modules = get_inventory_contents(entity, defines.inventory.assembling_machine_modules)
+        local input_inv = format_inventory_data(entity, defines.inventory.crafter_input, "crafter_input")
+        if input_inv then
+            data.inventories.crafter_input = input_inv
+        end
+        local output_inv = format_inventory_data(entity, defines.inventory.crafter_output, "crafter_output")
+        if output_inv then
+            data.inventories.crafter_output = output_inv
+        end
+        local modules_inv = format_inventory_data(entity, defines.inventory.assembling_machine_modules, "crafter_modules")
+        if modules_inv then
+            data.inventories.crafter_modules = modules_inv
+        end
     elseif entity.type == "furnace" then
-        data.input = get_inventory_contents(entity, defines.inventory.furnace_source)
-        data.output = get_inventory_contents(entity, defines.inventory.furnace_result)
-        data.fuel = get_inventory_contents(entity, defines.inventory.fuel)
+        local input_inv = format_inventory_data(entity, defines.inventory.crafter_input, "crafter_input")
+        if input_inv then
+            data.inventories.crafter_input = input_inv
+        end
+        local output_inv = format_inventory_data(entity, defines.inventory.crafter_output, "crafter_output")
+        if output_inv then
+            data.inventories.crafter_output = output_inv
+        end
+        local fuel_inv = format_inventory_data(entity, defines.inventory.fuel, "fuel")
+        if fuel_inv then
+            data.inventories.fuel = fuel_inv
+        end
     elseif entity.type == "chemical-plant" or entity.type == "oil-refinery" then
-        data.input = get_inventory_contents(entity, defines.inventory.assembling_machine_input)
-        data.output = get_inventory_contents(entity, defines.inventory.assembling_machine_output)
-        data.modules = get_inventory_contents(entity, defines.inventory.assembling_machine_modules)
+        local input_inv = format_inventory_data(entity, defines.inventory.crafter_input, "crafter_input")
+        if input_inv then
+            data.inventories.crafter_input = input_inv
+        end
+        local output_inv = format_inventory_data(entity, defines.inventory.crafter_output, "crafter_output")
+        if output_inv then
+            data.inventories.crafter_output = output_inv
+        end
+        local modules_inv = format_inventory_data(entity, defines.inventory.assembling_machine_modules, "crafter_modules")
+        if modules_inv then
+            data.inventories.crafter_modules = modules_inv
+        end
     end
     
     -- Energy

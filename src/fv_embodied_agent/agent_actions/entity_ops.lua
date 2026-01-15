@@ -221,7 +221,7 @@ end
 --- Get item from entity inventory (transfers to agent inventory)
 --- @param entity_name string Entity prototype name
 --- @param position table|nil Position {x, y} (nil to use agent position with radius search)
---- @param inventory_type number|string Inventory type
+--- @param inventory_type number|string|defines.inventory Inventory type
 --- @param item_name string Item name to get
 --- @param count number|nil Count to get (default: all available)
 --- @return table Result
@@ -260,13 +260,25 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
         end
     else
         if type(inventory_type) == "string" then
-            local inv_map = {
-                chest = defines.inventory.chest,
-                fuel = defines.inventory.fuel,
-                input = defines.inventory.assembling_machine_input,
-                output = defines.inventory.assembling_machine_output,
-            }
-            inv_index = inv_map[inventory_type]
+            -- Factorio 2.0+: Use crafter_output/crafter_input for crafting machines
+            local is_crafter = entity.type == "furnace" or entity.type == "assembling-machine" or 
+                              entity.type == "chemical-plant" or entity.type == "oil-refinery"
+            
+            if inventory_type == "output" and is_crafter then
+                inv_index = defines.inventory.crafter_output
+            elseif inventory_type == "input" and is_crafter then
+                inv_index = defines.inventory.crafter_input
+            else
+                -- Fallback to legacy inventory types
+                local inv_map = {
+                    chest = defines.inventory.chest,
+                    fuel = defines.inventory.fuel,
+                    input = defines.inventory.assembling_machine_input,
+                    output = defines.inventory.assembling_machine_output,
+                }
+                inv_index = inv_map[inventory_type]
+            end
+            
             if not inv_index then
                 error("Agent: Unknown inventory type name: " .. inventory_type)
             end
@@ -435,9 +447,11 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
 end
 
 --- Set item in entity inventory (transfers from agent inventory)
+--- Uses entity.insert() for automatic routing (fuel -> fuel slot, ore -> input slot, etc.)
+--- Only uses manual inventory selection for specific cases like chests and output
 --- @param entity_name string Entity prototype name
 --- @param position table|nil Position {x, y} (nil to use agent position with radius search)
---- @param inventory_type number|string Inventory type
+--- @param inventory_type number|string Inventory type (nil/"auto" = use entity.insert() auto-routing)
 --- @param item_name string Item name to set
 --- @param count number Count to set
 --- @return table Result
@@ -474,47 +488,81 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         error("Agent: Insufficient items in agent inventory (have " .. available_count .. ", need " .. count .. ")")
     end
     
-    -- Resolve inventory type to defines.inventory constant
-    local inv_index = inventory_type
+    -- Determine if we should use auto-routing (entity.insert()) or manual inventory selection
+    local use_auto_routing = false
     local entity_inventory = nil
+    local inv_index = inventory_type
     
-    -- Special handling for mining drills: use get_output_inventory() for output
-    if type(inventory_type) == "string" and inventory_type == "output" and entity.type == "mining-drill" then
-        entity_inventory = entity.get_output_inventory()
-        if not entity_inventory then
-            error("Agent: Mining drill output inventory is invalid")
-        end
+    -- Auto-routing: Use entity.insert() for fuel, input, or when inventory_type is nil/"auto"
+    -- The engine automatically routes: coal -> fuel, ore -> input, etc.
+    if inventory_type == nil or inventory_type == "auto" or 
+       (type(inventory_type) == "string" and (inventory_type == "fuel" or inventory_type == "input")) then
+        use_auto_routing = true
     else
+        -- Manual inventory selection for specific cases (chest, output, etc.)
         if type(inventory_type) == "string" then
-            local inv_map = {
-                chest = defines.inventory.chest,
-                fuel = defines.inventory.fuel,
-                input = defines.inventory.assembling_machine_input,
-                output = defines.inventory.assembling_machine_output,
-            }
-            inv_index = inv_map[inventory_type]
-            if not inv_index then
-                error("Agent: Unknown inventory type name: " .. inventory_type)
+            -- Factorio 2.0+: Use crafter_output for crafting machines
+            local is_crafter = entity.type == "furnace" or entity.type == "assembling-machine" or 
+                              entity.type == "chemical-plant" or entity.type == "oil-refinery"
+            
+            if inventory_type == "output" and is_crafter then
+                inv_index = defines.inventory.crafter_output
+            elseif inventory_type == "output" and entity.type == "mining-drill" then
+                -- Special handling for mining drills: use get_output_inventory() for output
+                entity_inventory = entity.get_output_inventory()
+                if not entity_inventory then
+                    error("Agent: Mining drill output inventory is invalid")
+                end
+            else
+                local inv_map = {
+                    chest = defines.inventory.chest,
+                    output = defines.inventory.assembling_machine_output,
+                    modules = defines.inventory.assembling_machine_modules,
+                }
+                inv_index = inv_map[inventory_type]
+                if not inv_index then
+                    error("Agent: Unknown inventory type name: " .. inventory_type)
+                end
             end
         end
         
-        -- Get entity inventory
-        entity_inventory = entity.get_inventory(inv_index)
+        -- Get entity inventory if not already set
         if not entity_inventory then
-            error("Agent: Entity inventory is invalid")
+            entity_inventory = entity.get_inventory(inv_index)
+            if not entity_inventory then
+                error("Agent: Entity inventory is invalid")
+            end
         end
     end
     
-    -- Check entity inventory space
-    local can_insert = entity_inventory.can_insert({ name = item_name, count = count })
+    -- Check if entity can accept items before removing from agent
+    local can_insert = false
+    if use_auto_routing then
+        -- Use entity.can_insert() for auto-routing
+        can_insert = entity.can_insert({ name = item_name, count = count })
+    else
+        -- Check specific inventory for manual insertion
+        can_insert = entity_inventory.can_insert({ name = item_name, count = count })
+    end
+    
     if not can_insert then
-        error("Agent: Cannot insert item into entity inventory (insufficient space)")
+        error("Agent: Cannot insert item into entity inventory (insufficient space or invalid item)")
     end
     
     -- Transfer items
     local removed = agent_inventory.remove({ name = item_name, count = count })
     if removed > 0 then
-        local inserted = entity_inventory.insert({ name = item_name, count = removed })
+        local inserted = 0
+        
+        if use_auto_routing then
+            -- Use entity.insert() - engine automatically routes to correct inventory
+            -- Coal goes to fuel, ore goes to input, etc.
+            inserted = entity.insert({ name = item_name, count = removed })
+        else
+            -- Manual inventory insertion for specific cases
+            inserted = entity_inventory.insert({ name = item_name, count = removed })
+        end
+        
         if inserted < removed then
             -- Rollback: put remaining items back
             agent_inventory.insert({ name = item_name, count = removed - inserted })
@@ -528,7 +576,7 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         agent_id = self.agent_id,
         entity_name = entity_name,
         position = { x = entity.position.x, y = entity.position.y },
-        inventory_type = inventory_type,
+        inventory_type = inventory_type or "auto",
         item_name = item_name,
         count = count,
         tick = game.tick or 0,
@@ -538,7 +586,7 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         success = true,
         entity_name = entity_name,
         position = { x = entity.position.x, y = entity.position.y },
-        inventory_type = inventory_type,
+        inventory_type = inventory_type or "auto",
         item_name = item_name,
         count = count,
     }

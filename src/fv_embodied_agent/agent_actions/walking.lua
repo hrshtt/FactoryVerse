@@ -217,7 +217,32 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
     options = options or {}
     options.start = self.character.position
     options.bounding_box = self.character.prototype.collision_box
-    options.collision_mask = self.character.prototype.collision_mask
+    -- Prepare collision mask - explicitly include layers to avoid shipwrecks/obstacles
+    -- request_path sometimes needs explicit layers even if character prototype has them
+    local collision_mask = { layers = {} }
+    
+    -- 1. Start with character's base layers
+    if self.character.prototype.collision_mask and self.character.prototype.collision_mask.layers then
+        for layer, _ in pairs(self.character.prototype.collision_mask.layers) do
+            collision_mask.layers[layer] = true
+        end
+    end
+    
+    -- 2. Explicitly force common obstacle layers (fixes issues with shipwrecks/debris)
+    local force_layers = {
+        "object",           -- Most entities
+        "player",           -- Character/Player
+        "water_tile",       -- Water
+        "cliff",            -- Cliffs
+        "train",            -- Trains
+        "transport_belt"    -- Belts (optional but good for avoidance)
+    }
+    
+    for _, layer in ipairs(force_layers) do
+        collision_mask.layers[layer] = true
+    end
+    
+    options.collision_mask = collision_mask
     options.force = self.character.force.name
     options.entity_to_ignore = self.character
     

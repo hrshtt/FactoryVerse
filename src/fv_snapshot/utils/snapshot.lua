@@ -772,7 +772,9 @@ end
 -- ============================================================================
 
 --- Maximum number of status dump files to keep on disk
-M.MAX_STATUS_DUMP_FILES = 100
+--- Maintains a rolling buffer of 50 status files (written every 60 ticks)
+--- External systems should copy files they need before they're deleted
+M.MAX_STATUS_DUMP_FILES = 50
 
 --- Track a status dump file in storage
 --- @param tick number Game tick
