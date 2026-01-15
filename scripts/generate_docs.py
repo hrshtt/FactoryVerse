@@ -897,7 +897,7 @@ Some entities have special placement requirements:
 
 ```python
 # Find where a pipe can connect to a boiler
-from FactoryVerse.agent.placement_hints import ConnectionType
+# Note: placement_hints and ConnectionType are pre-loaded as global variables, no import needed
 
 boiler = reachable_view.get_entity("boiler")
 pipe_positions = placement_hints.get_connection_positions(
