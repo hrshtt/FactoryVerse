@@ -1,191 +1,45 @@
 # FactoryVerse
 
-This repository explores the intersection of Large Language Models and complex systems optimization through the lens of Factorio gameplay. FactoryVerse treats Factorio as a collection of objects to manipulate, as well as a rich, spatial dataset to be analyzed, queried, and optimized at scale. 
+FactoryVerse is a multi-layered platform for creating AI agents in Factorio. It ships both generic, reusable components and opinionated framework pieces driven by research goals. The generic layer includes two Factorio mods: the **FV Embodied Agent** mod (multi-agent gameplay infrastructure) and the **FV Snapshot** mod (game state materialization). The opinionated layer provides a Python framework with a DuckDB spatial database for map queries, factory objects that wrap RCON calls into an **Object-Oriented Markov Decision Process (OOMDP)** interface, and top-level accessors for agent control. The platform supports multiple context modalities: the database currently provides spatial queries, with screenshots and Python-generated visualizations from database queries planned for integration. Vision is not removed from the equation—it's one of several context sources that agents can leverage alongside explicit data queries.
+
+## What FactoryVerse Provides
+
+FactoryVerse ships four integrated components:
+
+### 1. **FV Embodied Agent Mod** (`src/fv_embodied_agent/`)
+A Factorio mod that implements multi-agent gameplay infrastructure. Each agent is a fully-featured entity with its own character, force, inventory, and state machines. The mod exposes 30+ low-level action methods via Factorio's remote interface system, enabling external control through RCON.
+
+### 2. **FV Snapshot Mod** (`src/fv_snapshot/`)
+A Factorio mod that materializes game state to disk as append-only JSONL files. Every entity placement, resource extraction, and chunk charting event is captured deterministically and written to disk—providing a complete audit trail of game state.
+
+### 3. **Factory Objects** (`src/FactoryVerse/factory/`)
+Type-safe, stateful Python abstractions that wrap the mod's remote interface into an OOMDP. Instead of calling 30+ stateless RCON functions, agents interact with objects like `Furnace`, `MiningDrill`, and `AssemblingMachine` that have domain-specific methods (`add_fuel()`, `set_recipe()`, `output_position()`). These objects mirror the GUI interactions human players use.
+
+### 4. **Top-Level Accessors & DuckDB Integration**
+Python accessors that provide two complementary query interfaces:
+- **`reachable_view`**: Query entities and resources within interaction range (full mutation access)
+- **`remote_view`**: Query entities anywhere on the map via SQL (read-only, then walk to interact)
+
+The snapshot mod's JSONL files are loaded into a **DuckDB spatial database** (`src/FactoryVerse/agent/infra/snapshot/`) that stays synchronized with game state in real-time via UDP. This enables agents to query the entire map with SQL instead of processing screenshots.
 
 ## Research Motivation
 
-FactoryVerse investigates three core research questions that form the foundation for scalable, data-driven AI agents in complex simulation environments:
+FactoryVerse investigates three core research questions:
 
-### 1. FV Embodied Agent Mod, Scalable Mod Architecture for Agents
+### 1. Scalable Mod Architecture for Multi-Agent Gameplay
+**How can we design a mod architecture that scales for multiple embodied agents in Factorio?**
 
-**How can we design a mod architecture that scales for multiple embodied agents in Factorio-based gameplay?**
+The FV Embodied Agent mod provides a simple, extensible foundation for multi-agent scenarios. Each agent operates independently with its own force, inventory, and state machines. Actions like walking, mining, and crafting use async contracts (UDP notifications) to enable non-blocking, concurrent agent behavior.
 
-Inspired by the agent ecosystems of Minecraft, FactoryVerse implements an extensive design for multi-agent gameplay that serves as the core basis for building diverse environments on top of Factorio's sandbox mechanics. The **FV Embodied Agent** mod (`src/fv_embodied_agent/`) provides:
+### 2. Database as Proxy for Multi-Scale Vision
+**Is a database a good proxy for multi-scale vision in embodied gameplay?**
 
-- **Agent Class System**: Each agent is a fully-featured entity with its own character, force, inventory, and state machines
-- **Multi-Agent Coordination**: Agents can operate independently or collaboratively, with configurable force relationships (WIP)
-- **Action System**: Comprehensive action interface covering walking, mining, crafting, placement, research, and entity operations
-- **State Machine Processing**: Tick-based processing for concurrent agent activities (walking, mining, crafting)
-- **Async Action Contracts**: Long-running actions (walking, mining, crafting) use UDP notifications for completion events, enabling non-blocking agent behavior
-- **Remote Interface**: Python-RCON bridged remote interface for external agent control—each agent exposes `remote.call("agent_{id}", method, args)` for direct command execution
+Rather than processing screenshots, FactoryVerse materializes entire game state to disk and provides SQL query access to a real-time spatial database. Factorio's deterministic simulation guarantees that event handlers capture exact game state—every change is written to disk as append-only JSONL files. Reading game state directly via Lua blocks the Factorio runtime, making the snapshot system essential for scaling multi-agent game state reads. UDP sync provides real-time updates for performance, but the file-based record ensures no drift: if UDP drops packets, sequence gaps trigger reconstruction from disk files.
 
-**Understanding Factorio Remote Interfaces**
-
-Factorio's **remote interface** system (`remote.add_interface` / `remote.call`) is a global mechanism for cross-script communication. Mods register named interfaces that expose Lua functions callable from any context—including RCON.
-
-FactoryVerse uses remote interfaces extensively:
-
-**Base Interfaces** (exposed by mods):
-- `admin`: Development utilities (`add_items`, `unlock_technology`, `clear_inventory`)
-- `agent`: Agent lifecycle management (`create_agent`, `destroy_agents`, `list_agents`)
-- `entities`: Generic entity operations (`set_recipe`, `set_filter`, `extract_inventory_items`)
-- `map`: Snapshot and charting control (`get_snapshot_status`, `set_snapshot_config`)
-- `test_ground`: Scenario testing utilities (resource placement, area clearing)
-
-**Per-Agent Interfaces** (dynamically created):
-When you create an agent, a new interface `agent_{id}` is registered with 30+ low-level action methods:
-- Movement: `walk_to`, `stop_walking`, `teleport`
-- Mining: `mine_resource`, `stop_mining`
-- Crafting: `craft_enqueue`, `craft_dequeue`
-- Entity ops: `place_entity`, `pickup_entity`, `inspect_entity`
-- Inventory: `get_inventory_items`, `take_inventory_item`, `put_inventory_item`
-- Research: `enqueue_research`, `get_technologies`, `get_research_queue`
-- Reachability: `get_reachable`, `get_chunks_in_view`
-
-These are **low-level, stateless function calls**—essentially a procedural API for controlling agents.
-
-**Infrastructure Choices**:
-- **Port Isolation**: Each server instance uses isolated port ranges (RCON: 27000+N, Game: 34197+N, Snapshot: 34400+N, Agents: 34202+N*10) to support parallel experiments without conflicts
-- **Sync Services**: UDP-based real-time synchronization keeps Python data structures in sync with game state via the snapshot mod
-- **Async Contracts**: Actions return immediately with request IDs; UDP notifications deliver results when operations complete, preventing polling overhead
-
-This architecture is **simple, extensible, modular, and barebones**—providing the minimal foundation needed for rich multi-agent scenarios while remaining easy to understand and modify.
-
-### 2. FV Snapshot + DuckDB, Database as Proxy for Multi-Scale Vision
-
-**Is a database a good proxy for multi-scale vision in embodied gameplay?** This is the core research question. Rather than processing screenshots, **can a spatial database provide sufficient contextual awareness for intelligent gameplay?**
-
-FactoryVerse's approach: **materialize entire game state to disk and provide LLMs with SQL query access to a real-time spatial database**. This works because Factorio's **completely deterministic simulation** guarantees event handlers (`on_built_entity`, `on_mined_entity`, `on_chunk_charted`) capture exact game state. Every change is written to disk as append-only JSONL files—the source of truth. UDP sync provides real-time updates for performance, but the file-based record ensures no drift: if UDP drops packets, sequence gaps trigger reconstruction from disk files.
-
-**Technical Implementation:**
-
-The **FV Snapshot** mod (`src/fv_snapshot/`) coordinates two-phase snapshotting via a state machine:
-
-**Phase 1: Bootstrap Mode** (Initial Snapshotting)
-- **Trigger**: Map generation completes, all starting chunks charted
-- **Lua Process** (`Map.lua` state machine):
-  - Runs `find_entities_filtered()` on ALL initially charted chunks
-  - Serializes entities/resources to JSONL with batching (100 entities/tick, 3 writes/tick)
-  - Writes chunk-wise files: `{chunk_x}/{chunk_y}/entities-init.jsonl`, `resources-init.jsonl`, `water-init.jsonl`
-  - Spreads work across ticks to prevent game freezes (can take 30-60 seconds for large starting areas)
-- **Python Process** (`SnapshotLoader`):
-  - Discovers chunk directories in `script-output/factoryverse/snapshots/{chunk_x}/{chunk_y}/`
-  - Parses JSONL files and populates DuckDB tables (`map_entity`, `resource_tile`, `water_tile`, `ghost`)
-  - Builds derived tables (`resource_patch`, `belt_line`) via spatial clustering
-  - Returns last sequence number for sync tracking
-- **Output**: Complete spatial database snapshot of initial game state
-
-**Phase 2: Maintenance Mode** (Real-Time Sync)
-- **Trigger**: Bootstrap complete, agents start playing
-- **Lua Process** (Event Handlers):
-  - `on_built_entity`, `on_mined_entity`: Capture entity lifecycle changes
-  - `on_chunk_charted`: Snapshot new chunks as map expands
-  - **Write to disk**: Append operations to `{chunk_x}/{chunk_y}/entities-updates.jsonl` (source of truth)
-  - **UDP notification**: Emit JSON payload with `op: "upsert|remove"`, `sequence: N`, `entity: {...}` (performance optimization)
-- **Python Process** (`SyncService`):
-  - Subscribes to UDP port (34400+N per server instance)
-  - Receives incremental updates and applies SQL operations (`INSERT OR REPLACE`, `DELETE`)
-  - **Sequence gap detection**: If UDP drops packets → replay from `-updates.jsonl` files on disk
-  - Maintains last sequence number to know replay start point
-- **Output**: DuckDB stays in sync with game state within milliseconds
-- **Guarantee**: Disk files are the proof—UDP can miss packets, but determinism + append-only log ensures exact reconstruction
-
-**File Structure:**
-```
-script-output/factoryverse/snapshots/
-├── 0/                          # chunk_x = 0
-│   ├── 0/                      # chunk_y = 0
-│   │   ├── entities-init.jsonl       # Initial entities
-│   │   ├── entities-updates.jsonl    # Incremental changes
-│   │   ├── resources-init.jsonl      # Ore tiles
-│   │   ├── water-init.jsonl          # Water tiles
-│   │   └── ghosts-init.jsonl         # Construction ghosts
-│   └── 1/                      # chunk_y = 1
-│       └── ...
-└── 1/                          # chunk_x = 1
-    └── ...
-```
-
-**Vision Capabilities:**
-- **Static Vision**: Query exact positions, bounding boxes, connection topology (what screenshots lose in precision)
-- **Dynamic Visualization**: Generate matplotlib/plotly charts from SQL results (production graphs, heatmaps)
-- **Multi-Scale Analysis**: From inserter orientations to factory-wide throughput in one SQL query
-
-This transforms implicit visual data (sprite animations, flow rates) into explicit queries: "which drills lack power coverage?" instead of "what do I see?"
-
-### 3. Factory Objects for Stateful Entity Representation
-
+### 3. Object-Oriented MDP for LLM Agents
 **What abstraction best enables LLMs to interface with stateful game entities?**
 
-Factorio entities are inherently stateful—furnaces have fuel levels, assemblers have recipes, inserters have pickup/drop positions. Human players understand this through visual cues: animated sprites, colored overlays, range indicators. LLMs need a different interface.
-
-**Why Factory Objects Instead of Direct Remote Calls?**
-
-While the `fv_embodied_agent` mod exposes a complete remote interface (`remote.call("agent_1", "walk_to", {x=100, y=200})`), calling these functions directly via RCON has fundamental limitations:
-
-- **Stateless**: Each `remote.call()` is isolated—no object identity or persistent entity references
-- **Stringly-Typed**: All data passes as JSON strings through RCON—no type safety, no dynamic property access
-- **Positional Arguments**: Remote calls use unnamed Lua table arguments—error-prone for methods with many parameters
-- **No inherit Composition**: Cannot implicitly chain operations or build reusable references (e.g., "this furnace at position X")
-- **Manual Serialization**: Must manually parse data from return types to parameters across calls
-- **Procedural, Not Object-Oriented**: No encapsulation of entity state—every operation requires passing position/name explicitly
-
-**The OOMDP (Object-Oriented Markov Decision Process) Solution**:
-
-Factory objects create an **OOMDP abstraction** that mirrors the GUI interactions human players use:
-
-FactoryVerse provides an **object-oriented Python interface** (`src/FactoryVerse/factory/`) that wraps RCON with typed, stateful abstractions:
-
-- **Type-Safe Entity Classes**: `Furnace`, `AssemblingMachine`, `Inserter`, `MiningDrill`—each with domain-specific methods and proper type hints
-- **Explicit Affordances**: Methods like `furnace.add_fuel(stack)`, `drill.output_position()`, `inserter.get_drop_position()` make implicit game mechanics explicit and discoverable
-- **Entity View System**: Two access modes enforce proximity constraints:
-  - **REMOTE View** (`EntityView.REMOTE`): Query entities anywhere via `remote_view.get_entities(sql)`—read-only, blocks mutations
-  - **REACHABLE View** (`EntityView.REACHABLE`): Get nearby entities via `reachable.get_entity(name)`—full access to all operations
-  - **Ghost Property** (`is_ghost: bool`): Orthogonal to view—ghosts support `build()` (REACHABLE only) and `remove()`, but block state mutations (no fuel/recipe/inventory to mutate)
-- **Composable Operations**: LLMs write idiomatic Python combining spatial queries (DuckDB) with entity operations (factory objects)
-- **Prototype-Driven Behavior**: Static entity properties (output positions, search areas) derived from Factorio's prototype data ensure accuracy
-
-**Example Comparison**:
-
-```python
-# Low-level remote interface (30+ stateless functions):
-# Every operation requires explicit agent_id, position, serialization
-rcon.send_command(
-    "/c rcon.print(helpers.table_to_json("
-    "remote.call('agent_1', 'inspect_entity', 'stone-furnace', {x=10, y=20})"
-    "))"
-)
-result = json.loads(rcon.response)
-# Now manually parse result, check fuel, decide what to do...
-
-rcon.send_command(
-    "/c rcon.print(helpers.table_to_json("
-    "remote.call('agent_1', 'put_inventory_item', 'coal', 5, 'stone-furnace', {x=10, y=20})"
-    "))"
-)
-# Repeat for every interaction...
-
-# Get persistent object reference
-furnace = reachable.get_entity("stone-furnace")
-
-# Object knows its own position and state
-print(furnace.inspect())  # Human-readable formatted output
-
-# Type-safe methods with IDE autocomplete
-coal_stack = inventory.get_item("coal", count=5)
-furnace.add_fuel(coal_stack)  # Entity-specific affordance
-
-# Compose operations naturally
-ore_stack = inventory.get_item("iron-ore", count=10)
-furnace.add_ingredients(ore_stack)
-```
-
-**Key Insight**: Factory objects transform **30+ low-level procedural functions** into an **object-oriented MDP** where:
-- Entities are stateful objects (like GUI elements human players click on)
-- Methods are affordances (like menu options that appear when you right-click an entity)
-- The abstraction matches human mental models (click furnace → add fuel) rather than RPC mechanics
-
-This bridges the gap between human visual/interactive understanding and LLM code generation, enabling agents to reason about and manipulate complex factory systems through composable, type-safe Python code that mirrors GUI interactions.
+Factory objects create an OOMDP abstraction that mirrors GUI interactions. Instead of calling low-level RCON functions with positional arguments and manual serialization, agents interact with stateful objects that have explicit affordances. This bridges the gap between human visual/interactive understanding and LLM code generation.
 
 ---
 
@@ -299,7 +153,7 @@ Set `PRIME_API_KEY` in your `.env` file to use the Prime Intellect API.
 
 FactoryVerse's infrastructure is designed for **multi-instance isolation** and **real-time synchronization**. Key design choices:
 
-**Port Allocation Scheme** (see `docs/port-allocation-scheme.md`):
+**Port Allocation Scheme**:
 
 FactoryVerse uses incremental port allocation to support multiple concurrent Factorio instances without conflicts:
 
@@ -433,49 +287,30 @@ remote.call("agent_1", "craft_enqueue", {recipe_name="iron-plate", count=10})
 
 These 30+ methods are the **low-level primitives** that factory objects wrap into a higher-level OOMDP.
 
-**Async Action Contracts:**
+**Understanding Factorio Remote Interfaces**
 
-**Understanding Factorio's RCON Runtime**:
-- **RCON is synchronous and blocking**: When you send an RCON command, Factorio pauses the simulation, executes your Lua code on the current tick, and returns the result—all within the same tick
-- **Guaranteed atomicity**: If RCON returns, you can be 100% certain that all operations completed on that exact tick
-- **Blocking nature**: The entire simulation waits for your RCON to finish, which is acceptable for fast operations (inspect entity, place entity, teleport)
+Factorio's **remote interface** system (`remote.add_interface` / `remote.call`) is a global mechanism for cross-script communication. Mods register named interfaces that expose Lua functions callable from any context—including RCON.
 
-**The Async Action Problem**:
-Certain actions cannot complete within a single tick—they rely on Factorio's internal simulation systems that execute over multiple future ticks:
-- **Walking**: Uses A* pathfinding that computes paths asynchronously and moves the character incrementally
-- **Crafting**: Uses the character's internal crafting queue that processes recipes over time
-- **Mining**: Extracts resources progressively based on mining speed and tool efficiency
-- **Research**: Uses the force's technology system that unlocks over multiple ticks
+FactoryVerse uses remote interfaces extensively:
 
-For these actions, **RCON returning ≠ action completing**. RCON only confirms the action *started*, not that it finished.
+**Base Interfaces** (exposed by mods):
+- `admin`: Development utilities (`add_items`, `unlock_technology`, `clear_inventory`)
+- `agent`: Agent lifecycle management (`create_agent`, `destroy_agents`, `list_agents`)
+- `entities`: Generic entity operations (`set_recipe`, `set_filter`, `extract_inventory_items`)
+- `map`: Snapshot and charting control (`get_snapshot_status`, `set_snapshot_config`)
+- `test_ground`: Scenario testing utilities (resource placement, area clearing)
 
-**The UDP Notification Contract**:
-To handle async actions properly, each agent gets a unique UDP port and maintains state machines:
+**Per-Agent Interfaces** (dynamically created):
+When you create an agent, a new interface `agent_{id}` is registered with 30+ low-level action methods:
+- Movement: `walk_to`, `stop_walking`, `teleport`
+- Mining: `mine_resource`, `stop_mining`
+- Crafting: `craft_enqueue`, `craft_dequeue`
+- Entity ops: `place_entity`, `pickup_entity`, `inspect_entity`
+- Inventory: `get_inventory_items`, `take_inventory_item`, `put_inventory_item`
+- Research: `enqueue_research`, `get_technologies`, `get_research_queue`
+- Reachability: `get_reachable`, `get_chunks_in_view`
 
-1. **RCON call initiates action**: Returns immediately with a request ID (action has started, not finished)
-2. **State machine executes**: Lua mod tracks action progress over multiple ticks (walking waypoints, crafting progress, mining amount)
-3. **UDP notification on completion**: When the action finishes, agent sends completion event to its UDP port with final results
-4. **Python future resolves**: `AsyncActionListener` receives UDP payload and resolves the corresponding Python future
-
-**Example Flow**:
-```python
-# Python sends RCON to start walking
-result = await walking.to(MapPosition(100, 200))
-# ^ This returns immediately with request_id
-
-# Meanwhile, over many game ticks:
-# - Tick 1: Pathfinding begins
-# - Tick 5: Path computed, character starts moving
-# - Tick 6-50: Character walks along waypoints
-# - Tick 51: Character reaches destination
-
-# On tick 51, UDP notification sent:
-# {"type": "walking_complete", "request_id": "abc123", "success": true, ...}
-
-# Python future resolves, walking.to() completes
-```
-
-This design prevents polling (which would require RCON every tick) and enables efficient concurrent operations (multiple async actions can execute simultaneously).
+These are **low-level, stateless function calls**—essentially a procedural API for controlling agents.
 
 **Multi-Agent Support:**
 - Each agent has its own force with configurable relationships
@@ -493,6 +328,53 @@ The **FV Snapshot** mod (`src/fv_snapshot/`) materializes game state to disk for
 - **Power.lua**: Captures electric network topology and coverage areas
 - **Research.lua**: Exports technology tree state, research progress, unlocked recipes
 
+**Two-Phase Snapshotting:**
+
+**Phase 1: Bootstrap Mode** (Initial Snapshotting)
+- **Trigger**: Map generation completes, all starting chunks charted
+- **Lua Process** (`Map.lua` state machine):
+  - Runs `find_entities_filtered()` on ALL initially charted chunks
+  - Serializes entities/resources to JSONL with batching (100 entities/tick, 3 writes/tick)
+  - Writes chunk-wise files: `{chunk_x}/{chunk_y}/entities-init.jsonl`, `resources-init.jsonl`, `water-init.jsonl`
+  - Spreads work across ticks to prevent game freezes (can take 30-60 seconds for large starting areas)
+- **Python Process** (`SnapshotLoader`):
+  - Discovers chunk directories in `script-output/factoryverse/snapshots/{chunk_x}/{chunk_y}/`
+  - Parses JSONL files and populates DuckDB tables (`map_entity`, `resource_tile`, `water_tile`, `ghost`)
+  - Builds derived tables (`resource_patch`, `belt_line`) via spatial clustering
+  - Returns last sequence number for sync tracking
+- **Output**: Complete spatial database snapshot of initial game state
+
+**Phase 2: Maintenance Mode** (Real-Time Sync)
+- **Trigger**: Bootstrap complete, agents start playing
+- **Lua Process** (Event Handlers):
+  - `on_built_entity`, `on_mined_entity`: Capture entity lifecycle changes
+  - `on_chunk_charted`: Snapshot new chunks as map expands
+  - **Write to disk**: Append operations to `{chunk_x}/{chunk_y}/entities-updates.jsonl` (source of truth)
+  - **UDP notification**: Emit JSON payload with `op: "upsert|remove"`, `sequence: N`, `entity: {...}` (performance optimization)
+- **Python Process** (`SyncService`):
+  - Subscribes to UDP port (34400+N per server instance)
+  - Receives incremental updates and applies SQL operations (`INSERT OR REPLACE`, `DELETE`)
+  - **Sequence gap detection**: If UDP drops packets → replay from `-updates.jsonl` files on disk
+  - Maintains last sequence number to know replay start point
+- **Output**: DuckDB stays in sync with game state within milliseconds
+- **Guarantee**: Disk files are the proof—UDP can miss packets, but determinism + append-only log ensures exact reconstruction
+
+**File Structure:**
+```
+script-output/factoryverse/snapshots/
+├── 0/                          # chunk_x = 0
+│   ├── 0/                      # chunk_y = 0
+│   │   ├── entities-init.jsonl       # Initial entities
+│   │   ├── entities-updates.jsonl    # Incremental changes
+│   │   ├── resources-init.jsonl      # Ore tiles
+│   │   ├── water-init.jsonl          # Water tiles
+│   │   └── ghosts-init.jsonl         # Construction ghosts
+│   └── 1/                      # chunk_y = 1
+│       └── ...
+└── 1/                          # chunk_x = 1
+    └── ...
+```
+
 **Output Format:**
 - **JSONL files** (not CSV) with one JSON object per line for efficient streaming
 - Compression support for large datasets
@@ -506,11 +388,11 @@ The **FV Snapshot** mod (`src/fv_snapshot/`) materializes game state to disk for
 
 **Integration with Python:**
 
-The `RemoteView` class (`src/FactoryVerse/agent/snapshot/remote_view.py`) provides the Python interface:
+The `RemoteView` class (`src/FactoryVerse/agent/remote_view.py`) provides the Python interface:
 
 ```python
 view = RemoteView(snapshot_dir, udp_dispatcher=dispatcher)
-view.load()  # Load JSONL snapshots into DuckDB
+await view.load()  # Load JSONL snapshots into DuckDB
 await view.start()  # Start real-time UDP sync
 
 # Query entities anywhere on map (returns RemoteViewEntity instances)
@@ -521,17 +403,17 @@ pending = view.get_ghosts("SELECT * FROM ghost WHERE ghost_name = 'assembling-ma
 ```
 
 **Architecture Components:**
-- **SnapshotDatabase**: Manages DuckDB connection and schema (`src/FactoryVerse/infra/db/schema/`)
-- **SnapshotLoader**: Reads JSONL files and populates base/component/derived tables (`src/FactoryVerse/agent/snapshot/db/loader/`)
-- **SyncService**: Subscribes to UDP updates and applies incremental changes to keep database current (`src/FactoryVerse/agent/snapshot/sync.py`)
-- **QueryExecutor**: Validates SQL queries and constructs typed entity objects from results (`src/FactoryVerse/agent/snapshot/query.py`)
+- **SnapshotDatabase**: Manages DuckDB connection and schema (`src/FactoryVerse/agent/infra/snapshot/database.py`)
+- **SnapshotLoader**: Reads JSONL files and populates base/component/derived tables (`src/FactoryVerse/agent/infra/snapshot/loader.py`)
+- **SyncService**: Subscribes to UDP updates and applies incremental changes to keep database current (`src/FactoryVerse/agent/infra/snapshot/sync.py`)
+- **QueryExecutor**: Validates SQL queries and constructs typed entity objects from results (`src/FactoryVerse/agent/infra/snapshot/query.py`)
 
 ### Python Factory Objects
 
 The Python **Factory Objects** (`src/FactoryVerse/factory/`) provide a type-safe, object-oriented interface to Factorio—wrapping the RCON interface exposed by `fv_embodied_agent` with stateful, composable abstractions.
 
 **Core Concepts:**
-- **Accessor Modules**: `walking`, `mining`, `crafting`, `research`, `inventory`, `reachable`, `remote_view`
+- **Accessor Modules**: `walking`, `mining`, `crafting`, `research`, `inventory`, `reachable_view`, `remote_view`
 - **Entity Types**: `Furnace`, `AssemblingMachine`, `Inserter`, `MiningDrill`, `TransportBelt`, `ElectricPole`, `Container`
 - **Item Types**: `Item`, `ItemStack`, `PlaceableItem`, `MiningDrillItem` (with placement cues)
 - **Type Classes**: `MapPosition`, `Direction`, `BoundingBox`
@@ -544,7 +426,7 @@ Two access modes enforce proximity-based access control (defined by `EntityView`
   - Blocks: Mutations (`pickup()`, `add_fuel()`, `set_recipe()`, `build()`)
   - Use case: Query entities anywhere on map for planning, then navigate to them for interaction
 
-- **REACHABLE View** (full access): Returned by `reachable.get_entity(name)`
+- **REACHABLE View** (full access): Returned by `reachable_view.get_entity(name)`
   - Allows: Everything—all spatial, planning, AND mutation methods
   - Methods depend on entity's mixins (FuelableMixin, CrafterMixin, ContainerMixin, etc.)
   - Use case: Interact with nearby entities (within reach distance)
@@ -565,13 +447,68 @@ Two access modes enforce proximity-based access control (defined by `EntityView`
 - **REMOTE + real entity**: Can inspect, cannot mutate
 - **REACHABLE + real entity**: Full access to all operations
 
+**Why Factory Objects Instead of Direct Remote Calls?**
+
+While the `fv_embodied_agent` mod exposes a complete remote interface (`remote.call("agent_1", "walk_to", {x=100, y=200})`), calling these functions directly via RCON has fundamental limitations:
+
+- **Stateless**: Each `remote.call()` is isolated—no object identity or persistent entity references
+- **Stringly-Typed**: All data passes as JSON strings through RCON—no type safety, no dynamic property access
+- **Positional Arguments**: Remote calls use unnamed Lua table arguments—error-prone for methods with many parameters
+- **No inherit Composition**: Cannot implicitly chain operations or build reusable references (e.g., "this furnace at position X")
+- **Manual Serialization**: Must manually parse data from return types to parameters across calls
+- **Procedural, Not Object-Oriented**: No encapsulation of entity state—every operation requires passing position/name explicitly
+
+**The OOMDP Solution**:
+
+Factory objects create an **OOMDP abstraction** that mirrors the GUI interactions human players use:
+
+**Example Comparison**:
+
+```python
+# Low-level remote interface (30+ stateless functions):
+# Every operation requires explicit agent_id, position, serialization
+rcon.send_command(
+    "/c rcon.print(helpers.table_to_json("
+    "remote.call('agent_1', 'inspect_entity', 'stone-furnace', {x=10, y=20})"
+    "))"
+)
+result = json.loads(rcon.response)
+# Now manually parse result, check fuel, decide what to do...
+
+rcon.send_command(
+    "/c rcon.print(helpers.table_to_json("
+    "remote.call('agent_1', 'put_inventory_item', 'coal', 5, 'stone-furnace', {x=10, y=20})"
+    "))"
+)
+# Repeat for every interaction...
+
+# Get persistent object reference
+furnace = reachable_view.get_entity("stone-furnace")
+
+# Object knows its own position and state
+print(furnace.inspect())  # Human-readable formatted output
+
+# Type-safe methods with IDE autocomplete
+coal_stack = inventory.get_item("coal", count=5)
+furnace.add_fuel(coal_stack)  # Entity-specific affordance
+
+# Compose operations naturally
+ore_stack = inventory.get_item("iron-ore", count=10)
+furnace.add_ingredients(ore_stack)
+```
+
+**Key Insight**: Factory objects transform **30+ low-level procedural functions** into an **object-oriented MDP** where:
+- Entities are stateful objects (like GUI elements human players click on)
+- Methods are affordances (like menu options that appear when you right-click an entity)
+- The abstraction matches human mental models (click furnace → add fuel) rather than RPC mechanics
+
 **Accessor Patterns:**
 ```python
 # Walking
 await walking.to(MapPosition(100, 200))
 
 # Mining (max 25 items per operation)
-resources = reachable.get_resources("iron-ore")
+resources = reachable_view.get_resources("iron-ore")
 await resources[0].mine(max_count=25)
 
 # Crafting
@@ -582,7 +519,7 @@ crafting.enqueue("copper-plate", count=50)
 iron_count = inventory.get_total("iron-plate")
 
 # Entity operations (reachable only)
-furnace = reachable.get_entity("stone-furnace")
+furnace = reachable_view.get_entity("stone-furnace")
 furnace.add_fuel(coal_stack)
 furnace.add_ingredients(ore_stack)
 
@@ -617,7 +554,7 @@ This dramatically improves LLM code generation quality and reduces trial-and-err
 
 ### DuckDB Schemas (Broad Strokes)
 
-The DuckDB schema (`src/FactoryVerse/infra/db/duckdb_schema.py`) provides a spatial database for map queries:
+The DuckDB schema (`src/FactoryVerse/agent/infra/snapshot/schema_definitions.py`) provides a spatial database for map queries:
 
 **Core Tables:**
 - `resource_tile`: Individual ore tiles with position and amount
