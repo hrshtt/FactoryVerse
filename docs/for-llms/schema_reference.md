@@ -1,6 +1,6 @@
 # FactoryVerse Schema Reference
 
-> Auto-generated on 2026-01-14 16:00
+> Auto-generated on 2026-01-15 12:04
 
 This document describes the DuckDB database schema used for map-wide queries via `remote_view`. 
 The database is read-only from the LLM's perspective - data is synchronized from the game automatically.
@@ -75,6 +75,7 @@ class BaseEntity:
     
     # Available methods (read-only on REMOTE view):
     def inspect() -> EntityInspection  # Get current state
+    async def walk_to() -> MapPosition  # Navigate to entity (entity-aware pathfinding)
     
     # Blocked on REMOTE view (must walk to entity first):
     # - add_fuel(), take_fuel()
@@ -83,7 +84,14 @@ class BaseEntity:
     # - pickup()
 ```
 
-To interact with a remote entity, use `walking.walk_to(entity.position)` then get it via `reachable.get_entity()`.
+**IMPORTANT**: To interact with a remote entity, use `await entity.walk_to()`. After walking, the entity **automatically becomes REACHABLE** and you can use it directly - no need to get it again via `reachable.get_entity()`.
+
+```python
+# Preferred pattern:
+drill = remote_view.get_entity("SELECT * FROM map_entity WHERE entity_name = 'burner-mining-drill' LIMIT 1")
+await drill.walk_to()  # Automatically converts to REACHABLE
+drill.add_fuel(inventory.create_item_stacks("coal", 5))  # Use directly
+```
 
 ### `BaseResource` (from `get_resources`)
 
@@ -104,7 +112,14 @@ class BaseResource:
     # - mine()  # Raises AttributeError - must walk to first
 ```
 
-To mine a remote resource: navigate to it using `await resource.walk_to()`, then use `reachable.get_resource(name, position)` to get a REACHABLE view resource that can be mined.
+**IMPORTANT**: To mine a remote resource, use `await resource.walk_to()`. After walking, the resource **automatically becomes REACHABLE** and you can mine it directly - no need to get it again via `reachable.get_resource()`.
+
+```python
+# Preferred pattern:
+iron_ore = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore' LIMIT 1")[0]
+await iron_ore.walk_to()  # Automatically converts to REACHABLE
+items = await iron_ore.mine(max_count=25)  # Use directly
+```
 
 ### `Dict[str, Any]` (from `query`)
 
@@ -132,7 +147,6 @@ Core entity table containing all placed entities on the map
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | Unique identifier for the entity |
 | `entity_name` | `VARCHAR` | Factorio internal name (e.g., 'burner-mining-drill') |
 | `position_x` | `DOUBLE` | X coordinate on the map |
 | `position_y` | `DOUBLE` | Y coordinate on the map |
@@ -161,7 +175,6 @@ Ghost entities - planned placements that haven't been built yet
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | Unique identifier for the ghost |
 | `ghost_name` | `VARCHAR` | Entity name this ghost will become when built |
 | `position_x` | `DOUBLE` | X coordinate on the map |
 | `position_y` | `DOUBLE` | Y coordinate on the map |
@@ -184,7 +197,6 @@ Ore deposits (iron-ore, copper-ore, coal, stone, uranium-ore)
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | Unique identifier |
 | `name` | `VARCHAR` | Resource type (e.g., 'iron-ore', 'coal') |
 | `position_x` | `DOUBLE` | X coordinate |
 | `position_y` | `DOUBLE` | Y coordinate |
@@ -203,7 +215,6 @@ Natural resources like trees, rocks, and other minable objects
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | Unique identifier |
 | `name` | `VARCHAR` | Entity name (e.g., 'tree-01', 'rock-big') |
 | `entity_type` | `VARCHAR` | Type category (tree, simple-entity for rocks, etc.) |
 | `position_x` | `DOUBLE` | X coordinate |
@@ -229,7 +240,6 @@ Water tiles on the map
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | Unique identifier |
 | `position_x` | `DOUBLE` | X coordinate |
 | `position_y` | `DOUBLE` | Y coordinate |
 | `chunk_x` | `INTEGER` | Chunk X coordinate |
@@ -242,7 +252,7 @@ SELECT * FROM water_tile WHERE chunk_x = 0 AND chunk_y = 0
 
 ### Component Tables
 
-These tables contain entity-specific data and are joined via `entity_key`.
+These tables contain entity-specific data and are joined via foreign keys to `map_entity`.
 
 #### `inserter`
 
@@ -250,7 +260,9 @@ Inserter-specific data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | FK to map_entity |
+| `entity_name` | `VARCHAR` | FK to map_entity |
+| `position_x` | `DOUBLE` | FK to map_entity |
+| `position_y` | `DOUBLE` | FK to map_entity |
 | `direction` | `VARCHAR` | Inserter direction |
 | `pickup_position_x` | `DOUBLE` | Pickup position X |
 | `pickup_position_y` | `DOUBLE` | Pickup position Y |
@@ -263,7 +275,9 @@ Transport belt data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | FK to map_entity |
+| `entity_name` | `VARCHAR` | FK to map_entity |
+| `position_x` | `DOUBLE` | FK to map_entity |
+| `position_y` | `DOUBLE` | FK to map_entity |
 | `direction` | `VARCHAR` | Belt direction |
 | `belt_speed` | `DOUBLE` | Belt speed |
 
@@ -273,7 +287,9 @@ Mining drill data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | FK to map_entity |
+| `entity_name` | `VARCHAR` | FK to map_entity |
+| `position_x` | `DOUBLE` | FK to map_entity |
+| `position_y` | `DOUBLE` | FK to map_entity |
 | `direction` | `VARCHAR` | Drill direction |
 | `mining_target` | `VARCHAR` | What resource this drill is mining |
 
@@ -283,7 +299,9 @@ Assembling machine data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_key` | `VARCHAR` | FK to map_entity |
+| `entity_name` | `VARCHAR` | FK to map_entity |
+| `position_x` | `DOUBLE` | FK to map_entity |
+| `position_y` | `DOUBLE` | FK to map_entity |
 | `recipe` | `VARCHAR` | Currently set recipe |
 | `crafting_speed` | `DOUBLE` | Crafting speed multiplier |
 
@@ -397,27 +415,23 @@ iron_deposits = remote_view.get_resources('''
     LIMIT 5
 ''')
 
-# 2. NAVIGATE: Walk to the best deposit
+# 2. NAVIGATE: Walk to the best deposit - it automatically becomes REACHABLE
 target = iron_deposits[0]
-await walking.walk_to(target.position)
+await target.walk_to()  # Entity-aware pathfinding
 
-# 3. QUERY: Get reachable version for full access
-iron = reachable.get_resource("iron-ore")
+# 3. MINE: Use it directly - no need to get it again!
+items = await target.mine(max_count=50)
 
-# 4. MINE: Now you can mine
-items = await iron.mine(max_count=50)
-
-# 5. QUERY: Find existing infrastructure
+# 4. QUERY: Find existing infrastructure
 drills = remote_view.get_entities('''
     SELECT * FROM map_entity 
     WHERE entity_name = 'burner-mining-drill'
     AND chunk_x = 0 AND chunk_y = 0
 ''')
 
-# 6. NAVIGATE & INTERACT: Fuel the drills
+# 5. NAVIGATE & INTERACT: Fuel the drills
 for drill in drills:
-    await walking.walk_to(drill.position)
-    local_drill = reachable.get_entity("burner-mining-drill")
-    local_drill.add_fuel(inventory.create_item_stacks("coal", 5))
+    await drill.walk_to()  # Automatically becomes REACHABLE
+    drill.add_fuel(inventory.create_item_stacks("coal", 5))  # Use directly
 ```
 

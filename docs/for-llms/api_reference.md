@@ -1,6 +1,6 @@
 # FactoryVerse LLM Reference
 
-> Auto-generated via introspection on 2026-01-13 03:58
+> Auto-generated via introspection on 2026-01-15 12:04
 
 You are an embodied agent in Factorio. You have a physical presence, inventory, and can walk, craft, mine, and interact with entities.
 
@@ -74,12 +74,14 @@ Map-wide entity queries via DuckDB.
 ```python
 remote_view.count_entities(entity_name: Optional[str] = None) -> int
 remote_view.count_ghosts(ghost_name: Optional[str] = None) -> int
+remote_view.debug_info() -> Dict[str, Any]
+remote_view.flush() -> int
 remote_view.get_entities(sql: str) -> List['BaseEntity']
 remote_view.get_entity(sql: str) -> Optional['BaseEntity']
 remote_view.get_ghosts(sql: str) -> List['BaseEntity']
-remote_view.get_resources(sql: str) -> List['RemoteViewResource']
+remote_view.get_resources(sql: str) -> List['BaseResource']
 remote_view.is_loaded -> bool
-remote_view.load() -> FactoryVerse.agent.snapshot.types.LoadResult
+await remote_view.load(wait_for_bootstrap: bool = True, bootstrap_timeout: float = 120.0) -> FactoryVerse.agent.snapshot.types.LoadResult
 remote_view.query(sql: str) -> List[Dict[str, Any]]
 remote_view.rebuild() -> FactoryVerse.agent.snapshot.types.LoadResult
 await remote_view.start() -> NoneType
@@ -102,7 +104,7 @@ await ghost_builder.build_plan(plan: GhostPlan, strict: bool = False) -> Dict[st
 Spatial reasoning for entity placement.
 
 ```python
-placement_hints.get_connection_positions(source_entity: BaseEntity, target_entity_name: str, connection_type: <enum 'ConnectionType) -> List[Tuple[MapPosition, Optional[Direction]]]
+placement_hints.get_connection_positions(source_entity: BaseEntity, target_entity_name: str, connection_type: <enum 'ConnectionType) -> List[ConnectionPosition]
 placement_hints.get_inserter_placement_positions(source_entity: BaseEntity, target_entity: BaseEntity, inserter_name: str = 'inserter') -> List[Tuple[MapPosition, Direction]]
 placement_hints.get_placement_line(entity_name: str, start: MapPosition, end: MapPosition, width: int = 1, validate: bool = True) -> GhostPlan
 placement_hints.get_pole_coverage_plan(entities_to_power: List[BaseEntity], pole_name: str = 'medium-electric-pole') -> Tuple[GhostPlan, List[BaseEntity]]
@@ -179,22 +181,31 @@ items = await coal.mine(max_count=25)  # -> List[ItemStack]
 
 Query entities anywhere via SQL. Cannot mutate - walk to them first.
 
+**IMPORTANT**: Use `entity.walk_to()` or `resource.walk_to()` on remote objects. After walking, the entity/resource **automatically becomes REACHABLE** and you can use it directly - no need to get it again via `reachable.get_entity()` or `reachable.get_resource()`.
+
 ```python
 # Entities
 drills = remote_view.get_entities("SELECT * FROM map_entity WHERE entity_name = 'electric-mining-drill'")  # -> List[BaseEntity]
-entity = remote_view.get_entity("SELECT * FROM map_entity LIMIT 1")  # -> Optional[BaseEntity]
+drill = drills[0]
 
-# Walk to remote entities
-await entity.walk_to()  # Navigate to entity (entity-aware pathfinding)
+# Walk to the drill - it automatically becomes REACHABLE
+await drill.walk_to()  # Entity-aware pathfinding
+
+# Now you can use it directly - no need to get it again!
+drill.add_fuel(inventory.create_item_stacks("coal", 5))
 
 # Ghosts  
 ghosts = remote_view.get_ghosts("SELECT * FROM ghost")  # -> List[BaseEntity]
 
 # Resources
-resources = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore'")  # -> List[RemoteViewResource]
+resources = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore'")  # -> List[BaseResource] (REMOTE view)
+iron_ore = resources[0]
 
-# Walk to remote resources
-await resources[0].walk_to()  # Navigate to resource (entity-aware pathfinding)
+# Walk to the resource - it automatically becomes REACHABLE
+await iron_ore.walk_to()  # Entity-aware pathfinding
+
+# Now you can mine it directly!
+items = await iron_ore.mine(max_count=25)
 
 # Counts
 count = remote_view.count_entities("stone-furnace")  # -> int
@@ -268,7 +279,7 @@ patch.get_resource_tile(position: MapPosition) -> Optional[FactoryVerse.factory.
 patch.inspect(raw_data: bool = False, live: bool = False) -> Union[str, ResourcePatchData]
 await patch.mine(max_count: Optional[int] = None, timeout: Optional[int] = None) -> List['ItemStack']
 patch.position  # MapPosition - Get the average position of all resource tiles in the patch.
-patch.resource_type  # str - Get the resource type (resource, tree, rock). Returns "rock" instead of "simple-entity" for agent-friendly representation.
+patch.resource_type  # str - Get the resource type (resource, tree, rock).
 patch.total  # int - Get total amount across all resource tiles in the patch.
 ```
 
@@ -283,12 +294,13 @@ resource.amount  # Optional[int] - Get resource amount (only for ore patches, No
 resource.inspect(raw_data: bool = False, live: bool = False) -> Union[str, EntityInspectionData]
 await resource.mine(max_count: Optional[int] = None, timeout: Optional[int] = None) -> List['ItemStack']
 resource.products  # List[ProductData] - Get mineable products from this resource.
+resource.resource_type  # str - Get the resource type (resource, tree, rock).
 await resource.walk_to(timeout: Optional[int] = None) -> MapPosition
 ```
 
-### RemoteViewResource
+### Resources from `remote_view.get_resources()`
 
-Read-only resource wrapper from `remote_view.get_resources()`. Cannot mine - walk to it first.
+Resources from database queries have REMOTE view. Can walk to and inspect, but cannot mine.
 
 ```python
 resource.name       # str - resource name
@@ -296,11 +308,18 @@ resource.position   # MapPosition - location on map
 resource.total      # int - total amount (if patch)
 resource.amount     # Optional[int] - amount (if single tile)
 resource.inspect()  # str - formatted inspection
-await resource.walk_to(timeout: Optional[int] = None) -> MapPosition  # Walk to this resource.
-# resource.mine()   # ✗ AttributeError - read-only view
+await resource.walk_to()  # ✓ Navigate to resource
+# await resource.mine()   # ✗ AttributeError - REMOTE view blocks mine()
 ```
 
-**To mine:** Use `await resource.walk_to()` to navigate, then use `reachable.get_resource(name, position)`.
+**To mine:** Use `await resource.walk_to()` to navigate. After walking, the resource **automatically becomes REACHABLE** and you can mine it directly - no need to get it again via `reachable.get_resource()`.
+
+```python
+# Preferred pattern:
+iron_ore = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore' LIMIT 1")[0]
+await iron_ore.walk_to()  # Automatically converts to REACHABLE
+items = await iron_ore.mine(max_count=25)  # Use directly
+```
 
 ### Patch vs Tile Distinction
 
@@ -309,7 +328,7 @@ await resource.walk_to(timeout: Optional[int] = None) -> MapPosition  # Walk to 
 | `reachable.get_resources(name)` | `List[ResourceOrePatch]` | ✓ | ✗ |
 | `reachable.get_resource(name)` | `BaseResource` | ✗ | ✓ |
 | `patch[index]` | `BaseResource` | ✗ | ✓ |
-| `remote_view.get_resources(sql)` | `List[RemoteViewResource]` | ✓/✗ (depends) | ✓/✗ (depends) |
+| `remote_view.get_resources(sql)` | `List[BaseResource]` (REMOTE view) | ✓/✗ (depends) | ✓/✗ (depends) |
 
 ---
 
@@ -424,12 +443,22 @@ pipe_positions = placement_hints.get_connection_positions(
     source_entity=boiler,
     target_entity_name="pipe",
     connection_type=ConnectionType.FLUID_PIPE
-)  # -> List[Tuple[MapPosition, Optional[Direction]]]
+)  # -> List[ConnectionPosition]
 
 # Place pipes at valid positions
-for pos, direction in pipe_positions:
-    inventory.get_item("pipe").place(pos, direction)
+# Positions are sorted by alignment (lower perpendicular_offset = better aligned)
+for conn_pos in pipe_positions:
+    inventory.get_item("pipe").place(conn_pos.position, conn_pos.direction)
+    # conn_pos.perpendicular_offset tells you how well-aligned this position is
 ```
+
+**Return Value:**
+- Returns `List[ConnectionPosition]` - structured objects with `.position`, `.direction`, and `.perpendicular_offset`
+- Positions are sorted by alignment (lower `perpendicular_offset` = better aligned with source entity)
+- `perpendicular_offset`: Distance from source entity perpendicular to flow direction (0.0 = perfectly aligned)
+- `direction`: May be `None` if the target entity doesn't require explicit direction
+- Entities like pipes, chests can be placed without direction (Factorio auto-determines it)
+- Always pass `conn_pos.direction` directly to `place()` - it handles `None` gracefully
 
 ### Validation API
 
@@ -739,6 +768,16 @@ ghostplan.valid  # bool
 **Methods:**
 - `.validate(validator: PlacementValidator) -> bool` - Re-validate all positions in the plan.
 
+### ConnectionPosition
+
+A valid position for placing a target entity to connect to a source entity. Returned by `get_connection_positions()` with alignment information.
+
+```python
+connectionposition.position  # MapPosition
+connectionposition.direction  # Optional[Direction]
+connectionposition.perpendicular_offset  # float
+```
+
 ### ResearchStatus
 
 Comprehensive research status with progressive detail levels. Returned by `research.status()`. Provides minimal info if no research, queue info if queued, and full details if actively researching.
@@ -847,18 +886,21 @@ class WalkingNoStandableTilesError(WalkingError):
 ore_deposits = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'iron-ore' LIMIT 5")
 target_resource = ore_deposits[0]
 
-# 2. Walk to the resource (entity-aware pathfinding)
-await target_resource.walk_to()  # Or: await walking.walk_to(target_resource.position)
+# 2. Walk to the resource - it automatically becomes REACHABLE
+await target_resource.walk_to()  # Entity-aware pathfinding
 
-# 3. Get reachable resources (now in range)
-iron_ore = reachable.get_resource("iron-ore")
+# 3. Use it directly - no need to get it again!
+items = await target_resource.mine(max_count=25)
 
-# 4. Manual mining for bootstrap resources
-coal = await reachable.get_resource("coal").mine(max_count=10)
+# 4. Manual mining for bootstrap resources (if needed)
+coal_resources = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = 'coal' LIMIT 1")
+if coal_resources:
+    await coal_resources[0].walk_to()
+    coal_items = await coal_resources[0].mine(max_count=10)
 
 # 5. Place automated mining
 drill_item = inventory.get_item("burner-mining-drill")
-drill = drill_item.place(iron_ore.position, Direction.SOUTH)
+drill = drill_item.place(target_resource.position, Direction.SOUTH)
 
 # 6. Fuel the drill
 fuel = inventory.create_item_stacks("coal", 5)
@@ -896,19 +938,16 @@ drills = remote_view.get_entities(
 )
 
 for remote_drill in drills:
-    # 2. Walk to each drill (entity-aware pathfinding)
-    await remote_drill.walk_to()  # Or: await walking.walk_to(remote_drill.position)
+    # 2. Walk to the drill - it automatically becomes REACHABLE
+    await remote_drill.walk_to()  # Entity-aware pathfinding
     
-    # 3. Get reachable version for full access
-    drill = reachable.get_entity("burner-mining-drill", remote_drill.position)
-    
-    # 4. Check if it needs fuel
-    state = drill.inspect()
+    # 3. Use it directly - no need to get it again!
+    state = remote_drill.inspect()
     if state.burner.fuel_inventory.get("coal", 0) < 5:
         fuel = inventory.create_item_stacks("coal", 10)
-        drill.add_fuel(fuel)
+        remote_drill.add_fuel(fuel)
 
-# 5. Stop walking when done
+# 4. Stop walking when done
 walking.stop()
 ```
 
