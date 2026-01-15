@@ -22,7 +22,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 # Import schema definitions (single source of truth)
-from FactoryVerse.agent.snapshot.schema_definitions import (
+from FactoryVerse.agent.infra.snapshot.schema_definitions import (
     CORE_TABLES,
     COMPONENT_TABLES,
     TableDefinition,
