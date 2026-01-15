@@ -93,16 +93,16 @@ class AgentRuntime:
         self._listener = AsyncActionListener(agent_port=config.udp_port)
 
         # Actions - created with proper DI
-        from FactoryVerse.agent.actions.walking import MovementAction
-        from FactoryVerse.agent.actions.mining import MiningAction
-        from FactoryVerse.agent.actions.crafting import CraftingAction
-        from FactoryVerse.agent.actions.research import ResearchAction
-        from FactoryVerse.agent.actions.inventory import AgentInventory
-        from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
-        from FactoryVerse.agent.actions.place_entity import PlacementAction
-        from FactoryVerse.agent.actions.ghost_builder import GhostBuilderAction
-        from FactoryVerse.agent.actions.placement_hints import PlacementHints
-        from FactoryVerse.agent.actions.reachable import Reachable
+        from FactoryVerse.agent.embodied_actions.walking import MovementAction
+        from FactoryVerse.agent.embodied_actions.mining import MiningAction
+        from FactoryVerse.agent.embodied_actions.crafting import CraftingAction
+        from FactoryVerse.agent.embodied_actions.research import ResearchAction
+        from FactoryVerse.agent.embodied_actions.inventory import AgentInventory
+        from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+        from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
+        from FactoryVerse.agent.ghost_builder import GhostBuilderAction
+        from FactoryVerse.agent.placement_hints import PlacementHints
+        from FactoryVerse.agent.embodied_actions.reachable import Reachable
 
         # Wire up actions with their dependencies
         self._entity_ops = EntityOperationsAction(self._rcon)
@@ -136,7 +136,7 @@ class AgentRuntime:
         self._placement_hints = PlacementHints(self._rcon)
 
         # RemoteView - map-wide queries via DuckDB
-        from FactoryVerse.agent.snapshot import RemoteView
+        from FactoryVerse.agent.remote_view import RemoteView
         from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
 
         # Detect snapshot dir if not provided

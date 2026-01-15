@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
     from ..infra.async_listener import AsyncActionListener
     from FactoryVerse.factory.item.base import ItemStack
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
 
 
 @dataclass

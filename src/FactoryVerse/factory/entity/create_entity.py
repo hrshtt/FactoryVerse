@@ -14,9 +14,9 @@ from FactoryVerse.factory.types import MapPosition, Direction
 from .base_entity import EntityView
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
-    from FactoryVerse.agent.actions.walking import MovementAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.walking import MovementAction
     from .base_entity import BaseEntity
 
 # ... (omitted)

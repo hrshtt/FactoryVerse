@@ -7,7 +7,7 @@ from typing import List, Optional, TYPE_CHECKING
 from FactoryVerse.factory.types import MapPosition
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.actions.mining import MiningAction
+    from FactoryVerse.agent.embodied_actions.mining import MiningAction
     from FactoryVerse.factory.item.base import ItemStack
 
 
@@ -57,7 +57,7 @@ class ResourceOrePatch:
 def create_resource_example(mining_action: "MiningAction") -> ResourceOrePatch:
     """Factory function showing how resources are created with DI.
 
-    In the real implementation, this will be in agent/actions/reachable.py
+    In the real implementation, this will be in agent/embodied_actions/reachable.py
     and will create resources from DB/RCON data with injected actions.
     """
     return ResourceOrePatch(

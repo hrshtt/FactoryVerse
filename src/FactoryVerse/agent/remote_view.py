@@ -29,17 +29,17 @@ if TYPE_CHECKING:
     from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
     from FactoryVerse.factory.resource.base import BaseResource
     from FactoryVerse.factory.entity.base_entity import BaseEntity
-    from FactoryVerse.agent.actions.walking import MovementAction
-    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
-    from FactoryVerse.agent.actions.mining import MiningAction
+    from FactoryVerse.agent.embodied_actions.walking import MovementAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.mining import MiningAction
     from factorio_rcon import RCONClient
 
-from .database import SnapshotDatabase
-from .loader import SnapshotLoader
-from .sync import SyncService
-from .query import QueryExecutor
-from .types import LoadResult, SyncState
+from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
+from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
+from FactoryVerse.agent.infra.snapshot.sync import SyncService
+from FactoryVerse.agent.infra.snapshot.query import QueryExecutor
+from FactoryVerse.agent.infra.snapshot.types import LoadResult, SyncState
 from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
 
 logger = logging.getLogger(__name__)

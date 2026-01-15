@@ -21,7 +21,7 @@ from FactoryVerse.config import FactoryVerseConfig, get_config
 from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 from FactoryVerse.runtime import create_runtime
 from FactoryVerse.factory.types import MapPosition, Direction  # noqa: F401
-from FactoryVerse.agent.actions.placement_hints import ConnectionType  # noqa: F401
+from FactoryVerse.agent.placement_hints import ConnectionType  # noqa: F401
 # =============================================================================
 # Instance Detection (client vs server)
 # =============================================================================

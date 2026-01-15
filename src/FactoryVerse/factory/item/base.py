@@ -16,7 +16,7 @@ import math
 
 if TYPE_CHECKING:
     from FactoryVerse.factory.entity.base_entity import BaseEntity
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
 
 # Import BaseEntity for runtime isinstance checks
 from FactoryVerse.factory.entity.base_entity import BaseEntity

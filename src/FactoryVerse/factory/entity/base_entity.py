@@ -13,9 +13,9 @@ import math
 
 if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import ItemStack
-    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
-    from FactoryVerse.agent.actions.walking import MovementAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.walking import MovementAction
     from .inspection import EntityInspection
 
 

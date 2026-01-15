@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Union, Optional, TYPE_CHECKING
 from .base import Item, PlaceableItem, Fuel, ItemStack
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
 
 
 def create_item(

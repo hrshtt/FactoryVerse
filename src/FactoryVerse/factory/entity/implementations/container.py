@@ -10,7 +10,7 @@ from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import ItemStack
-    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
 
 
 class ContainerState(BaseModel):

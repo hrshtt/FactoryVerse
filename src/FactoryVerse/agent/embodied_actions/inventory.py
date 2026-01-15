@@ -4,7 +4,7 @@ from FactoryVerse.factory.item.create_item import create_item, create_item_stack
 from ..infra.rcon_handler import RconHandler
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
 
 
 class AgentInventory:

@@ -11,11 +11,11 @@ if TYPE_CHECKING:
     import duckdb
     from FactoryVerse.factory.resource.base import BaseResource
     from FactoryVerse.factory.entity.base_entity import BaseEntity
-    from FactoryVerse.agent.actions.walking import MovementAction
-    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
-    from FactoryVerse.agent.actions.mining import MiningAction
-    from FactoryVerse.agent.snapshot.sync import SyncService
+    from FactoryVerse.agent.embodied_actions.walking import MovementAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.mining import MiningAction
+    from FactoryVerse.agent.infra.snapshot.sync import SyncService
 
 logger = logging.getLogger(__name__)
 

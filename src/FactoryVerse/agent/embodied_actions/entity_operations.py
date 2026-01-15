@@ -22,7 +22,7 @@ from FactoryVerse.factory.item.base import ItemStack
 
 if TYPE_CHECKING:
     from ..infra.rcon_handler import RconHandler
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
     from FactoryVerse.factory.types import MapPosition, Direction
 
 

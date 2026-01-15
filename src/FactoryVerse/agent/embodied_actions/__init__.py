@@ -1,0 +1,42 @@
+"""Embodied actions module - exports all embodied action classes.
+
+This module provides the public API for embodied agent actions including:
+- Movement and pathfinding
+- Entity placement and building
+- Inventory management
+- Entity operations (recipe setting, filters, etc.)
+- Crafting
+- Research
+- Reachable queries (unified entity and resource queries)
+
+Note: 
+- Mining is not a top-level action. Resources have a .mine() method.
+  MiningAction is internal infrastructure used by resource objects.
+- Ghost building and placement hints are now at agent level:
+  - FactoryVerse.agent.ghost_builder (GhostBuilderAction)
+  - FactoryVerse.agent.placement_hints (PlacementHints, GhostPlan, etc.)
+"""
+
+# Core action classes
+from FactoryVerse.agent.embodied_actions.walking import MovementAction
+from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction, EntityPlaced, GhostRemoved
+from FactoryVerse.agent.embodied_actions.inventory import AgentInventory
+from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+# MiningAction is internal - not exported (used by resource objects)
+from FactoryVerse.agent.embodied_actions.crafting import CraftingAction
+from FactoryVerse.agent.embodied_actions.research import ResearchAction
+from FactoryVerse.agent.embodied_actions.reachable import Reachable
+
+__all__ = [
+    # Core actions
+    "MovementAction",
+    "PlacementAction",
+    "EntityPlaced",
+    "GhostRemoved",
+    "AgentInventory",
+    "EntityOperationsAction",
+    # MiningAction intentionally not exported - internal infrastructure
+    "CraftingAction",
+    "ResearchAction",
+    "Reachable",  # Unified entity and resource queries
+]

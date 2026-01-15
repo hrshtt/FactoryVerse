@@ -4,7 +4,7 @@ This module handles building ghost entities by walking to them and placing
 real entities. It works with ghost entities from:
 - Remote queries (runtime.remote_view.get_ghosts())
 - Reachable queries (runtime.reachable.get_ghosts())
-- GhostPlan objects (from placement_hints module)
+- GhostPlan objects (from agent.placement_hints module)
 
 All ghost entities are represented as BaseEntity with is_ghost=True.
 """
@@ -14,12 +14,12 @@ from typing import List, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.actions.walking import MovementAction
-    from FactoryVerse.agent.actions.place_entity import PlacementAction
-    from FactoryVerse.agent.actions.inventory import AgentInventory
+    from FactoryVerse.agent.embodied_actions.walking import MovementAction
+    from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
+    from FactoryVerse.agent.embodied_actions.inventory import AgentInventory
     from FactoryVerse.factory.entity.base_entity import BaseEntity
     from FactoryVerse.factory.types import MapPosition
-    from FactoryVerse.agent.actions.placement_hints import GhostPlan
+    from FactoryVerse.agent.placement_hints import GhostPlan
 
 
 @dataclass

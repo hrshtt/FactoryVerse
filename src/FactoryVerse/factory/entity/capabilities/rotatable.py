@@ -8,7 +8,7 @@ from typing import Optional, TYPE_CHECKING
 from FactoryVerse.factory.types import Direction
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
 
 
 class RotatableMixin:
