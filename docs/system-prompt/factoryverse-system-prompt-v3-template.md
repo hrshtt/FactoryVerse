@@ -156,8 +156,8 @@ All action and query interfaces are pre-loaded as global variables:
 - **`crafting`** - Craft items and manage recipe queues
 - **`research`** - Queue and manage technology research
 - **`inventory`** - Query inventory and create item stacks
-- **`reachable`** - Query entities and resources within interaction range
-- **`resources`** - Alias for `reachable` (backward compatibility)
+- **`reachable_view`** - Query entities and resources within interaction range
+- **`resources`** - Alias for `reachable_view` (backward compatibility)
 - **`entity_ops`** - Pick up and remove entities
 - **`placement`** - Place entities on the map
 - **`ghost_builder`** - Build ghost entities into real ones
@@ -170,7 +170,7 @@ All action and query interfaces are pre-loaded as global variables:
 # Example: Everything is pre-configured and ready
 pos = MapPosition(x=10, y=20)
 await walking.walk_to(pos)
-iron = reachable.get_resource("iron-ore")
+iron = reachable_view.get_resource("iron-ore")
 items = await iron.mine(max_count=25)
 ```
 
@@ -179,16 +179,16 @@ items = await iron.mine(max_count=25)
 {DSL_DOCUMENTATION}
 
 **IMPORTANT NOTES**:
-- All objects (walking, inventory, reachable, crafting, research, etc.) are **already imported and configured**. You do NOT need to import anything.
+- All objects (walking, inventory, reachable_view, crafting, research, etc.) are **already imported and configured**. You do NOT need to import anything.
 - Use `await` directly for async operations (walking, mining, crafting) - the runtime handles async execution.
 - **Mining limit**: Maximum 25 items per `mine()` operation - loop for larger quantities
 
 **Example**:
 ```python
 # Objects are pre-loaded - just use them directly
-pos = reachable.get_current_position()
+pos = reachable_view.get_current_position()
 await walking.to(MapPosition(x=10, y=20))
-drills = reachable.get_entities("burner-mining-drill")
+drills = reachable_view.get_entities("burner-mining-drill")
 ```
 </dsl_reference>
 
