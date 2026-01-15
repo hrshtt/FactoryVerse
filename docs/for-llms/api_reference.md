@@ -1,6 +1,6 @@
 # FactoryVerse LLM Reference
 
-> Auto-generated via introspection on 2026-01-15 12:04
+> Auto-generated via introspection on 2026-01-15 14:46
 
 You are an embodied agent in Factorio. You have a physical presence, inventory, and can walk, craft, mine, and interact with entities.
 
@@ -17,7 +17,7 @@ Movement actions.
 
 ```python
 walking.current_position -> MapPosition
-walking.stop() -> FactoryVerse.agent.actions.walking.WalkingStopped
+walking.stop() -> FactoryVerse.agent.embodied_actions.walking.WalkingStopped
 await walking.walk_to(goal: MapPosition, strict_goal: bool = False, options: Optional[Dict] = None, timeout: Optional[int] = None) -> MapPosition
 await walking.walk_to_entity(entity_name: str, entity_position: MapPosition, timeout: Optional[int] = None) -> MapPosition
 ```
@@ -55,16 +55,16 @@ inventory.get_item(item_name: str) -> Union[Item, PlaceableItem, NoneType]
 inventory.item_stacks -> List[ItemStack]
 ```
 
-### `reachable`
+### `reachable_view`
 
 Unified reachable entity and resource queries.
 
 ```python
-reachable.get_entities(entity_name: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> List['BaseEntity']
-reachable.get_entity(entity_name: str, position: Optional[MapPosition] = None, options: Optional[Dict[str, Any]] = None) -> Optional['BaseEntity']
-reachable.get_ghosts(entity_name: Optional[str] = None) -> List['BaseEntity']
-reachable.get_resource(resource_name: str, position: Optional[MapPosition] = None) -> Optional[Any]
-reachable.get_resources(resource_name: Optional[str] = None, resource_type: Optional[str] = None) -> List[Any]
+reachable_view.get_entities(entity_name: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> List['BaseEntity']
+reachable_view.get_entity(entity_name: str, position: Optional[MapPosition] = None, options: Optional[Dict[str, Any]] = None) -> Optional['BaseEntity']
+reachable_view.get_ghosts(entity_name: Optional[str] = None) -> List['BaseEntity']
+reachable_view.get_resource(resource_name: str, position: Optional[MapPosition] = None) -> Optional[Any]
+reachable_view.get_resources(resource_name: Optional[str] = None, resource_type: Optional[str] = None) -> List[Any]
 ```
 
 ### `remote_view`
@@ -81,12 +81,12 @@ remote_view.get_entity(sql: str) -> Optional['BaseEntity']
 remote_view.get_ghosts(sql: str) -> List['BaseEntity']
 remote_view.get_resources(sql: str) -> List['BaseResource']
 remote_view.is_loaded -> bool
-await remote_view.load(wait_for_bootstrap: bool = True, bootstrap_timeout: float = 120.0) -> FactoryVerse.agent.snapshot.types.LoadResult
+await remote_view.load(wait_for_bootstrap: bool = True, bootstrap_timeout: float = 120.0) -> FactoryVerse.agent.infra.snapshot.types.LoadResult
 remote_view.query(sql: str) -> List[Dict[str, Any]]
-remote_view.rebuild() -> FactoryVerse.agent.snapshot.types.LoadResult
+remote_view.rebuild() -> FactoryVerse.agent.infra.snapshot.types.LoadResult
 await remote_view.start() -> NoneType
 await remote_view.stop() -> NoneType
-remote_view.sync_state -> FactoryVerse.agent.snapshot.types.SyncState
+remote_view.sync_state -> FactoryVerse.agent.infra.snapshot.types.SyncState
 ```
 
 ### `ghost_builder`
@@ -165,13 +165,13 @@ Entities and resources you can interact with immediately.
 
 ```python
 # Entities
-entity = reachable.get_entity("stone-furnace")  # -> Optional[BaseEntity]
-entities = reachable.get_entities("burner-mining-drill")  # -> List[BaseEntity]
-ghosts = reachable.get_ghosts()  # -> List[BaseEntity]
+entity = reachable_view.get_entity("stone-furnace")  # -> Optional[BaseEntity]
+entities = reachable_view.get_entities("burner-mining-drill")  # -> List[BaseEntity]
+ghosts = reachable_view.get_ghosts()  # -> List[BaseEntity]
 
 # Resources
-coal = reachable.get_resource("coal")  # -> Optional[BaseResource]
-resources = reachable.get_resources()  # -> List[BaseResource]
+coal = reachable_view.get_resource("coal")  # -> Optional[BaseResource]
+resources = reachable_view.get_resources()  # -> List[BaseResource]
 
 # Mining (via resource object)
 items = await coal.mine(max_count=25)  # -> List[ItemStack]
@@ -181,7 +181,7 @@ items = await coal.mine(max_count=25)  # -> List[ItemStack]
 
 Query entities anywhere via SQL. Cannot mutate - walk to them first.
 
-**IMPORTANT**: Use `entity.walk_to()` or `resource.walk_to()` on remote objects. After walking, the entity/resource **automatically becomes REACHABLE** and you can use it directly - no need to get it again via `reachable.get_entity()` or `reachable.get_resource()`.
+**IMPORTANT**: Use `entity.walk_to()` or `resource.walk_to()` on remote objects. After walking, the entity/resource **automatically becomes REACHABLE** and you can use it directly - no need to get it again via `reachable_view.get_entity()` or `reachable_view.get_resource()`.
 
 ```python
 # Entities
@@ -219,7 +219,7 @@ rows = remote_view.query("SELECT entity_name, COUNT(*) FROM map_entity GROUP BY 
 
 | View | Source | Actions | Use Case |
 |------|--------|---------|----------|
-| REACHABLE | `reachable.*` | All actions available (no `walk_to` - already in range) | Interact with nearby entities |
+| REACHABLE | `reachable_view.*` | All actions available (no `walk_to` - already in range) | Interact with nearby entities |
 | REMOTE | `remote_view.*` | Read-only (inspect, `walk_to`) | Query map-wide, then walk to interact |
 
 ---
@@ -269,9 +269,9 @@ Resources represent mineable tiles on the map (ore, trees, rocks).
 
 ### ResourceOrePatch
 
-Consolidated patch of resource tiles. Returned by `reachable.get_resources()`.
+Consolidated patch of resource tiles. Returned by `reachable_view.get_resources()`.
 
-**Note:** `reachable.get_resources(name)` returns a **list of patches**, not individual tiles.
+**Note:** `reachable_view.get_resources(name)` returns a **list of patches**, not individual tiles.
 
 ```python
 patch.count  # int - Get number of resource tiles in this patch.
@@ -287,7 +287,7 @@ patch.total  # int - Get total amount across all resource tiles in the patch.
 
 ### BaseResource
 
-Individual resource tile. Access via `reachable.get_resource(name)` or `patch[index]`.
+Individual resource tile. Access via `reachable_view.get_resource(name)` or `patch[index]`.
 
 ```python
 resource.amount  # Optional[int] - Get resource amount (only for ore patches, None for trees/rocks).
@@ -312,7 +312,7 @@ await resource.walk_to()  # ✓ Navigate to resource
 # await resource.mine()   # ✗ AttributeError - REMOTE view blocks mine()
 ```
 
-**To mine:** Use `await resource.walk_to()` to navigate. After walking, the resource **automatically becomes REACHABLE** and you can mine it directly - no need to get it again via `reachable.get_resource()`.
+**To mine:** Use `await resource.walk_to()` to navigate. After walking, the resource **automatically becomes REACHABLE** and you can mine it directly - no need to get it again via `reachable_view.get_resource()`.
 
 ```python
 # Preferred pattern:
@@ -325,8 +325,8 @@ items = await iron_ore.mine(max_count=25)  # Use directly
 
 | Method | Returns | Use `total` | Use `amount` |
 |--------|---------|-------------|--------------|
-| `reachable.get_resources(name)` | `List[ResourceOrePatch]` | ✓ | ✗ |
-| `reachable.get_resource(name)` | `BaseResource` | ✗ | ✓ |
+| `reachable_view.get_resources(name)` | `List[ResourceOrePatch]` | ✓ | ✗ |
+| `reachable_view.get_resource(name)` | `BaseResource` | ✗ | ✓ |
 | `patch[index]` | `BaseResource` | ✗ | ✓ |
 | `remote_view.get_resources(sql)` | `List[BaseResource]` (REMOTE view) | ✓/✗ (depends) | ✓/✗ (depends) |
 
@@ -436,9 +436,9 @@ Some entities have special placement requirements:
 
 ```python
 # Find where a pipe can connect to a boiler
-from FactoryVerse.agent.actions.placement_hints import ConnectionType
+from FactoryVerse.agent.placement_hints import ConnectionType
 
-boiler = reachable.get_entity("boiler")
+boiler = reachable_view.get_entity("boiler")
 pipe_positions = placement_hints.get_connection_positions(
     source_entity=boiler,
     target_entity_name="pipe",
@@ -481,8 +481,8 @@ validator.validate_placement(entity_name: str, position: MapPosition, direction:
 
 ```python
 # Find where to place inserter connecting drill to furnace
-drill = reachable.get_entity("electric-mining-drill")
-furnace = reachable.get_entity("stone-furnace")
+drill = reachable_view.get_entity("electric-mining-drill")
+furnace = reachable_view.get_entity("stone-furnace")
 
 positions = placement_hints.get_inserter_placement_positions(
     source_entity=drill,
@@ -502,7 +502,7 @@ plan = placement_hints.get_pole_line(
 )  # Poles spaced at max wire distance
 
 # Find single pole to cover multiple entities
-drills = reachable.get_entities("electric-mining-drill")
+drills = reachable_view.get_entities("electric-mining-drill")
 pos = placement_hints.get_pole_coverage_position(drills)  # None if impossible
 
 # Get minimum poles for coverage
@@ -545,11 +545,11 @@ Convert ghosts to real entities:
 
 ```python
 # Build from reachable ghosts
-ghost = reachable.get_ghosts()[0]
+ghost = reachable_view.get_ghosts()[0]
 ghost.build()
 
 # Or build multiple via ghost_builder
-ghosts = reachable.get_ghosts("transport-belt")
+ghosts = reachable_view.get_ghosts("transport-belt")
 result = await ghost_builder.build_ghosts(ghosts, count=10, strict=True)
 ```
 
@@ -915,7 +915,7 @@ print(f"Mining: {state.miner.mining_target}")
 
 ```python
 # 1. Create validated belt line plan
-start = reachable.get_entity("burner-mining-drill").position
+start = reachable_view.get_entity("burner-mining-drill").position
 end = start.offset((0, 10), Direction.SOUTH)
 
 plan = placement_hints.get_placement_line("transport-belt", start=start, end=end)

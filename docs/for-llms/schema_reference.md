@@ -1,6 +1,6 @@
 # FactoryVerse Schema Reference
 
-> Auto-generated on 2026-01-15 12:04
+> Auto-generated on 2026-01-15 14:48
 
 This document describes the DuckDB database schema used for map-wide queries via `remote_view`. 
 The database is read-only from the LLM's perspective - data is synchronized from the game automatically.
