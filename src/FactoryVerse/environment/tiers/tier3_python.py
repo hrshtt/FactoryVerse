@@ -38,6 +38,7 @@ class Tier3Python(TierBase):
         self._udp_dispatcher: Optional[Any] = None
         self._action_listener: Optional[Any] = None
         self._instance: Optional[str] = None
+        self._agent_registry: Optional[Any] = None
 
     @property
     def config(self) -> PythonConfig:
@@ -58,6 +59,11 @@ class Tier3Python(TierBase):
     def instance(self) -> Optional[str]:
         """Get current instance name (client/server_N)."""
         return self._instance
+
+    @property
+    def agent_registry(self) -> Optional[Any]:
+        """Get agent registry service."""
+        return self._agent_registry
 
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 2 (Settings) is ready."""
@@ -98,6 +104,9 @@ class Tier3Python(TierBase):
 
             # Verify connection with ping
             await self._verify_connection()
+
+            # Initialize Agent Registry
+            await self._init_agent_registry()
 
             self._set_state(TierState.READY)
 
@@ -162,6 +171,19 @@ class Tier3Python(TierBase):
         )
 
         logger.info("Tier 3: RconHelper initialized")
+
+    async def _init_agent_registry(self) -> None:
+        """Initialize Agent Registry service."""
+        from FactoryVerse.agent.core.registry import AgentRegistry
+
+        infra_config = self._env.config.infra_config
+
+        # Use a central directory for agent profiles registry
+        # We use .fv-output/agents/
+        registry_dir = infra_config.fv_output_dir / "agents"
+
+        self._agent_registry = AgentRegistry(storage_dir=registry_dir)
+        logger.info(f"Tier 3: Agent Registry initialized at {registry_dir}")
 
     async def _verify_connection(self) -> None:
         """Verify RCON connection is working."""

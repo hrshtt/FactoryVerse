@@ -67,28 +67,13 @@ class MinerMixin:
         if self.is_ghost:
             return MinerState(drop_position=drop_pos)
 
-        # Parse mining target
-        mining_target = None
-        target_data = inspection_data.get("mining_target")
-        if target_data:
-            mining_target = MiningTarget(
-                name=target_data.get("name", ""),
-                amount=target_data.get("amount", 0),
-                position=target_data.get("position"),
-            )
+        # Use transformer to handle Lua quirks
+        from FactoryVerse.factory.entity.transform import _transform_miner
 
-        # Parse drop target
-        drop_target = None
-        drop_target_data = inspection_data.get("drop_target")
-        if drop_target_data:
-            drop_target = drop_target_data.get("name")
-
-        return MinerState(
-            mining_progress=inspection_data.get("mining_progress", 0),
-            mining_target=mining_target,
-            drop_position=drop_pos,
-            drop_target=drop_target,
-        )
+        # Get entity type from inspection data or prototype
+        entity_type = inspection_data.get("entity_type", "mining-drill")
+        miner_state = _transform_miner(inspection_data, entity_type)
+        return miner_state if miner_state else MinerState(drop_position=drop_pos)
 
     def get_output_position(self) -> "MapPosition":
         """Calculate drill output position (static, geometric).
@@ -104,7 +89,11 @@ class MinerMixin:
             >>> drill = get_entity("electric-mining-drill", pos)
             >>> output_pos = drill.get_output_position()
         """
-        from FactoryVerse.factory.prototypes import apply_cardinal_vector, snap_to_tile_center
+        from FactoryVerse.factory.prototypes import (
+            apply_cardinal_vector,
+            snap_to_tile_center,
+        )
+
         vec = tuple(self.prototype["vector_to_place_result"])
         raw_pos = apply_cardinal_vector(self.position, vec, self.direction)
         return snap_to_tile_center(raw_pos)
@@ -123,6 +112,7 @@ class MinerMixin:
             >>> search_area = drill.get_resource_search_area()
         """
         from FactoryVerse.factory.types import BoundingBox
+
         radius = self.prototype["resource_searching_radius"]
         x, y = self.position.x, self.position.y
         return BoundingBox.from_tuple(

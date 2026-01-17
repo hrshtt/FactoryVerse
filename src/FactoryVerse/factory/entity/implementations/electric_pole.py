@@ -66,6 +66,7 @@ class ElectricPole(ElectricPoleMixin, BaseEntity):
             >>> supply_area = pole.get_supply_area()
         """
         from FactoryVerse.factory.types import BoundingBox
+
         distance = self.prototype["supply_area_distance"]
         x, y = self.position.x, self.position.y
         return BoundingBox.from_tuple(

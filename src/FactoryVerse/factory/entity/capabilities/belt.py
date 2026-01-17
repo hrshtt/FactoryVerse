@@ -48,17 +48,9 @@ class BeltMixin:
         # Belt state is mostly the same for ghosts and real entities
         # (shape, type are static from placement)
 
-        # Parse linked neighbour
-        linked_neighbour = None
-        linked_data = inspection_data.get("linked_belt_neighbour")
-        if linked_data:
-            linked_neighbour = linked_data.get("name")
+        # Use transformer to handle Lua quirks
+        from FactoryVerse.factory.entity.transform import _transform_belt
 
-        return BeltState(
-            belt_shape=inspection_data.get("belt_shape"),
-            belt_to_ground_type=inspection_data.get("belt_to_ground_type"),
-            linked_belt_neighbour=linked_neighbour,
-            splitter_filter=inspection_data.get("splitter_filter"),
-            splitter_input_priority=inspection_data.get("splitter_input_priority"),
-            splitter_output_priority=inspection_data.get("splitter_output_priority"),
-        )
+        entity_type = inspection_data.get("entity_type", "transport-belt")
+        belt_state = _transform_belt(inspection_data, entity_type)
+        return belt_state if belt_state else BeltState()

@@ -260,6 +260,37 @@ async def create_agents_content(
                     "LAUNCH SESSION", icon="rocket_launch", on_click=start_session
                 ).props("rounded").classes("gradient-btn text-white px-6 py-2")
 
+        # Registered Agents
+        ui.label("👥 Persistent Agents").classes(
+            "section-header text-xl font-bold mt-6"
+        )
+
+        agents = agent_service.get_registered_agents()
+        if agents:
+            with ui.grid(columns=3).classes("w-full gap-4"):
+                for agent in agents:
+                    with ui.card().classes("p-4 gap-2"):
+                        with ui.row().classes("w-full items-center justify-between"):
+                            ui.label(agent.get("name", "Unknown")).classes(
+                                "text-lg font-bold"
+                            )
+                            ui.badge(agent.get("status", "unknown").upper()).props(
+                                "color=green"
+                                if agent.get("status") == "active"
+                                else "color=grey"
+                            )
+                        ui.label(f"ID: {agent.get('id', '')[:8]}...").classes(
+                            "text-xs text-gray-400"
+                        )
+                        ui.label(
+                            f"Instance: {agent.get('instance_id', 'unknown')}"
+                        ).classes("text-sm")
+                        ui.label(f"Model: {agent.get('model', 'unknown')}").classes(
+                            "text-sm text-gray-500"
+                        )
+        else:
+            ui.label("No persistent agents found").classes("text-gray-500")
+
         # Sessions list
         ui.label("📋 All Sessions").classes("section-header text-xl font-bold mt-6")
 

@@ -75,31 +75,11 @@ class FluidMixin:
         if self.is_ghost:
             return FluidState()  # Ghosts have no fluid data
 
-        fluidboxes = []
-        raw_boxes = inspection_data.get("fluidboxes", [])
+        # Use transformer to handle Lua quirks
+        from FactoryVerse.factory.entity.transform import _transform_fluid
 
-        for box_data in raw_boxes:
-            if box_data.get("empty", False):
-                fluidboxes.append(
-                    FluidBox(
-                        index=box_data.get("index", 0),
-                        is_empty=True,
-                        capacity=box_data.get("capacity", 0),
-                    )
-                )
-            else:
-                fluidboxes.append(
-                    FluidBox(
-                        index=box_data.get("index", 0),
-                        name=box_data.get("name"),
-                        amount=box_data.get("amount", 0),
-                        temperature=box_data.get("temperature", 15),
-                        capacity=box_data.get("capacity", 0),
-                        is_empty=False,
-                    )
-                )
-
-        return FluidState(fluidboxes=fluidboxes)
+        fluid_state = _transform_fluid(inspection_data)
+        return fluid_state if fluid_state else FluidState()
 
     def get_fluid(self, index: int = 1) -> Optional[FluidBox]:
         """Get fluid in specific fluidbox.

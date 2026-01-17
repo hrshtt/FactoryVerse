@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import ItemStack
-    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import (
+        EntityOperationsAction,
+    )
 
 
 class CrafterState(BaseModel):
@@ -58,29 +60,12 @@ class CrafterMixin:
         if self.is_ghost:
             return CrafterState()  # Ghosts have no crafting data
 
-        # Get inventories
-        inventories = inspection_data.get("inventories", {})
+        # Use transformer to handle Lua quirks
+        from FactoryVerse.factory.entity.transform import _transform_crafter
 
-        # Parse inventory contents
-        def parse_inventory(inv_data: dict) -> Dict[str, int]:
-            if not inv_data:
-                return {}
-            contents = inv_data.get("contents", [])
-            result = {}
-            for item in contents:
-                result[item["name"]] = item.get("count", 0)
-            return result
-
-        return CrafterState(
-            recipe=inspection_data.get("current_recipe")
-            or inspection_data.get("recipe"),
-            crafting_progress=inspection_data.get("crafting_progress", 0),
-            crafting_speed=inspection_data.get("crafting_speed", 1.0),
-            is_crafting=inspection_data.get("crafting_progress", 0) > 0,
-            crafter_input=parse_inventory(inventories.get("crafter_input", {})),
-            crafter_output=parse_inventory(inventories.get("crafter_output", {})),
-            crafter_modules=parse_inventory(inventories.get("crafter_modules", {})),
-        )
+        entity_type = inspection_data.get("entity_type", "assembling-machine")
+        crafter_state = _transform_crafter(inspection_data, entity_type)
+        return crafter_state if crafter_state else CrafterState()
 
     def add_ingredients(self, items: List["ItemStack"]) -> List:
         """Add ingredients to the entity's input buffer.
@@ -122,7 +107,9 @@ class CrafterMixin:
             output_inv = data.get("inventories", {}).get("crafter_output", {})
             contents = output_inv.get("contents", [])
             items = [
-                create_item_stack(item["name"], item["count"], placement=self._place_ops)
+                create_item_stack(
+                    item["name"], item["count"], placement=self._place_ops
+                )
                 for item in contents
             ]
 

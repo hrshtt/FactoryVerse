@@ -53,8 +53,8 @@ class ElectricMixin:
         if self.is_ghost:
             return ElectricState()  # Ghosts have no electric data
 
-        return ElectricState(
-            energy=inspection_data.get("energy", 0),
-            buffer_capacity=inspection_data.get("electric_buffer_size", 0),
-            electric_network_id=inspection_data.get("electric_network_id"),
-        )
+        # Use transformer to handle Lua quirks
+        from FactoryVerse.factory.entity.transform import _transform_electric
+
+        electric_state = _transform_electric(inspection_data)
+        return electric_state if electric_state else ElectricState()

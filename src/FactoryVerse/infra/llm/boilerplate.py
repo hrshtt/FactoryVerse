@@ -17,7 +17,7 @@ import os
 import json
 from pathlib import Path
 
-from FactoryVerse.config import FactoryVerseConfig, get_config
+from FactoryVerse.config import get_config
 from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 from FactoryVerse.runtime import create_runtime
 from FactoryVerse.factory.types import MapPosition, Direction  # noqa: F401
@@ -67,38 +67,106 @@ print(f"✅ RCON connected to {instance.rcon_host}:{instance.rcon_port}")
 # Agent Creation/Reuse
 # =============================================================================
 
-# Check for existing agents in Factorio
-agents_result = rcon_client.send_command(
-    "/c local res = remote.call('agent', 'list_agents'); rcon.print(helpers.table_to_json(res))"
-)
-agents = json.loads(agents_result)
+# =============================================================================
+# Agent Creation/Reuse (with Profile Reconciliation)
+# =============================================================================
 
-# Determine UDP port
+
+# Define reconciliation logic helper
+def reconcile_agent(agent_id, instance_name, requested_port):
+    """
+    Reconcile agent identity using AgentRegistry (filesystem) and Lua state.
+    Matches logic in Tier4Runtime._reconcile_and_create_agent.
+    """
+    from pathlib import Path
+    import json
+    import uuid
+    from datetime import datetime
+
+    # 1. Check Registry (Filesystem)
+    try:
+        # Access fv_output_dir directly from FactoryVerseConfig
+        registry_dir = config.fv_output_dir / "agents"
+        registry_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Fallback if config structure differs
+        registry_dir = Path(".fv-output/agents")
+        registry_dir.mkdir(parents=True, exist_ok=True)
+
+    profile_path = None
+    profile_data = None
+
+    # Scan for profile by name
+    for p in registry_dir.glob("*.json"):
+        try:
+            data = json.loads(p.read_text())
+            if data.get("name") == agent_id:
+                profile_path = p
+                profile_data = data
+                break
+        except Exception:
+            continue
+
+    # Check Lua state - verification only, logic is handled by try-create
+
+    if profile_data:
+        # Case 2: Resume (Profile Exists)
+        print(f"✅ Found persistent profile for '{agent_id}' ({profile_data['id']})")
+
+        # Verify/Create Entity (Bind) w/ destroy_existing=False
+        rcon_client.send_command(
+            f"/c local res = remote.call('agent', 'create_agent', {requested_port}, false); rcon.print(helpers.table_to_json(res))"
+        )
+
+        # Update Profile
+        profile_data["status"] = "active"
+        profile_data["updated_at"] = datetime.now().isoformat()
+        if profile_path:
+            profile_path.write_text(json.dumps(profile_data, indent=2))
+
+    else:
+        # Case 1: New (Spawn)
+        print(f"✨ Creating NEW persistent profile for '{agent_id}'")
+
+        # Create Entity (Destroy potential orphan)
+        # initial inventory: burner mining drill, stone furnace, and wood
+        inv_str = '{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}'
+        rcon_client.send_command(
+            f"/c local inv = {inv_str}; local res = remote.call('agent', 'create_agent', {requested_port}, true, 'player', inv); rcon.print(helpers.table_to_json(res))"
+        )
+
+        # Register Profile
+        new_id = str(uuid.uuid4())
+        profile_data = {
+            "id": new_id,
+            "name": agent_id,
+            "description": "Created via Boilerplate",
+            "instance_id": instance_name,
+            "model": "unknown",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "status": "active",
+            "stats": {},
+            "metadata": {"source": "boilerplate"},
+        }
+        (registry_dir / f"{new_id}.json").write_text(json.dumps(profile_data, indent=2))
+
+    return requested_port
+
+
+# Determine UDP port first
 if udp_port_override:
     requested_udp_port = int(udp_port_override)
 else:
-    # Auto-allocate UDP port
     from FactoryVerse.utils.port_utils import find_free_udp_port
 
     requested_udp_port = find_free_udp_port(
         start_port=config.agent_port_base, max_attempts=200, host=instance.rcon_host
     )
 
-# Find or create agent with configured ID
-existing = next((a for a in agents if a.get("interface_name") == agent_id), None)
-
-if existing:
-    actual_udp_port = existing.get("udp_port", requested_udp_port)
-    print(f"✅ Reusing agent '{agent_id}' on UDP port {actual_udp_port}")
-else:
-    # Create agent with initial inventory: burner mining drill, stone furnace, and wood
-    # set_unique_forces=false ensures agent uses the 'player' force, which is required
-    # for entity status tracking (status dumps filter on force='player')
-    rcon_client.send_command(
-        f'/c local inv = {{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}}; local res = remote.call(\'agent\', \'create_agent\', {requested_udp_port}, false, "player", inv); rcon.print(helpers.table_to_json(res))'
-    )
-    actual_udp_port = requested_udp_port
-    print(f"✅ Created agent '{agent_id}' on UDP port {actual_udp_port}")
+# Run reconciliation
+actual_udp_port = reconcile_agent(agent_id, instance.name, requested_udp_port)
+print(f"✅ Agent '{agent_id}' ready on port {actual_udp_port}")
 
 # =============================================================================
 # Entity Filter Sync

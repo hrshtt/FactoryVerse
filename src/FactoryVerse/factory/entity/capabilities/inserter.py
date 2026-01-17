@@ -7,7 +7,9 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import (
+        EntityOperationsAction,
+    )
     from FactoryVerse.factory.types import MapPosition, Direction
 
 
@@ -76,40 +78,19 @@ class InserterMixin:
                 drop_position=drop_pos,
             )
 
-        # Parse held item
-        held_item = None
-        held_data = inspection_data.get("held_stack")
-        if held_data and held_data.get("name"):
-            held_item = HeldItem(
-                name=held_data["name"],
-                count=held_data.get("count", 1),
-            )
+        # Use transformer to handle Lua quirks
+        from FactoryVerse.factory.entity.transform import _transform_inserter
 
-        # Parse targets
-        pickup_target = None
-        if inspection_data.get("pickup_target"):
-            pickup_target = inspection_data["pickup_target"].get("name")
+        entity_type = inspection_data.get("entity_type", "inserter")
+        inserter_state = _transform_inserter(inspection_data, entity_type)
 
-        drop_target = None
-        if inspection_data.get("drop_target"):
-            drop_target = inspection_data["drop_target"].get("name")
+        # Fallback to minimal state if transformer returns None
+        if not inserter_state:
+            pickup_pos = inspection_data.get("pickup_position")
+            drop_pos = inspection_data.get("drop_position")
+            return InserterState(pickup_position=pickup_pos, drop_position=drop_pos)
 
-        # Parse filters
-        filters = []
-        filter_data = inspection_data.get("filters", {})
-        if isinstance(filter_data, dict):
-            filters = list(filter_data.values())
-        elif isinstance(filter_data, list):
-            filters = filter_data
-
-        return InserterState(
-            held_item=held_item,
-            pickup_position=pickup_pos,
-            drop_position=drop_pos,
-            pickup_target=pickup_target,
-            drop_target=drop_target,
-            filters=filters,
-        )
+        return inserter_state
 
     def get_pickup_position(self) -> "MapPosition":
         """Calculate inserter pickup position (static, geometric).

@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import ItemStack
-    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import (
+        EntityOperationsAction,
+    )
 
 
 class BurnerState(BaseModel):
@@ -56,22 +58,11 @@ class BurnerMixin:
         if self.is_ghost:
             return BurnerState()  # Ghosts have no burner data
 
-        burner_data = inspection_data.get("burner", {})
-        fuel_inv = burner_data.get("fuel_inventory", {})
+        # Use transformer to handle Lua quirks (nested inventory structure, etc.)
+        from FactoryVerse.factory.entity.transform import _transform_burner
 
-        # Convert fuel inventory to dict
-        fuel_items: Dict[str, int] = {}
-        if fuel_inv and fuel_inv.get("contents"):
-            for item in fuel_inv.get("contents", []):
-                fuel_items[item["name"]] = item.get("count", 0)
-
-        return BurnerState(
-            heat=burner_data.get("heat", 0),
-            heat_capacity=burner_data.get("heat_capacity", 0),
-            remaining_burning_fuel=burner_data.get("remaining_burning_fuel", 0),
-            currently_burning=burner_data.get("currently_burning"),
-            fuel_inventory=fuel_items,
-        )
+        burner_state = _transform_burner(inspection_data)
+        return burner_state if burner_state else BurnerState()
 
     def _get_accepted_fuel_categories(self) -> List[str]:
         """Return accepted fuel categories for this entity.

@@ -10,7 +10,9 @@ from FactoryVerse.factory.entity.base_entity import BaseEntity
 
 if TYPE_CHECKING:
     from FactoryVerse.factory.item.base import ItemStack
-    from FactoryVerse.agent.embodied_actions.entity_operations import EntityOperationsAction
+    from FactoryVerse.agent.embodied_actions.entity_operations import (
+        EntityOperationsAction,
+    )
 
 
 class ContainerState(BaseModel):
@@ -47,24 +49,12 @@ class Container(BaseEntity):
         if self._is_ghost:
             return ContainerState()
 
-        # Parse inventory
-        inventory = inspection_data.get("inventories", {}).get("chest", {})
-        contents = {}
-        for item in inventory.get("contents", []):
-            contents[item["name"]] = item.get("count", 0)
+        # Use transformer to handle Lua quirks
+        from FactoryVerse.factory.entity.transform import _transform_container
 
-        # Parse filters
-        filters = {}
-        filter_data = inspection_data.get("filters", {})
-        if isinstance(filter_data, dict):
-            for slot, item_name in filter_data.items():
-                filters[int(slot)] = item_name
-
-        return ContainerState(
-            contents=contents,
-            inventory_size=inspection_data.get("inventory_size", 0),
-            filters=filters,
-        )
+        entity_type = inspection_data.get("entity_type", "container")
+        container_state = _transform_container(inspection_data, entity_type)
+        return container_state if container_state else ContainerState()
 
     def get_item_count(self, item_name: str) -> int:
         """Get count of a specific item in the container.

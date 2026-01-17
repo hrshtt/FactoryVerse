@@ -182,6 +182,36 @@ Returns immediately; completion signaled via UDP when crafting finishes.]],
             return self:craft_dequeue(recipe_name, count)
         end,
     },
+    get_crafting_queue = {
+        category = "crafting",
+        is_async = false,
+        doc = [[Get current crafting queue with full details.
+Returns array of queue items with index, recipe, count, prerequisite flags,
+plus overall queue size and progress through the current recipe.]],
+        paramspec = {
+            _param_order = {},
+        },
+        returns = {
+            type = "crafting_queue",
+            schema = {
+                queue = {
+                    type = "array",
+                    doc = "Array of crafting queue items",
+                    item_schema = {
+                        index = { type = "number", doc = "Position in queue (1-based)" },
+                        recipe = { type = "string", doc = "Recipe name" },
+                        count = { type = "number", doc = "Number of items to craft" },
+                        prerequisite = { type = "boolean", doc = "True if prerequisite for later items" },
+                    },
+                },
+                queue_size = { type = "number", doc = "Total items in queue" },
+                progress = { type = "number", doc = "Progress through current recipe (0.0-1.0)" },
+            },
+        },
+        func = function(self)
+            return self:get_crafting_queue()
+        end,
+    },
 
     -- ========================================================================
     -- SYNC: Entity Operations
@@ -946,6 +976,18 @@ function M:register_remote_interface()
     local interface = {}
     for method_name, meta in pairs(INTERFACE_METHODS) do
         interface[method_name] = function(...)
+            local args = ...
+            -- Check if called with a single table argument (RCON pattern)
+            if type(args) == "table" and select("#", ...) == 1 and meta.paramspec and meta.paramspec._param_order then
+                local ordered_args = {}
+                for _, key in ipairs(meta.paramspec._param_order) do
+                    table.insert(ordered_args, args[key])
+                end
+                -- If we found ordered args, use them, otherwise might be a regular call
+                -- But if paramspec exists, we should probably follow it if args matches
+                return meta.func(self, table.unpack(ordered_args))
+            end
+            -- Fallback to positional arguments
             return meta.func(self, ...)
         end
     end
