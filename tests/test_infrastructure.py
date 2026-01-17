@@ -56,11 +56,11 @@ class TestRuntimeBasics:
         assert "x" in pos
         assert "y" in pos
 
-    async def test_embodied_actions_loaded(self, environment: Environment):
-        """Verify embodied actions are loaded."""
-        assert environment.tier4.embodied_actions is not None
-        assert "movement" in environment.tier4.embodied_actions
-        assert "placement" in environment.tier4.embodied_actions
+    async def test_embodied_actions_loaded(self, environment_variant: Environment):
+        """Verify embodied actions are loaded in both variants."""
+        assert environment_variant.tier4.embodied_actions is not None
+        assert "movement" in environment_variant.tier4.embodied_actions
+        assert "placement" in environment_variant.tier4.embodied_actions
 
     async def test_agent_inspect(self, environment: Environment):
         """Verify agent inspect works."""

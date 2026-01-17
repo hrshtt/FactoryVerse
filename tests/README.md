@@ -88,6 +88,36 @@ tests/
 
 ---
 
+## Configuration Discovery
+
+The fixture system distinguishes between **runtime-discovered** and **static** configurations:
+
+### Runtime-Discovered (Dynamic)
+- **Scenarios**: Discovered from filesystem at test collection time
+  - Scans `src/factorio/scenarios/` for directories with `control.lua`
+  - Only repo scenarios are included (not local Factorio scenarios)
+  - Automatically included in `environment_scenario` parametrization
+
+### Static (Enum-Based)
+- **Runtime Variants**: `MINIMAL`, `FULL` (hardcoded enum values)
+- **Infra Modes**: `CLIENT`, `SERVER`, `CLIENT_AND_SERVER` (hardcoded enum values)
+
+**Why this matters:**
+- Scenarios change as you add/remove scenario directories → discovered automatically
+- Variants are fixed enum values → can be hardcoded in fixtures
+- Tests automatically adapt to available scenarios without code changes
+
+**Accessing discovered scenarios:**
+```python
+async def test_with_scenario_list(available_scenarios):
+    """Access the list of discovered scenarios."""
+    assert "test-ground" in available_scenarios
+    assert "freeplay" in available_scenarios
+    # ... use for custom parametrization
+```
+
+---
+
 ## Running Tests by Domain
 
 ```bash
@@ -115,6 +145,7 @@ uv run pytest -m "integration"
 **Key test files for verifying the test harness:**
 - `tests/unit/test_environment_tiers.py`: Unit tests for Environment tier initialization
 - `tests/test_infrastructure.py`: Smoke tests for the testing infrastructure using Environment
+- `tests/test_parametrized_fixtures.py`: Tests verifying parametrized fixtures work correctly
 
 ---
 
@@ -123,23 +154,36 @@ uv run pytest -m "integration"
 The test fixtures are organized around the `Environment` architecture, which provides a tiered initialization system:
 
 ```
-environment (function)        # Minimal Environment (Server + Settings + RCON + Runtime)
-    ├── tier4                 # Access to Tier 4 Runtime
-    │   ├── agent             # Access to embodied actions (acting as 'agent')
-    │   └── reachable_view    # Entity querying
-    ├── rcon                  # Tier 3 RconHelper
-    └── full_environment      # Full Environment (adds DuckDB + RemoteView)
-        └── remote_view       # SQL-based querying
+environment (function)              # Minimal Environment (default: test-ground, MINIMAL)
+    ├── tier4                       # Access to Tier 4 Runtime
+    │   ├── agent                   # Access to embodied actions (acting as 'agent')
+    │   └── reachable_view          # Entity querying
+    ├── rcon                        # Tier 3 RconHelper
+    │
+    ├── full_environment            # Full Environment (adds DuckDB + RemoteView)
+    │   └── remote_view             # SQL-based querying
+    │
+    ├── environment_variant         # Parametrized: MINIMAL and FULL variants
+    ├── environment_scenario        # Parametrized: All discovered scenarios
+    ├── environment_factory         # Factory for custom configurations
+    │
+    └── Named scenario fixtures:
+        ├── freeplay_environment    # Freeplay scenario
+        └── lab_environment         # Lab scenario
 ```
 
 **Key fixtures:**
-- `environment`: Basic setup for most tests (minimal runtime, no DuckDB)
+- `environment`: Basic setup for most tests (minimal runtime, no DuckDB, test-ground scenario)
 - `full_environment`: For tests needing DuckDB/RemoteView
+- `environment_variant`: **Parametrized** - runs tests for both MINIMAL and FULL variants
+- `environment_scenario`: **Parametrized** - runs tests for all discovered scenarios
+- `environment_factory`: Factory for creating custom environment configurations
 - `tier4`: Direct access to the `Tier4Runtime` instance
 - `agent`: Provides the `embodied_actions` dictionary (walking, crafting, etc.)
 - `rcon`: Access to the RCON client via `Tier3Python`
 - `reachable_view`: Lua-based entity querying (always available)
 - `remote_view`: SQL-based querying (requires `full_environment`)
+- `available_scenarios`: List of discovered scenarios (session-scoped)
 
 ---
 
@@ -294,6 +338,107 @@ async def test_remote_queries(remote_view):
     assert entities is not None
 ```
 
+### `environment_variant` (function-scoped, parametrized)
+
+**Parametrized fixture** that runs tests for both MINIMAL and FULL runtime variants. This ensures features work in both configurations.
+
+```python
+async def test_embodied_actions_work_all_variants(environment_variant: Environment):
+    """Test runs twice: once for MINIMAL, once for FULL."""
+    # This test automatically runs for both variants
+    actions = environment_variant.tier4.embodied_actions
+    assert actions is not None
+    assert "walking" in actions
+    
+    # FULL variant has remote_view, MINIMAL does not
+    if environment_variant.tier4.config.variant == RuntimeVariant.FULL:
+        assert environment_variant.tier4.remote_view is not None
+    else:
+        assert environment_variant.tier4.remote_view is None
+```
+
+**When to use:**
+- Testing features that should work in both variants
+- Ensuring core functionality doesn't depend on DuckDB/RemoteView
+- Systematic coverage of variant differences
+
+### `environment_scenario` (function-scoped, parametrized)
+
+**Parametrized fixture** that runs tests for all discovered scenarios. Scenarios are discovered from the filesystem at test collection time.
+
+```python
+async def test_scenario_behavior(environment_scenario: Environment):
+    """Test runs once per discovered scenario."""
+    # Automatically runs for: test-ground, freeplay, lab, etc.
+    scenario = environment_scenario.tier2.current_scenario
+    assert scenario is not None
+    
+    # Test scenario-specific behavior
+    reachable = environment_scenario.tier4.reachable_view
+    entities = reachable.get_entities()
+    assert entities is not None
+```
+
+**When to use:**
+- Testing features that should work across all scenarios
+- Verifying scenario-specific behavior
+- Systematic coverage of scenario differences
+
+**Note:** Scenarios are discovered at test collection time by scanning for directories with `control.lua` files. Only repo scenarios (not local Factorio scenarios) are included for test reproducibility.
+
+### `environment_factory` (function-scoped)
+
+Factory fixture for creating environments with custom configurations:
+
+```python
+async def test_custom_config(environment_factory):
+    """Test with custom scenario and variant."""
+    env = await environment_factory(
+        tier2={"scenario": "freeplay"},
+        tier4={"variant": RuntimeVariant.FULL},
+    )
+    try:
+        assert env.tier2.current_scenario == "freeplay"
+        assert env.tier4.config.variant == RuntimeVariant.FULL
+        assert env.tier4.remote_view is not None
+    finally:
+        await env.shutdown()
+```
+
+**When to use:**
+- Custom configurations not covered by parametrized fixtures
+- Testing specific scenario × variant combinations
+- One-off tests with unique requirements
+
+### `available_scenarios` (session-scoped)
+
+Provides the list of discovered scenarios for manual parametrization:
+
+```python
+async def test_custom_parametrization(environment_factory, available_scenarios):
+    """Manually parametrize over scenarios."""
+    for scenario in available_scenarios:
+        env = await environment_factory(tier2={"scenario": scenario})
+        try:
+            # Test logic
+            assert env.tier2.current_scenario == scenario
+        finally:
+            await env.shutdown()
+```
+
+### Named Scenario Fixtures
+
+Convenience fixtures for common scenarios:
+
+- `freeplay_environment`: Environment with freeplay scenario
+- `lab_environment`: Environment with lab scenario
+
+```python
+async def test_freeplay_specific(freeplay_environment: Environment):
+    """Test specific to freeplay scenario."""
+    assert freeplay_environment.tier2.current_scenario == "freeplay"
+```
+
 ## Domain-Specific Fixtures
 
 Each domain can define its own `conftest.py` for specialized fixtures that build on the core fixtures:
@@ -418,6 +563,59 @@ uv run pytest tests/test_infrastructure.py -v
 uv run pytest tests/unit/test_environment_tiers.py -v
 ```
 
+### 9. Parametrized Testing for Comprehensive Coverage
+
+Use parametrized fixtures to test features across multiple configurations:
+
+**Test across variants:**
+```python
+async def test_feature_works_all_variants(environment_variant: Environment):
+    """Automatically tests both MINIMAL and FULL variants."""
+    # Test runs twice (once per variant)
+    assert environment_variant.tier4.embodied_actions is not None
+```
+
+**Test across scenarios:**
+```python
+async def test_feature_works_all_scenarios(environment_scenario: Environment):
+    """Automatically tests all discovered scenarios."""
+    # Test runs once per scenario (test-ground, freeplay, lab, etc.)
+    scenario = environment_scenario.tier2.current_scenario
+    assert scenario is not None
+```
+
+**Test all combinations:**
+```python
+from FactoryVerse.environment.config import RuntimeVariant
+from tests.conftest import _AVAILABLE_SCENARIOS
+
+@pytest.mark.parametrize("scenario", _AVAILABLE_SCENARIOS)
+@pytest.mark.parametrize("variant", [RuntimeVariant.MINIMAL, RuntimeVariant.FULL])
+async def test_all_combinations(environment_factory, scenario, variant):
+    """Test all scenario × variant combinations."""
+    env = await environment_factory(
+        tier2={"scenario": scenario},
+        tier4={"variant": variant},
+    )
+    try:
+        # Test logic
+        assert env.tier2.current_scenario == scenario
+        assert env.tier4.config.variant == variant
+    finally:
+        await env.shutdown()
+```
+
+**Benefits:**
+- ✅ Automatic coverage of all configurations
+- ✅ Catches bugs in specific scenarios/variants
+- ✅ Documents which configs are supported
+- ✅ No manual test duplication
+
+**When to parametrize:**
+- Features that should work in both variants → use `environment_variant`
+- Features that should work in all scenarios → use `environment_scenario`
+- Testing configuration-specific behavior → use `environment_factory` with custom configs
+
 ### 7. Testing without Jupyter: Tier 4 Access
 
 **Solution**: Use the `tier4` or `agent` fixtures to interact with the Python runtime directly.
@@ -495,7 +693,9 @@ async def test_walking_action_injected(tier4):
 
 ---
 
-## Example Test
+## Example Tests
+
+### Basic Test with Default Environment
 
 ```python
 # tests/actions/test_crafting_status.py
@@ -506,19 +706,19 @@ from FactoryVerse.environment.environment import Environment
 class TestCraftingStatus:
     """Test crafting.status() returns proper queue information."""
 
-    async def test_status_returns_typed_queue(self, environment: Environment):
-        """status() should return CraftingQueueStatus with queue details."""
+    async def test_status_returns_typed_queue(self, environment_variant: Environment):
+        """Test runs for both MINIMAL and FULL variants."""
         # Setup: Ensure agent has items
-        agent_id_str = environment.tier4.agent_id
+        agent_id_str = environment_variant.tier4.agent_id
         agent_index = int(agent_id_str.split("_")[-1]) if "_" in agent_id_str else 1
 
         # Add items via RCON admin interface
         cmd = f"/c rcon.print(helpers.table_to_json(remote.call('admin', 'add_items', {agent_index}, {{['iron-plate'] = 20}})))"
-        res = environment.tier3.rcon_helper.rcon_client.send_command(cmd)
+        res = environment_variant.tier3.rcon_helper.rcon_client.send_command(cmd)
         assert "success" in res
 
         # Access crafting action via embodied_actions
-        crafting_action = environment.tier4.embodied_actions["crafting"]
+        crafting_action = environment_variant.tier4.embodied_actions["crafting"]
 
         # Get initial status (should be empty)
         status = crafting_action.status()
@@ -529,7 +729,30 @@ class TestCraftingStatus:
         assert len(status["queue"]) == 0, "Queue should be empty initially"
 ```
 
-**Using the agent fixture:**
+### Using Parametrized Fixtures
+
+```python
+# tests/actions/test_walking.py
+import pytest
+
+@pytest.mark.asyncio
+async def test_walk_to_all_variants(environment_variant):
+    """Test walking works in both MINIMAL and FULL variants."""
+    # Automatically runs twice (once per variant)
+    result = await environment_variant.tier4.embodied_actions["walking"].walk_to(x=10, y=10)
+    assert result["success"]
+
+@pytest.mark.asyncio
+async def test_walk_to_all_scenarios(environment_scenario):
+    """Test walking works in all scenarios."""
+    # Automatically runs for each discovered scenario
+    walking = environment_scenario.tier4.embodied_actions["walking"]
+    result = await walking.walk_to(x=10, y=10)
+    assert result["success"]
+```
+
+### Using the Agent Fixture
+
 ```python
 # tests/actions/test_walking.py
 import pytest
@@ -543,4 +766,26 @@ async def test_walk_to(agent, tier4):
     
     # Access agent ID if needed
     agent_id = tier4.agent_id
+```
+
+### Using Factory for Custom Configurations
+
+```python
+# tests/actions/test_custom.py
+import pytest
+from FactoryVerse.environment.config import RuntimeVariant
+
+@pytest.mark.asyncio
+async def test_custom_config(environment_factory):
+    """Test with custom scenario and variant."""
+    env = await environment_factory(
+        tier2={"scenario": "freeplay"},
+        tier4={"variant": RuntimeVariant.FULL},
+    )
+    try:
+        # Test logic
+        assert env.tier2.current_scenario == "freeplay"
+        assert env.tier4.remote_view is not None
+    finally:
+        await env.shutdown()
 ```

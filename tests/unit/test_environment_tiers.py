@@ -1,5 +1,6 @@
 import pytest
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from FactoryVerse.environment.environment import Environment, Tier
 from FactoryVerse.environment.config import (
@@ -95,3 +96,80 @@ async def test_environment_reset_logic():
     env._tier3.reset.assert_called_once()
     env._tier2.reset.assert_not_called()
     env._tier1.reset.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tier4_agent_reconciliation():
+    """Test Tier 4 agent reconciliation logic (New vs Resume)."""
+    # Mock mocks
+    mock_env = MagicMock(spec=Environment)
+    mock_env.config.tier4.agent_id = "test_agent"
+    mock_env.config.tier4.variant = RuntimeVariant.MINIMAL
+    # Mock Tier 6 so model capture works
+    mock_env.tier6 = None
+    mock_env.config.tier6 = MagicMock()
+    mock_env.config.tier6.model = "test-model"
+
+    # Mock Tier 3 with Registry
+    mock_registry = MagicMock()
+    mock_tier3 = MagicMock()
+    mock_tier3.agent_registry = mock_registry
+    mock_tier3.rcon_helper = MagicMock()
+    mock_tier3.rcon_helper._create_agent = MagicMock()
+    mock_tier3._udp_dispatcher.port = 1234
+    mock_tier3.instance = "server_0"
+    mock_env.tier3 = mock_tier3
+
+    from FactoryVerse.environment.tiers.tier4_runtime import Tier4Runtime
+    from FactoryVerse.agent.core.profile import AgentProfile, AgentStatus
+
+    # Case 1: New Agent (Registry returns None)
+    mock_registry.get_by_name.return_value = None
+
+    tier4_new = Tier4Runtime(mock_env)
+    # Patch internal methods we don't want to run
+    tier4_new._setup_session_dir = AsyncMock(return_value=Path("/tmp"))
+    tier4_new._load_embodied_actions = AsyncMock()
+    tier4_new._load_reachable_view = AsyncMock()
+
+    await tier4_new.initialize()
+
+    # Check registration happened
+    mock_registry.register.assert_called_once()
+    registered_profile = mock_registry.register.call_args[0][0]
+    assert registered_profile.name == "test_agent"
+    assert registered_profile.status == AgentStatus.ACTIVE
+
+    # Check creation with destroy_existing=True
+    mock_tier3.rcon_helper._create_agent.assert_called_with(
+        udp_port=1234, destroy_existing=True
+    )
+
+    # Case 2: Resume Agent (Registry returns Profile)
+    mock_registry.reset_mock()
+    mock_tier3.rcon_helper._create_agent.reset_mock()
+
+    existing_profile = AgentProfile(
+        name="test_agent",
+        instance_id="server_0",
+        model="old-model",  # Should not be overridden by current config model
+        description="Existing agent",
+        status=AgentStatus.PAUSED,
+    )
+    mock_registry.get_by_name.return_value = existing_profile
+
+    tier4_resume = Tier4Runtime(mock_env)
+    tier4_resume._setup_session_dir = AsyncMock(return_value=Path("/tmp"))
+    tier4_resume._load_embodied_actions = AsyncMock()
+    tier4_resume._load_reachable_view = AsyncMock()
+
+    await tier4_resume.initialize()
+
+    # Check status update
+    mock_registry.save.assert_called_once()
+    assert existing_profile.status == AgentStatus.ACTIVE
+
+    # Check creation with destroy_existing=False (Binding)
+    mock_tier3.rcon_helper._create_agent.assert_called_with(
+        udp_port=1234, destroy_existing=False
+    )

@@ -8,10 +8,11 @@ from FactoryVerse.environment.environment import Environment
 class TestCraftingStatus:
     """Test crafting.status() returns proper queue information."""
 
-    async def test_status_returns_typed_queue(self, environment: Environment):
+    async def test_status_returns_typed_queue(self, environment_variant: Environment):
+        """Test that crafting status works in both MINIMAL and FULL variants."""
         """status() should return CraftingQueueStatus with queue details."""
         # Setup: Ensure agent has items
-        agent_id_str = environment.tier4.agent_id
+        agent_id_str = environment_variant.tier4.agent_id
         # Extract ID number (legacy admin.add_items expects integer index)
         agent_index = int(agent_id_str.split("_")[-1]) if "_" in agent_id_str else 1
 
@@ -23,11 +24,11 @@ class TestCraftingStatus:
         # The return value from add_items is a table {success=true, ...}
         # We need to print it as JSON to receive it back
         cmd = f"/c rcon.print(helpers.table_to_json(remote.call('admin', 'add_items', {agent_index}, {{['iron-plate'] = 20}})))"
-        res = environment.tier3.rcon_helper.rcon_client.send_command(cmd)
+        res = environment_variant.tier3.rcon_helper.rcon_client.send_command(cmd)
         print(f"DEBUG add_items result: {res}")
         assert "success" in res, f"add_items failed: {res}"
 
-        crafting_action = environment.tier4.embodied_actions["crafting"]
+        crafting_action = environment_variant.tier4.embodied_actions["crafting"]
 
         # Get initial status (should be empty)
         status = crafting_action.status()
@@ -37,19 +38,20 @@ class TestCraftingStatus:
         assert "queue" in status, "Should have 'queue' field"
         assert len(status["queue"]) == 0, "Queue should be empty initially"
 
-    async def test_status_with_queued_items(self, environment: Environment):
+    async def test_status_with_queued_items(self, environment_variant: Environment):
+        """Test that crafting status with queued items works in both variants."""
         """status() should return queue items when crafting is queued."""
-        agent_id_str = environment.tier4.agent_id
+        agent_id_str = environment_variant.tier4.agent_id
         agent_index = int(agent_id_str.split("_")[-1]) if "_" in agent_id_str else 1
 
         # Add ingredients for gears
         # Use direct Lua table syntax
         cmd = f"/c rcon.print(helpers.table_to_json(remote.call('admin', 'add_items', {agent_index}, {{['iron-plate'] = 20}})))"
-        res = environment.tier3.rcon_helper.rcon_client.send_command(cmd)
+        res = environment_variant.tier3.rcon_helper.rcon_client.send_command(cmd)
         print(f"DEBUG add_items result: {res}")
         assert "success" in res, f"add_items failed: {res}"
 
-        crafting_action = environment.tier4.embodied_actions["crafting"]
+        crafting_action = environment_variant.tier4.embodied_actions["crafting"]
 
         # Enqueue crafting
         # Note: enqueue returns a dict, we need to inspect it
