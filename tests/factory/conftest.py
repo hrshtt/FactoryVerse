@@ -38,13 +38,17 @@ async def agent_runtime(rcon: RconConnection, agent_id: str) -> Generator:
     instance = FactorioInstanceManager.from_env(config)
     snapshot_dir = instance.script_output_dir
 
-    # Create runtime with auto-allocated UDP port
-    # Dynamic port discovery ensures no conflicts
+    # Use deterministic port allocation based on agent_id and server_index
+    # This ensures the port matches Docker's port mappings
+    server_index = instance.server_id if instance.type == "server" else None
+    
+    # Create runtime with deterministic UDP port allocation
     runtime = create_runtime(
         rcon_client=rcon.client,  # Access underlying RCON client
         agent_id=agent_id,
-        udp_port=None,  # Auto-allocate
+        udp_port=None,  # Auto-allocate deterministically
         snapshot_dir=snapshot_dir,  # Use Docker's script-output directory
+        server_index=server_index,  # Use server index for deterministic port
     )
 
     # Start the runtime (starts async listener)
