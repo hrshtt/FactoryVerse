@@ -8,7 +8,7 @@ Tests cover:
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch
-from FactoryVerse.agent.actions.placement_hints import (
+from FactoryVerse.agent.embodied_actions.placement_hints import (
     PlacementValidator,
     PlacementHints,
     GhostPlan,

@@ -17,7 +17,7 @@ from factorio_rcon import RCONClient
 from FactoryVerse.factory.prototypes import get_entity_prototypes
 from FactoryVerse.factory.types import MapPosition, Direction
 from FactoryVerse.agent.infra.rcon_handler import RconHandler
-from FactoryVerse.agent.actions.placement_hints import (
+from FactoryVerse.agent.embodied_actions.placement_hints import (
     PlacementValidator,
     PlacementHints,
     GhostPlan,

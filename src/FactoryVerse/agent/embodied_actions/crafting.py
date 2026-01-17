@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import logging
 
 from FactoryVerse.agent.models import AsyncActionResponse, AsyncActionCompletion
+from FactoryVerse.factory.types import CraftingQueueStatus, CraftingQueueItem
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +45,20 @@ class CraftingCompleted(AsyncActionCompletion):
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CraftingCompleted":
-        """Create instance from dict, mapping 'products' to 'items' for compatibility."""
-        # Handle both 'products' (from Lua) and 'items' (preferred)
+        """Create instance from dict, mapping 'products' to 'items' for compatibility.
+        
+        Handles both top-level 'products' and 'products' nested inside 'result'.
+        """
+        # Extract products from result if present (UDP payload structure)
+        if "result" in data and isinstance(data["result"], dict):
+            result = data["result"]
+            if "products" in result and "items" not in data:
+                data = {**data, "items": result["products"]}
+        
+        # Handle both 'products' (from Lua) and 'items' (preferred) at top level
         if "products" in data and "items" not in data:
             data = {**data, "items": data["products"]}
+        
         return super().from_dict(data)
 
     def __post_init__(self):
@@ -195,12 +206,36 @@ class CraftingAction:
         cmd = self._rcon.build_command("craft_dequeue", recipe, count)
         return self._rcon.execute_and_parse_json(cmd)
 
-    def status(self) -> Dict[str, Any]:
-        """Get current crafting status.
+    def status(self) -> CraftingQueueStatus:
+        """Get current crafting queue status with full details.
 
         Returns:
-            Crafting state dict with active, recipe, action_id
+            CraftingQueueStatus with queue items, size, and progress
+            
+        Example:
+            ```python
+            status = crafting.status()
+            print(f"Queue size: {status['queue_size']}")
+            print(f"Progress: {status['progress']:.1%}")
+            for item in status['queue']:
+                print(f"  {item['recipe']} x{item['count']} (index {item['index']})")
+            ```
         """
-        cmd = self._rcon.build_command("inspect", True)  # attach_state=True
-        state = self._rcon.execute_and_parse_json(cmd)
-        return state.get("state", {}).get("crafting", {})
+        cmd = self._rcon.build_command("get_crafting_queue")
+        data = self._rcon.execute_and_parse_json(cmd)
+        
+        # Parse queue items
+        queue_items = []
+        for item_data in data.get("queue", []):
+            queue_items.append(CraftingQueueItem(
+                index=item_data.get("index", 0),
+                recipe=item_data.get("recipe", ""),
+                count=item_data.get("count", 0),
+                prerequisite=item_data.get("prerequisite", False),
+            ))
+        
+        return CraftingQueueStatus(
+            queue=queue_items,
+            queue_size=data.get("queue_size", 0),
+            progress=data.get("progress", 0.0),
+        )

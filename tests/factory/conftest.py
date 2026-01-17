@@ -25,7 +25,7 @@ async def agent_runtime(rcon: RconConnection, agent_id: str) -> Generator:
     **Usage**:
     ```python
     async def test_something(agent_runtime):
-        furnace = agent_runtime.reachable.get_entity("stone-furnace")
+        furnace = agent_runtime.reachable_view_view_view.get_entity("stone-furnace")
         await agent_runtime.walking.walk_to(MapPosition(10, 10))
     ```
     """
@@ -72,7 +72,7 @@ def dsl_context(agent_runtime, test_ground: "TestGround", admin: "AdminInterface
 
         # Access runtime
         runtime = dsl_context.runtime
-        furnace = runtime.reachable.get_entity("stone-furnace")
+        furnace = runtime.reachable_view_view.get_entity("stone-furnace")
         info = furnace.inspect()
     ```
     """
@@ -102,7 +102,7 @@ class DSLTestContext:
 
     @property
     def reachable(self):
-        return self.runtime.reachable
+        return self.runtime.reachable_view
 
     @property
     def resources(self):
@@ -143,7 +143,7 @@ def unlocked_recipes(admin: "AdminInterface"):
     ```python
     async def test_advanced_crafting(dsl_context, unlocked_recipes):
         # All recipes available
-        assembler = dsl_context.reachable.get_entity("assembling-machine-1")
+        assembler = dsl_context.reachable_view.get_entity("assembling-machine-1")
         # assembler.set_recipe("advanced-circuit")
     ```
     """

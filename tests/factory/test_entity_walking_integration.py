@@ -10,7 +10,7 @@ Based on: docs/implementation_summaries/entity_walking_integration.md
 import pytest
 import asyncio
 from FactoryVerse.factory.types import MapPosition
-from FactoryVerse.agent.actions.walking import (
+from FactoryVerse.agent.embodied_actions.walking import (
     WalkingUnreachableError,
     WalkingEntityNotFoundError,
     WalkingNoStandableTilesError,
@@ -207,7 +207,7 @@ class TestReachableEntityNoWalking:
         dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
         
         # Act - get reachable entity
-        furnace = dsl_context.reachable.get_entity("stone-furnace")
+        furnace = dsl_context.reachable_view.get_entity("stone-furnace")
         
         # Assert - entity is in reachable range
         assert furnace is not None
@@ -427,7 +427,7 @@ class TestCrossModuleIntegration:
         # await remote_furnace.walk_to(timeout=10)
         
         # Step 3: Now get it as reachable entity for interaction
-        # reachable_furnace = dsl_context.reachable.get_entity("stone-furnace")
+        # reachable_furnace = dsl_context.reachable_view.get_entity("stone-furnace")
         # assert reachable_furnace is not None
         
         # Step 4: Interact with reachable entity

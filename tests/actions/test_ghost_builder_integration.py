@@ -9,8 +9,8 @@ from factorio_rcon import RCONClient
 
 from FactoryVerse.factory.types import MapPosition, Direction
 from FactoryVerse.agent.infra.rcon_handler import RconHandler
-from FactoryVerse.agent.actions.place_entity import PlacementAction
-from FactoryVerse.agent.actions.placement_hints import PlacementHints
+from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
+from FactoryVerse.agent.embodied_actions.placement_hints import PlacementHints
 
 
 # =============================================================================
@@ -106,7 +106,7 @@ class TestGhostBuilderUnit:
 
     def test_ghost_info_dataclass(self):
         """Test GhostInfo dataclass."""
-        from FactoryVerse.agent.actions.ghost_builder import GhostInfo
+        from FactoryVerse.agent.embodied_actions.ghost_builder import GhostInfo
 
         info = GhostInfo(
             name="transport-belt", position=MapPosition(x=10.0, y=20.0), direction=4
@@ -118,7 +118,7 @@ class TestGhostBuilderUnit:
 
     def test_ghost_builder_imports(self):
         """Test GhostBuilder can be imported."""
-        from FactoryVerse.agent.actions.ghost_builder import GhostBuilderAction
+        from FactoryVerse.agent.embodied_actions.ghost_builder import GhostBuilderAction
 
         assert GhostBuilderAction is not None
 

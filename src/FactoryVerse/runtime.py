@@ -19,7 +19,7 @@ Usage in boilerplate:
     furnace.inspect()
 
 Multi-agent: Each agent notebook creates its own runtime with dedicated UDP port.
-Orchestration between agents is handled at a higher level (experiment runner).
+Orchestration between agents is handled at a higher level.
 """
 
 from typing import Optional, TYPE_CHECKING
@@ -413,10 +413,11 @@ class AgentRuntime:
 def create_runtime(
     rcon_client: "RCONClient",
     agent_id: str,
-    udp_port: int,
+    udp_port: Optional[int] = None,
     *,
     snapshot_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    server_index: Optional[int] = None,
 ) -> AgentRuntime:
     """Create a complete agent runtime.
 
@@ -425,9 +426,12 @@ def create_runtime(
     Args:
         rcon_client: Connected RCON client
         agent_id: Agent identifier (e.g., "agent_1")
-        udp_port: UDP port for async action notifications (each agent needs unique port)
+        udp_port: UDP port for async action notifications (each agent needs unique port).
+                  If None, uses deterministic allocation based on agent_id and server_index.
         snapshot_dir: Optional path to snapshot directory for map_db
         db_path: Optional path to DuckDB database file
+        server_index: Optional server index for deterministic port allocation.
+                      If None and udp_port is None, uses dynamic port discovery.
 
     Returns:
         Configured AgentRuntime ready to use (call .start() before async operations)
@@ -445,6 +449,35 @@ def create_runtime(
         await runtime.walking.walk_to(MapPosition(10, 10))
         ```
     """
+    from FactoryVerse.config import get_config
+    
+    # Allocate UDP port if not provided
+    if udp_port is None:
+        config = get_config()
+        
+        # Try deterministic allocation if server_index is provided
+        if server_index is not None:
+            # Extract agent index from agent_id (e.g., "agent_1" -> 1)
+            try:
+                agent_index = int(agent_id.split("_")[1]) - 1  # Convert to 0-based
+                udp_port = config.get_agent_port(agent_index, server_index=server_index)
+            except (ValueError, IndexError):
+                # Fall back to dynamic allocation if agent_id format is unexpected
+                from FactoryVerse.utils.port_utils import find_free_udp_port
+                udp_port = find_free_udp_port(
+                    start_port=config.agent_port_base,
+                    max_attempts=200,
+                    host=config.rcon_host,
+                )
+        else:
+            # Dynamic port discovery (may not match Docker port mappings)
+            from FactoryVerse.utils.port_utils import find_free_udp_port
+            udp_port = find_free_udp_port(
+                start_port=config.agent_port_base,
+                max_attempts=200,
+                host=config.rcon_host,
+            )
+    
     config = RuntimeConfig(
         agent_id=agent_id,
         udp_port=udp_port,

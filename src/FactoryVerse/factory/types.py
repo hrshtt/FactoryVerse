@@ -304,8 +304,35 @@ class CraftCompletionPayload(TypedDict, total=False):
 # =============================================================================
 
 
+class CraftingQueueItem(TypedDict):
+    """Single item in crafting queue.
+    
+    RCON Contract: RemoteInterface.lua get_crafting_queue.returns.schema.queue.item_schema
+    """
+
+    index: int  # 1-based position in queue
+    recipe: str
+    count: int
+    prerequisite: bool
+
+
+class CraftingQueueStatus(TypedDict):
+    """Current crafting queue status.
+    
+    RCON Contract: RemoteInterface.lua get_crafting_queue.returns.schema
+    """
+
+    queue: List[CraftingQueueItem]
+    queue_size: int
+    progress: float  # 0.0 to 1.0
+
+
 class CraftingStatus(TypedDict):
-    """Current crafting status for an agent."""
+    """Current crafting status for an agent.
+    
+    DEPRECATED: Use CraftingQueueStatus instead for full queue details.
+    This is kept for backward compatibility.
+    """
 
     active: bool
     recipe: Optional[str]
@@ -667,6 +694,8 @@ __all__ = [
     "MineCompletionPayload",
     "CraftCompletionPayload",
     # Status types
+    "CraftingQueueItem",
+    "CraftingQueueStatus",
     "CraftingStatus",
     "ResearchQueueItem",
     "ResearchStatus",

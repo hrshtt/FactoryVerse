@@ -7,6 +7,7 @@ import shutil
 import json
 import subprocess
 import sys
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -157,6 +158,103 @@ def _save_mod_list(mod_path: Path, mod_list: dict) -> None:
     (mod_path / "mod-list.json").write_text(json.dumps(mod_list, indent=2))
 
 
+def _calculate_directory_hash(directory: Path) -> str:
+    """Calculate SHA256 hash of all files in a directory.
+    
+    Args:
+        directory: Path to directory to hash
+        
+    Returns:
+        Hexadecimal hash string
+    """
+    hasher = hashlib.sha256()
+    
+    # Get all files sorted by path for deterministic hashing
+    all_files = sorted(directory.rglob("*"))
+    
+    for file_path in all_files:
+        if file_path.is_file():
+            # Include relative path in hash
+            rel_path = file_path.relative_to(directory)
+            hasher.update(str(rel_path).encode())
+            
+            # Include file contents
+            try:
+                with open(file_path, "rb") as f:
+                    hasher.update(f.read())
+            except (IOError, OSError):
+                # Skip files we can't read
+                pass
+    
+    return hasher.hexdigest()
+
+
+def _get_mod_hash_file(mod_path: Path, mod_name: str) -> Path:
+    """Get path to hash file for a mod.
+    
+    Args:
+        mod_path: Factorio mods directory
+        mod_name: Mod name (e.g., 'fv_embodied_agent')
+        
+    Returns:
+        Path to hash file
+    """
+    return mod_path / f".{mod_name}.hash"
+
+
+def _get_mod_hash(mod_path: Path, mod_name: str) -> Optional[str]:
+    """Get stored hash for a mod.
+    
+    Args:
+        mod_path: Factorio mods directory
+        mod_name: Mod name
+        
+    Returns:
+        Hash string if exists, None otherwise
+    """
+    hash_file = _get_mod_hash_file(mod_path, mod_name)
+    if hash_file.exists():
+        return hash_file.read_text().strip()
+    return None
+
+
+def _save_mod_hash(mod_path: Path, mod_name: str, hash_value: str) -> None:
+    """Save hash for a mod.
+    
+    Args:
+        mod_path: Factorio mods directory
+        mod_name: Mod name
+        hash_value: Hash to save
+    """
+    hash_file = _get_mod_hash_file(mod_path, mod_name)
+    hash_file.write_text(hash_value)
+
+
+def _mod_needs_update(source_dir: Path, mod_path: Path, mod_name: str) -> bool:
+    """Check if mod needs to be updated based on hash comparison.
+    
+    Args:
+        source_dir: Source mod directory
+        mod_path: Factorio mods directory
+        mod_name: Mod name
+        
+    Returns:
+        True if mod needs update, False if hash matches
+    """
+    if not source_dir.exists():
+        return True
+    
+    current_hash = _calculate_directory_hash(source_dir)
+    stored_hash = _get_mod_hash(mod_path, mod_name)
+    
+    if stored_hash != current_hash:
+        # Update stored hash
+        _save_mod_hash(mod_path, mod_name, current_hash)
+        return True
+    
+    return False
+
+
 def _update_mod_list(mod_path: Path, mod_name: str, enabled: bool) -> None:
     """Add or update a mod in mod-list.json.
 
@@ -268,7 +366,7 @@ def setup_client(
             shutil.rmtree(client_scenario_dir)
 
     # Prepare fv_embodied_agent mod
-    print("📦 Preparing fv_embodied_agent mod...")
+    print("📦 Checking fv_embodied_agent mod...")
     info_json_path = embodied_agent_mod_dir / "info.json"
     if info_json_path.exists():
         info = json.loads(info_json_path.read_text())
@@ -279,14 +377,28 @@ def setup_client(
         mod_version = "1.0.0"
 
     client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
-    if client_mod_dir.exists():
-        shutil.rmtree(client_mod_dir)
-    shutil.copytree(embodied_agent_mod_dir, client_mod_dir)
-    _update_mod_list(mod_path, mod_name, True)
-    print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+    
+    # Check if mod needs update based on hash
+    if force or _mod_needs_update(embodied_agent_mod_dir, mod_path, mod_name):
+        if client_mod_dir.exists():
+            shutil.rmtree(client_mod_dir)
+        print(f"   Updating {mod_name} mod (hash changed or --force)...")
+        shutil.copytree(embodied_agent_mod_dir, client_mod_dir)
+        _update_mod_list(mod_path, mod_name, True)
+        print(f"✓ {mod_name} mod updated as {client_mod_dir.name}")
+    else:
+        # Ensure mod directory exists even if hash matches
+        if not client_mod_dir.exists():
+            print(f"   Mod directory missing, copying {mod_name}...")
+            shutil.copytree(embodied_agent_mod_dir, client_mod_dir)
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+        else:
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod up to date (hash unchanged)")
 
     # Prepare fv_snapshot mod
-    print("📦 Preparing fv_snapshot mod...")
+    print("📦 Checking fv_snapshot mod...")
     info_json_path = snapshot_mod_dir / "info.json"
     if info_json_path.exists():
         info = json.loads(info_json_path.read_text())
@@ -297,11 +409,25 @@ def setup_client(
         mod_version = "1.0.0"
 
     client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
-    if client_mod_dir.exists():
-        shutil.rmtree(client_mod_dir)
-    shutil.copytree(snapshot_mod_dir, client_mod_dir)
-    _update_mod_list(mod_path, mod_name, True)
-    print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+    
+    # Check if mod needs update based on hash
+    if force or _mod_needs_update(snapshot_mod_dir, mod_path, mod_name):
+        if client_mod_dir.exists():
+            shutil.rmtree(client_mod_dir)
+        print(f"   Updating {mod_name} mod (hash changed or --force)...")
+        shutil.copytree(snapshot_mod_dir, client_mod_dir)
+        _update_mod_list(mod_path, mod_name, True)
+        print(f"✓ {mod_name} mod updated as {client_mod_dir.name}")
+    else:
+        # Ensure mod directory exists even if hash matches
+        if not client_mod_dir.exists():
+            print(f"   Mod directory missing, copying {mod_name}...")
+            shutil.copytree(snapshot_mod_dir, client_mod_dir)
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+        else:
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod up to date (hash unchanged)")
 
     # Handle scenario if project_scenarios_dir is provided
     if project_scenarios_dir:
@@ -331,6 +457,34 @@ def setup_client(
     print(
         "ℹ️  Note: Restart Factorio if it's already running for changes to take effect."
     )
+
+
+def _find_steam_executable() -> Optional[Path]:
+    """Find Steam executable on macOS for launching games via -applaunch."""
+    if platform.system() != "Darwin":
+        return None
+    
+    # Check standard location
+    steam_path = Path("/Applications/Steam.app/Contents/MacOS/steam_osx")
+    if steam_path.exists():
+        return steam_path
+    
+    # Check alternative location
+    alt_path = (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "Steam"
+        / "Steam.AppBundle"
+        / "Steam"
+        / "Contents"
+        / "MacOS"
+        / "steam_osx"
+    )
+    if alt_path.exists():
+        return alt_path
+    
+    return None
 
 
 def _find_factorio_executable() -> Path:
@@ -383,12 +537,28 @@ def launch_factorio_client() -> None:
         # Clear snapshot directory before launch
         clear_client_snapshot_dir()
 
-        factorio_exe = _find_factorio_executable()
         config = get_config()
+        
+        # On macOS, use Steam -applaunch to bypass the popup dialog
+        # Factorio App ID: 427520
+        use_steam_launch = platform.system() == "Darwin"
+        steam_exe = None
+        if use_steam_launch:
+            steam_exe = _find_steam_executable()
+            if not steam_exe:
+                print("⚠️  Steam executable not found, falling back to direct launch")
+                use_steam_launch = False
 
-        print(f"🎮 Launching Factorio client: {factorio_exe}")
+        if use_steam_launch:
+            # Use Steam -applaunch on macOS
+            command = [str(steam_exe), "-applaunch", "427520"]
+            print(f"🎮 Launching Factorio via Steam: {steam_exe}")
+        else:
+            # Direct executable launch (Windows, Linux, or macOS fallback)
+            factorio_exe = _find_factorio_executable()
+            command = [str(factorio_exe)]
+            print(f"🎮 Launching Factorio client: {factorio_exe}")
 
-        command = [str(factorio_exe)]
         # Always enable UDP for agent and snapshot communication
         print("📡 Launching Factorio client with UDP enabled (--enable-lua-udp)")
         command.extend(["--enable-lua-udp", str(config.enable_udp_port)])

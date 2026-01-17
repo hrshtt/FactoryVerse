@@ -21,7 +21,7 @@ class TestDependencyInjectionPipeline:
         assert runtime.walking is not None
         
         # Verify it's a MovementAction
-        from FactoryVerse.agent.actions.walking import MovementAction
+        from FactoryVerse.agent.embodied_actions.walking import MovementAction
         assert isinstance(runtime.walking, MovementAction)
 
     async def test_remote_view_receives_walking_action(self, dsl_context):
@@ -63,7 +63,7 @@ class TestDependencyInjectionPipeline:
             return
         
         # Get reachable entity
-        furnace = dsl_context.reachable.get_entity("stone-furnace")
+        furnace = dsl_context.reachable_view_view.get_entity("stone-furnace")
         
         if furnace is not None:
             # Assert entity has _walking_action
@@ -90,7 +90,7 @@ class TestEntityWalkToMethodPresence:
             return  # Skip if placement fails
         
         # Get entity
-        chest = dsl_context.reachable.get_entity("iron-chest")
+        chest = dsl_context.reachable_view_view.get_entity("iron-chest")
         
         # Assert walk_to exists (if entity is reachable)
         if chest is not None:

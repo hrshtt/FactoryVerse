@@ -19,7 +19,7 @@ Requirements:
 import pytest
 from factorio_rcon import RCONClient
 
-from FactoryVerse.agent.actions.placement_hints import (
+from FactoryVerse.agent.embodied_actions.placement_hints import (
     PlacementValidator,
     PlacementHints,
     GhostPlan,

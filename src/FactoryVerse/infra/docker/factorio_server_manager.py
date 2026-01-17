@@ -8,6 +8,7 @@ Uses the unified FactoryVerseConfig from config.py.
 import json
 import shutil
 import subprocess
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional
 from factorio_rcon import RCONClient
@@ -206,17 +207,64 @@ class FactorioServerManager:
                     shutil.rmtree(old_mod)
 
         # Prepare fv_embodied_agent mod
-        self._copy_mod(self.embodied_agent_mod_dir, "fv_embodied_agent")
+        self._copy_mod(self.embodied_agent_mod_dir, "fv_embodied_agent", force=False)
 
         # Prepare fv_snapshot mod
-        self._copy_mod(self.snapshot_mod_dir, "fv_snapshot")
+        self._copy_mod(self.snapshot_mod_dir, "fv_snapshot", force=False)
 
         # Ensure DLC mods are disabled
         for dlc_mod in ["space-age", "quality", "elevated-rails"]:
             _update_mod_list(self.mod_path, dlc_mod, False)
         print("✓ DLC mods disabled in mod-list")
 
-    def _copy_mod(self, source_dir: Path, default_name: str) -> None:
+    def _calculate_directory_hash(self, directory: Path) -> str:
+        """Calculate SHA256 hash of all files in a directory."""
+        hasher = hashlib.sha256()
+        all_files = sorted(directory.rglob("*"))
+        
+        for file_path in all_files:
+            if file_path.is_file():
+                rel_path = file_path.relative_to(directory)
+                hasher.update(str(rel_path).encode())
+                try:
+                    with open(file_path, "rb") as f:
+                        hasher.update(f.read())
+                except (IOError, OSError):
+                    pass
+        
+        return hasher.hexdigest()
+
+    def _get_mod_hash_file(self, mod_name: str) -> Path:
+        """Get path to hash file for a mod."""
+        return self.mod_path / f".{mod_name}.hash"
+
+    def _get_mod_hash(self, mod_name: str) -> Optional[str]:
+        """Get stored hash for a mod."""
+        hash_file = self._get_mod_hash_file(mod_name)
+        if hash_file.exists():
+            return hash_file.read_text().strip()
+        return None
+
+    def _save_mod_hash(self, mod_name: str, hash_value: str) -> None:
+        """Save hash for a mod."""
+        hash_file = self._get_mod_hash_file(mod_name)
+        hash_file.write_text(hash_value)
+
+    def _mod_needs_update(self, source_dir: Path, mod_name: str) -> bool:
+        """Check if mod needs to be updated based on hash comparison."""
+        if not source_dir.exists():
+            return True
+        
+        current_hash = self._calculate_directory_hash(source_dir)
+        stored_hash = self._get_mod_hash(mod_name)
+        
+        if stored_hash != current_hash:
+            self._save_mod_hash(mod_name, current_hash)
+            return True
+        
+        return False
+
+    def _copy_mod(self, source_dir: Path, default_name: str, force: bool = False) -> None:
         """Copy a mod to the Factorio mods directory."""
         info_json_path = source_dir / "info.json"
         if info_json_path.exists():
@@ -227,12 +275,24 @@ class FactorioServerManager:
             mod_name = default_name
             mod_version = "1.0.0"
 
-        print(f"📦 Preparing {mod_name} mod...")
+        print(f"📦 Checking {mod_name} mod...")
         target_dir = self.mod_path / f"{mod_name}_{mod_version}"
 
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        shutil.copytree(source_dir, target_dir)
+        # Check if mod needs update based on hash
+        if force or self._mod_needs_update(source_dir, mod_name):
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            print(f"   Updating {mod_name} mod (hash changed or --force)...")
+            shutil.copytree(source_dir, target_dir)
+            print(f"✓ {mod_name} mod updated as {target_dir.name}")
+        else:
+            # Ensure mod directory exists even if hash matches
+            if not target_dir.exists():
+                print(f"   Mod directory missing, copying {mod_name}...")
+                shutil.copytree(source_dir, target_dir)
+                print(f"✓ {mod_name} mod copied as {target_dir.name}")
+            else:
+                print(f"✓ {mod_name} mod up to date (hash unchanged)")
 
         _update_mod_list(self.mod_path, mod_name, True)
         print(f"✓ {mod_name} mod copied as {target_dir.name}")
