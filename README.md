@@ -1,6 +1,7 @@
 # FactoryVerse
 
 FactoryVerse is a multi-layered platform addressing a critical gap in AI Agent Research in Factorio. To this effect it provides a comprehensive low-level scaffolding for developing embodied agents in Factorio, developed for scaling multi-agent research via the **FV Embodied Agent** mod. While the **FV Snapshot** mod, fills the gap of reading the massive map state in a deterministic and non-blocking manner. These two core mods provide a stable foundation for doing high-level, composable agent research in Factorio.
+
 Beyond the core foundation, FactoryVerse also explores an opinionated design to enhance the LLM Agent's ability for interacting and reasoning about the complex factorio game state. This is achieved by providing **High-level Action** and **Factory Object** interfaces that wrap the underlying low-level RCON calls into an **Object-Oriented Markov Decision Process (OOMDP)** interface, for agent control and entity interaction. While the complex game state is materialized via a real-time synchronized DuckDB database, providing an equivelence between the Remote View (map) screen available to human players via the GUI.
 
 ## What FactoryVerse Provides
@@ -42,6 +43,7 @@ Rather than only processing screenshots, FactoryVerse materializes entire game s
 **What abstraction best enables LLMs to interface with stateful game entities?**
 
 High-level actions wrap the stateful life cycles for async actions and the underlying UDP contracts provided by the embodied agent mod into a more user-friendly interface via python classes. They also provide entry points for instantiating factory objects.
+
 Factory objects create an OOMDP abstraction that mirrors GUI interactions. Instead of calling low-level RCON functions with positional arguments and manual serialization, agents interact with stateful objects that have explicit affordances. This bridges the gap between human visual/interactive understanding and LLM code generation.
 
 ---
