@@ -13,6 +13,9 @@ This script demonstrates:
 import json
 from factorio_rcon import RCONClient
 
+from FactoryVerse.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+
 
 class SimpleRconHandler:
     """Simplified RCON handler for testing without dependencies."""
@@ -49,8 +52,11 @@ def main():
     print("=" * 80)
 
     # Step 1: Connect to RCON
-    print("\n[Step 1] Connecting to RCON at localhost:27100...")
-    rcon_client = RCONClient("localhost", 27100, "factorio")
+    print("\n[Step 1] Connecting to RCON...")
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    print(f"[Step 1] Using instance: {instance.name} at {instance.rcon_host}:{instance.rcon_port}")
+    rcon_client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
 
     # Initial double-call pattern (first call produces warning, second executes)
     print("[Step 1] Warming up RCON connection...")

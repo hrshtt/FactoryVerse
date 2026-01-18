@@ -9,6 +9,9 @@ without requiring the agent to be near the entity.
 import json
 from factorio_rcon import RCONClient
 
+from FactoryVerse.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+
 
 class SimpleRconHandler:
     """Simplified RCON handler for testing without dependencies."""
@@ -45,7 +48,9 @@ def main():
 
     # Connect to RCON
     print("\n[1] Connecting to RCON...")
-    rcon_client = RCONClient("localhost", 27100, "factorio")
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    rcon_client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
     rcon_client.send_command("/c rcon.print('hello')")
     rcon_client.send_command("/c rcon.print('hello')")
     print("[1] ✓ Connected")

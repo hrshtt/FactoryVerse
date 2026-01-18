@@ -23,6 +23,9 @@ import json
 from typing import Dict, List, Any, Optional
 from factorio_rcon import RCONClient
 
+from FactoryVerse.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+
 
 class SimpleRconHandler:
     """Simplified RCON handler for testing."""
@@ -65,7 +68,9 @@ class InspectEntityTester:
         print("=" * 80)
 
         print("\n[Setup] Connecting to RCON...")
-        self.rcon_client = RCONClient("localhost", 27100, "factorio")
+        config = get_config()
+        instance = FactorioInstanceManager.from_env(config)
+        self.rcon_client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
         self.rcon_client.send_command("/c rcon.print('hello')")
         self.rcon_client.send_command("/c rcon.print('hello')")
         print("[Setup] ✓ Connected")

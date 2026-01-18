@@ -12,10 +12,12 @@ Requirements:
 import pytest
 from factorio_rcon import RCONClient
 
+from FactoryVerse.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 from FactoryVerse.factory.prototypes import get_entity_prototypes, apply_cardinal_vector
 from FactoryVerse.factory.types import MapPosition, Direction
 from FactoryVerse.agent.infra.rcon_handler import RconHandler
-from FactoryVerse.agent.embodied_actions.placement_hints import (
+from FactoryVerse.agent.placement_hints import (
     PlacementValidator,
     PlacementHints,
     ConnectionType,
@@ -30,7 +32,9 @@ from FactoryVerse.agent.embodied_actions.placement_hints import (
 @pytest.fixture(scope="module")
 def rcon_client():
     """RCON client for test-ground scenario."""
-    client = RCONClient("localhost", 27100, "factorio")
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
     yield client
 
 
@@ -291,7 +295,7 @@ class TestGhostBuilderBasics:
 
     def test_ghost_builder_imports(self):
         """Verify ghost builder can be imported."""
-        from FactoryVerse.agent.embodied_actions.ghost_builder import (
+        from FactoryVerse.agent.ghost_builder import (
             GhostBuilderAction,
             GhostInfo,
         )
@@ -301,7 +305,7 @@ class TestGhostBuilderBasics:
 
     def test_ghost_info_dataclass(self):
         """Test GhostInfo dataclass creation."""
-        from FactoryVerse.agent.embodied_actions.ghost_builder import GhostInfo
+        from FactoryVerse.agent.ghost_builder import GhostInfo
 
         info = GhostInfo(
             name="transport-belt", position=MapPosition(x=10.0, y=20.0), direction=4
@@ -313,7 +317,7 @@ class TestGhostBuilderBasics:
 
     def test_extract_ghost_info(self):
         """Test ghost info extraction from entity-like object."""
-        from FactoryVerse.agent.embodied_actions.ghost_builder import GhostBuilderAction
+        from FactoryVerse.agent.ghost_builder import GhostBuilderAction
 
         # Create mock objects
         class MockMovement:
@@ -513,7 +517,7 @@ class TestEdgeCases:
         rcon_client.send_command(place_real_cmd)
 
         # Try to validate ghost placement - should fail
-        from FactoryVerse.agent.embodied_actions.placement_hints import PlacementValidator
+        from FactoryVerse.agent.placement_hints import PlacementValidator
 
         validator = PlacementValidator(RconHandler(rcon_client, "test"))
         result = validator.validate_placement(
@@ -558,7 +562,7 @@ class TestEntityValidation:
 
     def test_item_drop_rejects_non_drill(self, hints, prototypes):
         """Test that ITEM_DROP fails for non-drill entities."""
-        from FactoryVerse.agent.embodied_actions.placement_hints import (
+        from FactoryVerse.agent.placement_hints import (
             EntityValidationError,
             ConnectionType,
         )
@@ -576,7 +580,7 @@ class TestEntityValidation:
 
     def test_fluid_pipe_rejects_non_fluid_entity(self, hints, prototypes):
         """Test that FLUID_PIPE fails for non-fluid entities."""
-        from FactoryVerse.agent.embodied_actions.placement_hints import (
+        from FactoryVerse.agent.placement_hints import (
             EntityValidationError,
             ConnectionType,
         )
@@ -594,7 +598,7 @@ class TestEntityValidation:
 
     def test_item_drop_accepts_mining_drill(self, hints, prototypes):
         """Test that ITEM_DROP works for electric-mining-drill."""
-        from FactoryVerse.agent.embodied_actions.placement_hints import (
+        from FactoryVerse.agent.placement_hints import (
             ITEM_DROP_ENTITIES,
             ConnectionType,
         )
@@ -616,7 +620,7 @@ class TestEntityValidation:
 
     def test_fluid_pipe_accepts_boiler(self, hints, prototypes):
         """Test that FLUID_PIPE works for boiler."""
-        from FactoryVerse.agent.embodied_actions.placement_hints import (
+        from FactoryVerse.agent.placement_hints import (
             FLUID_PIPE_ENTITIES,
             ConnectionType,
         )
@@ -638,7 +642,7 @@ class TestEntityValidation:
 
     def test_entity_sets_are_frozen(self):
         """Test that entity sets are immutable."""
-        from FactoryVerse.agent.embodied_actions.placement_hints import (
+        from FactoryVerse.agent.placement_hints import (
             ITEM_DROP_ENTITIES,
             FLUID_PIPE_ENTITIES,
             RESOURCE_PLACEMENT_ENTITIES,

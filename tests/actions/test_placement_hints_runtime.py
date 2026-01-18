@@ -19,7 +19,9 @@ Requirements:
 import pytest
 from factorio_rcon import RCONClient
 
-from FactoryVerse.agent.embodied_actions.placement_hints import (
+from FactoryVerse.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+from FactoryVerse.agent.placement_hints import (
     PlacementValidator,
     PlacementHints,
     GhostPlan,
@@ -38,9 +40,11 @@ from FactoryVerse.factory.types import MapPosition, Direction
 def rcon_client():
     """Create RCON client connected to test server.
 
-    Uses port 27100 for test-ground scenario.
+    Uses configured instance (auto-detected or from FV_INSTANCE env var).
     """
-    client = RCONClient("localhost", 27100, "factorio")
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
     yield client
 
 

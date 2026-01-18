@@ -14,10 +14,12 @@ Requirements:
 import pytest
 from factorio_rcon import RCONClient
 
+from FactoryVerse.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 from FactoryVerse.factory.prototypes import get_entity_prototypes
 from FactoryVerse.factory.types import MapPosition, Direction
 from FactoryVerse.agent.infra.rcon_handler import RconHandler
-from FactoryVerse.agent.embodied_actions.placement_hints import (
+from FactoryVerse.agent.placement_hints import (
     PlacementValidator,
     PlacementHints,
     GhostPlan,
@@ -34,7 +36,9 @@ from FactoryVerse.agent.embodied_actions.placement_hints import (
 @pytest.fixture(scope="module")
 def rcon_client():
     """RCON client for test-ground scenario."""
-    client = RCONClient("localhost", 27100, "factorio")
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
     yield client
 
 
