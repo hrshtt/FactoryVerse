@@ -38,8 +38,8 @@ def load_snapshot_scope(
     Returns:
         Dict with: snapshot_dir, db_path, database, snapshot_loader
     """
-    from FactoryVerse.agent.snapshot.loader import SnapshotLoader
-    from FactoryVerse.agent.snapshot.database import SnapshotDatabase
+    from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
+    from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
 
     instance = ctx["instance"]
     config = ctx["config"]

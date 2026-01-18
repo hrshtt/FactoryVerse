@@ -1,4 +1,18 @@
-"""FactoryVerse MCP Server Implementation."""
+"""FactoryVerse MCP Server Implementation.
+
+Provides MCP tools for:
+- Infrastructure lifecycle (server/client start/stop)
+- Instance management (list, status)
+- Environment composition (create, reset, shutdown)
+- Session management (create, execute, reload, destroy)
+- Development utilities (run tests, reload scripts)
+
+TODO: Implement executeDSL and executeQuery tools for runtime code execution.
+      These should be behind a feature flag (e.g., FACTORYVERSE_MCP_EXEC_ENABLED=1)
+      since they require stable infrastructure and are optional for development workflows.
+      See: factoryverse_execute_dsl(session_id, action, params)
+           factoryverse_execute_query(session_id, sql)
+"""
 
 import asyncio
 import json
@@ -6,6 +20,7 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -19,6 +34,7 @@ class FactoryVerseMCPServer:
 
     def __init__(self):
         self.server = Server("factoryverse")
+        self._environments: dict = {}  # Environment registry
         self._setup_tools()
 
     def _setup_tools(self):
@@ -212,6 +228,283 @@ Use after making changes to FactoryVerse Python code.""",
                         "properties": {},
                     },
                 ),
+                Tool(
+                    name="factoryverse_reload_python",
+                    description="""Hot-reload Python modules in the MCP server process.
+
+Use this after editing FactoryVerse Python code to pick up changes without restarting the MCP server.
+
+Default behavior reloads common development modules:
+- FactoryVerse.agent.embodied_actions.* (walking, mining, crafting, etc.)
+- FactoryVerse.agent.placement_hints, ghost_builder
+- FactoryVerse.runtime
+- FactoryVerse.infra.boilerplate.*
+
+Caveats:
+- Existing object instances won't pick up new methods
+- Destroy and recreate sessions after reload for clean state
+- Use clear_all=True for a complete reset (may require session recreation)""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "modules": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Specific module patterns to reload (e.g., 'FactoryVerse.agent.embodied_actions.*'). If not specified, reloads default development modules.",
+                            },
+                            "clear_all": {
+                                "type": "boolean",
+                                "description": "Clear ALL FactoryVerse modules from cache (nuclear option)",
+                                "default": False,
+                            },
+                        },
+                    },
+                ),
+                # ============================================================
+                # Infrastructure Lifecycle Tools
+                # ============================================================
+                Tool(
+                    name="factoryverse_server_start",
+                    description="""Start Factorio Docker server(s).
+
+Starts one or more Factorio servers in Docker containers with the specified scenario.
+Waits for servers to be ready (RCON responsive) before returning.
+
+Returns server info including ports and connection details.""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "num_servers": {
+                                "type": "integer",
+                                "description": "Number of servers to start (default: 1)",
+                                "default": 1,
+                                "minimum": 1,
+                                "maximum": 3,
+                            },
+                            "scenario": {
+                                "type": "string",
+                                "description": "Scenario to load (default: test-ground)",
+                                "default": "test-ground",
+                            },
+                            "max_agents": {
+                                "type": "integer",
+                                "description": "Max agents per server (default: 10)",
+                                "default": 10,
+                            },
+                            "no_jupyter": {
+                                "type": "boolean",
+                                "description": "Skip starting Jupyter notebook server",
+                                "default": True,
+                            },
+                        },
+                    },
+                ),
+                Tool(
+                    name="factoryverse_server_stop",
+                    description="Stop all Factorio Docker servers and associated services.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    },
+                ),
+                Tool(
+                    name="factoryverse_server_restart",
+                    description="Restart all Factorio Docker servers (preserves configuration).",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    },
+                ),
+                Tool(
+                    name="factoryverse_client_start",
+                    description="""Start the local Factorio client.
+
+Launches the Factorio client with specified scenario or save file.
+The client must have FactoryVerse mods installed.""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "scenario": {
+                                "type": "string",
+                                "description": "Scenario to load (e.g., 'test-ground', 'freeplay')",
+                            },
+                            "save_file": {
+                                "type": "string",
+                                "description": "Path to save file to load (overrides scenario)",
+                            },
+                            "new_map": {
+                                "type": "boolean",
+                                "description": "Create a new map instead of loading existing",
+                                "default": False,
+                            },
+                        },
+                    },
+                ),
+                Tool(
+                    name="factoryverse_client_stop",
+                    description="Stop the running Factorio client.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "force": {
+                                "type": "boolean",
+                                "description": "Force kill (SIGKILL instead of SIGTERM)",
+                                "default": False,
+                            },
+                        },
+                    },
+                ),
+                # ============================================================
+                # Instance Management Tools
+                # ============================================================
+                Tool(
+                    name="factoryverse_list_instances",
+                    description="""List all Factorio instances and their status.
+
+Returns information about all available instances (client + servers 0-2),
+including whether they are currently active (RCON responsive).""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    },
+                ),
+                Tool(
+                    name="factoryverse_instance_status",
+                    description="""Get detailed status of a specific instance.
+
+Returns connection info, game state, and current tick if available.""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "instance": {
+                                "type": "string",
+                                "description": "Instance name: 'client' or 'server_N' (e.g., 'server_0')",
+                            },
+                        },
+                        "required": ["instance"],
+                    },
+                ),
+                # ============================================================
+                # Environment Composition Tools
+                # ============================================================
+                Tool(
+                    name="factoryverse_env_create",
+                    description="""Create a FactoryVerse environment with tiered composition.
+
+The Environment orchestrates the complete runtime stack through 6 tiers:
+1. FACTORIO_INFRA - Client/Server with mods
+2. SETTINGS - Scenario/save loading
+3. PYTHON_INFRA - RCON + UDP connections
+4. RUNTIME - Agent modules (walking, crafting, etc.)
+5. SPECIFICATION - System prompt configuration
+6. INTERACTION - LLM orchestration
+
+Use this for full control over the runtime stack. For simpler cases,
+use factoryverse_create_session instead.""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "env_id": {
+                                "type": "string",
+                                "description": "Unique identifier for this environment",
+                            },
+                            "up_to_tier": {
+                                "type": "integer",
+                                "enum": [1, 2, 3, 4, 5, 6],
+                                "description": "Initialize up to this tier (default: 4 for RUNTIME)",
+                                "default": 4,
+                            },
+                            "preset": {
+                                "type": "string",
+                                "enum": ["testing", "agent", "mcp", "notebook"],
+                                "description": "Configuration preset (testing, agent, mcp, notebook)",
+                                "default": "testing",
+                            },
+                            "scenario": {
+                                "type": "string",
+                                "description": "Scenario to use (default: test-ground)",
+                                "default": "test-ground",
+                            },
+                            "instance": {
+                                "type": "string",
+                                "description": "Instance to connect to (auto-detect if not specified)",
+                            },
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent identifier (default: agent_1)",
+                                "default": "agent_1",
+                            },
+                        },
+                        "required": ["env_id"],
+                    },
+                ),
+                Tool(
+                    name="factoryverse_env_status",
+                    description="Get status of all tiers in an environment.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "env_id": {
+                                "type": "string",
+                                "description": "Environment ID to query",
+                            },
+                        },
+                        "required": ["env_id"],
+                    },
+                ),
+                Tool(
+                    name="factoryverse_env_reset",
+                    description="""Reset an environment from a specific tier upward.
+
+Lower tiers remain stable, higher tiers are reset.
+Useful for resetting runtime state without restarting infrastructure.""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "env_id": {
+                                "type": "string",
+                                "description": "Environment ID to reset",
+                            },
+                            "from_tier": {
+                                "type": "integer",
+                                "enum": [1, 2, 3, 4, 5, 6],
+                                "description": "Reset from this tier upward (default: 4 for RUNTIME)",
+                                "default": 4,
+                            },
+                        },
+                        "required": ["env_id"],
+                    },
+                ),
+                Tool(
+                    name="factoryverse_env_shutdown",
+                    description="Shutdown an environment and cleanup all resources.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "env_id": {
+                                "type": "string",
+                                "description": "Environment ID to shutdown",
+                            },
+                        },
+                        "required": ["env_id"],
+                    },
+                ),
+                Tool(
+                    name="factoryverse_list_envs",
+                    description="List all active environments with their tier status.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    },
+                ),
+                Tool(
+                    name="factoryverse_list_scenarios",
+                    description="List available scenarios that can be loaded.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -237,6 +530,37 @@ Use after making changes to FactoryVerse Python code.""",
                     return await self._destroy_session(arguments)
                 elif name == "factoryverse_list_sessions":
                     return await self._list_sessions(arguments)
+                elif name == "factoryverse_reload_python":
+                    return await self._reload_python(arguments)
+                # Infrastructure lifecycle tools
+                elif name == "factoryverse_server_start":
+                    return await self._server_start(arguments)
+                elif name == "factoryverse_server_stop":
+                    return await self._server_stop(arguments)
+                elif name == "factoryverse_server_restart":
+                    return await self._server_restart(arguments)
+                elif name == "factoryverse_client_start":
+                    return await self._client_start(arguments)
+                elif name == "factoryverse_client_stop":
+                    return await self._client_stop(arguments)
+                # Instance management tools
+                elif name == "factoryverse_list_instances":
+                    return await self._list_instances(arguments)
+                elif name == "factoryverse_instance_status":
+                    return await self._instance_status(arguments)
+                # Environment composition tools
+                elif name == "factoryverse_env_create":
+                    return await self._env_create(arguments)
+                elif name == "factoryverse_env_status":
+                    return await self._env_status(arguments)
+                elif name == "factoryverse_env_reset":
+                    return await self._env_reset(arguments)
+                elif name == "factoryverse_env_shutdown":
+                    return await self._env_shutdown(arguments)
+                elif name == "factoryverse_list_envs":
+                    return await self._list_envs(arguments)
+                elif name == "factoryverse_list_scenarios":
+                    return await self._list_scenarios(arguments)
                 else:
                     return [
                         TextContent(
@@ -541,6 +865,846 @@ Use after making changes to FactoryVerse Python code.""",
             )
         ]
 
+    async def _reload_python(self, args: dict) -> list[TextContent]:
+        """Hot-reload Python modules in the MCP server process."""
+        import fnmatch
+
+        modules_arg = args.get("modules", None)
+        clear_all = args.get("clear_all", False)
+
+        # Default modules to reload - these are the most commonly edited during development
+        default_patterns = [
+            "FactoryVerse.agent.embodied_actions.*",
+            "FactoryVerse.agent.ghost_builder",
+            "FactoryVerse.agent.placement_hints",
+            "FactoryVerse.agent.reachable_view",
+            "FactoryVerse.agent.remote_view",
+            "FactoryVerse.agent.infra.snapshot.*",
+            "FactoryVerse.runtime",
+            "FactoryVerse.runtime.*",
+            "FactoryVerse.infra.boilerplate.*",
+            "FactoryVerse.factory.entity.*",
+        ]
+
+        patterns = modules_arg if modules_arg else default_patterns
+
+        cleared = []
+        errors = []
+
+        if clear_all:
+            # Nuclear option: clear all FactoryVerse modules
+            to_clear = [
+                name for name in list(sys.modules.keys())
+                if name.startswith("FactoryVerse.")
+            ]
+            for name in to_clear:
+                try:
+                    del sys.modules[name]
+                    cleared.append(name)
+                except Exception as e:
+                    errors.append({"module": name, "error": str(e)})
+        else:
+            # Match modules against patterns
+            all_modules = list(sys.modules.keys())
+            matched_modules = set()
+
+            for pattern in patterns:
+                for mod_name in all_modules:
+                    # Convert glob pattern to work with module names
+                    if pattern.endswith(".*"):
+                        # Pattern like "FactoryVerse.agent.embodied_actions.*"
+                        prefix = pattern[:-2]
+                        if mod_name == prefix or mod_name.startswith(prefix + "."):
+                            matched_modules.add(mod_name)
+                    elif fnmatch.fnmatch(mod_name, pattern):
+                        matched_modules.add(mod_name)
+
+            # Sort by depth (deepest first) to handle dependencies correctly
+            sorted_modules = sorted(matched_modules, key=lambda x: x.count("."), reverse=True)
+
+            for mod_name in sorted_modules:
+                try:
+                    # Clear from cache to force fresh import
+                    if mod_name in sys.modules:
+                        del sys.modules[mod_name]
+                        cleared.append(mod_name)
+                except Exception as e:
+                    errors.append({"module": mod_name, "error": str(e), "action": "clear"})
+
+        result = {
+            "success": len(errors) == 0,
+            "cleared_count": len(cleared),
+            "cleared": cleared[:20] if len(cleared) > 20 else cleared,  # Truncate for readability
+            "truncated": len(cleared) > 20,
+            "patterns_used": patterns if not clear_all else ["*"],
+            "clear_all": clear_all,
+            "errors": errors if errors else None,
+            "note": "Destroy and recreate sessions for clean state" if cleared else None,
+        }
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(result, indent=2),
+            )
+        ]
+
+    # ========================================================================
+    # INFRASTRUCTURE LIFECYCLE METHODS
+    # ========================================================================
+
+    async def _server_start(self, args: dict) -> list[TextContent]:
+        """Start Factorio Docker servers."""
+        num_servers = args.get("num_servers", 1)
+        scenario = args.get("scenario", "test-ground")
+        max_agents = args.get("max_agents", 10)
+        no_jupyter = args.get("no_jupyter", True)
+
+        try:
+            from FactoryVerse.config import get_config
+            from FactoryVerse.infra.docker import (
+                DockerComposeManager,
+                FactorioServerManager,
+                JupyterManager,
+            )
+            from FactoryVerse.utils.port_config import configure_all_server_snapshot_ports
+
+            config = get_config()
+            work_dir = config.project_root
+
+            server_mgr = FactorioServerManager(work_dir, config)
+
+            # Validate scenario
+            if not server_mgr.validate_scenario(scenario):
+                available = server_mgr.list_scenarios()
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": f"Scenario '{scenario}' not found",
+                            "available_scenarios": available,
+                        }, indent=2),
+                    )
+                ]
+
+            # Clear server snapshot directories
+            server_mgr.clear_all_server_snapshot_dirs(num_servers)
+
+            # Consolidate scenarios and prepare mods
+            server_mgr.consolidate_scenarios()
+            server_mgr.prepare_mods(scenario)
+
+            # Build compose file
+            compose_mgr = DockerComposeManager(work_dir)
+
+            if not no_jupyter:
+                jupyter_mgr = JupyterManager(work_dir)
+                compose_mgr.add_services("jupyter", jupyter_mgr.get_services())
+
+            compose_mgr.add_services(
+                "factorio",
+                server_mgr.get_services(num_servers, scenario, max_agents=max_agents),
+            )
+            compose_mgr.write_compose()
+
+            # Start services
+            compose_mgr.up()
+
+            # Configure snapshot ports
+            configure_all_server_snapshot_ports(num_servers, config)
+
+            # Wait for servers to be ready (RCON responsive)
+            from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+            import time
+
+            ready_servers = []
+            max_wait = 60  # seconds
+            start_time = time.time()
+
+            while len(ready_servers) < num_servers and (time.time() - start_time) < max_wait:
+                for i in range(num_servers):
+                    if i not in ready_servers:
+                        instance = FactorioInstanceManager.get_server(i, config)
+                        if instance.test_connection():
+                            ready_servers.append(i)
+                if len(ready_servers) < num_servers:
+                    await asyncio.sleep(2)
+
+            # Build result
+            server_info = []
+            for i in range(num_servers):
+                rcon_port = config.get_rcon_port(f"server_{i}")
+                game_port = config.get_game_port(i)
+                snapshot_port = config.get_snapshot_port(f"server_{i}")
+                agent_range = config.get_agent_port_range(server_index=i)
+
+                server_info.append({
+                    "server_id": i,
+                    "name": f"server_{i}",
+                    "ready": i in ready_servers,
+                    "rcon_port": rcon_port,
+                    "game_port": game_port,
+                    "snapshot_port": snapshot_port,
+                    "agent_ports": f"{agent_range[0]}-{agent_range[-1]}",
+                })
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "scenario": scenario,
+                        "num_servers": num_servers,
+                        "servers": server_info,
+                        "all_ready": len(ready_servers) == num_servers,
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error starting servers")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _server_stop(self, args: dict) -> list[TextContent]:
+        """Stop all Factorio Docker servers."""
+        try:
+            from FactoryVerse.config import get_config
+            from FactoryVerse.infra.docker import DockerComposeManager
+
+            config = get_config()
+            compose_mgr = DockerComposeManager(config.project_root)
+            compose_mgr.down()
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "message": "All services stopped",
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error stopping servers")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _server_restart(self, args: dict) -> list[TextContent]:
+        """Restart all Factorio Docker servers."""
+        try:
+            from FactoryVerse.config import get_config
+            from FactoryVerse.infra.docker import DockerComposeManager
+
+            config = get_config()
+            compose_mgr = DockerComposeManager(config.project_root)
+            compose_mgr.restart()
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "message": "All services restarted",
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error restarting servers")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _client_start(self, args: dict) -> list[TextContent]:
+        """Start the Factorio client."""
+        scenario = args.get("scenario")
+        save_file = args.get("save_file")
+        new_map = args.get("new_map", False)
+
+        try:
+            from FactoryVerse.config import get_config
+            from FactoryVerse.infra.factorio_client_manager import FactorioClientManager
+            from FactoryVerse.infra.docker import FactorioServerManager
+
+            config = get_config()
+            work_dir = config.project_root
+            client_mgr = FactorioClientManager(work_dir)
+            server_mgr = FactorioServerManager(work_dir, config)
+
+            # Resolve paths
+            save_path = Path(save_file) if save_file else None
+            if save_path and not save_path.is_absolute():
+                save_path = work_dir / save_path
+
+            client_mgr.start(
+                scenario=scenario,
+                save_file=save_path,
+                new_map=new_map,
+                project_scenarios_dir=server_mgr.scenarios_dir,
+            )
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "message": "Client started",
+                        "scenario": scenario,
+                        "save_file": str(save_path) if save_path else None,
+                        "new_map": new_map,
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error starting client")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _client_stop(self, args: dict) -> list[TextContent]:
+        """Stop the Factorio client."""
+        force = args.get("force", False)
+
+        try:
+            from FactoryVerse.config import get_config
+            from FactoryVerse.infra.factorio_client_manager import FactorioClientManager
+
+            config = get_config()
+            client_mgr = FactorioClientManager(config.project_root)
+            client_mgr.stop(force=force)
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "message": "Client stopped",
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error stopping client")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    # ========================================================================
+    # INSTANCE MANAGEMENT METHODS
+    # ========================================================================
+
+    async def _list_instances(self, args: dict) -> list[TextContent]:
+        """List all Factorio instances."""
+        try:
+            from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+
+            instances = FactorioInstanceManager.list_available()
+            result = []
+
+            for inst in instances:
+                is_active = inst.test_connection()
+                result.append({
+                    "name": inst.name,
+                    "type": inst.type,
+                    "active": is_active,
+                    "rcon_host": inst.rcon_host,
+                    "rcon_port": inst.rcon_port,
+                    "script_output_dir": str(inst.script_output_dir),
+                    "snapshot_dir": str(inst.snapshot_dir),
+                })
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "instances": result,
+                        "active_count": sum(1 for i in result if i["active"]),
+                        "total_count": len(result),
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error listing instances")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _instance_status(self, args: dict) -> list[TextContent]:
+        """Get detailed status of a specific instance."""
+        instance_name = args["instance"]
+
+        try:
+            from FactoryVerse.config import get_config
+            from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+            from factorio_rcon import RCONClient
+
+            config = get_config()
+
+            # Get instance
+            if instance_name == "client":
+                instance = FactorioInstanceManager.get_client(config)
+            elif instance_name.startswith("server_"):
+                server_id = int(instance_name.split("_")[1])
+                instance = FactorioInstanceManager.get_server(server_id, config)
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": f"Invalid instance name: {instance_name}. Use 'client' or 'server_N'",
+                        }, indent=2),
+                    )
+                ]
+
+            result = {
+                "name": instance.name,
+                "type": instance.type,
+                "rcon_host": instance.rcon_host,
+                "rcon_port": instance.rcon_port,
+                "script_output_dir": str(instance.script_output_dir),
+                "snapshot_dir": str(instance.snapshot_dir),
+            }
+
+            # Test connection and get game state
+            if instance.test_connection():
+                result["active"] = True
+                try:
+                    client = RCONClient(
+                        instance.rcon_host,
+                        instance.rcon_port,
+                        instance.rcon_password,
+                    )
+                    client.connect()
+
+                    # Get game tick
+                    tick_response = client.send_command("/c rcon.print(game.tick)")
+                    result["game_tick"] = int(tick_response.strip()) if tick_response.strip().isdigit() else None
+
+                    # Get surface info
+                    surface_response = client.send_command(
+                        '/c local s = game.surfaces[1]; rcon.print(string.format("%s,%d,%d", s.name, s.map_gen_settings.seed or 0, #game.players))'
+                    )
+                    if surface_response:
+                        parts = surface_response.strip().split(",")
+                        if len(parts) >= 3:
+                            result["surface_name"] = parts[0]
+                            result["seed"] = int(parts[1])
+                            result["player_count"] = int(parts[2])
+
+                    client.close()
+                except Exception as e:
+                    result["game_state_error"] = str(e)
+            else:
+                result["active"] = False
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(result, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error getting instance status")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    # ========================================================================
+    # ENVIRONMENT COMPOSITION METHODS
+    # ========================================================================
+
+    async def _env_create(self, args: dict) -> list[TextContent]:
+        """Create a FactoryVerse environment."""
+        env_id = args["env_id"]
+        up_to_tier = args.get("up_to_tier", 4)
+        preset = args.get("preset", "testing")
+        scenario = args.get("scenario", "test-ground")
+        instance = args.get("instance")
+        agent_id = args.get("agent_id", "agent_1")
+
+        try:
+            from FactoryVerse.environment import Environment, create_environment
+            from FactoryVerse.environment.config import (
+                EnvironmentConfig,
+                SettingsConfig,
+                PythonConfig,
+                RuntimeConfig,
+                RuntimeVariant,
+            )
+            from FactoryVerse.environment.tiers.base import Tier
+
+            # Check if already exists
+            if env_id in self._environments:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": f"Environment '{env_id}' already exists. Use factoryverse_env_shutdown first.",
+                        }, indent=2),
+                    )
+                ]
+
+            # Create config based on preset
+            if preset == "testing":
+                config = EnvironmentConfig.for_testing(scenario=scenario)
+            elif preset == "agent":
+                config = EnvironmentConfig.for_agent(scenario=scenario)
+            elif preset == "mcp":
+                config = EnvironmentConfig.for_mcp(instance=instance)
+            elif preset == "notebook":
+                config = EnvironmentConfig.for_notebook(instance=instance or "client")
+            else:
+                config = EnvironmentConfig(
+                    tier2=SettingsConfig(scenario=scenario),
+                    tier3=PythonConfig(instance=instance),
+                    tier4=RuntimeConfig(agent_id=agent_id),
+                )
+
+            # Override with explicit settings
+            if instance:
+                config.tier3 = PythonConfig(instance=instance)
+            if agent_id != "agent_1":
+                config.tier4 = RuntimeConfig(
+                    agent_id=agent_id,
+                    variant=config.tier4.variant,
+                )
+
+            # Create environment
+            env = Environment(config=config)
+
+            # Map tier number to Tier enum
+            tier_map = {
+                1: Tier.FACTORIO_INFRA,
+                2: Tier.SETTINGS,
+                3: Tier.PYTHON_INFRA,
+                4: Tier.RUNTIME,
+                5: Tier.SPECIFICATION,
+                6: Tier.INTERACTION,
+            }
+            target_tier = tier_map.get(up_to_tier, Tier.RUNTIME)
+
+            # Initialize
+            await env.initialize(up_to=target_tier)
+
+            # Store in registry
+            self._environments[env_id] = env
+
+            # Get status
+            status = await env.status()
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "env_id": env_id,
+                        "preset": preset,
+                        "scenario": scenario,
+                        "initialized_up_to": target_tier.name,
+                        "status": {
+                            "tier1": status.tier1.to_dict() if status.tier1 else None,
+                            "tier2": status.tier2.to_dict() if status.tier2 else None,
+                            "tier3": status.tier3.to_dict() if status.tier3 else None,
+                            "tier4": status.tier4.to_dict() if status.tier4 else None,
+                            "tier5": status.tier5.to_dict() if status.tier5 else None,
+                            "tier6": status.tier6.to_dict() if status.tier6 else None,
+                        },
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error creating environment")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _env_status(self, args: dict) -> list[TextContent]:
+        """Get status of an environment."""
+        env_id = args["env_id"]
+
+        try:
+            if env_id not in self._environments:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": f"Environment '{env_id}' not found",
+                            "available": list(self._environments.keys()),
+                        }, indent=2),
+                    )
+                ]
+
+            env = self._environments[env_id]
+            status = await env.status()
+
+            def tier_to_dict(tier_status):
+                if tier_status is None:
+                    return None
+                return {
+                    "is_ready": tier_status.is_ready,
+                    "error": tier_status.error,
+                }
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "env_id": env_id,
+                        "status": {
+                            "tier1_factorio": tier_to_dict(status.tier1),
+                            "tier2_settings": tier_to_dict(status.tier2),
+                            "tier3_python": tier_to_dict(status.tier3),
+                            "tier4_runtime": tier_to_dict(status.tier4),
+                            "tier5_spec": tier_to_dict(status.tier5),
+                            "tier6_interaction": tier_to_dict(status.tier6),
+                        },
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error getting environment status")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _env_reset(self, args: dict) -> list[TextContent]:
+        """Reset an environment from a specific tier."""
+        env_id = args["env_id"]
+        from_tier = args.get("from_tier", 4)
+
+        try:
+            from FactoryVerse.environment.tiers.base import Tier
+
+            if env_id not in self._environments:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": f"Environment '{env_id}' not found",
+                        }, indent=2),
+                    )
+                ]
+
+            tier_map = {
+                1: Tier.FACTORIO_INFRA,
+                2: Tier.SETTINGS,
+                3: Tier.PYTHON_INFRA,
+                4: Tier.RUNTIME,
+                5: Tier.SPECIFICATION,
+                6: Tier.INTERACTION,
+            }
+            target_tier = tier_map.get(from_tier, Tier.RUNTIME)
+
+            env = self._environments[env_id]
+            await env.reset(from_tier=target_tier)
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "env_id": env_id,
+                        "reset_from": target_tier.name,
+                        "message": f"Reset from {target_tier.name} upward",
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error resetting environment")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _env_shutdown(self, args: dict) -> list[TextContent]:
+        """Shutdown an environment."""
+        env_id = args["env_id"]
+
+        try:
+            if env_id not in self._environments:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": f"Environment '{env_id}' not found",
+                        }, indent=2),
+                    )
+                ]
+
+            env = self._environments[env_id]
+            await env.shutdown()
+            del self._environments[env_id]
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "env_id": env_id,
+                        "message": "Environment shutdown complete",
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error shutting down environment")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _list_envs(self, args: dict) -> list[TextContent]:
+        """List all active environments."""
+        try:
+            result = []
+            for env_id, env in self._environments.items():
+                status = await env.status()
+                result.append({
+                    "env_id": env_id,
+                    "tiers_ready": {
+                        "tier1": status.tier1.is_ready if status.tier1 else False,
+                        "tier2": status.tier2.is_ready if status.tier2 else False,
+                        "tier3": status.tier3.is_ready if status.tier3 else False,
+                        "tier4": status.tier4.is_ready if status.tier4 else False,
+                        "tier5": status.tier5.is_ready if status.tier5 else False,
+                        "tier6": status.tier6.is_ready if status.tier6 else False,
+                    },
+                })
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "environments": result,
+                        "count": len(result),
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error listing environments")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
+    async def _list_scenarios(self, args: dict) -> list[TextContent]:
+        """List available scenarios."""
+        try:
+            from FactoryVerse.config import get_config
+
+            config = get_config()
+            scenarios = config.list_scenarios(include_local=True)
+
+            # Get repo-only scenarios
+            repo_scenarios = set(config._list_scenarios_in_dir(config.scenarios_dir))
+
+            result = []
+            for scenario in sorted(scenarios):
+                is_repo = scenario in repo_scenarios
+                result.append({
+                    "name": scenario,
+                    "source": "repo" if is_repo else "local",
+                    "hot_reload": is_repo,
+                })
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "scenarios": result,
+                        "count": len(result),
+                        "repo_dir": str(config.scenarios_dir),
+                        "local_dir": str(config.local_scenarios_dir),
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error listing scenarios")
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    }, indent=2),
+                )
+            ]
+
 
 def create_mcp_server() -> FactoryVerseMCPServer:
     """Create and configure MCP server."""
@@ -570,23 +1734,35 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
         print("FactoryVerse MCP Server")
         print("\nThis server provides MCP tools for FactoryVerse development:")
-        print("\nLegacy tools:")
+        print("\n=== Development Tools ===")
         print("  - factoryverse_run_test: Run pytest tests")
         print("  - factoryverse_execute_code: Execute Python code for debugging")
         print("  - factoryverse_server_reload: Reload Factorio Lua scripts")
         print("  - factoryverse_inspect_inventory: Get agent inventory state")
-        print("\nSession management (scoped boilerplate):")
-        print(
-            "  - factoryverse_create_session: Create session at scope (RCON/SNAPSHOT/AGENT/RUNTIME)"
-        )
+        print("\n=== Session Management ===")
+        print("  - factoryverse_create_session: Create session at scope (RCON/SNAPSHOT/AGENT/RUNTIME)")
         print("  - factoryverse_execute_in_session: Execute code in session context")
-        print(
-            "  - factoryverse_reload_session: Reload session (Python modules + optional Lua)"
-        )
+        print("  - factoryverse_reload_session: Reload session (Python modules + optional Lua)")
         print("  - factoryverse_destroy_session: Destroy session and cleanup")
         print("  - factoryverse_list_sessions: List active sessions")
+        print("\n=== Infrastructure Lifecycle ===")
+        print("  - factoryverse_server_start: Start Docker Factorio servers")
+        print("  - factoryverse_server_stop: Stop all Docker servers")
+        print("  - factoryverse_server_restart: Restart all Docker servers")
+        print("  - factoryverse_client_start: Start local Factorio client")
+        print("  - factoryverse_client_stop: Stop local Factorio client")
+        print("\n=== Instance Management ===")
+        print("  - factoryverse_list_instances: List all instances with status")
+        print("  - factoryverse_instance_status: Get detailed instance status")
+        print("\n=== Environment Composition ===")
+        print("  - factoryverse_env_create: Create environment at tier level (1-6)")
+        print("  - factoryverse_env_status: Get tier status of environment")
+        print("  - factoryverse_env_reset: Reset from specific tier upward")
+        print("  - factoryverse_env_shutdown: Shutdown environment")
+        print("  - factoryverse_list_envs: List all active environments")
+        print("  - factoryverse_list_scenarios: List available scenarios")
         print("\nThe server communicates via stdio (JSON-RPC).")
-        print("Configure it in your IDE's MCP settings.")
+        print("Configure it in your IDE's MCP settings (see mcp.json.example).")
         print("\nUsage: factoryverse-mcp [--verbose]")
         print("  --verbose, -v: Enable verbose logging to stderr")
         sys.exit(0)

@@ -329,7 +329,10 @@ class FactorioServerManager:
         services = {}
 
         for i in range(num_instances):
+            # Add Factorio server
             services[f"factorio_{i}"] = self._build_service_config(i, scenario)
+            # Add UDP forwarder sidecar (Alpine + socat)
+            services[f"udp_forwarder_{i}"] = self._build_udp_forwarder_config(i)
 
         return services
 
@@ -366,26 +369,14 @@ class FactorioServerManager:
 
         command = " ".join(command_parts)
 
-        # Build port mappings
+        # Build port mappings - only game and RCON
+        # Agent/snapshot UDP ports are handled by the sidecar forwarder
         ports = [
             f"{game_port}:{cfg.internal_game_port}/udp",  # Game UDP
             f"{rcon_port}:{cfg.internal_rcon_port}/tcp",  # RCON TCP
         ]
 
-        # Add agent ports (Factorio sends OUT to these, Python listens)
-        # These are exposed so Python on host can receive UDP from container
-        # Each server gets its own agent port range for isolation
-        for agent_idx in range(self.effective_max_agents):
-            agent_port = cfg.get_agent_port(agent_idx, server_index=instance_id)
-            # Note: We expose on host, but Factorio sends to localhost:port inside container
-            # This works because UDP from container can reach host's bound ports
-            ports.append(f"{agent_port}:{agent_port}/udp")
-
-        # Add snapshot port (per-server)
-        snapshot_port = cfg.get_snapshot_port(f"server_{instance_id}")
-        ports.append(f"{snapshot_port}:{snapshot_port}/udp")
-
-        # Optionally expose Factorio's incoming UDP listener
+        # Optionally expose Factorio's incoming UDP listener (for external control)
         if cfg.expose_incoming_udp:
             ports.append(f"{cfg.enable_udp_port}:{cfg.enable_udp_port}/udp")
 
@@ -403,9 +394,56 @@ class FactorioServerManager:
                 f"{self.config_dir.resolve()}:/factorio/config",
                 f"{output_dir.resolve()}:/opt/factorio/script-output",
             ],
+            # extra_hosts needed here since sidecar shares network namespace
+            "extra_hosts": ["host.docker.internal:host-gateway"],
             "restart": "unless-stopped",
-            # Network mode for UDP to work properly
-            # Container sends to localhost:port, needs host network or port forwarding
+        }
+
+    def _build_udp_forwarder_config(self, instance_id: int) -> dict:
+        """Build UDP forwarder sidecar service config.
+
+        This Alpine-based container runs socat to forward UDP from Factorio's
+        localhost (inside the Factorio container's network namespace) to
+        host.docker.internal where Python on the host listens.
+
+        Factorio's helpers.send_udp() sends to localhost:port, which this
+        sidecar intercepts and forwards to the host.
+        """
+        cfg = self.config
+        snapshot_port = cfg.get_snapshot_port(f"server_{instance_id}")
+
+        # Build socat commands for all agent ports + snapshot port
+        socat_commands = []
+        for agent_idx in range(self.effective_max_agents):
+            agent_port = cfg.get_agent_port(agent_idx, server_index=instance_id)
+            # socat listens on localhost:port and forwards to host.docker.internal:port
+            socat_commands.append(
+                f"socat UDP-LISTEN:{agent_port},fork,reuseaddr UDP:host.docker.internal:{agent_port}"
+            )
+        # Also forward snapshot port
+        socat_commands.append(
+            f"socat UDP-LISTEN:{snapshot_port},fork,reuseaddr UDP:host.docker.internal:{snapshot_port}"
+        )
+
+        # Run all socat instances in parallel, keep container alive
+        # Using & to background all but the last one (which keeps container running)
+        if len(socat_commands) > 1:
+            command = " & ".join(socat_commands[:-1]) + " & " + socat_commands[-1]
+        else:
+            command = socat_commands[0]
+
+        return {
+            "image": "alpine/socat",
+            "platform": cfg.docker_platform,
+            # Share network namespace with Factorio container
+            # (inherits extra_hosts from factorio service)
+            "network_mode": f"service:factorio_{instance_id}",
+            # Override entrypoint since alpine/socat has "socat" as entrypoint
+            # Use list format to ensure command is passed as single argument to -c
+            "entrypoint": ["/bin/sh", "-c"],
+            "command": [command],
+            "depends_on": [f"factorio_{instance_id}"],
+            "restart": "unless-stopped",
         }
 
     # =========================================================================

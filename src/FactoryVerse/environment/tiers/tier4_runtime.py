@@ -41,6 +41,7 @@ class Tier4Runtime(TierBase):
         self._remote_view: Optional[Any] = None
         self._reachable_view: Optional[Any] = None
         self._embodied_actions: Optional[Any] = None
+        self._placement_hints: Optional[Any] = None
         self._modules_loaded: List[str] = []
 
     @property
@@ -78,6 +79,11 @@ class Tier4Runtime(TierBase):
         """Get EmbodiedActions for agent actions."""
         return self._embodied_actions
 
+    @property
+    def placement_hints(self) -> Optional[Any]:
+        """Get PlacementHints for spatial reasoning and connection solving."""
+        return self._placement_hints
+
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 3 (Python Infra) is ready."""
         tier3 = self._env.tier3
@@ -105,6 +111,7 @@ class Tier4Runtime(TierBase):
             # Load modules based on variant
             await self._load_embodied_actions()
             await self._load_reachable_view()
+            await self._load_placement_hints()
 
             if self.config.variant == RuntimeVariant.FULL:
                 await self._load_database()
@@ -292,14 +299,18 @@ class Tier4Runtime(TierBase):
     async def _load_reachable_view(self) -> None:
         """Load ReachableView module (Lua-based entity querying)."""
         from FactoryVerse.agent.reachable_view import ReachableView
+        from FactoryVerse.agent.infra.rcon_handler import RconHandler
 
         tier3 = self._env.tier3
         if tier3 is None or tier3.rcon_helper is None:
             raise RuntimeError("Tier 3 must be initialized with RCON")
 
+        # ReachableView requires RconHandler (not RconHelper)
+        rcon_handler = RconHandler(tier3.rcon_helper.rcon_client, self.agent_id)
+
         # ReachableView requires action instances
         self._reachable_view = ReachableView(
-            rcon_handler=tier3.rcon_helper,
+            rcon_handler=rcon_handler,
             entity_ops=self._entity_ops,
             place_ops=self._placement,
             walking_action=self._movement,
@@ -308,6 +319,23 @@ class Tier4Runtime(TierBase):
         self._modules_loaded.append("reachable_view")
 
         logger.info("Tier 4: ReachableView loaded")
+
+    async def _load_placement_hints(self) -> None:
+        """Load PlacementHints module (spatial reasoning for entity placement)."""
+        from FactoryVerse.agent.placement_hints import PlacementHints
+
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.rcon_helper is None:
+            raise RuntimeError("Tier 3 must be initialized with RCON")
+
+        # Use RconHandler for placement hints
+        from FactoryVerse.agent.infra.rcon_handler import RconHandler
+
+        rcon_handler = RconHandler(tier3.rcon_helper.rcon_client, self.agent_id)
+        self._placement_hints = PlacementHints(rcon_handler)
+        self._modules_loaded.append("placement_hints")
+
+        logger.info("Tier 4: PlacementHints loaded")
 
     async def _load_database(self) -> None:
         """Load DuckDB database for persistent game state."""
@@ -417,6 +445,7 @@ class Tier4Runtime(TierBase):
         self._remote_view = None
         self._reachable_view = None
         self._embodied_actions = None
+        self._placement_hints = None
         self._agent_id = None
         self._session_dir = None
         self._modules_loaded = []
@@ -453,6 +482,7 @@ class Tier4Runtime(TierBase):
         # Re-initialize module instances
         await self._load_embodied_actions()
         await self._load_reachable_view()
+        await self._load_placement_hints()
         if self.config.variant == RuntimeVariant.FULL:
             await self._load_remote_view()
 

@@ -87,7 +87,7 @@ def get_runtime_script() -> str:
 # Generated runtime setup
 from FactoryVerse.infra.llm.boilerplate import load, Scope
 from FactoryVerse.factory.types import MapPosition, Direction
-from FactoryVerse.agent.actions.placement_hints import ConnectionType
+from FactoryVerse.agent.placement_hints import ConnectionType
 
 # Load full runtime
 _ctx = load(scope=Scope.RUNTIME)

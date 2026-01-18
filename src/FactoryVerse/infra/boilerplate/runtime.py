@@ -56,8 +56,8 @@ def load_runtime_scope(ctx: "BoilerplateContext") -> Dict[str, Any]:
         "crafting": runtime.crafting,
         "research": runtime.research,
         "inventory": runtime.inventory,
-        "reachable": runtime.reachable,
-        "resources": runtime.resources,  # Alias for reachable
+        "reachable_view": runtime.reachable_view,
+        "resources": runtime.resources,  # Alias for reachable_view
         "entity_ops": runtime.entity_ops,
         "placement": runtime.placement,
         "ghost_builder": runtime.ghost_builder,
@@ -87,7 +87,7 @@ def get_runtime_script() -> str:
 # Generated runtime setup
 from FactoryVerse.infra.boilerplate import load, Scope
 from FactoryVerse.factory.types import MapPosition, Direction
-from FactoryVerse.agent.actions.placement_hints import ConnectionType
+from FactoryVerse.agent.placement_hints import ConnectionType
 
 # Load full runtime
 _ctx = load(scope=Scope.RUNTIME)
@@ -103,7 +103,7 @@ walking = runtime.walking
 crafting = runtime.crafting
 research = runtime.research
 inventory = runtime.inventory
-reachable = runtime.reachable
+reachable_view = runtime.reachable_view
 resources = runtime.resources
 entity_ops = runtime.entity_ops
 placement = runtime.placement

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from . import BoilerplateContext
 
 
-class TestGroundHelper:
+class TestGroundHelper:  # noqa: B903
     """Test Ground helper for boilerplate contexts.
 
     Provides resource placement, entity placement, and area management

@@ -159,6 +159,50 @@ def validate_entity_for_connection(
                 f"FLUID_PIPE connection not applicable to '{entity_name}'. "
                 f"Valid entities: {sorted(FLUID_PIPE_ENTITIES)}"
             )
+    elif connection_type == ConnectionType.ELECTRIC_WIRE:
+        if entity_name not in ELECTRIC_POLE_ENTITIES:
+            raise EntityValidationError(
+                f"ELECTRIC_WIRE connection not applicable to '{entity_name}'. "
+                f"Valid entities: {sorted(ELECTRIC_POLE_ENTITIES)}"
+            )
+
+
+@dataclass
+class PolePlacementResult:
+    """Result of dry-run pole placement evaluation.
+    
+    Provides rich feedback about what would happen if a pole were placed
+    at a position, without actually placing anything (not even a ghost).
+    """
+    
+    position: MapPosition
+    pole_name: str
+    
+    # Supply area
+    supply_area_distance: float
+    entities_powered: List["BaseEntity"]  # Entities within supply area
+    entities_powered_count: int
+    
+    # Connectivity (if source_pole provided)
+    source_pole: Optional["BaseEntity"]  # The source pole that was checked against
+    connects_to_source: bool  # True if within wire distance of source_pole
+    distance_to_source: Optional[float]  # Distance to source_pole if provided
+    
+    # All nearby poles
+    connected_poles: List["BaseEntity"]  # All poles within maximum_wire_distance
+    connected_poles_count: int
+    
+    # Power network analysis (traces through connected poles)
+    can_receive_power: bool  # True if connects to power source (via any connected pole)
+    power_path: Optional[List["BaseEntity"]]  # Path: [this_pole, ...connected_poles..., power_source]
+    power_source: Optional["BaseEntity"]  # Nearest power source
+    
+    # Placement validation
+    is_valid_placement: bool
+    placement_error: Optional[str]  # Why placement failed, if any
+    
+    # Metadata
+    maximum_wire_distance: float
 
 
 @dataclass
@@ -178,6 +222,26 @@ class ConnectionPosition:
         """Validate perpendicular_offset is non-negative."""
         if self.perpendicular_offset < 0:
             raise ValueError("perpendicular_offset must be non-negative")
+
+
+@dataclass
+class WireConnectionPosition(ConnectionPosition):
+    """Connection position for ELECTRIC_WIRE connections (pole to pole).
+    
+    Extends ConnectionPosition with wire-specific distance and utilization metrics.
+    """
+
+    wire_distance: float  # Actual distance to source pole (in tiles)
+    wire_distance_utilization: float  # Ratio of distance / maximum_wire_distance (0.0 to 1.0+)
+    # Typically 0.0-1.0 for valid positions within max wire distance
+
+    def __post_init__(self):
+        """Validate wire-specific fields."""
+        super().__post_init__()
+        if self.wire_distance < 0:
+            raise ValueError("wire_distance must be non-negative")
+        if self.wire_distance_utilization < 0:
+            raise ValueError("wire_distance_utilization must be non-negative")
 
 
 @dataclass
@@ -728,6 +792,8 @@ class PlacementHints:
             return self._get_item_drop_positions(source_entity, target_entity_name)
         elif connection_type == ConnectionType.FLUID_PIPE:
             return self._get_fluid_pipe_positions(source_entity, target_entity_name)
+        elif connection_type == ConnectionType.ELECTRIC_WIRE:
+            return self._get_electric_wire_positions(source_entity, target_entity_name)
         else:
             logger.warning(f"Connection type {connection_type} not yet implemented")
             return []
@@ -940,17 +1006,27 @@ class PlacementHints:
             if isinstance(source_entity, FluidMixin):
                 # Use the mixin's method if available
                 pipe_positions = source_entity.get_pipe_connections()
+                logger.debug(f"FluidMixin.get_pipe_connections() returned {len(pipe_positions)} positions")
             else:
                 # Fallback to direct prototype access
                 proto = source_entity.prototype
+                if not proto:
+                    logger.warning(f"Entity {source_entity.name} has no prototype data")
+                    return []
+                
+                # Try multiple possible fluidbox locations (both spellings: fluidbox and fluid_box)
                 fluidbox_data = (
                     proto.get("fluidbox")
+                    or proto.get("fluid_box")
                     or proto.get("output_fluid_box")
                     or proto.get("input_fluid_box")
                 )
 
                 if not fluidbox_data:
-                    logger.warning(f"Entity {source_entity.name} has no fluidbox data")
+                    logger.warning(
+                        f"Entity {source_entity.name} has no fluidbox data in prototype. "
+                        f"Available keys: {list(proto.keys())[:20]}"
+                    )
                     return []
 
                 # Extract pipe connection positions manually
@@ -959,44 +1035,98 @@ class PlacementHints:
                 pipe_connections = fluidbox_data.get("pipe_connections", [])
                 if not pipe_connections:
                     logger.warning(
-                        f"Entity {source_entity.name} has no pipe connections"
+                        f"Entity {source_entity.name} has no pipe_connections in fluidbox. "
+                        f"Fluidbox keys: {list(fluidbox_data.keys())}"
                     )
                     return []
 
                 pipe_positions = []
-                source_dir = getattr(source_entity, "direction", Direction.NORTH)
+                # Get direction from entity, default to NORTH if not available
+                source_dir = getattr(source_entity, "direction", None)
+                if source_dir is None:
+                    source_dir = Direction.NORTH
 
-                for connection in pipe_connections:
+                logger.debug(f"Processing {len(pipe_connections)} pipe connections for {source_entity.name}")
+                for i, connection in enumerate(pipe_connections):
+                    # Connection can have "position" (single) or "positions" (list)
                     positions = connection.get("positions", [])
                     if not positions:
                         position = connection.get("position")
                         if position:
                             positions = [position]
 
+                    logger.debug(f"Connection {i}: {len(positions)} positions, keys: {list(connection.keys())}")
                     for pos_data in positions:
                         if isinstance(pos_data, list) and len(pos_data) == 2:
                             vec = tuple(pos_data)
-                            pipe_positions.append(
-                                apply_cardinal_vector(
-                                    source_entity.position, vec, source_dir
-                                )
+                            calculated_pos = apply_cardinal_vector(
+                                source_entity.position, vec, source_dir
                             )
+                            pipe_positions.append(calculated_pos)
+                            logger.debug(f"  Calculated pipe position: {calculated_pos} from vec {vec}, dir {source_dir}")
+                        elif isinstance(pos_data, dict) and "x" in pos_data and "y" in pos_data:
+                            # Handle dict format {x: ..., y: ...}
+                            vec = (pos_data["x"], pos_data["y"])
+                            calculated_pos = apply_cardinal_vector(
+                                source_entity.position, vec, source_dir
+                            )
+                            pipe_positions.append(calculated_pos)
+                            logger.debug(f"  Calculated pipe position: {calculated_pos} from dict {pos_data}, dir {source_dir}")
+                
+                logger.debug(f"Total pipe positions calculated: {len(pipe_positions)}")
 
             # Validate all positions and create ConnectionPosition objects
-            # For fluid pipes, alignment is less critical, so we use 0.0 as default
+            # Pipe connection points are where pipes connect TO the entity, not where to place the pipe.
+            # We need to find adjacent positions where we can actually place a pipe.
+            # Try positions adjacent to each connection point (cardinal directions)
             valid_positions: List[ConnectionPosition] = []
-            for pipe_pos in pipe_positions:
-                if self._validator.validate_placement(
-                    target_entity_name, pipe_pos, None, ghost=True
-                ):
+            
+            for connection_point in pipe_positions:
+                # Try placing pipe at the connection point first (might work for some entities)
+                can_place_at_point = self._validator.validate_placement(
+                    target_entity_name, connection_point, None, ghost=True
+                )
+                if can_place_at_point:
                     valid_positions.append(
                         ConnectionPosition(
-                            position=pipe_pos,
+                            position=connection_point,
                             direction=None,
-                            perpendicular_offset=0.0,  # Pipes don't need alignment sorting
+                            perpendicular_offset=0.0,
                         )
                     )
+                    logger.debug(f"Pipe can be placed at connection point: {connection_point}")
+                    continue
+                
+                # If connection point is invalid (likely inside entity collision box),
+                # try adjacent positions (1 tile away in cardinal directions)
+                adjacent_offsets = [
+                    (0, -1),  # North
+                    (1, 0),   # East
+                    (0, 1),   # South
+                    (-1, 0),  # West
+                ]
+                
+                for dx, dy in adjacent_offsets:
+                    adjacent_pos = MapPosition(
+                        x=connection_point.x + dx,
+                        y=connection_point.y + dy,
+                    )
+                    can_place = self._validator.validate_placement(
+                        target_entity_name, adjacent_pos, None, ghost=True
+                    )
+                    logger.debug(f"Validation for pipe at {adjacent_pos} (adjacent to {connection_point}): {can_place}")
+                    if can_place:
+                        valid_positions.append(
+                            ConnectionPosition(
+                                position=adjacent_pos,
+                                direction=None,
+                                perpendicular_offset=0.0,  # Pipes don't need alignment sorting
+                            )
+                        )
+                        # Only need one valid adjacent position per connection point
+                        break
 
+            logger.debug(f"Returning {len(valid_positions)} valid pipe positions out of {len(pipe_positions)} connection points")
             return valid_positions
 
         except Exception as e:
@@ -1458,6 +1588,313 @@ class PlacementHints:
 
         plan.validate(self._validator)
         return plan
+
+    def _get_electric_wire_positions(
+        self, source_entity: "BaseEntity", target_entity_name: str
+    ) -> List[WireConnectionPosition]:
+        """Get positions where a pole can connect to source pole.
+        
+        Early exits:
+        - If source_entity is not a pole → raises EntityValidationError (handled by caller)
+        - If no valid positions within maximum_wire_distance → returns []
+        
+        Args:
+            source_entity: The source pole entity
+            target_entity_name: Pole type to place (e.g., "medium-electric-pole")
+            
+        Returns:
+            List of WireConnectionPosition objects, sorted by distance (closest first)
+        """
+        from FactoryVerse.factory.prototypes import get_entity_prototypes
+        import math
+        
+        # Get wire distance from target pole prototype
+        prototypes = get_entity_prototypes()
+        target_proto = prototypes.get_prototype(target_entity_name)
+        if not target_proto:
+            logger.warning(f"Target pole prototype not found: {target_entity_name}")
+            return []
+        
+        max_wire_distance = target_proto.get("maximum_wire_distance", 7.5)
+        
+        # Calculate grid of positions within wire distance
+        # Use tile-based positions for efficiency
+        source_pos = source_entity.position
+        positions: List[WireConnectionPosition] = []
+        
+        # Generate positions in a square grid around source
+        # Use integer tile coordinates for efficiency
+        max_tiles = int(math.ceil(max_wire_distance))
+        
+        for dx in range(-max_tiles, max_tiles + 1):
+            for dy in range(-max_tiles, max_tiles + 1):
+                candidate_pos = MapPosition(
+                    x=source_pos.x + dx,
+                    y=source_pos.y + dy,
+                )
+                
+                # Early exit: beyond wire distance (with small tolerance for floating point)
+                distance = source_pos.distance(candidate_pos)
+                if distance > max_wire_distance + 0.01:  # Small tolerance for floating point precision
+                    continue
+                
+                # Validate placement
+                if self._validator.validate_placement(
+                    target_entity_name, candidate_pos, None, ghost=True
+                ):
+                    # Calculate wire distance utilization (ratio of distance to max)
+                    wire_utilization = distance / max_wire_distance if max_wire_distance > 0 else 0.0
+                    
+                    positions.append(
+                        WireConnectionPosition(
+                            position=candidate_pos,
+                            direction=None,  # Poles don't have direction
+                            perpendicular_offset=distance,  # For sorting by distance
+                            wire_distance=distance,  # Explicit wire distance in tiles
+                            wire_distance_utilization=wire_utilization,  # How much of max wire distance is used (ratio)
+                        )
+                    )
+        
+        # Sort by distance (closest first)
+        positions.sort(key=lambda p: p.perpendicular_offset)
+        return positions
+
+    def evaluate_pole_placement(
+        self,
+        position: MapPosition,
+        pole_name: str,
+        source_pole: Optional["BaseEntity"] = None,
+        reachable_view: Optional[Any] = None,
+    ) -> PolePlacementResult:
+        """Evaluate a pole placement position without placing anything (dry run).
+        
+        Answers "what if I place a pole here?" - provides rich feedback about
+        connectivity, power supply area, and power network access.
+        
+        Args:
+            position: Position to evaluate
+            pole_name: Pole type to evaluate (e.g., "medium-electric-pole")
+            source_pole: Optional source pole to check connectivity against
+            reachable_view: Optional ReachableView for querying entities/poles
+                           If None, will try to get from context (may fail)
+        
+        Returns:
+            PolePlacementResult with rich feedback about the placement
+        """
+        from FactoryVerse.factory.prototypes import get_entity_prototypes
+        from FactoryVerse.factory.types import BoundingBox
+        
+        # Get pole prototype
+        prototypes = get_entity_prototypes()
+        pole_proto = prototypes.get_prototype(pole_name)
+        if not pole_proto:
+            return PolePlacementResult(
+                position=position,
+                pole_name=pole_name,
+                supply_area_distance=0.0,
+                entities_powered=[],
+                entities_powered_count=0,
+                source_pole=source_pole,
+                connects_to_source=False,
+                distance_to_source=None,
+                connected_poles=[],
+                connected_poles_count=0,
+                can_receive_power=False,
+                power_path=None,
+                power_source=None,
+                is_valid_placement=False,
+                placement_error=f"Unknown pole type: {pole_name}",
+                maximum_wire_distance=0.0,
+            )
+        
+        supply_area_distance = pole_proto.get("supply_area_distance", 0.0)
+        maximum_wire_distance = pole_proto.get("maximum_wire_distance", 7.5)
+        
+        # Validate placement first
+        is_valid = self._validator.validate_placement(
+            pole_name, position, None, ghost=True
+        )
+        placement_error = None if is_valid else "Cannot place pole at this position (collision or invalid)"
+        
+        # Initialize result
+        result = PolePlacementResult(
+            position=position,
+            pole_name=pole_name,
+            supply_area_distance=supply_area_distance,
+            entities_powered=[],
+            entities_powered_count=0,
+            source_pole=source_pole,
+            connects_to_source=False,
+            distance_to_source=None,
+            connected_poles=[],
+            connected_poles_count=0,
+            can_receive_power=False,
+            power_path=None,
+            power_source=None,
+            is_valid_placement=is_valid,
+            placement_error=placement_error,
+            maximum_wire_distance=maximum_wire_distance,
+        )
+        
+        # Check connectivity to source pole if provided (even if placement is invalid)
+        if source_pole:
+            distance = position.distance(source_pole.position)
+            result.distance_to_source = distance
+            result.connects_to_source = distance <= maximum_wire_distance
+        
+        # If placement is invalid, return early with minimal info (but distance_to_source already set)
+        if not is_valid:
+            return result
+        
+        # Find entities within supply area and poles within wire distance
+        # Note: This requires reachable_view - if not provided, we can't query
+        if reachable_view is None:
+            logger.warning("evaluate_pole_placement called without reachable_view - limited functionality")
+            return result
+        
+        # Get all reachable entities to check supply area
+        all_entities = reachable_view.get_entities()
+        
+        # Filter entities within supply area
+        entities_powered = []
+        for entity in all_entities:
+            # Skip poles and ghosts for supply area calculation
+            if entity.name in ELECTRIC_POLE_ENTITIES or entity.is_ghost:
+                continue
+            
+            # Check if entity is within supply area
+            distance_to_entity = position.distance(entity.position)
+            if distance_to_entity <= supply_area_distance:
+                entities_powered.append(entity)
+        
+        result.entities_powered = entities_powered
+        result.entities_powered_count = len(entities_powered)
+        
+        # Find poles within wire distance
+        connected_poles = []
+        for entity in all_entities:
+            if entity.name in ELECTRIC_POLE_ENTITIES and not entity.is_ghost:
+                distance_to_pole = position.distance(entity.position)
+                if distance_to_pole <= maximum_wire_distance and distance_to_pole > 0.01:  # Exclude self
+                    connected_poles.append(entity)
+        
+        # Sort by distance
+        connected_poles.sort(key=lambda p: position.distance(p.position))
+        result.connected_poles = connected_poles
+        result.connected_poles_count = len(connected_poles)
+        
+        # Trace power path if there are connected poles
+        if connected_poles:
+            power_path, power_source = self._trace_power_path(
+                position, pole_name, connected_poles, reachable_view
+            )
+            result.power_path = power_path
+            result.power_source = power_source
+            result.can_receive_power = power_source is not None
+        
+        return result
+
+    def _trace_power_path(
+        self,
+        position: MapPosition,
+        pole_name: str,
+        connected_poles: List["BaseEntity"],
+        reachable_view: Any,
+    ) -> Tuple[Optional[List["BaseEntity"]], Optional["BaseEntity"]]:
+        """Trace connectivity from position through connected poles to find power source.
+        
+        Uses BFS to find path to power source through pole network.
+        
+        Args:
+            position: Position of the candidate pole
+            pole_name: Pole type name
+            connected_poles: List of poles within wire distance
+            reachable_view: ReachableView for querying entities
+        
+        Returns:
+            Tuple of (power_path, power_source) or (None, None) if not connected
+        """
+        from FactoryVerse.factory.prototypes import get_entity_prototypes
+        
+        # Get all poles in reachable area for network traversal
+        all_poles = [
+            e for e in reachable_view.get_entities()
+            if e.name in ELECTRIC_POLE_ENTITIES and not e.is_ghost
+        ]
+        
+        # Get pole prototype for wire distance
+        prototypes = get_entity_prototypes()
+        pole_proto = prototypes.get_prototype(pole_name)
+        max_wire_distance = pole_proto.get("maximum_wire_distance", 7.5) if pole_proto else 7.5
+        
+        # Power sources are entities that generate electricity
+        # Check both by name and by prototype energy_source.type
+        POWER_SOURCE_NAMES = {
+            "steam-engine",
+            "steam-turbine",
+            "solar-panel",
+            "nuclear-reactor",
+        }
+        
+        def is_power_source(entity: "BaseEntity") -> bool:
+            """Check if entity is a power source."""
+            if entity.is_ghost:
+                return False
+            
+            # Check by name
+            if entity.name in POWER_SOURCE_NAMES:
+                return True
+            
+            # Check by prototype energy_source
+            proto = entity.prototype
+            if proto:
+                energy_source = proto.get("energy_source")
+                if energy_source:
+                    energy_type = energy_source.get("type")
+                    # "electric" with "burns_fluid" or "solar" indicates power generation
+                    if energy_type == "electric" and energy_source.get("burns_fluid"):
+                        return True
+                    if energy_type == "solar":
+                        return True
+            
+            return False
+        
+        # BFS from position through connected poles to find power source
+        visited = set()
+        # Use position as string key for visited set
+        visited.add(f"{position.x:.2f},{position.y:.2f}")
+        
+        queue = [(position, [])]  # (current_pos, path_so_far)
+        
+        # Get all entities once for power source checking
+        all_entities = reachable_view.get_entities()
+        power_sources = [e for e in all_entities if is_power_source(e)]
+        
+        while queue:
+            current_pos, path = queue.pop(0)
+            
+            # Check if current position has a power source nearby
+            # Power sources connect to poles within their supply area or via wires
+            for power_source in power_sources:
+                distance = current_pos.distance(power_source.position)
+                # Check if power source is within reasonable connection distance
+                # (poles can connect to power sources within supply area or wire distance)
+                if distance <= max_wire_distance + 2.0:  # Allow some tolerance
+                    # Found power source - return path
+                    return (path, power_source)
+            
+            # Check connected poles from current position
+            for pole in all_poles:
+                pole_key = f"{pole.position.x:.2f},{pole.position.y:.2f}"
+                if pole_key in visited:
+                    continue
+                
+                distance = current_pos.distance(pole.position)
+                if distance <= max_wire_distance:
+                    visited.add(pole_key)
+                    queue.append((pole.position, path + [pole]))
+        
+        return (None, None)  # No path to power source
 
     @property
     def validator(self) -> PlacementValidator:

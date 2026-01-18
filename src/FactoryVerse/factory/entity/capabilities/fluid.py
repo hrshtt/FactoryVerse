@@ -111,32 +111,80 @@ class FluidMixin:
         from FactoryVerse.factory.types import MapPosition
 
         # Extract from fluidbox data - check multiple possible locations
-        fluidbox = (
-            self.prototype.get("fluidbox")
-            or self.prototype.get("output_fluid_box")
-            or self.prototype.get("input_fluid_box")
-        )
-        if not fluidbox:
+        # Some entities have separate input_fluid_box and output_fluid_box
+        # (e.g., boilers have input for water and output for steam)
+        # Note: Factorio uses both "fluidbox" and "fluid_box" (with underscore)
+        # Some entities use "fluid_boxes" (plural) as an array
+        fluidboxes = []
+        
+        # Check main fluidbox (both spellings)
+        if "fluidbox" in self.prototype:
+            fluidboxes.append(("fluidbox", self.prototype["fluidbox"]))
+        if "fluid_box" in self.prototype:
+            fluidboxes.append(("fluid_box", self.prototype["fluid_box"]))
+        
+        # Check fluid_boxes (plural, array format used by chemical-plant, oil-refinery, etc.)
+        if "fluid_boxes" in self.prototype:
+            fluid_boxes_data = self.prototype["fluid_boxes"]
+            if isinstance(fluid_boxes_data, list):
+                # Array of fluidboxes
+                for i, fb in enumerate(fluid_boxes_data):
+                    if isinstance(fb, dict):
+                        fluidboxes.append((f"fluid_boxes[{i}]", fb))
+            elif isinstance(fluid_boxes_data, dict):
+                # Single fluidbox dict
+                fluidboxes.append(("fluid_boxes", fluid_boxes_data))
+        
+        # Check input fluidbox (if separate)
+        if "input_fluid_box" in self.prototype:
+            fluidboxes.append(("input_fluid_box", self.prototype["input_fluid_box"]))
+        
+        # Check output fluidbox (if separate)
+        if "output_fluid_box" in self.prototype:
+            fluidboxes.append(("output_fluid_box", self.prototype["output_fluid_box"]))
+        
+        if not fluidboxes:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Entity {self.name} has no fluidbox data. Available keys: {list(self.prototype.keys())[:30]}")
             return []
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Entity {self.name} has {len(fluidboxes)} fluidbox(es): {[name for name, _ in fluidboxes]}")
 
-        connections = fluidbox.get("pipe_connections", [])
         positions = []
+        # Use entity's direction if available, default to NORTH
+        direction = getattr(self, "direction", None)
+        if direction is None:
+            from FactoryVerse.factory.types import Direction
+            direction = Direction.NORTH
 
-        for conn in connections:
-            # Get positions (can be multiple for rotatable entities)
-            pos_list = conn.get("positions", [])
-            if not pos_list:
-                # Single position
-                pos_data = conn.get("position")
-                if pos_data:
-                    pos_list = [pos_data]
+        # Process all fluidboxes
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        for fluidbox_name, fluidbox in fluidboxes:
+            connections = fluidbox.get("pipe_connections", [])
+            logger.debug(f"  {fluidbox_name} has {len(connections)} pipe connections")
+            
+            for i, conn in enumerate(connections):
+                # Get positions (can be multiple for rotatable entities)
+                pos_list = conn.get("positions", [])
+                if not pos_list:
+                    # Single position
+                    pos_data = conn.get("position")
+                    if pos_data:
+                        pos_list = [pos_data]
 
-            for pos_data in pos_list:
-                # pos_data is [x, y] relative to entity center
-                if isinstance(pos_data, list) and len(pos_data) == 2:
-                    vec = tuple(pos_data)
-                    positions.append(
-                        apply_cardinal_vector(self.position, vec, self.direction)
-                    )
+                logger.debug(f"    Connection {i}: {len(pos_list)} positions, keys: {list(conn.keys())}")
+                for pos_data in pos_list:
+                    # pos_data is [x, y] relative to entity center
+                    if isinstance(pos_data, list) and len(pos_data) == 2:
+                        vec = tuple(pos_data)
+                        calculated_pos = apply_cardinal_vector(self.position, vec, direction)
+                        positions.append(calculated_pos)
+                        logger.debug(f"      Calculated position: {calculated_pos} from vec {vec}")
 
+        logger.debug(f"Total pipe connection positions: {len(positions)}")
         return positions

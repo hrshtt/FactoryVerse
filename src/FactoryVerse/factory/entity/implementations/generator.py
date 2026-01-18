@@ -48,6 +48,11 @@ class Boiler(GeneratorMixin, BurnerMixin, FluidMixin, RotatableMixin, BaseEntity
     **For Agents**: Connect to water source, add fuel, output steam.
     """
 
+    def __init__(self, direction=None, **kwargs):
+        """Initialize boiler with direction."""
+        super().__init__(**kwargs)
+        self.direction = direction
+
     def _get_accepted_fuel_categories(self) -> List[str]:
         """Boilers accept chemical fuel."""
         return ["chemical"]
@@ -61,7 +66,10 @@ class SteamEngine(
     **For Agents**: Connect to steam source (boiler output).
     """
 
-    pass
+    def __init__(self, direction=None, **kwargs):
+        """Initialize steam engine with direction."""
+        super().__init__(**kwargs)
+        self.direction = direction
 
 
 class SteamTurbine(
@@ -72,4 +80,7 @@ class SteamTurbine(
     **For Agents**: Requires high-temperature steam from heat exchangers.
     """
 
-    pass
+    def __init__(self, direction=None, **kwargs):
+        """Initialize steam turbine with direction."""
+        super().__init__(**kwargs)
+        self.direction = direction

@@ -52,26 +52,54 @@ def load_agent_scope(
     )
     agents = json.loads(agents_result)
 
-    # Determine UDP port
+    # Determine UDP port - use deterministic allocation for servers
     udp_port_override = os.getenv("FV_AGENT_UDP_PORT")
     if udp_port is not None:
         requested_udp_port = udp_port
     elif udp_port_override:
         requested_udp_port = int(udp_port_override)
     else:
-        # Auto-allocate UDP port
-        requested_udp_port = find_free_udp_port(
-            start_port=config.agent_port_base,
-            max_attempts=200,
-            host=instance.rcon_host,
-        )
+        # Extract agent index from agent_id (e.g., "agent_1" -> 0, "agent_2" -> 1)
+        try:
+            agent_index = int(agent_id.split("_")[1]) - 1  # Convert to 0-based
+        except (ValueError, IndexError):
+            agent_index = 0
+
+        # Check if this is a server instance
+        if instance.name.startswith("server_"):
+            # Use deterministic port allocation for Docker port mapping compatibility
+            try:
+                server_index = int(instance.name.split("_")[1])
+                requested_udp_port = config.get_agent_port(agent_index, server_index)
+            except (ValueError, IndexError):
+                # Fallback to dynamic allocation
+                requested_udp_port = find_free_udp_port(
+                    start_port=config.agent_port_base,
+                    max_attempts=200,
+                    host=instance.rcon_host,
+                )
+        else:
+            # Client mode - use deterministic allocation from base
+            requested_udp_port = config.get_agent_port(agent_index)
 
     # Find or create agent
     existing = next((a for a in agents if a.get("interface_name") == agent_id), None)
 
     if existing:
-        actual_udp_port = existing.get("udp_port", requested_udp_port)
-    else:
+        # Check if existing agent's port matches expected - if not, we need to recreate
+        existing_port = existing.get("udp_port")
+        if existing_port != requested_udp_port:
+            # Destroy and recreate agent with correct port
+            # Use numeric agent ID for destroy_agents
+            agent_numeric_id = existing.get("id")
+            rcon.send_command(
+                f"/c remote.call('agent', 'destroy_agents', {{{agent_numeric_id}}})"
+            )
+            existing = None  # Force recreation below
+        else:
+            actual_udp_port = existing_port
+
+    if not existing:
         # Create agent with initial inventory
         # Args: udp_port, set_global_pos (bool), set_unique_forces (bool), force_name, initial_inventory
         # set_unique_forces=false ensures agent uses the 'player' force
