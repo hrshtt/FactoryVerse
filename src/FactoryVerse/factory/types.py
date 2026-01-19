@@ -621,36 +621,6 @@ class ReachableSnapshotData(TypedDict, total=False):
 
 
 # =============================================================================
-# PLACEMENT CUES DATA
-# =============================================================================
-
-
-class PlacementCueData(TypedDict, total=False):
-    """Single placement cue position.
-
-    RCON Contract: RemoteInterface.lua get_placement_cues.returns.schema
-    """
-
-    position: Dict[str, float]
-    resource_name: Optional[str]
-    resource_amount: Optional[int]
-
-
-class PlacementCuesResponse(TypedDict):
-    """Response from get_placement_cues query.
-
-    RCON Contract: RemoteInterface.lua get_placement_cues.returns.schema
-    """
-
-    entity_name: str
-    collision_box: Dict[str, Any]
-    tile_width: int
-    tile_height: int
-    positions: List[PlacementCueData]
-    reachable_positions: List[PlacementCueData]
-
-
-# =============================================================================
 # EXPORTS
 # =============================================================================
 
@@ -716,7 +686,4 @@ __all__ = [
     "ReachableResourceData",
     "ReachableGhostData",
     "ReachableSnapshotData",
-    # Placement types
-    "PlacementCueData",
-    "PlacementCuesResponse",
 ]

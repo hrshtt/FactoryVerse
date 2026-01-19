@@ -48,6 +48,7 @@ class SessionConfig:
     model: str
     mode: str  # 'assisted' or 'autonomous'
     started_at: str
+    provider: str = "unknown"  # LLM provider (e.g., 'prime_intellect', 'anthropic')
     ended_at: Optional[str] = None
     total_turns: int = 0
     config: Dict[str, Any] = field(default_factory=dict)
@@ -57,14 +58,16 @@ class SessionConfig:
         cls,
         model: str,
         mode: str = "assisted",
+        provider: str = "unknown",
         config: Optional[Dict[str, Any]] = None,
         run_id: Optional[str] = None,
     ) -> "SessionConfig":
         """Create a new session config with timestamp-based ID.
 
         Args:
-            model: Model name (e.g., 'claude-3-opus')
+            model: Model name (e.g., 'claude-3-opus', 'intellect-3')
             mode: 'assisted' or 'autonomous'
+            provider: LLM provider (e.g., 'prime_intellect', 'anthropic')
             config: Optional additional configuration
             run_id: Optional explicit run ID (default: timestamp)
 
@@ -78,6 +81,7 @@ class SessionConfig:
             run_id=run_id,
             model=model,
             mode=mode,
+            provider=provider,
             started_at=datetime.datetime.now().isoformat(),
             config=config or {},
         )
@@ -139,13 +143,15 @@ class FileManager:
     def get_session_dir(self, config: SessionConfig) -> Path:
         """Get session directory path.
 
+        Directory structure: .fv-output/runs/{provider}/{model}/{run_id}/
+
         Args:
             config: Session configuration
 
         Returns:
             Path to session directory
         """
-        return self.runs_dir / config.model / config.run_id
+        return self.runs_dir / config.provider / config.model / config.run_id
 
     def get_session_paths(self, config: SessionConfig) -> SessionPaths:
         """Get all file paths for a session.
@@ -173,6 +179,7 @@ class FileManager:
         self,
         model: str,
         mode: str = "assisted",
+        provider: str = "unknown",
         config: Optional[Dict[str, Any]] = None,
     ) -> SessionConfig:
         """Create new session with directory and metadata.
@@ -180,6 +187,7 @@ class FileManager:
         Args:
             model: Model name
             mode: 'assisted' or 'autonomous'
+            provider: LLM provider (e.g., 'prime_intellect', 'anthropic')
             config: Optional additional configuration
 
         Returns:
@@ -188,6 +196,7 @@ class FileManager:
         session_config = SessionConfig.create(
             model=model,
             mode=mode,
+            provider=provider,
             config=config,
         )
 

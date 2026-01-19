@@ -7,7 +7,7 @@ from typing import Optional, Dict, List, Union, Any, TYPE_CHECKING
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from FactoryVerse.factory.types import MapPosition, Direction, BoundingBox
+    from FactoryVerse.factory.types import BoundingBox
 
 
 class MiningTarget(BaseModel):
@@ -35,21 +35,21 @@ class MinerMixin:
 
     Provides:
     - _get_miner_state() for inspection
-    - get_output_position() for geometric calculations
     - get_resource_search_area() for geometric calculations
+
+    Note: Drop positions come from Lua inspection data (engine-computed),
+    not calculated from prototypes. Use fv_placement_hints for placement queries.
 
     Requires entity to have:
     - is_ghost: bool
-    - direction: Direction
     - position: Position
     - name: str
-    - prototype: Dict[str, Any] (from BaseEntity)
+    - prototype: Dict[str, Any] (for resource_searching_radius)
     """
 
     is_ghost: bool
     name: str
     position: Any  # MapPosition at runtime
-    direction: "Direction"
     prototype: Any  # Dict[str, Any] at runtime
 
     def _get_miner_state(self, inspection_data: dict) -> MinerState:
@@ -74,29 +74,6 @@ class MinerMixin:
         entity_type = inspection_data.get("entity_type", "mining-drill")
         miner_state = _transform_miner(inspection_data, entity_type)
         return miner_state if miner_state else MinerState(drop_position=drop_pos)
-
-    def get_output_position(self) -> "MapPosition":
-        """Calculate drill output position (static, geometric).
-
-        Returns the position where the mining drill drops extracted items.
-        This is calculated from the prototype's vector_to_place_result,
-        rotated by the entity's direction.
-
-        Returns:
-            MapPosition where items are dropped
-
-        Example:
-            >>> drill = get_entity("electric-mining-drill", pos)
-            >>> output_pos = drill.get_output_position()
-        """
-        from FactoryVerse.factory.prototypes import (
-            apply_cardinal_vector,
-            snap_to_tile_center,
-        )
-
-        vec = tuple(self.prototype["vector_to_place_result"])
-        raw_pos = apply_cardinal_vector(self.position, vec, self.direction)
-        return snap_to_tile_center(raw_pos)
 
     def get_resource_search_area(self) -> "BoundingBox":
         """Calculate mining area (static, geometric).

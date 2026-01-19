@@ -8,8 +8,8 @@ import nbformat
 from jupyter_client import BlockingKernelClient
 from jupyter_client.manager import KernelManager
 
-from FactoryVerse.infra.llm.output_compressor import OutputCompressor
-from FactoryVerse.infra.llm.factorio_error_parser import (
+from FactoryVerse.llm.context.compressor import OutputCompressor
+from FactoryVerse.infra.output.error_parser import (
     FactorioErrorParser,
     ErrorVerbosity,
 )

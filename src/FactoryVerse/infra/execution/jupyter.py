@@ -21,8 +21,8 @@ from FactoryVerse.infra.execution.base import (
     ExecutionResult,
     ExecutionStatus,
 )
-from FactoryVerse.infra.llm.output_compressor import OutputCompressor
-from FactoryVerse.infra.llm.factorio_error_parser import (
+from FactoryVerse.llm.context.compressor import OutputCompressor
+from FactoryVerse.infra.output.error_parser import (
     FactorioErrorParser,
     ErrorVerbosity,
 )
@@ -220,7 +220,12 @@ class JupyterExecutor(ExecutionEnvironment):
                 text_parts.append(content.get("data", {}).get("text/plain", ""))
             elif msg_type == "error":
                 # Parse and format error
-                raw_error = f"Error: {content.get('evalue', '')}\n{''.join(content.get('traceback', []))}"
+                # Join traceback lines with newlines and strip ANSI codes
+                traceback_lines = content.get('traceback', [])
+                traceback_text = '\n'.join(traceback_lines)
+                # Strip ANSI escape codes for proper parsing
+                traceback_text = _strip_ansi_codes(traceback_text)
+                raw_error = f"Error: {content.get('evalue', '')}\n{traceback_text}"
                 parsed_error = self.error_parser.parse_and_format(raw_error)
                 error_parts.append(parsed_error)
 
@@ -405,3 +410,21 @@ class JupyterExecutor(ExecutionEnvironment):
 
         with open(self.notebook_path, "w") as f:
             nbformat.write(nb, f)
+
+
+def _strip_ansi_codes(text: str) -> str:
+    """Strip ANSI escape codes from text.
+
+    Jupyter tracebacks contain ANSI color codes that can interfere
+    with error parsing. This removes them for cleaner parsing.
+
+    Args:
+        text: Text potentially containing ANSI codes
+
+    Returns:
+        Text with ANSI codes stripped
+    """
+    import re
+    # Match ANSI escape sequences: ESC[ ... m (where ... is numbers/semicolons)
+    ansi_pattern = re.compile(r'\x1b\[[0-9;]*m')
+    return ansi_pattern.sub('', text)

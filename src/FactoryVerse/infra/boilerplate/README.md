@@ -18,7 +18,7 @@ This module provides **scope-based, composable loading** of FactoryVerse infrast
 ### Python API
 
 ```python
-from FactoryVerse.infra.llm.boilerplate import load, Scope
+from FactoryVerse.infra.boilerplate import load, Scope
 
 # Load just RCON for testing Lua commands
 ctx = load(scope=Scope.RCON)
@@ -37,7 +37,7 @@ await ctx['runtime'].walking.walk_to(MapPosition(10, 10))
 ### Session Management (for MCP/Development)
 
 ```python
-from FactoryVerse.infra.llm.boilerplate import create_session, get_session, destroy_session
+from FactoryVerse.infra.boilerplate import create_session, get_session, destroy_session
 
 # Create a session
 session = create_session(
@@ -130,7 +130,7 @@ The original `boilerplate.py` file is unchanged and still works for Jupyter note
 # Loads boilerplate.py as a string into Jupyter kernel
 
 # New (modular)
-from FactoryVerse.infra.llm.boilerplate import load, Scope
+from FactoryVerse.infra.boilerplate import load, Scope
 ctx = load(scope=Scope.RUNTIME)
 ```
 

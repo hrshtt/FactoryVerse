@@ -33,7 +33,7 @@ class FactoryVerseSession:
     Example:
         from FactoryVerse.infra.session import FactoryVerseSession
         from FactoryVerse.infra.execution import JupyterExecutor
-        from FactoryVerse.infra.llm.boilerplate import Scope
+        from FactoryVerse.infra.boilerplate import Scope
 
         # Create with Jupyter for full agent runs
         executor = JupyterExecutor("/path/to/notebook.ipynb")

@@ -4,8 +4,8 @@ Provides TestGround-like helpers for use with boilerplate sessions.
 These can be loaded on top of any scope that has RCON.
 
 Usage:
-    >>> from FactoryVerse.infra.llm.boilerplate import load, Scope
-    >>> from FactoryVerse.infra.llm.boilerplate.test_ground import TestGroundHelper
+    >>> from FactoryVerse.infra.boilerplate import load, Scope
+    >>> from FactoryVerse.infra.boilerplate.test_ground import TestGroundHelper
     >>> ctx = load(scope=Scope.RCON)
     >>> tg = TestGroundHelper(ctx)
     >>> tg.place_entity('iron-chest', 10, 10)

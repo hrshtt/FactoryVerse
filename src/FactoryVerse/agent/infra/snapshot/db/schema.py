@@ -252,7 +252,23 @@ def create_schema(
             position map_position NOT NULL,
             bbox GEOMETRY NOT NULL,
             electric_network_id INTEGER,
+            tile_x INTEGER,
+            tile_y INTEGER,
             PRIMARY KEY (entity_name, position_x, position_y)
+        );
+    """)
+
+    # Footprint tiles table - maps tiles to entities that occupy them
+    # Each entity occupies one or more tiles based on its footprint
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS footprint_tiles (
+            tile_x INTEGER NOT NULL,
+            tile_y INTEGER NOT NULL,
+            entity_name VARCHAR NOT NULL,
+            entity_position_x DOUBLE NOT NULL,
+            entity_position_y DOUBLE NOT NULL,
+            is_ghost BOOLEAN NOT NULL DEFAULT FALSE,
+            PRIMARY KEY (tile_x, tile_y)
         );
     """)
 
@@ -425,6 +441,14 @@ def create_schema(
     )
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_map_entity_name ON map_entity(entity_name);"
+    )
+
+    # Tile-based indexes for fast spatial queries
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_map_entity_tile ON map_entity(tile_x, tile_y);"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_footprint_tiles_entity ON footprint_tiles(entity_name, entity_position_x, entity_position_y);"
     )
 
     # Spatial indexes on GEOMETRY columns using RTREE

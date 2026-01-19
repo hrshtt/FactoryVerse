@@ -24,6 +24,7 @@ class Tier5Specification(TierBase):
     - API reference documentation
     - Database schema reference
     - Task-specific instructions
+    - Initial state summary (agent's starting situation)
     """
 
     tier_level = Tier.SPECIFICATION
@@ -34,6 +35,7 @@ class Tier5Specification(TierBase):
         self._api_reference: Optional[str] = None
         self._schema_reference: Optional[str] = None
         self._task_definition: Optional[Dict[str, Any]] = None
+        self._initial_state: Optional[str] = None
 
     @property
     def config(self) -> SpecificationConfig:
@@ -54,6 +56,11 @@ class Tier5Specification(TierBase):
     def schema_reference(self) -> Optional[str]:
         """Get database schema reference."""
         return self._schema_reference
+
+    @property
+    def initial_state(self) -> Optional[str]:
+        """Get initial state summary."""
+        return self._initial_state
 
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 4 (Runtime) is ready."""
@@ -85,6 +92,10 @@ class Tier5Specification(TierBase):
 
             # Compose full system prompt
             await self._compose_system_prompt()
+
+            # Generate initial state (orients the agent about its situation)
+            if self.config.include_initial_state:
+                await self._generate_initial_state()
 
             self._set_state(TierState.READY)
 
@@ -137,6 +148,35 @@ class Tier5Specification(TierBase):
             f"Tier 5: System prompt composed ({len(self._system_prompt)} chars)"
         )
 
+    async def _generate_initial_state(self) -> None:
+        """Generate initial state summary showing agent's starting situation.
+
+        Uses InitialStateGenerator to execute code and capture outputs,
+        creating a document that orients the agent about:
+        - Current position and inventory
+        - Nearby resources and entities
+        - Available technologies and recipes
+        """
+        from FactoryVerse.llm.context.initial_state import InitialStateGenerator
+
+        tier4 = self._env.tier4
+        if tier4 is None or tier4.session_dir is None:
+            logger.warning("Tier 5: Cannot generate initial state - no session directory")
+            return
+
+        # Create a runtime adapter for code execution
+        runtime_adapter = _InitialStateRuntimeAdapter(self._env)
+
+        try:
+            generator = InitialStateGenerator(runtime_adapter)
+            self._initial_state = generator.generate_summary(tier4.session_dir)
+            logger.info(
+                f"Tier 5: Initial state generated ({len(self._initial_state)} chars)"
+            )
+        except Exception as e:
+            logger.warning(f"Tier 5: Initial state generation failed: {e}")
+            self._initial_state = None
+
     async def verify_ready(self) -> Tier5Status:
         """Verify specification is ready."""
         if self._state != TierState.READY:
@@ -164,6 +204,7 @@ class Tier5Specification(TierBase):
         self._api_reference = None
         self._schema_reference = None
         self._task_definition = None
+        self._initial_state = None
         self._set_state(TierState.SHUTDOWN)
 
     # =========================================================================
@@ -190,3 +231,65 @@ class Tier5Specification(TierBase):
             "name": task_name,
             **task_definition,
         }
+
+
+class _InitialStateRuntimeAdapter:
+    """Adapter for InitialStateGenerator that executes code via Tier 3/4.
+
+    InitialStateGenerator expects a runtime with execute_code() method.
+    This adapter bridges between Environment tiers and that interface.
+    """
+
+    def __init__(self, env: "Environment"):
+        self._env = env
+
+    def execute_code(self, code: str, compress_output: bool = False) -> str:
+        """Execute Python code and return output.
+
+        The code expects these variables to be available:
+        - walking, crafting, research, inventory (from embodied_actions)
+        - remote_view (for SQL queries)
+        - rcon_client, agent_id (for direct RCON calls)
+
+        We build a namespace with these and exec the code.
+        """
+        tier3 = self._env.tier3
+        tier4 = self._env.tier4
+
+        if tier3 is None or tier4 is None:
+            return "Error: Environment tiers not initialized"
+
+        # Build execution namespace with expected variables
+        namespace = {
+            # Agent ID and RCON client (for direct Lua calls)
+            "agent_id": tier4.agent_id,
+            "rcon_client": tier3.rcon_helper.rcon_client if tier3.rcon_helper else None,
+            # Remote view for SQL queries
+            "remote_view": tier4.remote_view,
+            # Embodied actions
+            "walking": tier4._movement if hasattr(tier4, "_movement") else None,
+            "crafting": tier4._crafting if hasattr(tier4, "_crafting") else None,
+            "research": tier4._research if hasattr(tier4, "_research") else None,
+            "inventory": tier4._inventory if hasattr(tier4, "_inventory") else None,
+            "reachable_view": tier4.reachable_view,
+            # Standard library
+            "json": __import__("json"),
+        }
+
+        # Capture output
+        import io
+        import sys
+
+        stdout_capture = io.StringIO()
+        old_stdout = sys.stdout
+
+        try:
+            sys.stdout = stdout_capture
+            exec(code, namespace)
+            output = stdout_capture.getvalue()
+        except Exception as e:
+            output = f"Error: {e}"
+        finally:
+            sys.stdout = old_stdout
+
+        return output.strip()

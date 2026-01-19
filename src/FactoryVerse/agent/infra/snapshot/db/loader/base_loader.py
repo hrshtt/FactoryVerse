@@ -5,6 +5,7 @@ Load base tables: water_tile, resource_tile, resource_entity, map_entity, ghosts
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
@@ -206,6 +207,46 @@ def load_resource_entities(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, r
                                 )
 
 
+def _compute_footprint_tiles(
+    px: float,
+    py: float,
+    tile_width: int,
+    tile_height: int,
+    direction: Optional[int] = None,
+) -> List[Tuple[int, int]]:
+    """
+    Compute the tiles occupied by an entity's footprint.
+
+    Args:
+        px, py: Entity center position
+        tile_width, tile_height: Entity dimensions in tiles
+        direction: Entity direction (0=N, 4=E, 8=S, 12=W)
+
+    Returns:
+        List of (tile_x, tile_y) tuples
+    """
+    # For asymmetric entities facing EAST/WEST, swap dimensions
+    effective_width = tile_width
+    effective_height = tile_height
+    if direction is not None and direction in (4, 12):  # EAST=4, WEST=12
+        if tile_width != tile_height:
+            effective_width, effective_height = tile_height, tile_width
+
+    half_w = effective_width / 2
+    half_h = effective_height / 2
+
+    min_x = math.floor(px - half_w)
+    max_x = math.floor(px + half_w - 0.001)
+    min_y = math.floor(py - half_h)
+    max_y = math.floor(py + half_h - 0.001)
+
+    return [
+        (x, y)
+        for x in range(min_x, max_x + 1)
+        for y in range(min_y, max_y + 1)
+    ]
+
+
 def _process_entity_data(
     data: Dict[str, Any],
     entity_data: List[Dict[str, Any]],
@@ -213,25 +254,25 @@ def _process_entity_data(
 ) -> int:
     """
     Process a single entity data dict and add to entity_data list.
-    
+
     Returns:
         Number of skipped entities (0 or 1)
     """
     entity_name = data.get("name")
     if not entity_name:
         return 0
-    
+
     # Filter out entities not in our placeable_entity ENUM
     if valid_entities and entity_name not in valid_entities:
         return 1
-    
+
     pos = data.get("position", {})
     px = float(pos.get("x", 0.0))
     py = float(pos.get("y", 0.0))
-    
+
     if not pos or (px == 0.0 and py == 0.0):
         return 0
-    
+
     # Store bounding box coordinates for GEOMETRY construction
     bbox = data.get("bounding_box", {})
     if bbox:
@@ -245,7 +286,25 @@ def _process_entity_data(
         min_x = min_y = px
         max_x = max_y = py
         bbox_coords = (min_x, min_y, max_x, max_y)
-    
+
+    # Anchor tile: tile containing entity center
+    tile_x = math.floor(px)
+    tile_y = math.floor(py)
+
+    # Get tile dimensions (default to 1x1)
+    tile_width = data.get("tile_width", 1)
+    tile_height = data.get("tile_height", 1)
+    direction = data.get("direction")
+
+    # Footprint tiles: either from serialized data or computed
+    footprint_tiles = data.get("footprint_tiles")
+    if footprint_tiles:
+        # Convert from [{x, y}, ...] to [(x, y), ...]
+        footprint_tiles = [(t.get("x", 0), t.get("y", 0)) for t in footprint_tiles]
+    else:
+        # Compute from position and dimensions
+        footprint_tiles = _compute_footprint_tiles(px, py, tile_width, tile_height, direction)
+
     entity_data.append({
         "entity_name": entity_name,
         "position_x": px,
@@ -253,6 +312,9 @@ def _process_entity_data(
         "position": {"x": px, "y": py},
         "bbox": bbox_coords,
         "electric_network_id": data.get("electric_network_id"),
+        "tile_x": tile_x,
+        "tile_y": tile_y,
+        "footprint_tiles": footprint_tiles,
     })
     return 0
 
@@ -339,16 +401,20 @@ def load_map_entities(
         print(f"  Skipped {skipped_count} entities not in placeable_entity ENUM")
     
     if entity_data:
-        # Clear existing entities
+        # Clear existing entities and footprint tiles
         con.execute("DELETE FROM map_entity;")
-        
+        con.execute("DELETE FROM footprint_tiles;")
+
+        # Collect all footprint tile entries for batch insert
+        footprint_entries = []
+
         for e in entity_data:
             # Use ST_MakeEnvelope to create GEOMETRY (POLYGON)
             min_x, min_y, max_x, max_y = e["bbox"]
             con.execute(
                 """
-                INSERT OR REPLACE INTO map_entity (entity_name, position_x, position_y, position, bbox, electric_network_id)
-                VALUES (?, ?, ?, ?, ST_MakeEnvelope(?, ?, ?, ?), ?)
+                INSERT OR REPLACE INTO map_entity (entity_name, position_x, position_y, position, bbox, electric_network_id, tile_x, tile_y)
+                VALUES (?, ?, ?, ?, ST_MakeEnvelope(?, ?, ?, ?), ?, ?, ?)
                 """,
                 [
                     e["entity_name"],
@@ -360,8 +426,70 @@ def load_map_entities(
                     max_x,
                     max_y,
                     e["electric_network_id"],
+                    e["tile_x"],
+                    e["tile_y"],
                 ],
             )
+
+            # Collect footprint tiles for this entity
+            for tile_x, tile_y in e.get("footprint_tiles", []):
+                footprint_entries.append((
+                    tile_x,
+                    tile_y,
+                    e["entity_name"],
+                    e["position_x"],
+                    e["position_y"],
+                    False,  # is_ghost = False for regular entities
+                ))
+
+        # Batch insert footprint tiles
+        if footprint_entries:
+            con.executemany(
+                """
+                INSERT OR REPLACE INTO footprint_tiles (tile_x, tile_y, entity_name, entity_position_x, entity_position_y, is_ghost)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                footprint_entries,
+            )
+            print(f"  Loaded {len(footprint_entries)} footprint tiles")
+
+
+def _process_ghost_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Process a ghost entry and compute footprint tiles if needed."""
+    ghost_name = entry.get("ghost_name") or "unknown"
+    pos = entry.get("position") or {}
+    px = float(pos.get("x", 0.0))
+    py = float(pos.get("y", 0.0))
+
+    chunk = entry.get("chunk") or {}
+    chunk_x = chunk.get("x") if chunk else None
+    chunk_y = chunk.get("y") if chunk else None
+
+    # Get tile dimensions (default to 1x1)
+    tile_width = entry.get("tile_width", 1)
+    tile_height = entry.get("tile_height", 1)
+    direction = entry.get("direction")
+
+    # Footprint tiles: either from serialized data or computed
+    footprint_tiles = entry.get("footprint_tiles")
+    if footprint_tiles:
+        footprint_tiles = [(t.get("x", 0), t.get("y", 0)) for t in footprint_tiles]
+    else:
+        footprint_tiles = _compute_footprint_tiles(px, py, tile_width, tile_height, direction)
+
+    return {
+        "ghost_name": ghost_name,
+        "position_x": px,
+        "position_y": py,
+        "force": entry.get("force"),
+        "direction": direction,
+        "direction_name": entry.get("direction_name"),
+        "chunk_x": chunk_x,
+        "chunk_y": chunk_y,
+        "tile_width": tile_width,
+        "tile_height": tile_height,
+        "footprint_tiles": footprint_tiles,
+    }
 
 
 def load_ghosts(
@@ -371,55 +499,35 @@ def load_ghosts(
 ) -> None:
     """
     Load ghosts from chunk-wise ghosts-init.jsonl files.
-    
+
     Optionally replays ghosts-updates.jsonl to compute current state.
-    
+
     Args:
         con: DuckDB connection
         snapshot_dir: Path to snapshot directory
         replay_updates: If True, replay ghosts-updates.jsonl operations log
     """
     snapshot_dir = normalize_snapshot_dir(snapshot_dir)
-    
+
     # Check if ghost table exists (may not be in schema)
     try:
         con.execute("SELECT 1 FROM ghost_layer LIMIT 1;")
     except:
         # Table doesn't exist, skip ghost loading
         return
-    
+
     con.execute("DELETE FROM ghost_layer;")
-    
-    ghosts_by_key: Dict[Tuple[str, float, float], Tuple] = {}
-    
+
+    ghosts_by_key: Dict[Tuple[str, float, float], Dict[str, Any]] = {}
+
     # Load initial state from chunk-wise ghosts-init.jsonl files
     ghost_init_files = list(snapshot_dir.rglob("ghosts-init.jsonl"))
     for init_file in ghost_init_files:
         for entry in load_jsonl_file(init_file):
-            ghost_name = entry.get("ghost_name") or "unknown"
-            pos = entry.get("position") or {}
-            px = float(pos.get("x", 0.0))
-            py = float(pos.get("y", 0.0))
-            
-            chunk = entry.get("chunk") or {}
-            chunk_x = chunk.get("x") if chunk else None
-            chunk_y = chunk.get("y") if chunk else None
-            
-            # Use composite key (ghost_name, position_x, position_y) as dict key
-            composite_key = (ghost_name, px, py)
-            ghosts_by_key[composite_key] = (
-                ghost_name,
-                px,
-                py,
-                entry.get("force"),
-                px,
-                py,
-                entry.get("direction"),
-                entry.get("direction_name"),
-                chunk_x,
-                chunk_y,
-            )
-    
+            ghost_data = _process_ghost_entry(entry)
+            composite_key = (ghost_data["ghost_name"], ghost_data["position_x"], ghost_data["position_y"])
+            ghosts_by_key[composite_key] = ghost_data
+
     # Replay operations log if requested (chunk-wise ghosts-updates.jsonl files)
     if replay_updates:
         update_files = list(snapshot_dir.rglob("ghosts-updates.jsonl"))
@@ -427,28 +535,11 @@ def load_ghosts(
             for op in load_jsonl_file(updates_file):
                 op_type = op.get("op")
                 if op_type == "upsert":
-                    ghost_data = op.get("ghost")
-                    if ghost_data:
-                        ghost_name = ghost_data.get("ghost_name") or "unknown"
-                        pos = ghost_data.get("position") or {}
-                        px = float(pos.get("x", 0.0))
-                        py = float(pos.get("y", 0.0))
-                        chunk = ghost_data.get("chunk") or {}
-                        chunk_x = chunk.get("x") if chunk else None
-                        chunk_y = chunk.get("y") if chunk else None
-                        composite_key = (ghost_name, px, py)
-                        ghosts_by_key[composite_key] = (
-                            ghost_name,
-                            px,
-                            py,
-                            ghost_data.get("force"),
-                            px,
-                            py,
-                            ghost_data.get("direction"),
-                            ghost_data.get("direction_name"),
-                            chunk_x,
-                            chunk_y,
-                        )
+                    ghost_entry = op.get("ghost")
+                    if ghost_entry:
+                        ghost_data = _process_ghost_entry(ghost_entry)
+                        composite_key = (ghost_data["ghost_name"], ghost_data["position_x"], ghost_data["position_y"])
+                        ghosts_by_key[composite_key] = ghost_data
                 elif op_type == "remove":
                     ghost_name = op.get("ghost_name") or op.get("name", "")
                     position = op.get("position", {})
@@ -465,32 +556,75 @@ def load_ghosts(
                         px = float(position.get("x", 0))
                         py = float(position.get("y", 0))
                         composite_key = (ghost_name, px, py)
-                        # Update direction in ghosts_by_key if it exists
+                        # Update direction and recompute footprint
                         if composite_key in ghosts_by_key:
-                            ghost_data = list(ghosts_by_key[composite_key])
-                            ghost_data[5] = direction  # direction is at index 5
-                            ghost_data[6] = op.get("direction_name")  # direction_name is at index 6
-                            ghosts_by_key[composite_key] = tuple(ghost_data)
-    
-    # Insert into database
+                            ghost_data = ghosts_by_key[composite_key]
+                            ghost_data["direction"] = direction
+                            ghost_data["direction_name"] = op.get("direction_name")
+                            # Recompute footprint tiles with new direction
+                            ghost_data["footprint_tiles"] = _compute_footprint_tiles(
+                                ghost_data["position_x"],
+                                ghost_data["position_y"],
+                                ghost_data.get("tile_width", 1),
+                                ghost_data.get("tile_height", 1),
+                                direction,
+                            )
+
+    # Insert into database and collect footprint tiles
+    ghost_footprint_entries = []
+
     if ghosts_by_key:
-        con.executemany(
-            """
-            INSERT INTO ghost_layer (
-                ghost_name, position_x, position_y, force_name,
-                map_position,
-                direction, direction_name,
-                chunk_x, chunk_y
+        for ghost_data in ghosts_by_key.values():
+            con.execute(
+                """
+                INSERT INTO ghost_layer (
+                    ghost_name, position_x, position_y, force_name,
+                    map_position,
+                    direction, direction_name,
+                    chunk_x, chunk_y
+                )
+                VALUES (
+                    ?, ?, ?, ?,
+                    ST_Point(?, ?),
+                    ?, ?,
+                    ?, ?
+                )
+                """,
+                [
+                    ghost_data["ghost_name"],
+                    ghost_data["position_x"],
+                    ghost_data["position_y"],
+                    ghost_data.get("force"),
+                    ghost_data["position_x"],
+                    ghost_data["position_y"],
+                    ghost_data.get("direction"),
+                    ghost_data.get("direction_name"),
+                    ghost_data.get("chunk_x"),
+                    ghost_data.get("chunk_y"),
+                ],
             )
-            VALUES (
-                ?, ?, ?, ?,
-                ST_Point(?, ?),
-                ?, ?,
-                ?, ?
+
+            # Collect footprint tiles for this ghost
+            for tile_x, tile_y in ghost_data.get("footprint_tiles", []):
+                ghost_footprint_entries.append((
+                    tile_x,
+                    tile_y,
+                    ghost_data["ghost_name"],
+                    ghost_data["position_x"],
+                    ghost_data["position_y"],
+                    True,  # is_ghost = True
+                ))
+
+        # Insert ghost footprint tiles (using INSERT OR IGNORE to avoid conflicts with entity tiles)
+        if ghost_footprint_entries:
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO footprint_tiles (tile_x, tile_y, entity_name, entity_position_x, entity_position_y, is_ghost)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ghost_footprint_entries,
             )
-            """,
-            list(ghosts_by_key.values()),
-        )
+            print(f"  Loaded {len(ghost_footprint_entries)} ghost footprint tiles")
 
 
 def load_base_tables(con: duckdb.DuckDBPyConnection, snapshot_dir: Path, replay_updates: bool = True) -> None:

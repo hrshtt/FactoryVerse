@@ -215,3 +215,14 @@ def reset_global_dispatcher():
     """Reset the global dispatcher (useful for testing)."""
     global _global_dispatcher
     _global_dispatcher = None
+
+
+async def stop_global_dispatcher():
+    """Stop and cleanup the global dispatcher.
+
+    Call this when shutting down to properly release the UDP port.
+    """
+    global _global_dispatcher
+    if _global_dispatcher is not None and _global_dispatcher.is_running():
+        await _global_dispatcher.stop()
+    _global_dispatcher = None

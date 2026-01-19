@@ -9,7 +9,7 @@ Components loaded:
     - rcon: Connected RCONClient
 
 Usage:
-    >>> from FactoryVerse.infra.llm.boilerplate.rcon import load_rcon_scope
+    >>> from FactoryVerse.infra.boilerplate.rcon import load_rcon_scope
     >>> ctx = load_rcon_scope(instance='client')
     >>> ctx['rcon'].send_command('/c print("hello")')
 """

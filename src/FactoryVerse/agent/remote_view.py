@@ -409,6 +409,189 @@ class RemoteView:
             result = self.query("SELECT COUNT(*) as c FROM ghost")
         return result[0]["c"] if result else 0
 
+    # =========================================================================
+    # Tile-Based Spatial Queries
+    # =========================================================================
+
+    def get_entity_at_tile(self, tile_x: int, tile_y: int) -> Optional["BaseEntity"]:
+        """Get entity occupying a specific tile.
+
+        Uses the footprint_tiles table for O(1) tile lookup.
+        Returns the entity whose footprint includes this tile.
+
+        Args:
+            tile_x: Tile X coordinate (integer)
+            tile_y: Tile Y coordinate (integer)
+
+        Returns:
+            BaseEntity if tile is occupied, None otherwise
+
+        Example:
+            >>> entity = view.get_entity_at_tile(5, 10)
+            >>> if entity:
+            ...     print(f"Tile occupied by {entity.name}")
+        """
+        self._ensure_query_ready()
+
+        # Query footprint_tiles to find entity at this tile
+        result = self.query(f"""
+            SELECT ft.entity_name, ft.entity_position_x, ft.entity_position_y, ft.is_ghost
+            FROM footprint_tiles ft
+            WHERE ft.tile_x = {tile_x} AND ft.tile_y = {tile_y}
+            LIMIT 1
+        """)
+
+        if not result:
+            return None
+
+        row = result[0]
+        is_ghost = row.get("is_ghost", False)
+
+        if is_ghost:
+            # Query ghost table
+            return self.get_entity(f"""
+                SELECT * FROM ghost
+                WHERE ghost_name = '{row["entity_name"]}'
+                AND position_x = {row["entity_position_x"]}
+                AND position_y = {row["entity_position_y"]}
+            """)
+        else:
+            # Query map_entity table
+            return self.get_entity(f"""
+                SELECT * FROM map_entity
+                WHERE entity_name = '{row["entity_name"]}'
+                AND position_x = {row["entity_position_x"]}
+                AND position_y = {row["entity_position_y"]}
+            """)
+
+    def is_tile_occupied(self, tile_x: int, tile_y: int) -> bool:
+        """Check if a tile is occupied by any entity.
+
+        Fast O(1) check using footprint_tiles table index.
+
+        Args:
+            tile_x: Tile X coordinate (integer)
+            tile_y: Tile Y coordinate (integer)
+
+        Returns:
+            True if tile is occupied, False otherwise
+
+        Example:
+            >>> if not view.is_tile_occupied(5, 10):
+            ...     # Safe to place entity here
+        """
+        self._ensure_query_ready()
+        result = self.query(f"""
+            SELECT 1 FROM footprint_tiles
+            WHERE tile_x = {tile_x} AND tile_y = {tile_y}
+            LIMIT 1
+        """)
+        return len(result) > 0
+
+    def get_entities_in_tile_area(
+        self,
+        min_tile_x: int,
+        min_tile_y: int,
+        max_tile_x: int,
+        max_tile_y: int,
+        entity_name: Optional[str] = None,
+    ) -> List["BaseEntity"]:
+        """Get all entities with footprints overlapping a tile area.
+
+        Uses tile-based indexing for efficient rectangular area queries.
+        Much faster than geometry-based queries for tile-aligned areas.
+
+        Args:
+            min_tile_x: Minimum tile X coordinate (inclusive)
+            min_tile_y: Minimum tile Y coordinate (inclusive)
+            max_tile_x: Maximum tile X coordinate (inclusive)
+            max_tile_y: Maximum tile Y coordinate (inclusive)
+            entity_name: Optional filter by entity name
+
+        Returns:
+            List of BaseEntity instances in the area
+
+        Example:
+            >>> # Get all entities in a 10x10 tile area
+            >>> entities = view.get_entities_in_tile_area(0, 0, 9, 9)
+            >>> # Get only inserters in the area
+            >>> inserters = view.get_entities_in_tile_area(0, 0, 9, 9, "inserter")
+        """
+        self._ensure_query_ready()
+
+        # Find unique entities with footprints in the tile area
+        name_filter = f"AND ft.entity_name = '{entity_name}'" if entity_name else ""
+
+        result = self.query(f"""
+            SELECT DISTINCT ft.entity_name, ft.entity_position_x, ft.entity_position_y, ft.is_ghost
+            FROM footprint_tiles ft
+            WHERE ft.tile_x >= {min_tile_x} AND ft.tile_x <= {max_tile_x}
+            AND ft.tile_y >= {min_tile_y} AND ft.tile_y <= {max_tile_y}
+            {name_filter}
+        """)
+
+        if not result:
+            return []
+
+        # Separate ghosts and regular entities
+        entities = []
+        ghosts = []
+        for row in result:
+            if row.get("is_ghost", False):
+                ghosts.append(row)
+            else:
+                entities.append(row)
+
+        all_entities: List["BaseEntity"] = []
+
+        # Fetch regular entities
+        if entities:
+            # Build IN clause for efficient batch query
+            entity_conditions = " OR ".join([
+                f"(entity_name = '{r['entity_name']}' AND position_x = {r['entity_position_x']} AND position_y = {r['entity_position_y']})"
+                for r in entities
+            ])
+            all_entities.extend(self.get_entities(f"""
+                SELECT * FROM map_entity WHERE {entity_conditions}
+            """))
+
+        # Fetch ghosts
+        if ghosts:
+            ghost_conditions = " OR ".join([
+                f"(ghost_name = '{r['entity_name']}' AND position_x = {r['entity_position_x']} AND position_y = {r['entity_position_y']})"
+                for r in ghosts
+            ])
+            all_entities.extend(self.get_ghosts(f"""
+                SELECT * FROM ghost WHERE {ghost_conditions}
+            """))
+
+        return all_entities
+
+    def get_entities_at_anchor_tile(
+        self, tile_x: int, tile_y: int
+    ) -> List["BaseEntity"]:
+        """Get entities whose anchor tile (center) is at a specific tile.
+
+        Unlike get_entity_at_tile which checks footprint overlap,
+        this returns only entities centered on the specified tile.
+
+        Args:
+            tile_x: Tile X coordinate (integer)
+            tile_y: Tile Y coordinate (integer)
+
+        Returns:
+            List of BaseEntity instances with anchor at this tile
+
+        Example:
+            >>> # Find entities centered at tile (5, 10)
+            >>> entities = view.get_entities_at_anchor_tile(5, 10)
+        """
+        self._ensure_query_ready()
+        return self.get_entities(f"""
+            SELECT * FROM map_entity
+            WHERE tile_x = {tile_x} AND tile_y = {tile_y}
+        """)
+
     @property
     def sync_state(self) -> SyncState:
         """Get current sync state."""

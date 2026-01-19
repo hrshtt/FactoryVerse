@@ -6,8 +6,8 @@ with capability slots populated based on isinstance checks.
 """
 
 from enum import Enum
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
-from FactoryVerse.factory.types import MapPosition, Direction, EntityStatus
+from typing import Optional, List, Dict, Any, Set, TYPE_CHECKING
+from FactoryVerse.factory.types import MapPosition, Direction, EntityStatus, TilePosition
 from FactoryVerse.factory.prototypes import get_entity_prototypes, get_width_height
 import math
 
@@ -240,6 +240,97 @@ class BaseEntity:
     def footprint(self) -> tuple:
         """Get (width, height) tuple for spatial calculations."""
         return (self.tile_width, self.tile_height)
+
+    @property
+    def anchor_tile(self) -> TilePosition:
+        """The tile containing this entity's center.
+
+        For odd-dimension entities (1x1, 3x3), the center is at tile center.
+        For even-dimension entities (2x2), the center is at tile corner.
+        In both cases, this returns the tile containing that center point.
+
+        Returns:
+            TilePosition of the anchor tile.
+
+        Example:
+            >>> chest.position  # (5.5, 5.5)
+            >>> chest.anchor_tile
+            TilePosition(x=5, y=5)
+        """
+        return TilePosition.from_map_position(self.position.x, self.position.y)
+
+    @property
+    def footprint_tiles(self) -> List[TilePosition]:
+        """Tiles occupied by this entity's footprint.
+
+        Computed from position and tile dimensions. For asymmetric entities,
+        accounts for direction (width/height swap for EAST/WEST).
+
+        Returns:
+            List of TilePositions this entity occupies.
+
+        Example:
+            >>> assembler.position  # (10.5, 10.5), 3x3
+            >>> assembler.footprint_tiles
+            [TilePosition(9,9), TilePosition(10,9), TilePosition(11,9),
+             TilePosition(9,10), TilePosition(10,10), TilePosition(11,10),
+             TilePosition(9,11), TilePosition(10,11), TilePosition(11,11)]
+        """
+        # Get effective dimensions (may swap for EAST/WEST asymmetric entities)
+        width = self.tile_width
+        height = self.tile_height
+        direction = getattr(self, 'direction', None)
+
+        # For asymmetric entities facing EAST/WEST, swap width and height
+        if direction in (Direction.EAST, Direction.WEST) and width != height:
+            width, height = height, width
+
+        half_w = width / 2
+        half_h = height / 2
+
+        # Calculate tile bounds
+        # The -0.001 epsilon handles exact boundary cases
+        min_x = math.floor(self.position.x - half_w)
+        max_x = math.floor(self.position.x + half_w - 0.001)
+        min_y = math.floor(self.position.y - half_h)
+        max_y = math.floor(self.position.y + half_h - 0.001)
+
+        return [
+            TilePosition(x=x, y=y)
+            for x in range(min_x, max_x + 1)
+            for y in range(min_y, max_y + 1)
+        ]
+
+    @property
+    def footprint_tiles_set(self) -> Set[TilePosition]:
+        """Tiles occupied by this entity as a set (for fast membership/intersection).
+
+        Returns:
+            Frozen set of TilePositions for O(1) membership tests.
+        """
+        return set(self.footprint_tiles)
+
+    def occupies_tile(self, tile: TilePosition) -> bool:
+        """Check if this entity occupies a specific tile.
+
+        Args:
+            tile: TilePosition to check.
+
+        Returns:
+            True if this entity's footprint includes the tile.
+        """
+        return tile in self.footprint_tiles_set
+
+    def collides_with(self, other: "BaseEntity") -> bool:
+        """Check if this entity's footprint overlaps with another entity.
+
+        Args:
+            other: Another BaseEntity to check collision with.
+
+        Returns:
+            True if the footprints share at least one tile.
+        """
+        return bool(self.footprint_tiles_set & other.footprint_tiles_set)
 
     @property
     def is_ghost(self) -> bool:

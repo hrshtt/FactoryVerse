@@ -154,6 +154,18 @@ MAP_ENTITY = TableDefinition(
             nullable=True,
             description="JSON blob with full entity data",
         ),
+        ColumnDefinition(
+            name="tile_x",
+            type="INTEGER",
+            nullable=True,
+            description="Anchor tile X coordinate (integer grid position)",
+        ),
+        ColumnDefinition(
+            name="tile_y",
+            type="INTEGER",
+            nullable=True,
+            description="Anchor tile Y coordinate (integer grid position)",
+        ),
     ],
     example_query="SELECT * FROM map_entity WHERE entity_name = 'burner-mining-drill'",
 )
@@ -368,6 +380,64 @@ WATER_TILE = TableDefinition(
     example_query="SELECT * FROM water_tile WHERE chunk_x = 0 AND chunk_y = 0",
 )
 
+FOOTPRINT_TILES = TableDefinition(
+    name="footprint_tiles",
+    purpose="Maps tiles to entities that occupy them. Enables O(1) 'what entity is at tile X?' queries.",
+    primary_key=["tile_x", "tile_y"],
+    columns=[
+        ColumnDefinition(
+            name="tile_x",
+            type="INTEGER",
+            nullable=False,
+            description="Tile X coordinate (integer grid position)",
+        ),
+        ColumnDefinition(
+            name="tile_y",
+            type="INTEGER",
+            nullable=False,
+            description="Tile Y coordinate (integer grid position)",
+        ),
+        ColumnDefinition(
+            name="entity_name",
+            type="VARCHAR",
+            nullable=False,
+            description="Name of entity occupying this tile",
+        ),
+        ColumnDefinition(
+            name="entity_position_x",
+            type="DOUBLE",
+            nullable=False,
+            description="Entity center X coordinate",
+        ),
+        ColumnDefinition(
+            name="entity_position_y",
+            type="DOUBLE",
+            nullable=False,
+            description="Entity center Y coordinate",
+        ),
+        ColumnDefinition(
+            name="is_ghost",
+            type="BOOLEAN",
+            nullable=False,
+            description="Whether this is a ghost entity",
+            default="FALSE",
+        ),
+    ],
+    example_queries=[
+        "-- Check if tile is occupied",
+        "SELECT * FROM footprint_tiles WHERE tile_x = 5 AND tile_y = 10",
+        "-- Find all tiles in an area",
+        "SELECT * FROM footprint_tiles WHERE tile_x BETWEEN 0 AND 10 AND tile_y BETWEEN 0 AND 10",
+        "-- Get entity at specific tile",
+        "SELECT entity_name, entity_position_x, entity_position_y FROM footprint_tiles WHERE tile_x = 5 AND tile_y = 5",
+    ],
+    notes=(
+        "**Tile-based queries**: This table enables fast integer-based spatial queries. "
+        "Each entity occupies one or more tiles based on its footprint (e.g., 3x3 assembler = 9 tiles). "
+        "The primary key enforces that only one entity can occupy each tile."
+    ),
+)
+
 # =============================================================================
 # COMPONENT TABLES
 # =============================================================================
@@ -573,6 +643,7 @@ CORE_TABLES: List[TableDefinition] = [
     RESOURCE_TILE,
     RESOURCE_ENTITY,
     WATER_TILE,
+    FOOTPRINT_TILES,
 ]
 
 # Component tables (joined via foreign keys)
@@ -598,6 +669,7 @@ __all__ = [
     "RESOURCE_TILE",
     "RESOURCE_ENTITY",
     "WATER_TILE",
+    "FOOTPRINT_TILES",
     "INSERTER",
     "TRANSPORT_BELT",
     "MINING_DRILL",

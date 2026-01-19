@@ -15,9 +15,10 @@ from FactoryVerse.config import FactoryVerseConfig
 class InfraMode(str, Enum):
     """Factorio infrastructure mode."""
 
-    CLIENT = "client"
-    SERVER = "server"
-    CLIENT_AND_SERVER = "client_and_server"
+    CLIENT = "client"  # Manage client lifecycle
+    SERVER = "server"  # Manage server lifecycle (Docker)
+    CLIENT_AND_SERVER = "client_and_server"  # Manage both
+    EXTERNAL = "external"  # Connect to pre-existing instance, don't manage lifecycle
 
 
 class RuntimeVariant(str, Enum):
@@ -25,6 +26,13 @@ class RuntimeVariant(str, Enum):
 
     MINIMAL = "minimal"  # No remote_view, no DuckDB
     FULL = "full"  # All agent modules including remote_view
+
+
+class ExecutionMode(str, Enum):
+    """Code execution mode for the runtime."""
+
+    INPROCESS = "inprocess"  # Execute in same Python process (lightweight, no notebook)
+    JUPYTER = "jupyter"  # Execute in Jupyter kernel (isolated, with notebook logging)
 
 
 class InteractionMode(str, Enum):
@@ -114,6 +122,27 @@ class RuntimeConfig(BaseModel):
     session_dir: Optional[Path] = Field(
         default=None, description="Session directory (auto-created if None)"
     )
+    execution_mode: ExecutionMode = Field(
+        default=ExecutionMode.JUPYTER,
+        description="Code execution mode (jupyter for notebook logging, inprocess for lightweight)",
+    )
+    kernel_name: str = Field(
+        default="fv",
+        description="Jupyter kernel name (only used when execution_mode=JUPYTER)",
+    )
+    # Session metadata for trajectory tracking
+    provider: Optional[str] = Field(
+        default=None,
+        description="LLM provider for session organization (e.g., 'prime_intellect'). Used in session directory path.",
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Model name for session organization (e.g., 'intellect-3'). Used in session directory path.",
+    )
+    mode: Optional[str] = Field(
+        default=None,
+        description="Agent mode ('assisted' or 'autonomous'). Stored in session metadata.",
+    )
 
     class Config:
         use_enum_values = True
@@ -127,6 +156,9 @@ class SpecificationConfig(BaseModel):
     )
     include_schema_reference: bool = Field(
         default=True, description="Include database schema in system prompt"
+    )
+    include_initial_state: bool = Field(
+        default=True, description="Generate initial state summary showing agent's situation"
     )
     system_prompt_path: Optional[Path] = Field(
         default=None, description="Custom system prompt path (uses default if None)"
@@ -151,6 +183,10 @@ class InteractionConfig(BaseModel):
     )
     max_context_tokens: int = Field(
         default=100000, description="Maximum context window tokens"
+    )
+    console_output_enabled: bool = Field(
+        default=True,
+        description="Enable console output streaming for agent thoughts/actions",
     )
 
     class Config:

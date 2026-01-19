@@ -328,6 +328,7 @@ def setup_client(
 
     embodied_agent_mod_dir = work_dir / "src" / "fv_embodied_agent"
     snapshot_mod_dir = work_dir / "src" / "fv_snapshot"
+    placement_hints_mod_dir = work_dir / "src" / "fv_placement_hints"
 
     # Ensure directories exist
     mod_path.mkdir(parents=True, exist_ok=True)
@@ -351,6 +352,7 @@ def setup_client(
     for old_mod_pattern in [
         "fv_embodied_agent*",
         "fv_snapshot*",
+        "fv_placement_hints*",
         "factorio_verse*",
     ]:
         for old_mod in mod_path.glob(old_mod_pattern):
@@ -428,6 +430,41 @@ def setup_client(
         else:
             _update_mod_list(mod_path, mod_name, True)
             print(f"✓ {mod_name} mod up to date (hash unchanged)")
+
+    # Prepare fv_placement_hints mod
+    print("📦 Checking fv_placement_hints mod...")
+    if placement_hints_mod_dir.exists():
+        info_json_path = placement_hints_mod_dir / "info.json"
+        if info_json_path.exists():
+            info = json.loads(info_json_path.read_text())
+            mod_name = info.get("name", "fv_placement_hints")
+            mod_version = info.get("version", "1.0.0")
+        else:
+            mod_name = "fv_placement_hints"
+            mod_version = "1.0.0"
+
+        client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
+
+        # Check if mod needs update based on hash
+        if force or _mod_needs_update(placement_hints_mod_dir, mod_path, mod_name):
+            if client_mod_dir.exists():
+                shutil.rmtree(client_mod_dir)
+            print(f"   Updating {mod_name} mod (hash changed or --force)...")
+            shutil.copytree(placement_hints_mod_dir, client_mod_dir)
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod updated as {client_mod_dir.name}")
+        else:
+            # Ensure mod directory exists even if hash matches
+            if not client_mod_dir.exists():
+                print(f"   Mod directory missing, copying {mod_name}...")
+                shutil.copytree(placement_hints_mod_dir, client_mod_dir)
+                _update_mod_list(mod_path, mod_name, True)
+                print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+            else:
+                _update_mod_list(mod_path, mod_name, True)
+                print(f"✓ {mod_name} mod up to date (hash unchanged)")
+    else:
+        print("⚠️  fv_placement_hints mod not found, skipping...")
 
     # Handle scenario if project_scenarios_dir is provided
     if project_scenarios_dir:

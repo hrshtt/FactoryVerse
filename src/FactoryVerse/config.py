@@ -312,6 +312,11 @@ class FactoryVerseConfig(BaseSettings):
         """Get fv_snapshot mod source directory."""
         return self.project_root / "src" / "fv_snapshot"
 
+    @property
+    def placement_hints_mod_dir(self) -> Path:
+        """Get fv_placement_hints mod source directory."""
+        return self.project_root / "src" / "fv_placement_hints"
+
     # =========================================================================
     # Methods
     # =========================================================================

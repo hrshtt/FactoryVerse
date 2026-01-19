@@ -782,8 +782,8 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
     async def _create_session(self, args: dict) -> list[TextContent]:
         """Create a boilerplate session."""
-        from FactoryVerse.infra.llm.boilerplate import Scope
-        from FactoryVerse.infra.llm.boilerplate.mcp import mcp_create_session
+        from FactoryVerse.infra.boilerplate import Scope
+        from FactoryVerse.infra.boilerplate.mcp import mcp_create_session
 
         session_id = args["session_id"]
         scope_int = args.get("scope", 3)
@@ -807,7 +807,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
     async def _execute_in_session(self, args: dict) -> list[TextContent]:
         """Execute code in a session."""
-        from FactoryVerse.infra.llm.boilerplate.mcp import mcp_execute_code
+        from FactoryVerse.infra.boilerplate.mcp import mcp_execute_code
 
         session_id = args["session_id"]
         code = args["code"]
@@ -823,7 +823,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
     async def _reload_session(self, args: dict) -> list[TextContent]:
         """Reload a session."""
-        from FactoryVerse.infra.llm.boilerplate.mcp import mcp_reload_session
+        from FactoryVerse.infra.boilerplate.mcp import mcp_reload_session
 
         session_id = args["session_id"]
         reload_lua = args.get("reload_lua", False)
@@ -839,7 +839,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
     async def _destroy_session(self, args: dict) -> list[TextContent]:
         """Destroy a session."""
-        from FactoryVerse.infra.llm.boilerplate.mcp import mcp_destroy_session
+        from FactoryVerse.infra.boilerplate.mcp import mcp_destroy_session
 
         session_id = args["session_id"]
 
@@ -854,7 +854,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
     async def _list_sessions(self, args: dict) -> list[TextContent]:
         """List active sessions."""
-        from FactoryVerse.infra.llm.boilerplate.mcp import mcp_list_sessions
+        from FactoryVerse.infra.boilerplate.mcp import mcp_list_sessions
 
         result = await mcp_list_sessions()
 

@@ -155,7 +155,11 @@ class AsyncActionListener:
 
 
 class RconHelper:
-    """Enhanced RCON helper with async/sync action support."""
+    """Enhanced RCON helper with async/sync action support.
+
+    Note: Agent creation is now handled by Tier 3/4 using the query-first pattern.
+    Set auto_create_agent=False when using with the Environment module.
+    """
 
     # Hardcoded list of async actions (agent interface actions only)
     ASYNC_ACTIONS = {
@@ -170,7 +174,6 @@ class RconHelper:
         udp_listener: Optional[AsyncActionListener] = None,
         auto_create_agent: bool = True,
         udp_port: Optional[int] = None,
-        destroy_existing: bool = True,
     ):
         """
         Initialize the RCON helper.
@@ -179,41 +182,49 @@ class RconHelper:
             rcon_client: factorio_rcon.RCONClient instance
             udp_listener: Optional AsyncActionListener for handling async action completions
                          (default: AsyncActionListener on port 34202)
-            auto_create_agent: If True, automatically create agent before loading interfaces
-                             (default: True, since agent interfaces only appear after creation)
+            auto_create_agent: If True, automatically create agent before loading interfaces.
+                             Set to False when using with Environment module (Tier 3/4 handle agent creation).
             udp_port: UDP port for agent-specific payloads (defaults to 34202)
-            destroy_existing: If True, destroy existing agents before creating new ones (default: True)
         """
         self.rcon_client = rcon_client
         self.udp_listener = udp_listener
 
         # Create agent if requested (before fetching interfaces, since agent interfaces
         # like "agent_1" only appear after agents are created)
+        # Note: When using Environment module, set auto_create_agent=False
+        # as Tier 3/4 use the query-first pattern for proper lifecycle management.
         if auto_create_agent:
-            self._create_agent(udp_port, destroy_existing)
+            self._create_agent_simple(udp_port)
 
         self.interfaces = None
         self._fetch_interfaces()
 
-    def _create_agent(
-        self, udp_port: Optional[int] = None, destroy_existing: bool = True
-    ):
-        """Create agent via admin API."""
+    def _create_agent_simple(self, udp_port: Optional[int] = None):
+        """Create agent via admin API (simple mode for standalone usage).
+
+        Note: For proper lifecycle management with query-first pattern,
+        use Tier 3's create_game_agent() method instead.
+        """
         try:
-            # Use admin interface to create agent
-            # Format: remote.call('agent', 'create_agent', udp_port, destroy_existing)
-            # Must use rcon.print(helpers.table_to_json(...)) to get output
+            # Use correct Lua API signature:
+            # remote.call('agent', 'create_agent', udp_port, set_global_pos, set_unique_forces, force_name, initial_inventory)
             if udp_port is not None:
-                create_cmd = f"/c local res = remote.call('agent', 'create_agent', {udp_port}, {str(destroy_existing).lower()}); rcon.print(helpers.table_to_json(res))"
+                create_cmd = (
+                    f"/c local res = remote.call('agent', 'create_agent', {udp_port}, true, false, 'player'); "
+                    "rcon.print(helpers.table_to_json(res))"
+                )
             else:
-                create_cmd = f"/c local res = remote.call('agent', 'create_agent', nil, {str(destroy_existing).lower()}); rcon.print(helpers.table_to_json(res))"
+                create_cmd = (
+                    "/c local res = remote.call('agent', 'create_agent', nil, true, false, 'player'); "
+                    "rcon.print(helpers.table_to_json(res))"
+                )
             result = self.rcon_client.send_command(create_cmd)
             if result and result.strip():
-                print(f"✅ Created agent: {result}")
+                print(f"Created agent: {result}")
             else:
-                print(f"⚠️  Agent creation returned empty result")
+                print("Agent creation returned empty result")
         except Exception as e:
-            print(f"⚠️  Error creating agent: {e}")
+            print(f"Error creating agent: {e}")
             # Don't raise - allow initialization to continue even if agent creation fails
 
     def refresh_interfaces(self) -> None:

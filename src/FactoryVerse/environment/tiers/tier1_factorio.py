@@ -38,6 +38,9 @@ class Tier1Factorio(TierBase):
         self._client_manager: Optional[Any] = None
         self._server_manager: Optional[Any] = None
         self._docker_compose_manager: Optional[Any] = None
+        # Track what WE started vs what was already running
+        self._client_started_by_us: bool = False
+        self._server_started_by_us: bool = False
 
     @property
     def config(self) -> InfraConfig:
@@ -59,6 +62,10 @@ class Tier1Factorio(TierBase):
 
         However, we verify system requirements are met.
         """
+        # EXTERNAL mode: no prerequisites, just connect to existing
+        if self.config.mode == InfraMode.EXTERNAL:
+            return PrerequisiteResult.ok()
+
         missing = []
 
         # Check Factorio is installed (for client mode)
@@ -81,13 +88,20 @@ class Tier1Factorio(TierBase):
     async def initialize(self) -> None:
         """Initialize Factorio infrastructure based on mode.
 
-        - CLIENT: Initialize client manager
-        - SERVER: Initialize server manager + Docker
+        - CLIENT: Initialize client manager (manages lifecycle)
+        - SERVER: Initialize server manager + Docker (manages lifecycle)
         - CLIENT_AND_SERVER: Initialize both
+        - EXTERNAL: No managers, just connect to existing instance
         """
         self._set_state(TierState.INITIALIZING)
 
         try:
+            # EXTERNAL mode: no lifecycle management, skip manager initialization
+            if self.config.mode == InfraMode.EXTERNAL:
+                logger.info("Tier 1: EXTERNAL mode - no lifecycle management")
+                self._set_state(TierState.READY)
+                return
+
             infra_config = self._env.config.infra_config
 
             # Initialize based on mode
@@ -174,24 +188,33 @@ class Tier1Factorio(TierBase):
         await self.initialize()
 
     async def shutdown(self) -> None:
-        """Shutdown Factorio infrastructure."""
+        """Shutdown Factorio infrastructure.
+
+        Only stops instances that WE started. Pre-existing instances are left alone.
+        """
         self._set_state(TierState.SHUTTING_DOWN)
 
-        if self._client_manager:
+        # Only stop client if WE started it
+        if self._client_manager and self._client_started_by_us:
             try:
                 self._client_manager.stop()
+                logger.info("Tier 1: Stopped client (started by us)")
             except Exception as e:
                 logger.warning(f"Error stopping client: {e}")
 
-        if self._docker_compose_manager:
+        # Only stop server if WE started it
+        if self._docker_compose_manager and self._server_started_by_us:
             try:
                 self._docker_compose_manager.down()
+                logger.info("Tier 1: Stopped server (started by us)")
             except Exception as e:
                 logger.warning(f"Error stopping server: {e}")
 
         self._client_manager = None
         self._server_manager = None
         self._docker_compose_manager = None
+        self._client_started_by_us = False
+        self._server_started_by_us = False
 
         self._set_state(TierState.SHUTDOWN)
 
@@ -223,6 +246,9 @@ class Tier1Factorio(TierBase):
             # Use tier 2 config if available
             tier2_config = self._env.config.tier2
             self._client_manager.start(scenario=tier2_config.scenario, **kwargs)
+
+        # Mark that WE started the client
+        self._client_started_by_us = True
 
     async def stop_client(self, force: bool = False) -> None:
         """Stop Factorio client."""
@@ -256,6 +282,9 @@ class Tier1Factorio(TierBase):
 
         # Start containers
         self._docker_compose_manager.up()
+
+        # Mark that WE started the server
+        self._server_started_by_us = True
 
     async def stop_server(self) -> None:
         """Stop Factorio server container(s)."""

@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from FactoryVerse.agent.embodied_actions.entity_operations import (
         EntityOperationsAction,
     )
-    from FactoryVerse.factory.types import MapPosition, Direction
 
 
 class HeldItem(BaseModel):
@@ -39,24 +38,22 @@ class InserterMixin:
 
     Provides:
     - _get_inserter_state() for inspection
-    - get_pickup_position() for geometric calculations
-    - get_drop_position() for geometric calculations
     - set_filter() for filter inserters
+
+    Note: Pickup/drop positions come from Lua inspection data (engine-computed),
+    not calculated from prototypes. Use fv_placement_hints for placement queries.
 
     Requires entity to have:
     - is_ghost: bool
     - direction: Direction
     - position: Position
     - name: str
-    - prototype: Dict[str, Any] (from BaseEntity)
     - _entity_ops: EntityOperationsAction
     """
 
     is_ghost: bool
     name: str
     position: Any  # MapPosition at runtime
-    direction: "Direction"
-    prototype: Any  # Dict[str, Any] at runtime
     _entity_ops: "EntityOperationsAction"
 
     def _get_inserter_state(self, inspection_data: dict) -> InserterState:
@@ -91,44 +88,6 @@ class InserterMixin:
             return InserterState(pickup_position=pickup_pos, drop_position=drop_pos)
 
         return inserter_state
-
-    def get_pickup_position(self) -> "MapPosition":
-        """Calculate inserter pickup position (static, geometric).
-
-        Returns the position where the inserter picks up items from.
-        This is calculated from the prototype's pickup_position,
-        rotated by the entity's direction.
-
-        Returns:
-            MapPosition where items are picked up
-
-        Example:
-            >>> inserter = get_entity("inserter", pos)
-            >>> pickup_pos = inserter.get_pickup_position()
-        """
-        from FactoryVerse.factory.prototypes import apply_cardinal_vector
-
-        vec = tuple(self.prototype["pickup_position"])
-        return apply_cardinal_vector(self.position, vec, self.direction)
-
-    def get_drop_position(self) -> "MapPosition":
-        """Calculate inserter drop position (static, geometric).
-
-        Returns the position where the inserter drops items to.
-        This is calculated from the prototype's insert_position,
-        rotated by the entity's direction.
-
-        Returns:
-            MapPosition where items are dropped
-
-        Example:
-            >>> inserter = get_entity("inserter", pos)
-            >>> drop_pos = inserter.get_drop_position()
-        """
-        from FactoryVerse.factory.prototypes import apply_cardinal_vector
-
-        vec = tuple(self.prototype["insert_position"])
-        return apply_cardinal_vector(self.position, vec, self.direction)
 
     def set_filter(self, slot: int, item_name: str) -> bool:
         """Set a filter slot on this inserter.

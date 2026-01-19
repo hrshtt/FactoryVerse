@@ -152,9 +152,11 @@ class Tier3Python(TierBase):
 
     async def _init_rcon_helper(self) -> None:
         """Initialize RconHelper with async action support."""
-        from FactoryVerse.infra.rcon_helper import RconHelper, AsyncActionListener
+        from FactoryVerse.infra.rcon_helper import RconHelper
+        from FactoryVerse.agent.infra.async_listener import AsyncActionListener
 
         # Create action listener if UDP is enabled
+        # Using the one from agent.infra.async_listener which has await_action()
         if self._udp_dispatcher:
             self._action_listener = AsyncActionListener(
                 udp_dispatcher=self._udp_dispatcher
@@ -297,6 +299,153 @@ class Tier3Python(TierBase):
             raise RuntimeError("RCON not connected")
 
         return self._rcon.send_command(f"/silent-command {code}")
+
+    # =========================================================================
+    # Lua State Query Methods (Single Source of Truth)
+    # =========================================================================
+
+    def list_game_agents(self) -> list[dict]:
+        """Query agents currently existing in Factorio.
+
+        Returns:
+            List of agent dicts with keys:
+            - id: Numeric agent ID
+            - interface_name: Agent interface name (e.g., 'agent_1')
+            - force: Force name (e.g., 'player')
+            - udp_port: UDP port for notifications
+            - entity_valid: Whether agent entity is valid
+            - position: {x, y} position
+        """
+        import json
+
+        if not self._rcon:
+            raise RuntimeError("RCON not connected")
+
+        result = self._rcon.send_command(
+            "/c local res = remote.call('agent', 'list_agents'); "
+            "rcon.print(helpers.table_to_json(res))"
+        )
+        return json.loads(result) if result else []
+
+    def get_snapshot_status(self) -> dict:
+        """Query snapshot system status from Factorio.
+
+        Returns:
+            Dict with keys:
+            - phase: Current phase
+            - system_phase: System phase
+            - pending_chunks: Number of pending chunks
+            - completed_chunks: Number of completed chunks
+            - bootstrap_wait: Bootstrap wait status
+            - config: Snapshot configuration
+        """
+        import json
+
+        if not self._rcon:
+            raise RuntimeError("RCON not connected")
+
+        result = self._rcon.send_command(
+            "/c local res = remote.call('map', 'get_snapshot_status'); "
+            "rcon.print(helpers.table_to_json(res))"
+        )
+        return json.loads(result) if result else {}
+
+    def get_game_tick(self) -> int:
+        """Get current game tick from Factorio.
+
+        Returns:
+            Current game tick number
+        """
+        if not self._rcon:
+            raise RuntimeError("RCON not connected")
+
+        result = self._rcon.send_command("/c rcon.print(game.tick)")
+        return int(result.strip()) if result else 0
+
+    def destroy_game_agents(
+        self, agent_ids: list[int], remove_forces: bool = False
+    ) -> dict:
+        """Destroy agents in Factorio.
+
+        Args:
+            agent_ids: List of numeric agent IDs to destroy
+            remove_forces: Whether to also remove agent forces
+
+        Returns:
+            Dict with: destroyed (list), errors (list)
+        """
+        import json
+
+        if not self._rcon:
+            raise RuntimeError("RCON not connected")
+
+        # Format agent IDs as Lua table
+        ids_lua = "{" + ", ".join(str(id) for id in agent_ids) + "}"
+        remove_str = "true" if remove_forces else "false"
+
+        result = self._rcon.send_command(
+            f"/c local res = remote.call('agent', 'destroy_agents', {ids_lua}, {remove_str}); "
+            "rcon.print(helpers.table_to_json(res))"
+        )
+        return json.loads(result) if result else {"destroyed": [], "errors": []}
+
+    def create_game_agent(
+        self,
+        udp_port: int,
+        set_unique_forces: bool = False,
+        default_common_force: str = "player",
+        initial_inventory: dict[str, int] | None = None,
+    ) -> dict:
+        """Create a new agent in Factorio with correct parameter mapping.
+
+        This matches the Lua API signature:
+        remote.call('agent', 'create_agent', udp_port, set_global_pos, set_unique_forces, force_name, initial_inventory)
+
+        Args:
+            udp_port: UDP port for agent notifications
+            set_unique_forces: If True, create unique force per agent; if False, use default_common_force
+            default_common_force: Force name when set_unique_forces=False (default: 'player')
+            initial_inventory: Optional dict of item_name -> count
+
+        Returns:
+            Dict with: agent_id, force_name, interface_name, udp_port
+        """
+        import json
+
+        if not self._rcon:
+            raise RuntimeError("RCON not connected")
+
+        # Build Lua command with correct parameter order
+        # Args: udp_port, set_global_pos (always true), set_unique_forces, force_name, initial_inventory
+        set_unique_str = "true" if set_unique_forces else "false"
+
+        if initial_inventory:
+            inv_lua = (
+                "{"
+                + ", ".join(f'["{k}"] = {v}' for k, v in initial_inventory.items())
+                + "}"
+            )
+            cmd = (
+                f"/c local res = remote.call('agent', 'create_agent', "
+                f"{udp_port}, true, {set_unique_str}, \"{default_common_force}\", {inv_lua}); "
+                "rcon.print(helpers.table_to_json(res))"
+            )
+        else:
+            cmd = (
+                f"/c local res = remote.call('agent', 'create_agent', "
+                f"{udp_port}, true, {set_unique_str}, \"{default_common_force}\"); "
+                "rcon.print(helpers.table_to_json(res))"
+            )
+
+        result = self._rcon.send_command(cmd)
+
+        if result and result.strip():
+            parsed = json.loads(result)
+            logger.info(f"Tier 3: Created agent: {parsed}")
+            return parsed
+        else:
+            logger.warning("Tier 3: Agent creation returned empty result")
+            return {}
 
     # =========================================================================
     # Helper Methods

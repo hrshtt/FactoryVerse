@@ -514,7 +514,12 @@ class AgentOrchestrator:
             metadata = {"tool_name": tool_name, "turn_number": self.turn_number}
 
             if tool_name == "execute_dsl":
-                result = self.runtime.execute_dsl(arguments["code"], metadata=metadata)
+                # execute_dsl may be async (when using Environment tiers)
+                coro_or_result = self.runtime.execute_dsl(arguments["code"], metadata=metadata)
+                if hasattr(coro_or_result, "__await__"):
+                    result = await coro_or_result
+                else:
+                    result = coro_or_result
                 return result, ActionStatus.SUCCESS
 
             elif tool_name == "execute_duckdb":
@@ -588,7 +593,12 @@ except Exception as e:
     print("[]")
 """
         try:
-            result = self.runtime.execute_code(notification_code, compress_output=False)
+            # execute_code may be async (when using Environment tiers)
+            coro_or_result = self.runtime.execute_code(notification_code, compress_output=False)
+            if hasattr(coro_or_result, "__await__"):
+                result = await coro_or_result
+            else:
+                result = coro_or_result
             result = result.strip()
             if not result or result == "[]":
                 return []

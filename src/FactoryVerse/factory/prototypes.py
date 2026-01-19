@@ -1,57 +1,18 @@
 """Prototype data access - minimal loader providing raw dict access.
 
 This module provides:
-- Geometric helper functions (pure functions, no state)
+- get_width_height(): Helper for collision box dimensions
 - EntityPrototypes: Singleton providing get_prototype(name) -> Dict[str, Any]
 - ItemPrototypes: Singleton for item data access
 - RecipePrototypes: Singleton for recipe data access
+
+Note: Geometric position calculations (vector rotation, drop/pickup positions)
+are now handled by fv_placement_hints mod in Lua using engine-provided values.
 
 All property accessors are defined on BaseEntity, mixins, and implementations.
 """
 
 from typing import Tuple, List, Dict, Any, Optional
-from FactoryVerse.factory.types import MapPosition, Direction, BoundingBox
-import math
-
-
-def snap_to_tile_center(position: MapPosition) -> MapPosition:
-    """Snaps a coordinate to the center of the grid tile it falls within.
-
-    In Factorio, the tile at index 39 covers x=[39.0, 40.0).
-    Its center is 39.5.
-    """
-    return MapPosition(x=math.floor(position.x) + 0.5, y=math.floor(position.y) + 0.5)
-
-
-def apply_cardinal_vector(
-    map_position: MapPosition,
-    vector: Tuple[float, float],
-    direction: Direction,
-) -> MapPosition:
-    """Apply a vector transformation based on direction.
-
-    Rotates a vector relative to NORTH based on the given direction.
-    Coordinate System: +X is East, +Y is South.
-    """
-    vx, vy = vector
-    if not direction.is_cardinal():
-        raise ValueError("Direction must be cardinal")
-
-    # Correct Rotation Logic (Clockwise from North)
-    if direction == Direction.NORTH:
-        # No change
-        pass
-    elif direction == Direction.EAST:
-        # Rotate 90 deg CW: (x, y) -> (-y, x)
-        vx, vy = -vy, vx
-    elif direction == Direction.SOUTH:
-        # Rotate 180 deg: (x, y) -> (-x, -y)
-        vx, vy = -vx, -vy
-    elif direction == Direction.WEST:
-        # Rotate 270 deg CW (or 90 CCW): (x, y) -> (y, -x)
-        vx, vy = vy, -vx
-
-    return MapPosition(x=map_position.x + vx, y=map_position.y + vy)
 
 
 def get_width_height(bbox: List[List[float]]) -> Tuple[float, float]:

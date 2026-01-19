@@ -180,7 +180,12 @@ class FactorioErrorParser:
         )
 
     def _parse_python_error(self, error_text: str) -> ParsedError:
-        """Parse a Python error."""
+        """Parse a Python error.
+
+        Handles both standard Python tracebacks and Jupyter/IPython format:
+        - Standard: "Traceback (most recent call last):\\n  File..."
+        - Jupyter: "ErrorType                    Traceback (most recent call last)\\n<ipython-input-...>"
+        """
         lines = error_text.split("\n")
 
         # Python errors typically have "Traceback (most recent call last):"
@@ -188,6 +193,27 @@ class FactorioErrorParser:
         traceback_frames = []
         error_message = ""
         in_traceback = False
+
+        # Look for the actual error message at the end (ErrorType: message format)
+        # This is more reliable than trying to detect when traceback ends
+        for line in reversed(lines):
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            # Skip separator lines
+            if line_stripped.startswith("-"):
+                continue
+            # Check for ErrorType: message pattern
+            if ":" in line_stripped and not line_stripped.startswith(("File", "<", "-->", "    ")):
+                potential_type = line_stripped.split(":")[0].strip()
+                # Verify it looks like an error type (starts with capital, no spaces except Error suffix)
+                if (potential_type and potential_type[0].isupper() and
+                    ("Error" in potential_type or "Exception" in potential_type or
+                     potential_type in ("KeyError", "TypeError", "ValueError", "NameError",
+                                       "AttributeError", "ImportError", "RuntimeError",
+                                       "IndexError", "KeyboardInterrupt", "StopIteration"))):
+                    error_message = line_stripped
+                    break
 
         for line in lines:
             line_stripped = line.strip()
@@ -197,18 +223,31 @@ class FactorioErrorParser:
                 continue
 
             if in_traceback:
-                if line_stripped and (line.startswith("  ") or line.startswith("File")):
-                    # This is a traceback frame
+                # Traceback frame patterns:
+                # Standard Python: "  File ..."
+                # Jupyter: "<ipython-input-...>" or lines with "-->" or numbered lines
+                is_frame = False
+                if line_stripped and (
+                    line.startswith("  ") or
+                    line.startswith("File") or
+                    line_stripped.startswith("<") or  # Jupyter frame locator
+                    line_stripped.startswith("-->") or  # Jupyter error line marker
+                    (len(line_stripped) > 0 and line_stripped[0].isdigit())  # Numbered context line
+                ):
+                    is_frame = True
+
+                if is_frame:
                     traceback_frames.append(line.rstrip())
                 elif line_stripped and not line.startswith(" "):
-                    # This is the error message (no leading whitespace)
-                    error_message = line_stripped
+                    # Potential end of traceback, but only if we haven't found error message yet
+                    if not error_message:
+                        error_message = line_stripped
                     in_traceback = False
 
         # If no error message found, use last non-empty line
         if not error_message:
             for line in reversed(lines):
-                if line.strip():
+                if line.strip() and not line.strip().startswith("-"):
                     error_message = line.strip()
                     break
 
@@ -264,11 +303,20 @@ class FactorioErrorParser:
 
     def _format_minimal(self, parsed_error: ParsedError) -> str:
         """Format error with minimal verbosity (message only)."""
-        return f"❌ {parsed_error.error_type}: {parsed_error.error_message}"
+        # Avoid redundancy if error_message already starts with error_type
+        msg = parsed_error.error_message
+        if msg.startswith(f"{parsed_error.error_type}:"):
+            return f"❌ {msg}"
+        return f"❌ {parsed_error.error_type}: {msg}"
 
     def _format_moderate(self, parsed_error: ParsedError) -> str:
         """Format error with moderate verbosity (message + limited frames)."""
-        result = [f"❌ {parsed_error.error_type}: {parsed_error.error_message}"]
+        # Avoid redundancy if error_message already starts with error_type
+        msg = parsed_error.error_message
+        if msg.startswith(f"{parsed_error.error_type}:"):
+            result = [f"❌ {msg}"]
+        else:
+            result = [f"❌ {parsed_error.error_type}: {msg}"]
 
         # Filter and limit frames
         frames = self._filter_frames(parsed_error.traceback_frames)
@@ -296,7 +344,12 @@ class FactorioErrorParser:
 
     def _format_full(self, parsed_error: ParsedError) -> str:
         """Format error with full verbosity (complete traceback)."""
-        result = [f"❌ {parsed_error.error_type}: {parsed_error.error_message}"]
+        # Avoid redundancy if error_message already starts with error_type
+        msg = parsed_error.error_message
+        if msg.startswith(f"{parsed_error.error_type}:"):
+            result = [f"❌ {msg}"]
+        else:
+            result = [f"❌ {parsed_error.error_type}: {msg}"]
 
         frames = self._filter_frames(parsed_error.traceback_frames)
 

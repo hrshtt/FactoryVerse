@@ -32,6 +32,7 @@ class Tier6Interaction(TierBase):
         self._llm_client: Optional[Any] = None
         self._orchestrator: Optional[Any] = None
         self._trajectory_writer: Optional[Any] = None
+        self._console_output: Optional[Any] = None
         self._tools_registered: int = 0
 
     @property
@@ -72,6 +73,9 @@ class Tier6Interaction(TierBase):
             # Initialize trajectory writer
             await self._init_trajectory_writer()
 
+            # Initialize console output (for streaming agent thoughts/actions)
+            await self._init_console_output()
+
             # Initialize orchestrator
             await self._init_orchestrator()
 
@@ -104,6 +108,19 @@ class Tier6Interaction(TierBase):
             self._trajectory_writer = TrajectoryWriter(trajectory_path)
             logger.info(f"Tier 6: Trajectory writer initialized at {trajectory_path}")
 
+    async def _init_console_output(self) -> None:
+        """Initialize console output for streaming agent thoughts/actions."""
+        from FactoryVerse.infra.output.console import ConsoleOutput
+
+        # Create ConsoleOutput based on config
+        enabled = self.config.console_output_enabled
+        self._console_output = ConsoleOutput(enabled=enabled)
+
+        if enabled:
+            logger.info("Tier 6: Console output enabled (streaming agent thoughts/actions)")
+        else:
+            logger.info("Tier 6: Console output disabled")
+
     async def _init_orchestrator(self) -> None:
         """Initialize AgentOrchestrator."""
         from FactoryVerse.llm.orchestrator import AgentOrchestrator
@@ -125,13 +142,32 @@ class Tier6Interaction(TierBase):
         tool_defs = runtime.get_tool_definitions(mode=mode)
         self._tools_registered = len(tool_defs)
 
-        # Write system prompt to temp file (AgentOrchestrator expects a file path)
+        # Get session paths from Tier 4
+        tier4 = self._env.tier4
+        chat_log_path = None
+        system_prompt_path = None
+
+        if tier4:
+            # Use session directory paths if available
+            if tier4.system_prompt_path:
+                system_prompt_path = str(tier4.system_prompt_path)
+            if tier4.chat_log_path:
+                chat_log_path = str(tier4.chat_log_path)
+
+        # Write system prompt to file (session-scoped or temp)
         system_prompt = tier5.system_prompt or "You are a Factorio automation agent."
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False
-        ) as prompt_file:
-            prompt_file.write(system_prompt)
-            prompt_path = prompt_file.name
+        if system_prompt_path:
+            # Write to session directory (persistent)
+            with open(system_prompt_path, "w") as f:
+                f.write(system_prompt)
+            prompt_path = system_prompt_path
+        else:
+            # Fallback to temp file
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".md", delete=False
+            ) as prompt_file:
+                prompt_file.write(system_prompt)
+                prompt_path = prompt_file.name
 
         if self._llm_client is None:
             raise RuntimeError("LLM Client not initialized")
@@ -140,9 +176,12 @@ class Tier6Interaction(TierBase):
             llm_client=self._llm_client,
             runtime=runtime,
             system_prompt_path=prompt_path,
+            chat_log_path=chat_log_path,
+            console_output=self._console_output,
             trajectory_writer=self._trajectory_writer,
             max_context_tokens=self.config.max_context_tokens,
             mode=mode,
+            initial_state_path=str(tier4.initial_state_path) if tier4 and tier4.initial_state_path else None,
         )
 
         if self.config.max_turns:
@@ -201,6 +240,7 @@ class Tier6Interaction(TierBase):
         self._orchestrator = None
         self._llm_client = None
         self._trajectory_writer = None
+        self._console_output = None
         self._tools_registered = 0
 
         self._set_state(TierState.SHUTDOWN)
@@ -266,22 +306,43 @@ class Tier6Interaction(TierBase):
 
 
 class _RuntimeAdapter:
-    """Adapter that implements RuntimeProtocol using Environment tiers."""
+    """Adapter that implements RuntimeProtocol using Environment tiers.
+
+    Provides the runtime interface expected by AgentOrchestrator:
+    - execute_code: Run Python code with access to embodied actions
+    - execute_dsl: Run Lua code via RCON
+    - execute_duckdb: Query the game state database
+    - _listener: Access to AsyncActionListener for notifications
+    """
 
     def __init__(self, tier3, tier4):
         self._tier3 = tier3
         self._tier4 = tier4
 
-    def execute_dsl(self, code: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-        """Execute DSL code via RCON."""
-        # DSL execution would be handled here
-        return self._tier3.execute_lua(code)
+    @property
+    def _listener(self):
+        """Expose the AsyncActionListener for notification access.
+
+        The orchestrator uses this to check for async notifications:
+            await runtime._listener.get_notifications(timeout=0.05)
+        """
+        if self._tier3:
+            return self._tier3._action_listener
+        return None
+
+    async def execute_dsl(self, code: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Execute DSL code (Python, not Lua).
+
+        The FactoryVerse DSL is Python code using the agent API
+        (walking, crafting, reachable_view, etc.), not Lua.
+        """
+        return await self.execute_code(code, compress_output=True)
 
     def execute_duckdb(
         self, query: str, metadata: Optional[Dict[str, Any]] = None
     ) -> str:
         """Execute DuckDB query."""
-        if self._tier4.database:
+        if self._tier4 and self._tier4.database:
             result = self._tier4.database.execute(query).fetchall()
             return str(result)
         return "Database not available"
@@ -350,6 +411,18 @@ class _RuntimeAdapter:
 
         return tools
 
-    def execute_code(self, code: str, compress_output: bool = False) -> str:
-        """Execute arbitrary code."""
-        return self._tier3.execute_lua(code)
+    async def execute_code(self, code: str, compress_output: bool = False) -> str:
+        """Execute Python code and return output.
+
+        Uses Tier 4's execute_code method which provides:
+        - In-process execution with access to all Tier 4 modules
+        - Notebook logging if JUPYTER mode is configured
+        - Native async code support (await statements work directly)
+
+        Note: For async code (with 'await'), Tier 4 wraps and awaits directly.
+        """
+        if self._tier4:
+            return await self._tier4.execute_code(code, compress_output=compress_output)
+
+        # Fallback if Tier 4 not available (shouldn't happen in normal use)
+        return "Error: Tier 4 (Runtime) not initialized"

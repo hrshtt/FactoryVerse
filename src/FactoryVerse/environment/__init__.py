@@ -19,6 +19,7 @@ from .config import (
     InteractionConfig,
     InfraMode,
     RuntimeVariant,
+    ExecutionMode,
     InteractionMode,
 )
 from .status import TierStatus, TierState, PrerequisiteResult
@@ -41,6 +42,7 @@ __all__ = [
     "InteractionConfig",
     "InfraMode",
     "RuntimeVariant",
+    "ExecutionMode",
     "InteractionMode",
     # Status
     "TierStatus",

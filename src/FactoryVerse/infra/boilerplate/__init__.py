@@ -123,6 +123,10 @@ class BoilerplateContext:
         if runtime is not None and self._started:
             await runtime.stop()
 
+        # Stop global UDP dispatcher to release port
+        from FactoryVerse.infra.udp_dispatcher import stop_global_dispatcher
+        await stop_global_dispatcher()
+
         # Close database connection if present
         database = self.database
         if database is not None:

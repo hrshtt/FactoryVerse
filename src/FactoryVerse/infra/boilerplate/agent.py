@@ -9,7 +9,7 @@ Components loaded (in addition to SNAPSHOT):
     - entity_list: Filtered entity list synced to Lua mod
 
 Usage:
-    >>> from FactoryVerse.infra.llm.boilerplate import load, Scope
+    >>> from FactoryVerse.infra.boilerplate import load, Scope
     >>> ctx = load(scope=Scope.AGENT, agent_id='agent_1')
     >>> print(f"Agent: {ctx['agent_id']} on UDP {ctx['udp_port']}")
 """

@@ -10,7 +10,7 @@ Components loaded (in addition to RCON):
     - snapshot_loader: SnapshotLoader instance
 
 Usage:
-    >>> from FactoryVerse.infra.llm.boilerplate import load, Scope
+    >>> from FactoryVerse.infra.boilerplate import load, Scope
     >>> ctx = load(scope=Scope.SNAPSHOT)
     >>> result = ctx['database'].connection.execute("SELECT * FROM entities LIMIT 10")
 """
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 def load_snapshot_scope(
     ctx: "BoilerplateContext",
     session_dir: Optional[Path] = None,
+    in_memory: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Load snapshot scope components.
 
@@ -33,7 +34,9 @@ def load_snapshot_scope(
 
     Args:
         ctx: BoilerplateContext with RCON scope loaded
-        session_dir: Session directory for DB file, defaults to cwd
+        session_dir: Session directory for DB file. If provided, uses persistent DB.
+        in_memory: Use in-memory database. Defaults to True for testing (no session_dir),
+                   False for agent sessions (session_dir provided).
 
     Returns:
         Dict with: snapshot_dir, db_path, database, snapshot_loader
@@ -45,6 +48,11 @@ def load_snapshot_scope(
     config = ctx["config"]
     rcon = ctx["rcon"]
 
+    # Determine if we should use in-memory database
+    # Default: in-memory for testing, persistent for agent sessions
+    if in_memory is None:
+        in_memory = session_dir is None
+
     # Session directory for artifacts
     if session_dir is None:
         session_dir = Path(os.getenv("FV_SESSION_DIR", "."))
@@ -54,8 +62,8 @@ def load_snapshot_scope(
     # Snapshot directory from instance
     snapshot_dir = instance.script_output_dir
 
-    # DB path in session dir
-    db_path = session_dir / "map.duckdb"
+    # DB path: None for in-memory, otherwise in session dir
+    db_path = None if in_memory else (session_dir / "map.duckdb")
 
     # Configure snapshot mod UDP port
     snapshot_udp_port = config.get_snapshot_port(instance.name)
@@ -63,7 +71,7 @@ def load_snapshot_scope(
         f"/c remote.call('snapshot', 'set_udp_port', {snapshot_udp_port})"
     )
 
-    # Create database with schema
+    # Create database with schema (None = in-memory)
     database = SnapshotDatabase(db_path)
     database.ensure_schema()
 

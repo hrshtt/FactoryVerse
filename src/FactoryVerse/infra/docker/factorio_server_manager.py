@@ -74,6 +74,7 @@ class FactorioServerManager:
         self.verse_mod_dir = self.work_dir / "src" / "factorio_verse"
         self.embodied_agent_mod_dir = self.config.embodied_agent_mod_dir
         self.snapshot_mod_dir = self.config.snapshot_mod_dir
+        self.placement_hints_mod_dir = self.config.placement_hints_mod_dir
         self.scenarios_dir = self.config.scenarios_dir
         self.config_dir = self.config.server_config_dir
         self.mod_path = self.config.mods_dir
@@ -199,6 +200,7 @@ class FactorioServerManager:
         for old_mod_pattern in [
             "fv_embodied_agent*",
             "fv_snapshot*",
+            "fv_placement_hints*",
             "factorio_verse*",
         ]:
             for old_mod in self.mod_path.glob(old_mod_pattern):
@@ -211,6 +213,12 @@ class FactorioServerManager:
 
         # Prepare fv_snapshot mod
         self._copy_mod(self.snapshot_mod_dir, "fv_snapshot", force=False)
+
+        # Prepare fv_placement_hints mod (if it exists)
+        if self.placement_hints_mod_dir.exists():
+            self._copy_mod(self.placement_hints_mod_dir, "fv_placement_hints", force=False)
+        else:
+            print("⚠️  fv_placement_hints mod not found, skipping...")
 
         # Ensure DLC mods are disabled
         for dlc_mod in ["space-age", "quality", "elevated-rails"]:

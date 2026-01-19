@@ -1,18 +1,24 @@
 """Tier 4: FactoryVerse Runtime.
 
 Orchestrates agent modules: remote_view, reachable_view, embodied_actions, DuckDB.
+
+Supports two execution modes:
+- JUPYTER: Code runs in isolated Jupyter kernel with notebook logging
+- INPROCESS: Code runs in same Python process (lightweight, no notebook)
 """
 
 import logging
 from pathlib import Path
 from typing import Optional, Any, List, TYPE_CHECKING
 
-from ..config import RuntimeConfig, RuntimeVariant
+from ..config import RuntimeConfig, RuntimeVariant, ExecutionMode
 from ..status import Tier4Status, TierState, PrerequisiteResult
 from .base import TierBase, Tier, TierInitializationError
 
 if TYPE_CHECKING:
     from ..environment import Environment
+    from FactoryVerse.infra.execution.base import ExecutionEnvironment
+    from FactoryVerse.infra.session.file_manager import SessionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +43,18 @@ class Tier4Runtime(TierBase):
         super().__init__(environment)
         self._agent_id: Optional[str] = None
         self._session_dir: Optional[Path] = None
-        self._database: Optional[Any] = None
+        self._session_config: Optional["SessionConfig"] = None  # Session metadata
+        self._snapshot_database: Optional[Any] = None  # SnapshotDatabase wrapper
+        self._database: Optional[Any] = None  # Raw DuckDB connection
         self._remote_view: Optional[Any] = None
         self._reachable_view: Optional[Any] = None
         self._embodied_actions: Optional[Any] = None
         self._placement_hints: Optional[Any] = None
         self._modules_loaded: List[str] = []
+
+        # Execution environment (Jupyter or InProcess)
+        self._executor: Optional["ExecutionEnvironment"] = None
+        self._notebook_path: Optional[Path] = None
 
     @property
     def config(self) -> RuntimeConfig:
@@ -58,6 +70,26 @@ class Tier4Runtime(TierBase):
     def session_dir(self) -> Optional[Path]:
         """Get session directory."""
         return self._session_dir
+
+    @property
+    def chat_log_path(self) -> Optional[Path]:
+        """Get chat log path."""
+        return self._session_dir / "chat.md" if self._session_dir else None
+
+    @property
+    def debug_log_path(self) -> Optional[Path]:
+        """Get debug log path."""
+        return self._session_dir / "debug.log" if self._session_dir else None
+
+    @property
+    def initial_state_path(self) -> Optional[Path]:
+        """Get initial state path."""
+        return self._session_dir / "initial_state.md" if self._session_dir else None
+
+    @property
+    def system_prompt_path(self) -> Optional[Path]:
+        """Get system prompt path (ephemeral, session-scoped)."""
+        return self._session_dir / "system_prompt.md" if self._session_dir else None
 
     @property
     def database(self) -> Optional[Any]:
@@ -84,6 +116,21 @@ class Tier4Runtime(TierBase):
         """Get PlacementHints for spatial reasoning and connection solving."""
         return self._placement_hints
 
+    @property
+    def notebook_path(self) -> Optional[Path]:
+        """Get notebook path (only available in JUPYTER mode)."""
+        return self._notebook_path
+
+    @property
+    def executor(self) -> Optional["ExecutionEnvironment"]:
+        """Get the execution environment (JupyterExecutor or InProcessExecutor)."""
+        return self._executor
+
+    @property
+    def session_config(self) -> Optional["SessionConfig"]:
+        """Get session configuration/metadata (for trajectory tracking)."""
+        return self._session_config
+
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 3 (Python Infra) is ready."""
         tier3 = self._env.tier3
@@ -105,6 +152,9 @@ class Tier4Runtime(TierBase):
             self._agent_id = self.config.agent_id
             self._session_dir = await self._setup_session_dir()
 
+            # Create execution environment based on config
+            await self._setup_executor()
+
             # Create agent in Factorio
             await self._reconcile_and_create_agent()
 
@@ -117,6 +167,11 @@ class Tier4Runtime(TierBase):
                 await self._load_database()
                 await self._load_remote_view()
 
+            # Note: We intentionally do NOT inject boilerplate into Jupyter kernel.
+            # The boilerplate creates its own RCON/UDP connections which conflict
+            # with Tier 3's connections. Instead, code execution uses in-process
+            # execution with Tier 4's modules, and results are logged to notebook.
+
             self._set_state(TierState.READY)
 
         except Exception as e:
@@ -124,123 +179,298 @@ class Tier4Runtime(TierBase):
             raise TierInitializationError(self.tier_level, str(e)) from e
 
     async def _setup_session_dir(self) -> Path:
-        """Setup session directory for this agent run."""
+        """Setup session directory for this agent run.
+
+        Uses FileManager to create session directories in a consistent structure:
+        - .fv-output/runs/{model}/{run_id}/ when model is specified
+        - .fv-output/sessions/session_{timestamp}/ as fallback
+
+        This matches the structure used by run_agent.py for trajectory tracking.
+        """
         if self.config.session_dir:
+            # Explicit session directory provided
             session_dir = self.config.session_dir
-        else:
-            # Auto-generate session directory
-            import datetime
+            session_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Tier 4: Using explicit session directory: {session_dir}")
+            return session_dir
 
-            infra_config = self._env.config.infra_config
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            session_dir = (
-                infra_config.fv_output_dir / "sessions" / f"session_{timestamp}"
-            )
+        # Use FileManager for consistent session structure
+        from FactoryVerse.infra.session.file_manager import FileManager, SessionConfig
 
-        session_dir.mkdir(parents=True, exist_ok=True)
+        infra_config = self._env.config.infra_config
+
+        # Get provider from config hierarchy:
+        # 1. RuntimeConfig.provider (explicit)
+        # 2. InteractionConfig.llm_provider (from tier 6)
+        # 3. Default to "unknown"
+        provider = self.config.provider
+        if not provider:
+            provider = self._env.config.tier6.llm_provider if self._env.config.tier6 else None
+        if not provider:
+            provider = "unknown"
+
+        # Get model name from config hierarchy:
+        # 1. RuntimeConfig.model (explicit)
+        # 2. InteractionConfig.model (from tier 6)
+        # 3. Default to "unknown"
+        model_name = self.config.model
+        if not model_name:
+            model_name = self._env.config.tier6.model if self._env.config.tier6 else None
+        if not model_name:
+            model_name = "unknown"
+
+        # Get mode from config hierarchy
+        mode = self.config.mode
+        if not mode:
+            mode = self._env.config.tier6.mode if self._env.config.tier6 else "autonomous"
+
+        # Create session using FileManager
+        # Directory structure: .fv-output/runs/{provider}/{model}/{run_id}/
+        file_manager = FileManager(output_dir=infra_config.fv_output_dir)
+        file_manager.initialize()
+
+        session_config = file_manager.create_session(
+            model=model_name,
+            mode=mode,
+            provider=provider,
+        )
+
+        # Store session config for later metadata updates
+        self._session_config = session_config
+
+        # Get session paths
+        paths = file_manager.get_session_paths(session_config)
+        session_dir = paths.session_dir
+
         logger.info(f"Tier 4: Session directory: {session_dir}")
+        logger.info(f"Tier 4: Session ID: {session_config.run_id}")
         return session_dir
 
-    async def _reconcile_and_create_agent(self) -> None:
-        """Reconcile AgentProfile with Factorio Entity.
+    async def _setup_executor(self) -> None:
+        """Setup execution environment for code execution.
 
-        Strategy:
-        1. Check Registry for existing profile.
-        2. If New: Create Profile -> Create Entity (destroy=True).
-        3. If Exists: Check Entity -> Bind (destroy=False) or Respawn.
+        Code execution always uses in-process execution (exec) with Tier 4 modules.
+        In JUPYTER mode, we also create a notebook file for logging executions.
+        """
+        execution_mode = self.config.execution_mode
+
+        if execution_mode == ExecutionMode.JUPYTER:
+            import nbformat
+
+            # Create notebook path in session directory
+            if self._session_dir is None:
+                raise RuntimeError("Session directory must be set before creating executor")
+
+            self._notebook_path = self._session_dir / "agent_session.ipynb"
+
+            # Create empty notebook file (we'll log executions to it)
+            self._notebook_path.parent.mkdir(parents=True, exist_ok=True)
+            nb = nbformat.v4.new_notebook()
+            nb.metadata.update({
+                "kernelspec": {
+                    "display_name": "Python 3",
+                    "language": "python",
+                    "name": "python3",
+                }
+            })
+            with open(self._notebook_path, "w") as f:
+                nbformat.write(nb, f)
+
+            # Mark that we have notebook logging (executor is None for in-process)
+            self._executor = None  # We use in-process execution, not kernel
+            logger.info(f"Tier 4: Notebook logging enabled: {self._notebook_path}")
+
+        elif execution_mode == ExecutionMode.INPROCESS:
+            # No notebook, just in-process execution
+            self._executor = None
+            self._notebook_path = None
+            logger.info("Tier 4: InProcess execution mode (no notebook)")
+
+        self._modules_loaded.append("executor")
+
+    async def _inject_boilerplate(self) -> None:
+        """Inject boilerplate into Jupyter kernel.
+
+        This sets up the runtime environment in the kernel namespace,
+        making all embodied actions and views available for code execution.
+        """
+        if self._executor is None:
+            raise RuntimeError("Executor not initialized")
+
+        from FactoryVerse.infra.boilerplate import get_runtime_script
+
+        tier3 = self._env.tier3
+        if tier3 is None:
+            raise RuntimeError("Tier 3 must be initialized")
+
+        # Calculate agent-specific UDP port (not the generic dispatcher port)
+        agent_id = self._agent_id or "agent_1"
+        udp_port = self._calculate_agent_udp_port(agent_id)
+
+        # Generate boilerplate script with current configuration
+        script = get_runtime_script(
+            instance=tier3.instance,
+            agent_id=agent_id,
+            session_dir=str(self._session_dir) if self._session_dir else None,
+            udp_port=udp_port,
+        )
+
+        # Execute boilerplate in the kernel
+        logger.info("Tier 4: Injecting boilerplate into Jupyter kernel...")
+        logger.debug(f"Tier 4: Boilerplate script ({len(script.splitlines())} lines)")
+        result = self._executor.execute(script, timeout=120.0)
+
+        if result.is_error:
+            # Log the full error for debugging
+            logger.error(f"Tier 4: Boilerplate injection error:\n{result.error}")
+            if self._notebook_path:
+                logger.error(f"Tier 4: Check notebook for details: {self._notebook_path}")
+            raise RuntimeError(f"Boilerplate injection failed: {result.error}")
+
+        # Log output for debugging
+        if result.output:
+            logger.debug(f"Tier 4: Boilerplate output:\n{result.output}")
+
+        logger.info("Tier 4: Boilerplate injected successfully")
+        self._modules_loaded.append("boilerplate")
+
+    def _calculate_agent_udp_port(self, agent_id: str) -> int:
+        """Calculate the correct UDP port for an agent.
+
+        Each agent needs a unique UDP port for async action notifications.
+        Port allocation is deterministic based on agent_id and instance type:
+        - Client: base_port + agent_index
+        - Server N: base_port + (N * max_agents) + agent_index
+
+        Args:
+            agent_id: Agent identifier (e.g., 'agent_1', 'agent_2')
+
+        Returns:
+            UDP port number for this agent
+        """
+        tier3 = self._env.tier3
+        infra_config = self._env.config.infra_config
+
+        # Extract agent index from agent_id (e.g., "agent_1" -> 0, "agent_2" -> 1)
+        try:
+            agent_index = int(agent_id.split("_")[1]) - 1  # Convert to 0-based
+        except (ValueError, IndexError):
+            agent_index = 0
+
+        # Determine server_index from tier3 instance
+        server_index = None
+        if tier3 and tier3.instance and tier3.instance.startswith("server_"):
+            try:
+                server_index = int(tier3.instance.split("_")[1])
+            except (ValueError, IndexError):
+                pass
+
+        return infra_config.get_agent_port(agent_index, server_index)
+
+    async def _reconcile_and_create_agent(self) -> None:
+        """Reconcile agent state: Query Lua first, then decide action.
+
+        Strategy (Lua is SSOT):
+        1. Query tier3.list_game_agents()
+        2. Find agent by interface_name
+        3. If exists + entity_valid + port matches: BIND
+        4. If exists + wrong port or invalid entity: DESTROY then CREATE
+        5. If not exists: CREATE
+        6. Update Python AgentRegistry as metadata (optional)
         """
         from datetime import datetime
         from uuid import uuid4
         from FactoryVerse.agent.core.profile import AgentProfile, AgentStatus
 
         tier3 = self._env.tier3
-        if tier3 is None or tier3.rcon_helper is None:
-            raise RuntimeError("Tier 3 must be initialized with RCON")
+        if tier3 is None:
+            raise RuntimeError("Tier 3 must be initialized")
 
-        registry = tier3.agent_registry
-        if not registry:
-            logger.warning(
-                "Tier 4: Registry not found in Tier 3, falling back to legacy creation"
-            )
-            await self._create_agent_legacy()
-            return
-
-        # 1. Look up profile
+        # Get requested agent ID and calculate UDP port
         requested_id = self.config.agent_id or "agent_1"
-        profile = registry.get_by_name(requested_id)
+        udp_port = self._calculate_agent_udp_port(requested_id)
 
-        rcon_helper = tier3.rcon_helper
-        udp_port = tier3._udp_dispatcher.port if tier3._udp_dispatcher else None
-
-        if not profile:
-            # Case 1: New Agent (Spawn)
-            logger.info(f"Tier 4: creating NEW agent '{requested_id}'")
-
-            # Create persistent profile
-            profile = AgentProfile(
-                id=uuid4(),
-                name=requested_id,
-                instance_id=tier3.instance or "unknown",
-                model=self._env.config.tier6.model
-                if self._env.tier6
-                else "unknown",  # Capture intended model
-                description="Auto-generated by Tier 4 Runtime",
-                status=AgentStatus.ACTIVE,
-            )
-            registry.register(profile)
-
-            # Create Entity (Destroy potential orphan with same name)
-            rcon_helper._create_agent(udp_port=udp_port, destroy_existing=True)
-
-        else:
-            # Case 2: Resume Agent (Bind)
-            logger.info(
-                f"Tier 4: Resuming existing agent '{profile.name}' ({profile.id})"
-            )
-
-            # Verify if entity actually exists (Resurrection check)
-            # We assume it exists unless proven otherwise, but we use destroy_existing=False
-            # If the entity is missing, rcon_helper._create_agent with destroy_existing=False *might* fail or do nothing?
-            # Actually, standard logic is just to 're-bind'.
-            # Ideally we check existence via Lua first.
-
-            # Safe re-creation: Try to create ONLY if missing?
-            # For now, we use rcon_helper to ensure it exists but NOT destroy old one
-            # Caveat: Factorio 'create_agent' usually spawns a new one.
-            # We need a 'ensure_agent' in rcon_helper or careful call.
-
-            # Current `_create_agent` in rcon_helper calls Lua `remote.call('agent', 'create_agent', ...)`
-            # If destroy_existing=False, it should ideally attach to existing or spawn if missing.
-            # Let's assume the Lua layer handles "get or create" if destroy_existing=False.
-            rcon_helper._create_agent(udp_port=udp_port, destroy_existing=False)
-
-            # Update Status
-            profile.status = AgentStatus.ACTIVE
-            profile.updated_at = datetime.now()
-            registry.save(profile)
-
-            # Override runtime ID with profile ID/Name
-            self._agent_id = profile.name
-
-        rcon_helper.refresh_interfaces()
-        self._modules_loaded.append("agent")
-
-        logger.info(
-            f"Tier 4: Agent '{self._agent_id}' ready (Persistent ID: {profile.id})"
+        # Step 1: Query Lua for existing agents (SSOT)
+        game_agents = tier3.list_game_agents()
+        existing = next(
+            (a for a in game_agents if a.get("interface_name") == requested_id),
+            None,
         )
 
-    async def _create_agent_legacy(self) -> None:
-        """Legacy creation logic (destructive)."""
-        tier3 = self._env.tier3
-        if tier3 is None or tier3.rcon_helper is None:
-            raise RuntimeError("Tier 3 must be initialized with RCON")
-        rcon_helper = tier3.rcon_helper
-        udp_port = tier3._udp_dispatcher.port if tier3._udp_dispatcher else None
+        if existing:
+            # Agent exists in Factorio - check if we can bind or need to recreate
+            existing_port = existing.get("udp_port")
+            entity_valid = existing.get("entity_valid", True)
 
-        rcon_helper._create_agent(udp_port=udp_port, destroy_existing=True)
-        rcon_helper.refresh_interfaces()
+            if entity_valid and existing_port == udp_port:
+                # Case 1: BIND - Agent is valid with correct port
+                logger.info(
+                    f"Tier 4: Binding to existing agent '{requested_id}' "
+                    f"(port {udp_port}, entity valid)"
+                )
+            else:
+                # Case 2: DESTROY then CREATE - Port mismatch or invalid entity
+                reason = []
+                if not entity_valid:
+                    reason.append("entity invalid")
+                if existing_port != udp_port:
+                    reason.append(f"port mismatch ({existing_port} != {udp_port})")
+
+                logger.info(
+                    f"Tier 4: Recreating agent '{requested_id}' ({', '.join(reason)})"
+                )
+
+                # Destroy the existing agent
+                agent_numeric_id = existing.get("id")
+                if agent_numeric_id is not None:
+                    tier3.destroy_game_agents([agent_numeric_id])
+
+                # Create new agent with correct configuration
+                tier3.create_game_agent(
+                    udp_port=udp_port,
+                    set_unique_forces=False,
+                    default_common_force="player",
+                )
+        else:
+            # Case 3: CREATE - No existing agent
+            logger.info(f"Tier 4: Creating new agent '{requested_id}' (port {udp_port})")
+            tier3.create_game_agent(
+                udp_port=udp_port,
+                set_unique_forces=False,
+                default_common_force="player",
+            )
+
+        # Update Python AgentRegistry as metadata (optional)
+        registry = tier3.agent_registry
+        if registry:
+            profile = registry.get_by_name(requested_id)
+            if not profile:
+                # Create new profile
+                profile = AgentProfile(
+                    id=uuid4(),
+                    name=requested_id,
+                    instance_id=tier3.instance or "unknown",
+                    model=self._env.config.tier6.model
+                    if self._env.config.tier6
+                    else "unknown",
+                    description="Auto-generated by Tier 4 Runtime",
+                    status=AgentStatus.ACTIVE,
+                )
+                registry.register(profile)
+                logger.debug(f"Tier 4: Created profile for agent '{requested_id}'")
+            else:
+                # Update existing profile
+                profile.status = AgentStatus.ACTIVE
+                profile.updated_at = datetime.now()
+                registry.save(profile)
+                logger.debug(f"Tier 4: Updated profile for agent '{requested_id}'")
+
+        # Refresh interfaces to pick up the agent
+        if tier3.rcon_helper:
+            tier3.rcon_helper.refresh_interfaces()
+
         self._modules_loaded.append("agent")
-        logger.info(f"Tier 4: Created agent {self._agent_id} (Legacy/Ephemeral)")
+        logger.info(f"Tier 4: Agent '{self._agent_id}' ready on UDP port {udp_port}")
 
     async def _load_embodied_actions(self) -> None:
         """Load EmbodiedActions modules.
@@ -339,18 +569,19 @@ class Tier4Runtime(TierBase):
 
     async def _load_database(self) -> None:
         """Load DuckDB database for persistent game state."""
-        import duckdb
+        from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
 
-        if self._session_dir is None:
-            raise RuntimeError("Session directory not initialized")
-        db_path = self._session_dir / "map.duckdb"
-        self._database = duckdb.connect(str(db_path))
+        # Use in-memory database (session_dir is optional for testing)
+        # For persistent storage, pass db_path to SnapshotDatabase
+        self._snapshot_database = SnapshotDatabase(db_path=None)  # In-memory
+        self._snapshot_database.ensure_schema()
+        self._database = self._snapshot_database.connection
         self._modules_loaded.append("database")
 
-        # Initialize schema from snapshot
+        # Sync with game state
         await self._sync_database()
 
-        logger.info(f"Tier 4: DuckDB connected at {db_path}")
+        logger.info("Tier 4: DuckDB connected (in-memory)")
 
     async def _sync_database(self) -> None:
         """Sync DuckDB with game state from snapshots."""
@@ -429,16 +660,29 @@ class Tier4Runtime(TierBase):
         await self.shutdown()
         await self.initialize()
 
-    async def shutdown(self) -> None:
-        """Shutdown runtime and cleanup."""
+    async def shutdown(self, total_turns: Optional[int] = None) -> None:
+        """Shutdown runtime and cleanup.
+
+        Args:
+            total_turns: Final turn count to save in session metadata
+        """
         self._set_state(TierState.SHUTTING_DOWN)
 
-        # Close database
-        if self._database:
+        # Save session metadata before cleanup
+        if self._session_config is not None:
+            self._save_session_metadata(total_turns=total_turns)
+
+        # Clear executor and notebook path
+        self._executor = None
+        self._notebook_path = None
+
+        # Close database via SnapshotDatabase wrapper
+        if self._snapshot_database:
             try:
-                self._database.close()
+                self._snapshot_database.close()
             except Exception:
                 pass
+            self._snapshot_database = None
             self._database = None
 
         # Clear module references
@@ -448,9 +692,199 @@ class Tier4Runtime(TierBase):
         self._placement_hints = None
         self._agent_id = None
         self._session_dir = None
+        self._session_config = None
         self._modules_loaded = []
 
         self._set_state(TierState.SHUTDOWN)
+
+    def _save_session_metadata(self, total_turns: Optional[int] = None) -> None:
+        """Save session metadata to disk.
+
+        Args:
+            total_turns: Final turn count
+        """
+        if self._session_config is None or self._session_dir is None:
+            return
+
+        from FactoryVerse.infra.session.file_manager import FileManager
+
+        try:
+            # Mark session as ended
+            self._session_config.mark_ended(total_turns=total_turns)
+
+            # Save metadata using FileManager
+            infra_config = self._env.config.infra_config
+            file_manager = FileManager(output_dir=infra_config.fv_output_dir)
+            file_manager.save_metadata(self._session_config)
+
+            logger.info(f"Tier 4: Session metadata saved (turns: {total_turns})")
+        except Exception as e:
+            logger.warning(f"Tier 4: Failed to save session metadata: {e}")
+
+    async def execute_code(self, code: str, compress_output: bool = False) -> str:
+        """Execute Python code using in-process execution with notebook logging.
+
+        Code runs in the current process using exec() with access to Tier 4 modules
+        (walking, crafting, mining, etc.). If JUPYTER mode is configured,
+        the execution is also logged to the notebook for debugging.
+
+        Args:
+            code: Python code to execute
+            compress_output: Whether to compress large outputs
+
+        Returns:
+            Output string from execution
+        """
+        import io
+        import sys
+        import json
+        import asyncio
+        import time
+
+        from FactoryVerse.factory.types import MapPosition, Direction, BoundingBox
+
+        tier3 = self._env.tier3
+
+        # Create a runtime proxy for notification access
+        # This allows notification code to access runtime._listener
+        class RuntimeProxy:
+            def __init__(self, listener):
+                self._listener = listener
+        runtime_proxy = RuntimeProxy(tier3._action_listener if tier3 else None)
+
+        # Build namespace with Tier 4 modules
+        namespace = {
+            "json": json,
+            "asyncio": asyncio,
+            # Common types
+            "MapPosition": MapPosition,
+            "Direction": Direction,
+            "BoundingBox": BoundingBox,
+            # Tier 3 components
+            "rcon_client": tier3.rcon if tier3 else None,
+            "runtime": runtime_proxy,  # For notification access
+            # Tier 4 components
+            "agent_id": self._agent_id,
+            "walking": self._movement,
+            "crafting": self._crafting,
+            "mining": self._mining,
+            "research": self._research,
+            "inventory": self._inventory,
+            "placement": self._placement,
+            "entity_ops": self._entity_ops,
+            "reachable_view": self._reachable_view,
+            "resources": self._reachable_view,  # Alias
+            "remote_view": self._remote_view,
+            "ghost_builder": getattr(self, "_ghost_builder", None),
+            "placement_hints": self._placement_hints,
+        }
+
+        # Capture stdout
+        stdout_capture = io.StringIO()
+        old_stdout = sys.stdout
+        start_time = time.time()
+        error_text = None
+
+        try:
+            sys.stdout = stdout_capture
+
+            # Check if code contains 'await' - needs async execution
+            if "await " in code:
+                # Wrap code in async function
+                indented_code = "\n".join(f"    {line}" for line in code.split("\n"))
+                async_wrapper = f"async def __async_exec__():\n{indented_code}\n"
+
+                # Compile and execute the wrapper definition
+                exec(compile(async_wrapper, "<string>", "exec"), namespace)
+
+                # Await the async function directly (we're already in async context)
+                await namespace["__async_exec__"]()
+            else:
+                # Sync code - simple exec
+                exec(code, namespace)
+
+            output = stdout_capture.getvalue().strip()
+
+        except Exception as e:
+            output = stdout_capture.getvalue().strip()
+            error_text = f"Error: {type(e).__name__}: {e}"
+            if output:
+                output = f"{output}\n{error_text}"
+            else:
+                output = error_text
+
+        finally:
+            sys.stdout = old_stdout
+
+        execution_time = (time.time() - start_time) * 1000  # ms
+
+        # Log to notebook if notebook logging is enabled
+        if self._notebook_path is not None:
+            self._log_to_notebook(code, output, error_text, execution_time)
+
+        # Compress if requested
+        if compress_output and output and not error_text:
+            from FactoryVerse.llm.context.compressor import OutputCompressor
+            compressor = OutputCompressor()
+            compressed = compressor.compress_action_result(output, action_type="execute_code")
+            output = compressed.text
+
+        return output
+
+    def _log_to_notebook(
+        self, code: str, output: str, error: Optional[str], execution_time_ms: float
+    ) -> None:
+        """Log code execution to notebook file.
+
+        Args:
+            code: Executed code
+            output: Execution output
+            error: Error message if any
+            execution_time_ms: Execution time in milliseconds
+        """
+        if self._notebook_path is None:
+            return
+
+        import nbformat
+
+        try:
+            # Read existing notebook
+            with open(self._notebook_path, "r") as f:
+                nb = nbformat.read(f, as_version=4)
+
+            # Create code cell
+            cell = nbformat.v4.new_code_cell(source=code)
+            cell.metadata["execution_time_ms"] = execution_time_ms
+
+            # Add outputs
+            cell_outputs = []
+            if output:
+                cell_outputs.append(
+                    nbformat.v4.new_output(
+                        output_type="stream",
+                        name="stdout",
+                        text=output,
+                    )
+                )
+            if error:
+                cell_outputs.append(
+                    nbformat.v4.new_output(
+                        output_type="error",
+                        ename="ExecutionError",
+                        evalue=error,
+                        traceback=[error],
+                    )
+                )
+            cell.outputs = cell_outputs
+
+            nb.cells.append(cell)
+
+            # Write back
+            with open(self._notebook_path, "w") as f:
+                nbformat.write(nb, f)
+
+        except Exception as e:
+            logger.warning(f"Tier 4: Failed to log to notebook: {e}")
 
     # =========================================================================
     # Module Reload

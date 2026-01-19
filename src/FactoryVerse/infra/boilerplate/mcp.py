@@ -4,7 +4,7 @@ Provides high-level functions for MCP server to manage sessions,
 execute code, and interact with FactoryVerse environments.
 
 Usage in MCP server:
-    from FactoryVerse.infra.llm.boilerplate.mcp import (
+    from FactoryVerse.infra.boilerplate.mcp import (
         mcp_create_session,
         mcp_execute_code,
         mcp_reload_session,

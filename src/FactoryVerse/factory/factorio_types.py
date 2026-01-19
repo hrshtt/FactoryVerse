@@ -275,6 +275,9 @@ class TilePosition:
 
     Each tile is a 1x1 unit area. Positive x goes east, positive y goes south.
     Unlike MapPosition, TilePosition uses integer coordinates.
+
+    Tile (5, 5) covers the area [5.0, 6.0) x [5.0, 6.0).
+    The center of tile (5, 5) is at MapPosition(5.5, 5.5).
     """
 
     x: int
@@ -285,14 +288,132 @@ class TilePosition:
 
     @classmethod
     def from_map_position(cls, x: float, y: float) -> "TilePosition":
-        """Convert map position to tile position (floors coordinates)."""
+        """Convert map position to containing tile (floors coordinates).
+
+        Args:
+            x: Map x coordinate (float)
+            y: Map y coordinate (float)
+
+        Returns:
+            TilePosition of the tile containing this map position.
+
+        Example:
+            >>> TilePosition.from_map_position(5.7, 3.2)
+            TilePosition(x=5, y=3)
+            >>> TilePosition.from_map_position(5.5, 5.5)  # tile center
+            TilePosition(x=5, y=5)
+        """
         import math
 
         return cls(x=math.floor(x), y=math.floor(y))
 
+    def to_map_position(self, center: bool = True) -> Tuple[float, float]:
+        """Convert to map position coordinates.
+
+        Args:
+            center: If True, return tile center (x+0.5, y+0.5).
+                   If False, return tile corner (x, y).
+
+        Returns:
+            Tuple of (x, y) float coordinates.
+
+        Example:
+            >>> TilePosition(5, 5).to_map_position(center=True)
+            (5.5, 5.5)
+            >>> TilePosition(5, 5).to_map_position(center=False)
+            (5.0, 5.0)
+        """
+        offset = 0.5 if center else 0.0
+        return (float(self.x) + offset, float(self.y) + offset)
+
     def to_tuple(self) -> Tuple[int, int]:
         """Convert to tuple (x, y)."""
         return (self.x, self.y)
+
+    def offset(self, direction: "Direction", tiles: int = 1) -> "TilePosition":
+        """Offset by N tiles in a cardinal direction.
+
+        Args:
+            direction: Cardinal direction (NORTH, EAST, SOUTH, WEST)
+            tiles: Number of tiles to move (default 1)
+
+        Returns:
+            New TilePosition offset in the given direction.
+
+        Raises:
+            ValueError: If direction is not cardinal.
+
+        Example:
+            >>> TilePosition(5, 5).offset(Direction.NORTH, 2)
+            TilePosition(x=5, y=3)
+            >>> TilePosition(5, 5).offset(Direction.EAST)
+            TilePosition(x=6, y=5)
+        """
+        if not direction.is_cardinal():
+            raise ValueError(f"Cannot offset in non-cardinal direction: {direction.name}")
+
+        # Direction vectors: NORTH=-Y, EAST=+X, SOUTH=+Y, WEST=-X
+        vectors = {
+            Direction.NORTH: (0, -1),
+            Direction.EAST: (1, 0),
+            Direction.SOUTH: (0, 1),
+            Direction.WEST: (-1, 0),
+        }
+        dx, dy = vectors[direction]
+        return TilePosition(x=self.x + dx * tiles, y=self.y + dy * tiles)
+
+    def neighbors(self, diagonal: bool = False) -> List["TilePosition"]:
+        """Get adjacent tiles.
+
+        Args:
+            diagonal: If True, include 8 neighbors (cardinal + diagonal).
+                     If False, include only 4 cardinal neighbors.
+
+        Returns:
+            List of adjacent TilePositions.
+
+        Example:
+            >>> TilePosition(5, 5).neighbors()
+            [TilePosition(5, 4), TilePosition(6, 5), TilePosition(5, 6), TilePosition(4, 5)]
+        """
+        cardinal = [
+            TilePosition(self.x, self.y - 1),  # NORTH
+            TilePosition(self.x + 1, self.y),  # EAST
+            TilePosition(self.x, self.y + 1),  # SOUTH
+            TilePosition(self.x - 1, self.y),  # WEST
+        ]
+        if not diagonal:
+            return cardinal
+
+        diagonals = [
+            TilePosition(self.x + 1, self.y - 1),  # NE
+            TilePosition(self.x + 1, self.y + 1),  # SE
+            TilePosition(self.x - 1, self.y + 1),  # SW
+            TilePosition(self.x - 1, self.y - 1),  # NW
+        ]
+        return cardinal + diagonals
+
+    def manhattan_distance(self, other: "TilePosition") -> int:
+        """Calculate Manhattan distance to another tile.
+
+        Args:
+            other: Another TilePosition.
+
+        Returns:
+            Manhattan distance (sum of absolute differences).
+        """
+        return abs(self.x - other.x) + abs(self.y - other.y)
+
+    def chebyshev_distance(self, other: "TilePosition") -> int:
+        """Calculate Chebyshev distance (chessboard distance) to another tile.
+
+        Args:
+            other: Another TilePosition.
+
+        Returns:
+            Chebyshev distance (max of absolute differences).
+        """
+        return max(abs(self.x - other.x), abs(self.y - other.y))
 
 
 # =============================================================================
