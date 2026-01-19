@@ -2,7 +2,7 @@
 
 FactoryVerse is a multi-layered platform addressing a critical gap in AI Agent Research in Factorio. To this effect it provides a comprehensive low-level scaffolding for developing embodied agents in Factorio, developed for scaling multi-agent research via the **FV Embodied Agent** mod. While the **FV Snapshot** mod, fills the gap of reading the massive map state in a deterministic and non-blocking manner. These two core mods provide a stable foundation for doing high-level, composable agent research in Factorio.
 
-Beyond the core foundation, FactoryVerse also explores an opinionated design to enhance the LLM Agent's ability for interacting and reasoning about the complex factorio game state. This is achieved by providing **High-level Action** and **Factory Object** interfaces that wrap the underlying low-level RCON calls into an **Object-Oriented Markov Decision Process (OOMDP)** interface, for agent control and entity interaction. While the complex game state is materialized via a real-time synchronized DuckDB database, providing an equivelence between the Remote View (map) screen available to human players via the GUI.
+Beyond the core foundation, FactoryVerse also explores an opinionated design to enhance the LLM Agent's ability for interacting and reasoning about the complex factorio game state. This is achieved by providing **High-level Action** and **Factory Object** interfaces that wrap the underlying low-level RCON calls into an **Object-Oriented Markov Decision Process (OOMDP)** interface, for agent control and entity interaction via an agent owned python runtime. While the complex game state is materialized via a real-time synchronized DuckDB database, providing an equivelence between the Remote View (map) screen available to human players via the GUI.
 
 ## What FactoryVerse Provides
 
@@ -24,6 +24,8 @@ Python accessors that provide two complementary query interfaces:
 - **`Ghost Entity`**: In-built dry run placement for entities, useful for planning large-scale construction
 
 The snapshot mod's JSONL files are loaded into a **DuckDB spatial database** (`src/FactoryVerse/agent/infra/snapshot/`) that stays synchronized with game state in real-time via UDP. This enables agents to query the entire map with SQL instead of processing screenshots.
+
+**Utility Mods:** In addition to the core infrastructure, FactoryVerse provides supporting mods such as **FV Placement Hints** (`src/fv_placement_hints/`). This module is designed to replicate, in structured form, the same visual feedback Factorio provides when you use the cursor to hover, pick up, or move entities—highlighting valid placement tiles and indicating where entities can connect or interact. By consolidating placement validation, connection solving, and area scanning logic into Lua functions, FV Placement Hints exposes to agents and external tools the same kind of real-time spatial reasoning that players rely on visually, enabling automated systems to gauge and select valid placements just as a human would with the game's interface. *(See Appendix A.7 for details.)*
 
 ## Research Motivation
 
@@ -755,6 +757,47 @@ configure_all_server_snapshot_ports(num_servers=3)
 ```
 
 This injects the correct per-instance port into the Lua mod's runtime settings via RCON.
+
+#### A.7 FV Placement Hints Mod
+
+The **FV Placement Hints** mod (`src/fv_placement_hints/`) is a utility mod that consolidates spatial reasoning logic for entity placement. Unlike the core mods (`fv_embodied_agent` and `fv_snapshot`), this mod represents an organizational decision about where certain code should live rather than a fundamental architectural choice.
+
+**Design Rationale:**
+
+The core `fv_embodied_agent` mod is intentionally action-oriented—it provides the primitives for what an agent *can do* (walk, place, craft, mine) and reads into action-level state (position, crafting status, research progress). It deliberately avoids opinionated decision-making logic about *where* or *how* to place entities.
+
+Spatial reasoning—figuring out valid placements, connection points, and optimal positions—is a separate concern. Different research approaches might:
+- Use visual/screenshot-based reasoning entirely
+- Implement custom planning algorithms in Python
+- Build neural network-based placement policies
+- Use the database queries for spatial analysis
+
+By extracting placement hints into a separate mod, the `fv_embodied_agent` stays minimal and unopinionated, while researchers who want engine-level placement validation can use `fv_placement_hints` without it being bundled into the core action interface.
+
+**What It Provides:**
+
+| Category | Methods | Purpose |
+|----------|---------|---------|
+| **Validation** | `validate_placement`, `validate_positions` | Check if positions are valid for entity placement |
+| **Area Scanning** | `get_valid_placements`, `get_resource_placements`, `get_water_placements` | Find valid positions in an area |
+| **Connection Solving** | `get_item_drop_connections`, `get_fluid_connections`, `get_inserter_placements`, `get_pole_connections` | Find positions that connect entities (drill→chest, pipe→machine, etc.) |
+| **Entity Info** | `get_entity_output_info`, `get_fluid_connection_points`, `get_entity_footprint` | Query engine-level entity data (drop positions, fluidbox connections) |
+
+**Key Principle:** All methods use **engine-provided values** (e.g., `entity.drop_position`, `entity.fluidbox.get_pipe_connections()`) rather than reimplementing prototype calculations. This ensures accuracy across Factorio versions and mod configurations.
+
+**Usage via RCON:**
+```lua
+-- Validate a single position
+remote.call("placement_hints", "validate_placement", "iron-chest", {x=10, y=20})
+
+-- Find valid drill placements on resources
+remote.call("placement_hints", "get_resource_placements", "electric-mining-drill", area, {max_results=50})
+
+-- Find where to place a chest to receive items from a drill
+remote.call("placement_hints", "get_item_drop_connections", "electric-mining-drill", drill_pos, "iron-chest")
+```
+
+**Independence:** The `fv_placement_hints` mod has no dependency on `fv_embodied_agent` and vice versa. They can be used together or independently.
 
 ### B. Spatial Types
 

@@ -529,28 +529,6 @@ Simple position query without additional state information.]],
             return { x = self.character.position.x, y = self.character.position.y }
         end,
     },
-    get_placement_cues = {
-        category = "query",
-        is_async = false,
-        doc = [[Get placement information for an entity type.
-Returns valid positions and orientation hints for placing the entity.]],
-        paramspec = {
-            _param_order = { "entity_name" },
-            entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
-        },
-        returns = {
-            type = "placement_info",
-            schema = {
-                entity_name = { type = "string", doc = "Entity name" },
-                collision_box = { type = "table", doc = "Entity collision bounds" },
-                tile_width = { type = "number", doc = "Width in tiles" },
-                tile_height = { type = "number", doc = "Height in tiles" },
-            },
-        },
-        func = function(self, entity_name)
-            return self:get_placement_cues(entity_name)
-        end,
-    },
     get_chunks_in_view = {
         category = "query",
         is_async = false,
