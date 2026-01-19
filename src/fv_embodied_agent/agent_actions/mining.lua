@@ -72,12 +72,16 @@ end
 --- The last progress value before 1.0 is (1.0 - progress_per_tick)
 --- @param character LuaEntity Character entity
 --- @param entity LuaEntity Entity being mined
---- @return number Threshold value (progress > threshold means cycle about to complete)
+--- @return number Threshold value (progress >= threshold means cycle about to complete)
 local function get_completion_threshold(character, entity)
     local mining_time = entity.prototype.mineable_properties.mining_time
     local mining_speed = get_effective_mining_speed(character)
     local progress_per_tick = mining_speed / (mining_time * 60)
-    return 1.0 - progress_per_tick - 0.0001
+    -- Use a larger margin (1.5x progress_per_tick) to ensure we catch the cycle
+    -- even with floating-point imprecision. The cycle detection checks
+    -- last_progress >= threshold AND current_progress < last_progress,
+    -- so a lower threshold is more permissive and safer.
+    return 1.0 - (progress_per_tick * 1.5) - 0.001
 end
 
 --- Get expected products for a mineable entity (deterministic only)
@@ -489,68 +493,80 @@ end
 --- @param self Agent
 function MiningActions.process_mining(self)
     local mining_state = self.mining
-    
-    -- Check if we WERE mining (have mining state) but Factorio stopped it
-    -- This happens when entity is depleted - Factorio auto-clears mining_state
-    if mining_state and mining_state.mode and not self.character.mining_state.mining then
-        -- Factorio stopped mining for us - entity was depleted
-        local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
-        if DEBUG then
-            game.print(string.format("[DEBUG mining.process_mining] Tick %d: Factorio stopped mining, calling finalize_mining with reason=%s", 
-                game.tick, reason))
-        end
-        self:finalize_mining(reason)
+
+    -- Early exit if no mining state
+    if not mining_state or not mining_state.mode then
         return
     end
-    
-    -- Not mining at all
-    if not self.character.mining_state.mining then
-        return
-    end
-    
-    local entity = self.character.selected
-    
-    -- Check entity validity (depleted) - backup check
-    if not entity or not entity.valid then
-        local reason = mining_state and mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
-        if DEBUG then
-            game.print(string.format("[DEBUG mining.process_mining] Tick %d: Entity invalid, calling finalize_mining with reason=%s", 
-                game.tick, reason))
-        end
-        self:finalize_mining(reason)
-        return
-    end
-    
-    -- Only incremental mode needs per-tick processing
+
+    -- CRITICAL: Process cycle detection FIRST before any early exit checks
+    -- This ensures we don't miss counting cycles if Factorio stops mining
+    -- in the same tick that a cycle completes
     if mining_state.mode == MINING_MODE.INCREMENTAL then
         local current_progress = self.character.character_mining_progress or 0
         local last_progress = mining_state.last_progress or 0
         local threshold = mining_state.completion_threshold or 0.99
-        
-        -- Detect cycle completion: was at threshold, now dropped (reset)
-        if last_progress > threshold and current_progress < last_progress then
+
+        -- Detect cycle completion: was at or above threshold, now dropped (reset)
+        -- Use >= instead of > to handle floating-point edge cases where
+        -- last_progress exactly equals threshold
+        if last_progress >= threshold and current_progress < last_progress then
             mining_state.count_progress = mining_state.count_progress + 1
-            
+
+            if DEBUG then
+                game.print(string.format("[DEBUG mining.process_mining] Tick %d: Cycle detected! count_progress=%d, last_progress=%.4f, current_progress=%.4f, threshold=%.4f",
+                    game.tick, mining_state.count_progress, last_progress, current_progress, threshold))
+            end
+
             -- Render floating text using localized string format
             -- Format: +<amount> <icon> <localised name> (<total>)
-            local total_count = self.character.get_main_inventory().get_item_count(entity.name)
-            local text = {
-                "",
-                "+1 ",
-                "[item=" .. entity.name .. "]",
-                {"item-name." .. entity.name},
-                " (", total_count, ")"
-            }
-            debug_render.render_player_floating_text(text, entity.position, 1)
-            
+            local entity = self.character.selected
+            if entity and entity.valid then
+                local total_count = self.character.get_main_inventory().get_item_count(entity.name)
+                local text = {
+                    "",
+                    "+1 ",
+                    "[item=" .. entity.name .. "]",
+                    {"item-name." .. entity.name},
+                    " (", total_count, ")"
+                }
+                debug_render.render_player_floating_text(text, entity.position, 1)
+            end
+
             -- Check if target reached
             if mining_state.target_count and mining_state.count_progress >= mining_state.target_count then
                 self:finalize_mining("completed")
                 return
             end
         end
-        
+
         mining_state.last_progress = current_progress
+    end
+
+    -- Now check if Factorio stopped mining (entity depleted or other reason)
+    -- This check is AFTER cycle detection to ensure we count the final cycle
+    if not self.character.mining_state.mining then
+        -- Factorio stopped mining for us - entity was depleted or interrupted
+        local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
+        if DEBUG then
+            game.print(string.format("[DEBUG mining.process_mining] Tick %d: Factorio stopped mining, count_progress=%d, calling finalize_mining with reason=%s",
+                game.tick, mining_state.count_progress or 0, reason))
+        end
+        self:finalize_mining(reason)
+        return
+    end
+
+    local entity = self.character.selected
+
+    -- Check entity validity (depleted) - backup check
+    if not entity or not entity.valid then
+        local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
+        if DEBUG then
+            game.print(string.format("[DEBUG mining.process_mining] Tick %d: Entity invalid, count_progress=%d, calling finalize_mining with reason=%s",
+                game.tick, mining_state.count_progress or 0, reason))
+        end
+        self:finalize_mining(reason)
+        return
     end
     -- DEPLETE mode: nothing to do, just wait for entity.valid == false
 end

@@ -230,6 +230,17 @@ class MiningAction:
 
         # Wait for completion via UDP
         completion_dict = await self._listener.await_action(response, timeout=timeout)
+
+        # Flatten 'result' dict into completion_dict if present
+        # The UDP message has actual_products nested inside 'result', but
+        # MiningCompleted.from_dict expects it at the top level
+        if isinstance(completion_dict, dict) and 'result' in completion_dict:
+            result_data = completion_dict.get('result', {})
+            if isinstance(result_data, dict):
+                # Merge result fields into top level (result fields take precedence)
+                flattened = {**completion_dict, **result_data}
+                completion_dict = flattened
+
         completion = MiningCompleted.from_dict(completion_dict)
 
         # Log actual_products for debugging
