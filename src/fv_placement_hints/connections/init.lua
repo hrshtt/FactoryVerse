@@ -90,17 +90,24 @@ function M.get_item_drop_connections(source_name, source_position, target_name, 
                     candidate_pos
                 )
 
+                -- Calculate distance to drop position for tiebreaking
+                local dist_to_drop = geometry.distance(candidate_pos, drop_pos)
+
                 table.insert(candidates, {
                     position = candidate_pos,
                     perpendicular_offset = perp_offset,
+                    distance_to_drop = dist_to_drop,
                 })
             end
         end
     end
 
-    -- Sort by perpendicular offset (best alignment first)
+    -- Sort by perpendicular offset (best alignment first), then by distance to drop (closest first)
     table.sort(candidates, function(a, b)
-        return a.perpendicular_offset < b.perpendicular_offset
+        if a.perpendicular_offset ~= b.perpendicular_offset then
+            return a.perpendicular_offset < b.perpendicular_offset
+        end
+        return a.distance_to_drop < b.distance_to_drop
     end)
 
     -- Validate candidates and return valid ones
@@ -124,6 +131,7 @@ function M.get_item_drop_connections(source_name, source_position, target_name, 
             table.insert(positions, {
                 position = candidate.position,
                 perpendicular_offset = candidate.perpendicular_offset,
+                distance_to_drop = candidate.distance_to_drop,
                 valid = true,
             })
         end
@@ -295,6 +303,8 @@ function M.get_inserter_placements(pickup_name, pickup_position, drop_name, drop
 
     local surface = game.surfaces[1]
     local positions = {}
+    local candidates_in_reach = 0  -- Track how many pass reach check
+    local candidates_blocked = 0   -- Track how many fail placement check
 
     -- Calculate search area between the two entities
     local min_x = math.min(pickup_position.x, drop_position.x) - 2
@@ -330,6 +340,8 @@ function M.get_inserter_placements(pickup_name, pickup_position, drop_name, drop
 
                 -- Allow 1.5 tile tolerance for reach
                 if pickup_dist <= 1.5 and drop_dist <= 1.5 then
+                    candidates_in_reach = candidates_in_reach + 1
+
                     -- Validate inserter placement
                     local params = {
                         name = inserter_name,
@@ -348,9 +360,21 @@ function M.get_inserter_placements(pickup_name, pickup_position, drop_name, drop
                             drop_position = actual_drop,
                             valid = true,
                         })
+                    else
+                        candidates_blocked = candidates_blocked + 1
                     end
                 end
             end
+        end
+    end
+
+    -- Determine error if no valid positions found
+    local error_msg = nil
+    if #positions == 0 then
+        if candidates_in_reach == 0 then
+            error_msg = "Inserter cannot reach between these entities (gap too large for " .. inserter_name .. ")"
+        else
+            error_msg = "All " .. candidates_blocked .. " valid inserter positions are blocked by other entities"
         end
     end
 
@@ -360,6 +384,9 @@ function M.get_inserter_placements(pickup_name, pickup_position, drop_name, drop
         inserter_name = inserter_name,
         positions = positions,
         count = #positions,
+        candidates_in_reach = candidates_in_reach,
+        candidates_blocked = candidates_blocked,
+        error = error_msg,
     }
 end
 

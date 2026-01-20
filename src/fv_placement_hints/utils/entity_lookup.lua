@@ -111,7 +111,7 @@ end
 -- ============================================================================
 
 --- Get fluid connection points for an entity with a fluidbox
---- Returns absolute map positions for each connection
+--- Returns absolute map positions for each connection, calculated from prototype data
 --- @param entity_name string Entity prototype name
 --- @param position table Entity position {x, y}
 --- @return table {connections: array, entity_found: bool}
@@ -126,30 +126,103 @@ function M.get_fluid_connection_points(entity_name, position)
         }
     end
 
-    local connections = {}
+    local proto = prototypes.entity[entity_name]
+    if not proto or not proto.fluidbox_prototypes then
+        return {
+            entity_found = true,
+            connections = {},
+            error = "Entity has no fluidbox prototypes",
+        }
+    end
 
-    -- Check if entity has fluidboxes
+    local connections = {}
+    local entity_pos = entity.position
+    local entity_dir = entity.direction
+
+    -- Map direction to positions array index (1-indexed)
+    -- North=0 -> 1, East=4 -> 2, South=8 -> 3, West=12 -> 4
+    local dir_index = (entity_dir / 4) + 1
+
+    -- Get runtime fluidbox info for flow direction
+    local runtime_connections = {}
     if entity.fluidbox and #entity.fluidbox > 0 then
         for fb_index = 1, #entity.fluidbox do
-            -- Get pipe connections for this fluidbox
-            local pipe_connections = entity.fluidbox.get_pipe_connections(fb_index)
+            local pipe_conns = entity.fluidbox.get_pipe_connections(fb_index)
+            if pipe_conns then
+                runtime_connections[fb_index] = pipe_conns
+            end
+        end
+    end
 
-            if pipe_connections then
-                for conn_index, conn in ipairs(pipe_connections) do
-                    -- conn.position is the absolute map position
-                    -- conn.flow_direction indicates direction: "input", "output", or "input-output"
-                    table.insert(connections, {
-                        fluidbox_index = fb_index,
-                        connection_index = conn_index,
-                        position = {x = conn.position.x, y = conn.position.y},
-                        flow_direction = conn.flow_direction,
-                        -- target is the connected entity if any
-                        target = conn.target and {
-                            owner_name = conn.target.owner.name,
-                            owner_position = {x = conn.target.owner.position.x, y = conn.target.owner.position.y},
-                        } or nil,
-                    })
+    -- Use prototype fluidbox data to get correct positions
+    for fb_index, fb_proto in ipairs(proto.fluidbox_prototypes) do
+        local production_type = fb_proto.production_type  -- "input", "output", "input-output", "none"
+
+        if fb_proto.pipe_connections then
+            for conn_index, conn in ipairs(fb_proto.pipe_connections) do
+                -- Get relative position based on entity direction
+                local rel_pos
+                if conn.positions and #conn.positions >= dir_index then
+                    -- Use direction-specific position
+                    rel_pos = conn.positions[dir_index]
+                elseif conn.position then
+                    -- Use single position (same for all directions)
+                    rel_pos = conn.position
+                else
+                    rel_pos = {x = 0, y = 0}
                 end
+
+                -- Fallback for entities with (0,0) positions: calculate edge from bounding box
+                -- This handles entities like offshore-pump where prototype positions are all zeros
+                local abs_pos
+                if rel_pos.x == 0 and rel_pos.y == 0 then
+                    -- Calculate connection position at entity edge based on entity direction
+                    local bbox = entity.bounding_box
+                    local half_w = (bbox.right_bottom.x - bbox.left_top.x) / 2
+                    local half_h = (bbox.right_bottom.y - bbox.left_top.y) / 2
+
+                    -- Determine which direction the connection is on
+                    -- For output connections (like offshore pump), output is OPPOSITE to entity facing direction
+                    -- (pump faces INTO water, outputs to the opposite side toward land)
+                    local conn_dir = entity_dir
+                    if production_type == "output" then
+                        -- Opposite direction: add 8 (180 degrees) and wrap
+                        conn_dir = (entity_dir + 8) % 16
+                    end
+
+                    if conn_dir == defines.direction.north then
+                        abs_pos = {x = entity_pos.x, y = entity_pos.y - half_h}
+                    elseif conn_dir == defines.direction.east then
+                        abs_pos = {x = entity_pos.x + half_w, y = entity_pos.y}
+                    elseif conn_dir == defines.direction.south then
+                        abs_pos = {x = entity_pos.x, y = entity_pos.y + half_h}
+                    elseif conn_dir == defines.direction.west then
+                        abs_pos = {x = entity_pos.x - half_w, y = entity_pos.y}
+                    else
+                        abs_pos = {x = entity_pos.x, y = entity_pos.y}
+                    end
+                else
+                    -- Use prototype-provided relative position
+                    abs_pos = {
+                        x = entity_pos.x + rel_pos.x,
+                        y = entity_pos.y + rel_pos.y,
+                    }
+                end
+
+                -- Get flow direction from runtime if available, otherwise from production_type
+                local flow_direction = production_type
+                if runtime_connections[fb_index] and runtime_connections[fb_index][conn_index] then
+                    flow_direction = runtime_connections[fb_index][conn_index].flow_direction or production_type
+                end
+
+                table.insert(connections, {
+                    fluidbox_index = fb_index,
+                    connection_index = conn_index,
+                    position = abs_pos,
+                    relative_position = rel_pos,
+                    flow_direction = flow_direction,
+                    connection_direction = conn.direction,
+                })
             end
         end
     end
@@ -157,8 +230,8 @@ function M.get_fluid_connection_points(entity_name, position)
     return {
         entity_found = true,
         name = entity.name,
-        position = {x = entity.position.x, y = entity.position.y},
-        direction = entity.direction,
+        position = {x = entity_pos.x, y = entity_pos.y},
+        direction = entity_dir,
         connections = connections,
     }
 end
