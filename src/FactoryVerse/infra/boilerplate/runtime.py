@@ -86,8 +86,50 @@ def get_runtime_script() -> str:
     return """
 # Generated runtime setup
 from FactoryVerse.infra.boilerplate import load, Scope
-from FactoryVerse.factory.types import MapPosition, Direction
-from FactoryVerse.agent.placement_hints import ConnectionType
+
+# =================================================================
+# Import all types documented in API reference for agent use
+# =================================================================
+
+# Core spatial types
+from FactoryVerse.factory.types import (
+    MapPosition,
+    Direction,
+    BoundingBox,
+    CraftingQueueStatus,
+    ResearchQueueItem,
+)
+
+# Placement planning types
+from FactoryVerse.agent.placement_hints import (
+    ConnectionType,
+    ConnectionPosition,
+    WireConnectionPosition,
+    GhostPlan,
+    PolePlacementResult,
+    EntityValidationError,
+)
+
+# Item types
+from FactoryVerse.factory.item.base import (
+    Item,
+    PlaceableItem,
+    ItemStack,
+)
+
+# Walking exception types
+from FactoryVerse.agent.embodied_actions.walking import (
+    WalkingError,
+    WalkingUnreachableError,
+    WalkingEntityNotFoundError,
+    WalkingNoStandableTilesError,
+)
+
+# Research types
+from FactoryVerse.agent.embodied_actions.research import (
+    ResearchStatus,
+    QueuedTechnology,
+)
 
 # Load full runtime
 _ctx = load(scope=Scope.RUNTIME)

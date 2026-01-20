@@ -135,16 +135,44 @@ class Tier3Python(TierBase):
                     raise
 
     async def _init_udp(self) -> None:
-        """Initialize UDP dispatcher for notifications."""
-        from FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
+        """Initialize UDP dispatcher for agent action notifications.
+
+        The UDP port must match what Tier 4 tells the Lua mod, otherwise
+        async action notifications (walking, mining, crafting) will be lost.
+
+        Port calculation:
+        - If udp_port is explicitly set: use that port
+        - Otherwise: calculate from agent_id using infra_config.get_agent_port()
+        """
+        from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
 
         udp_port = self.config.udp_port
-        if udp_port is None:
-            # Use global dispatcher with auto-allocated port
-            self._udp_dispatcher = get_udp_dispatcher()
-        else:
-            self._udp_dispatcher = UDPDispatcher(port=udp_port)
 
+        if udp_port is None:
+            # Calculate agent-specific port from agent_id
+            # This ensures the Python listener matches the Lua agent's notification target
+            agent_id = self.config.agent_id  # e.g., "agent_1"
+            infra_config = self._env.config.infra_config
+
+            try:
+                agent_index = int(agent_id.split("_")[1]) - 1  # agent_1 → 0
+            except (ValueError, IndexError):
+                agent_index = 0
+
+            # Get server_index from instance name
+            server_index = None
+            if self._instance and self._instance.startswith("server_"):
+                try:
+                    server_index = int(self._instance.split("_")[1])
+                except (ValueError, IndexError):
+                    pass
+
+            udp_port = infra_config.get_agent_port(agent_index, server_index)
+            logger.info(
+                f"Tier 3: Calculated agent UDP port {udp_port} from agent_id='{agent_id}'"
+            )
+
+        self._udp_dispatcher = UDPDispatcher(port=udp_port)
         await self._udp_dispatcher.start()
         logger.info(
             f"Tier 3: UDP dispatcher started on port {self._udp_dispatcher.port}"
@@ -399,7 +427,7 @@ class Tier3Python(TierBase):
         """Create a new agent in Factorio with correct parameter mapping.
 
         This matches the Lua API signature:
-        remote.call('agent', 'create_agent', udp_port, set_global_pos, set_unique_forces, force_name, initial_inventory)
+        remote.call('agent', 'create_agent', udp_port, set_unique_forces, default_common_force, initial_inventory)
 
         Args:
             udp_port: UDP port for agent notifications
@@ -416,7 +444,7 @@ class Tier3Python(TierBase):
             raise RuntimeError("RCON not connected")
 
         # Build Lua command with correct parameter order
-        # Args: udp_port, set_global_pos (always true), set_unique_forces, force_name, initial_inventory
+        # Args: udp_port, set_unique_forces, default_common_force, initial_inventory
         set_unique_str = "true" if set_unique_forces else "false"
 
         if initial_inventory:
@@ -427,13 +455,13 @@ class Tier3Python(TierBase):
             )
             cmd = (
                 f"/c local res = remote.call('agent', 'create_agent', "
-                f"{udp_port}, true, {set_unique_str}, \"{default_common_force}\", {inv_lua}); "
+                f"{udp_port}, {set_unique_str}, \"{default_common_force}\", {inv_lua}); "
                 "rcon.print(helpers.table_to_json(res))"
             )
         else:
             cmd = (
                 f"/c local res = remote.call('agent', 'create_agent', "
-                f"{udp_port}, true, {set_unique_str}, \"{default_common_force}\"); "
+                f"{udp_port}, {set_unique_str}, \"{default_common_force}\"); "
                 "rcon.print(helpers.table_to_json(res))"
             )
 

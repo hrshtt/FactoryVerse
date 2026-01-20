@@ -12,6 +12,7 @@ from .base import TierBase, Tier, TierInitializationError
 
 if TYPE_CHECKING:
     from ..environment import Environment
+    from FactoryVerse.tasks.base import TaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class Tier5Specification(TierBase):
         self._api_reference: Optional[str] = None
         self._schema_reference: Optional[str] = None
         self._task_definition: Optional[Dict[str, Any]] = None
+        self._task_config: Optional["TaskConfig"] = None
         self._initial_state: Optional[str] = None
 
     @property
@@ -61,6 +63,11 @@ class Tier5Specification(TierBase):
     def initial_state(self) -> Optional[str]:
         """Get initial state summary."""
         return self._initial_state
+
+    @property
+    def task_config(self) -> Optional["TaskConfig"]:
+        """Get loaded task configuration."""
+        return self._task_config
 
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 4 (Runtime) is ready."""
@@ -104,7 +111,7 @@ class Tier5Specification(TierBase):
             raise TierInitializationError(self.tier_level, str(e)) from e
 
     async def _generate_api_reference(self) -> None:
-        """Generate API reference documentation."""
+        """Generate API reference documentation from the registry."""
         from FactoryVerse.llm.prompts.api_reference import generate_api_reference
 
         self._api_reference = generate_api_reference()
@@ -123,14 +130,48 @@ class Tier5Specification(TierBase):
         )
 
     async def _load_task_definition(self, task_name: str) -> None:
-        """Load task definition by name."""
-        # Future: Load from tasks registry
+        """Load task definition by name from the task registry.
+
+        Args:
+            task_name: Task key to load (e.g., "iron_plate_throughput")
+        """
+        from FactoryVerse.tasks.registry import TaskRegistry
+
+        registry = TaskRegistry.get()
+
+        if not registry.task_exists(task_name):
+            # Fall back to basic task definition for unknown tasks
+            logger.warning(
+                f"Tier 5: Task '{task_name}' not found in registry, using basic definition"
+            )
+            self._task_config = None
+            self._task_definition = {
+                "name": task_name,
+                "description": f"Task: {task_name}",
+            }
+            return
+
+        # Load from registry
+        self._task_config = registry.get_task(task_name)
+
+        # Also populate legacy task_definition dict for compatibility
         self._task_definition = {
             "name": task_name,
-            "description": f"Task: {task_name}",
-            # Additional task fields would be loaded here
+            "description": self._task_config.goal_description,
+            "task_type": self._task_config.task_type.value,
+            "max_trajectory_steps": self._task_config.max_trajectory_steps,
         }
-        logger.info(f"Tier 5: Task '{task_name}' loaded")
+
+        if self._task_config.verification:
+            self._task_definition["verification"] = {
+                "target_item": self._task_config.verification.target_item,
+                "min_automation_produced": self._task_config.verification.min_automation_produced,
+            }
+
+        logger.info(
+            f"Tier 5: Task '{task_name}' loaded from registry "
+            f"(type={self._task_config.task_type.value})"
+        )
 
     async def _compose_system_prompt(self) -> None:
         """Compose full system prompt from components."""
@@ -144,9 +185,47 @@ class Tier5Specification(TierBase):
             schema_reference=self._schema_reference,
         )
 
+        # Append task goal if a task is loaded
+        if self._task_config is not None:
+            task_section = self._format_task_section()
+            self._system_prompt += task_section
+
         logger.info(
             f"Tier 5: System prompt composed ({len(self._system_prompt)} chars)"
         )
+
+    def _format_task_section(self) -> str:
+        """Format the task section for the system prompt.
+
+        Returns:
+            Formatted task section string
+        """
+        if self._task_config is None:
+            return ""
+
+        lines = [
+            "",
+            "## Task",
+            "",
+            self._task_config.goal_description,
+            "",
+        ]
+
+        # Add verification info if present
+        if self._task_config.verification:
+            v = self._task_config.verification
+            lines.extend([
+                "### Success Criteria",
+                f"- Target item: `{v.target_item}`",
+                f"- Minimum automation-produced: {v.min_automation_produced}",
+            ])
+            if v.max_manual_ratio is not None:
+                lines.append(
+                    f"- Maximum manual ratio: {v.max_manual_ratio:.0%}"
+                )
+            lines.append("")
+
+        return "\n".join(lines)
 
     async def _generate_initial_state(self) -> None:
         """Generate initial state summary showing agent's starting situation.
@@ -204,6 +283,7 @@ class Tier5Specification(TierBase):
         self._api_reference = None
         self._schema_reference = None
         self._task_definition = None
+        self._task_config = None
         self._initial_state = None
         self._set_state(TierState.SHUTDOWN)
 

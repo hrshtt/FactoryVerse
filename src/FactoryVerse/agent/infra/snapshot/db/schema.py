@@ -432,6 +432,46 @@ def create_schema(
         );
     """)
 
+    # =========================================================================
+    # ANALYTICS TABLES
+    # =========================================================================
+
+    # Global power statistics (time-series)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS power_statistics (
+            tick INTEGER NOT NULL,
+            input VARCHAR NOT NULL,
+            output VARCHAR NOT NULL,
+            storage VARCHAR NOT NULL,
+            PRIMARY KEY (tick)
+        );
+    """)
+
+    # Per-agent force-level production statistics (time-series)
+    # Tracks total items produced/consumed by the agent's force (includes automation)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS agent_production_statistics (
+            agent_id INTEGER NOT NULL,
+            tick INTEGER NOT NULL,
+            statistics VARCHAR NOT NULL,
+            PRIMARY KEY (agent_id, tick)
+        );
+    """)
+
+    # Per-agent manual production statistics (time-series)
+    # Tracks items hand-crafted and hand-mined by the agent character (not automation)
+    # Use with agent_production_statistics to calculate automation-produced items:
+    #   automation = force_output - manual_crafted - manual_mined
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS agent_manual_production_statistics (
+            agent_id INTEGER NOT NULL,
+            tick INTEGER NOT NULL,
+            crafted VARCHAR NOT NULL,
+            mined VARCHAR NOT NULL,
+            PRIMARY KEY (agent_id, tick)
+        );
+    """)
+
     # Create indexes
     # Note: Cannot index on STRUCT types (position), only on scalar types or GEOMETRY with RTREE
 

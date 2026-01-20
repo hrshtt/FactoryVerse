@@ -633,6 +633,116 @@ ASSEMBLER = TableDefinition(
 )
 
 # =============================================================================
+# ANALYTICS TABLES
+# =============================================================================
+
+POWER_STATISTICS = TableDefinition(
+    name="power_statistics",
+    purpose="Global power grid statistics over time (input/output/storage per tick)",
+    primary_key=["tick"],
+    columns=[
+        ColumnDefinition(
+            name="tick",
+            type="INTEGER",
+            nullable=False,
+            description="Game tick when statistics were recorded",
+        ),
+        ColumnDefinition(
+            name="input",
+            type="VARCHAR",
+            nullable=False,
+            description="JSON: Power input by source {entity_name: joules}",
+        ),
+        ColumnDefinition(
+            name="output",
+            type="VARCHAR",
+            nullable=False,
+            description="JSON: Power output by consumer {entity_name: joules}",
+        ),
+        ColumnDefinition(
+            name="storage",
+            type="VARCHAR",
+            nullable=False,
+            description="JSON: Power in storage {entity_name: joules}",
+        ),
+    ],
+    example_query="SELECT tick, json(input) as power_input FROM power_statistics ORDER BY tick DESC LIMIT 10",
+    notes="Statistics are deduplicated - only recorded when values change from previous tick.",
+)
+
+AGENT_PRODUCTION_STATISTICS = TableDefinition(
+    name="agent_production_statistics",
+    purpose="Per-agent force-level production statistics over time (includes automation)",
+    primary_key=["agent_id", "tick"],
+    columns=[
+        ColumnDefinition(
+            name="agent_id",
+            type="INTEGER",
+            nullable=False,
+            description="Agent ID",
+        ),
+        ColumnDefinition(
+            name="tick",
+            type="INTEGER",
+            nullable=False,
+            description="Game tick when statistics were recorded",
+        ),
+        ColumnDefinition(
+            name="statistics",
+            type="VARCHAR",
+            nullable=False,
+            description="JSON: {input: {item: count}, output: {item: count}}",
+        ),
+    ],
+    example_query="SELECT agent_id, tick, json(statistics) FROM agent_production_statistics WHERE agent_id = 1 ORDER BY tick DESC LIMIT 10",
+    notes="Force-level stats include ALL production (automation + manual). Use with agent_manual_production_statistics to isolate automation.",
+)
+
+AGENT_MANUAL_PRODUCTION_STATISTICS = TableDefinition(
+    name="agent_manual_production_statistics",
+    purpose="Per-agent manual production statistics (hand-crafted and hand-mined items only)",
+    primary_key=["agent_id", "tick"],
+    columns=[
+        ColumnDefinition(
+            name="agent_id",
+            type="INTEGER",
+            nullable=False,
+            description="Agent ID",
+        ),
+        ColumnDefinition(
+            name="tick",
+            type="INTEGER",
+            nullable=False,
+            description="Game tick when statistics were recorded",
+        ),
+        ColumnDefinition(
+            name="crafted",
+            type="VARCHAR",
+            nullable=False,
+            description="JSON: Items hand-crafted by agent {item_name: count}",
+        ),
+        ColumnDefinition(
+            name="mined",
+            type="VARCHAR",
+            nullable=False,
+            description="JSON: Items hand-mined by agent {item_name: count}",
+        ),
+    ],
+    example_queries=[
+        "-- Get latest manual production for agent 1",
+        "SELECT tick, json(crafted), json(mined) FROM agent_manual_production_statistics WHERE agent_id = 1 ORDER BY tick DESC LIMIT 1",
+        "-- Calculate automation-produced items (pseudocode):",
+        "-- automation[item] = force_output[item] - manual_crafted[item] - manual_mined[item]",
+    ],
+    notes=(
+        "Tracks ONLY items produced by the agent character directly (crafting queue, mining). "
+        "Does NOT include items produced by machines/automation. "
+        "Use with agent_production_statistics to calculate automation output: "
+        "automation = force_output - manual_crafted - manual_mined"
+    ),
+)
+
+# =============================================================================
 # SCHEMA COLLECTIONS
 # =============================================================================
 
@@ -654,8 +764,15 @@ COMPONENT_TABLES: List[TableDefinition] = [
     ASSEMBLER,
 ]
 
+# Analytics tables (time-series data)
+ANALYTICS_TABLES: List[TableDefinition] = [
+    POWER_STATISTICS,
+    AGENT_PRODUCTION_STATISTICS,
+    AGENT_MANUAL_PRODUCTION_STATISTICS,
+]
+
 # All tables
-ALL_TABLES: List[TableDefinition] = CORE_TABLES + COMPONENT_TABLES
+ALL_TABLES: List[TableDefinition] = CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES
 
 # Table lookup by name
 TABLE_BY_NAME: dict[str, TableDefinition] = {table.name: table for table in ALL_TABLES}
@@ -664,18 +781,26 @@ TABLE_BY_NAME: dict[str, TableDefinition] = {table.name: table for table in ALL_
 __all__ = [
     "ColumnDefinition",
     "TableDefinition",
+    # Core tables
     "MAP_ENTITY",
     "GHOST",
     "RESOURCE_TILE",
     "RESOURCE_ENTITY",
     "WATER_TILE",
     "FOOTPRINT_TILES",
+    # Component tables
     "INSERTER",
     "TRANSPORT_BELT",
     "MINING_DRILL",
     "ASSEMBLER",
+    # Analytics tables
+    "POWER_STATISTICS",
+    "AGENT_PRODUCTION_STATISTICS",
+    "AGENT_MANUAL_PRODUCTION_STATISTICS",
+    # Collections
     "CORE_TABLES",
     "COMPONENT_TABLES",
+    "ANALYTICS_TABLES",
     "ALL_TABLES",
     "TABLE_BY_NAME",
 ]

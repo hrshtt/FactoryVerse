@@ -207,15 +207,15 @@ class RconHelper:
         """
         try:
             # Use correct Lua API signature:
-            # remote.call('agent', 'create_agent', udp_port, set_global_pos, set_unique_forces, force_name, initial_inventory)
+            # remote.call('agent', 'create_agent', udp_port, set_unique_forces, force_name, initial_inventory)
             if udp_port is not None:
                 create_cmd = (
-                    f"/c local res = remote.call('agent', 'create_agent', {udp_port}, true, false, 'player'); "
+                    f"/c local res = remote.call('agent', 'create_agent', {udp_port}, false, 'player'); "
                     "rcon.print(helpers.table_to_json(res))"
                 )
             else:
                 create_cmd = (
-                    "/c local res = remote.call('agent', 'create_agent', nil, true, false, 'player'); "
+                    "/c local res = remote.call('agent', 'create_agent', nil, false, 'player'); "
                     "rcon.print(helpers.table_to_json(res))"
                 )
             result = self.rcon_client.send_command(create_cmd)

@@ -7,7 +7,10 @@ Supports two execution modes:
 - INPROCESS: Code runs in same Python process (lightweight, no notebook)
 """
 
+import asyncio
+import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Any, List, TYPE_CHECKING
 
@@ -50,11 +53,15 @@ class Tier4Runtime(TierBase):
         self._reachable_view: Optional[Any] = None
         self._embodied_actions: Optional[Any] = None
         self._placement_hints: Optional[Any] = None
+        self._ghost_builder: Optional[Any] = None
         self._modules_loaded: List[str] = []
 
         # Execution environment (Jupyter or InProcess)
         self._executor: Optional["ExecutionEnvironment"] = None
         self._notebook_path: Optional[Path] = None
+
+        # Persistent user namespace for code execution (survives across blocks)
+        self._user_namespace: dict = {}
 
     @property
     def config(self) -> RuntimeConfig:
@@ -117,6 +124,11 @@ class Tier4Runtime(TierBase):
         return self._placement_hints
 
     @property
+    def ghost_builder(self) -> Optional[Any]:
+        """Get GhostBuilder for building ghost entities."""
+        return self._ghost_builder
+
+    @property
     def notebook_path(self) -> Optional[Path]:
         """Get notebook path (only available in JUPYTER mode)."""
         return self._notebook_path
@@ -160,6 +172,7 @@ class Tier4Runtime(TierBase):
 
             # Load modules based on variant
             await self._load_embodied_actions()
+            await self._load_ghost_builder()
             await self._load_reachable_view()
             await self._load_placement_hints()
 
@@ -526,6 +539,19 @@ class Tier4Runtime(TierBase):
 
         logger.info("Tier 4: EmbodiedActions loaded (7 action modules)")
 
+    async def _load_ghost_builder(self) -> None:
+        """Load GhostBuilder module for building ghost entities."""
+        from FactoryVerse.agent.ghost_builder import GhostBuilderAction
+
+        self._ghost_builder = GhostBuilderAction(
+            movement=self._movement,
+            placement=self._placement,
+            inventory=self._inventory,
+        )
+        self._modules_loaded.append("ghost_builder")
+
+        logger.info("Tier 4: GhostBuilder loaded")
+
     async def _load_reachable_view(self) -> None:
         """Load ReachableView module (Lua-based entity querying)."""
         from FactoryVerse.agent.reachable_view import ReachableView
@@ -583,8 +609,106 @@ class Tier4Runtime(TierBase):
 
         logger.info("Tier 4: DuckDB connected (in-memory)")
 
+    async def _wait_for_snapshot_bootstrap(self, timeout: float = 120.0) -> None:
+        """Wait for Lua snapshot system bootstrap to complete before loading data.
+
+        The snapshot system has two phases:
+        - INITIAL_SNAPSHOTTING: Bootstrap phase, still discovering and writing chunks
+        - MAINTENANCE: Bootstrap complete, stable state for loading
+
+        This method polls RCON to check the snapshot system phase and waits
+        until MAINTENANCE phase is reached (or timeout).
+
+        Args:
+            timeout: Maximum time to wait for bootstrap (seconds, default 120s)
+
+        Raises:
+            asyncio.TimeoutError: If bootstrap doesn't complete within timeout
+        """
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.rcon_helper is None:
+            raise RuntimeError("Tier 3 must be initialized with RCON")
+
+        rcon_client = tier3.rcon_helper.rcon_client
+        start_time = time.time()
+        check_interval = 1.0  # Check every second
+        last_log_time = 0.0
+
+        logger.info("Tier 4: Waiting for snapshot system bootstrap to complete...")
+
+        while True:
+            elapsed = time.time() - start_time
+
+            # Check timeout
+            if elapsed > timeout:
+                raise asyncio.TimeoutError(
+                    f"Snapshot bootstrap did not complete within {timeout}s. "
+                    "The game may still be in INITIAL_SNAPSHOTTING phase."
+                )
+
+            # Poll snapshot status via RCON
+            try:
+                cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
+                result = rcon_client.send_command(cmd)
+
+                if result is None or result.strip() == "":
+                    logger.debug("Tier 4: Empty RCON result, retrying...")
+                    await asyncio.sleep(check_interval)
+                    continue
+
+                status = json.loads(result)
+                system_phase = status.get("system_phase")
+
+                if system_phase == "MAINTENANCE":
+                    # Bootstrap complete!
+                    completed = status.get("completed_chunks", 0)
+                    logger.info(
+                        f"Tier 4: Snapshot bootstrap complete! "
+                        f"{completed} chunks snapshotted, entering MAINTENANCE mode."
+                    )
+                    return
+
+                elif system_phase == "INITIAL_SNAPSHOTTING":
+                    # Still bootstrapping - log progress periodically
+                    pending = status.get("pending_chunks", 0)
+                    completed = status.get("completed_chunks", 0)
+                    bootstrap_wait = status.get("bootstrap_wait", {})
+                    current_tick = bootstrap_wait.get("current_tick", 0)
+                    total_ticks = bootstrap_wait.get("total_ticks", 300)
+                    waiting = bootstrap_wait.get("waiting", False)
+
+                    # Log every 5 seconds
+                    if elapsed - last_log_time >= 5.0:
+                        last_log_time = elapsed
+                        if waiting:
+                            logger.info(
+                                f"Tier 4: Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
+                                f"{pending} pending chunks, {completed} completed"
+                            )
+                        else:
+                            logger.info(
+                                f"Tier 4: Processing chunks: {pending} pending, {completed} completed"
+                            )
+
+                else:
+                    # Unknown phase - treat as still bootstrapping
+                    logger.debug(f"Tier 4: Unknown snapshot phase: {system_phase}")
+
+            except json.JSONDecodeError as e:
+                logger.warning(f"Tier 4: Failed to parse snapshot status JSON: {e}")
+            except Exception as e:
+                logger.warning(f"Tier 4: Error checking snapshot status: {e}")
+
+            await asyncio.sleep(check_interval)
+
     async def _sync_database(self) -> None:
-        """Sync DuckDB with game state from snapshots."""
+        """Sync DuckDB with game state from snapshots.
+
+        This method:
+        1. Waits for snapshot system bootstrap to complete (MAINTENANCE phase)
+        2. Loads initial snapshot data
+        3. Reloads after bootstrap to ensure complete data
+        """
         # Get snapshot directory based on instance
         tier3 = self._env.tier3
         if tier3 is None or tier3.instance is None:
@@ -603,13 +727,30 @@ class Tier4Runtime(TierBase):
             db=self._database,
             snapshot_dir=snapshot_dir,
         )
+
+        # CRITICAL: Wait for snapshot system bootstrap to complete
+        # Without this, we may load incomplete/stale data
+        await self._wait_for_snapshot_bootstrap(timeout=120.0)
+
+        # Now load snapshot data - system is in MAINTENANCE mode
+        logger.info("Tier 4: Loading snapshot data into database...")
         loader.load_all()
 
-        logger.info("Tier 4: Database synced with game state")
+        logger.info("Tier 4: Database synced with game state (bootstrap complete)")
 
     async def _load_remote_view(self) -> None:
-        """Load RemoteView module (SQL-based entity querying)."""
+        """Load RemoteView module (SQL-based entity querying).
+
+        IMPORTANT: RemoteView needs a SEPARATE UDP dispatcher on the snapshot port,
+        not the agent action port. The snapshot system sends entity updates
+        (created, destroyed, etc.) on a different port than agent action completions.
+
+        Port separation:
+        - Agent action port (34202+): Walking/mining/crafting completion notifications
+        - Snapshot port (34500 for client, 34400+N for servers): Entity state updates
+        """
         from FactoryVerse.agent.remote_view import RemoteView
+        from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
 
         tier3 = self._env.tier3
         if tier3 is None:
@@ -619,17 +760,33 @@ class Tier4Runtime(TierBase):
             raise RuntimeError("Tier 3 must be initialized with instance")
         snapshot_dir = infra_config.get_snapshot_dir(tier3.instance)
 
+        # RemoteView uses the global UDP dispatcher (get_udp_dispatcher) internally
+        # for snapshot sync. That dispatcher binds to the snapshot port (34500 for client).
+        # We don't create a separate one here to avoid port conflicts.
+        #
+        # The global dispatcher is started by RemoteView._wait_for_bootstrap_complete()
+        # during load(), so we just pass None and let it use the global one.
+        snapshot_udp_port = infra_config.get_snapshot_port(tier3.instance)
+        logger.info(f"Tier 4: RemoteView will use snapshot port {snapshot_udp_port}")
+
         self._remote_view = RemoteView(
             snapshot_dir=snapshot_dir,
             entity_ops=self._entity_ops,
             place_ops=self._placement,
             walking_action=self._movement,
             mining_action=self._mining,
-            udp_dispatcher=tier3._udp_dispatcher,
+            udp_dispatcher=None,  # Let RemoteView use global dispatcher
             rcon_client=tier3._rcon,
         )
-        self._modules_loaded.append("remote_view")
 
+        # Load initial data and start sync service
+        # Note: load() will start the global UDP dispatcher internally
+        logger.info("Tier 4: Loading RemoteView data...")
+        await self._remote_view.load(wait_for_bootstrap=True, bootstrap_timeout=120.0)
+        await self._remote_view.start()  # Start real-time sync via UDP
+        logger.info("Tier 4: RemoteView sync started")
+
+        self._modules_loaded.append("remote_view")
         logger.info("Tier 4: RemoteView loaded")
 
     async def verify_ready(self) -> Tier4Status:
@@ -676,6 +833,10 @@ class Tier4Runtime(TierBase):
         self._executor = None
         self._notebook_path = None
 
+        # Note: We don't stop the global UDP dispatcher here since it's shared
+        # and managed by the infra module. RemoteView uses get_udp_dispatcher()
+        # which returns the global singleton.
+
         # Close database via SnapshotDatabase wrapper
         if self._snapshot_database:
             try:
@@ -690,7 +851,11 @@ class Tier4Runtime(TierBase):
         self._reachable_view = None
         self._embodied_actions = None
         self._placement_hints = None
+        self._ghost_builder = None
         self._agent_id = None
+
+        # Clear persistent user namespace
+        self._user_namespace = {}
         self._session_dir = None
         self._session_config = None
         self._modules_loaded = []
@@ -741,7 +906,50 @@ class Tier4Runtime(TierBase):
         import asyncio
         import time
 
-        from FactoryVerse.factory.types import MapPosition, Direction, BoundingBox
+        # =================================================================
+        # Import all types documented in API reference for agent use
+        # =================================================================
+
+        # Core spatial types
+        from FactoryVerse.factory.types import (
+            MapPosition,
+            Direction,
+            BoundingBox,
+            # Status types
+            CraftingQueueStatus,
+            ResearchQueueItem,
+        )
+
+        # Placement planning types
+        from FactoryVerse.agent.placement_hints import (
+            ConnectionType,
+            ConnectionPosition,
+            WireConnectionPosition,
+            GhostPlan,
+            PolePlacementResult,
+            EntityValidationError,
+        )
+
+        # Item types
+        from FactoryVerse.factory.item.base import (
+            Item,
+            PlaceableItem,
+            ItemStack,
+        )
+
+        # Walking exception types
+        from FactoryVerse.agent.embodied_actions.walking import (
+            WalkingError,
+            WalkingUnreachableError,
+            WalkingEntityNotFoundError,
+            WalkingNoStandableTilesError,
+        )
+
+        # Research types
+        from FactoryVerse.agent.embodied_actions.research import (
+            ResearchStatus,
+            QueuedTechnology,
+        )
 
         tier3 = self._env.tier3
 
@@ -753,17 +961,56 @@ class Tier4Runtime(TierBase):
         runtime_proxy = RuntimeProxy(tier3._action_listener if tier3 else None)
 
         # Build namespace with Tier 4 modules
-        namespace = {
+        # Start with user-defined variables from previous blocks
+        namespace = dict(self._user_namespace)
+
+        # Inject built-in modules (these override any user variables with same name)
+        builtin_names = {
             "json": json,
             "asyncio": asyncio,
-            # Common types
+            # =================================================================
+            # Core spatial types (MapPosition, Direction, BoundingBox)
+            # =================================================================
             "MapPosition": MapPosition,
             "Direction": Direction,
             "BoundingBox": BoundingBox,
+            # =================================================================
+            # Placement planning types (ConnectionType, GhostPlan, etc.)
+            # =================================================================
+            "ConnectionType": ConnectionType,
+            "ConnectionPosition": ConnectionPosition,
+            "WireConnectionPosition": WireConnectionPosition,
+            "GhostPlan": GhostPlan,
+            "PolePlacementResult": PolePlacementResult,
+            "EntityValidationError": EntityValidationError,
+            # =================================================================
+            # Item types (Item, PlaceableItem, ItemStack)
+            # =================================================================
+            "Item": Item,
+            "PlaceableItem": PlaceableItem,
+            "ItemStack": ItemStack,
+            # =================================================================
+            # Status types (CraftingQueueStatus, ResearchStatus, etc.)
+            # =================================================================
+            "CraftingQueueStatus": CraftingQueueStatus,
+            "ResearchStatus": ResearchStatus,
+            "ResearchQueueItem": ResearchQueueItem,
+            "QueuedTechnology": QueuedTechnology,
+            # =================================================================
+            # Walking exception types
+            # =================================================================
+            "WalkingError": WalkingError,
+            "WalkingUnreachableError": WalkingUnreachableError,
+            "WalkingEntityNotFoundError": WalkingEntityNotFoundError,
+            "WalkingNoStandableTilesError": WalkingNoStandableTilesError,
+            # =================================================================
             # Tier 3 components
+            # =================================================================
             "rcon_client": tier3.rcon if tier3 else None,
             "runtime": runtime_proxy,  # For notification access
-            # Tier 4 components
+            # =================================================================
+            # Tier 4 components (action modules and views)
+            # =================================================================
             "agent_id": self._agent_id,
             "walking": self._movement,
             "crafting": self._crafting,
@@ -775,9 +1022,10 @@ class Tier4Runtime(TierBase):
             "reachable_view": self._reachable_view,
             "resources": self._reachable_view,  # Alias
             "remote_view": self._remote_view,
-            "ghost_builder": getattr(self, "_ghost_builder", None),
+            "ghost_builder": self._ghost_builder,
             "placement_hints": self._placement_hints,
         }
+        namespace.update(builtin_names)
 
         # Capture stdout
         stdout_capture = io.StringIO()
@@ -790,18 +1038,28 @@ class Tier4Runtime(TierBase):
 
             # Check if code contains 'await' - needs async execution
             if "await " in code:
-                # Wrap code in async function
+                # Wrap code in async function that returns its locals
                 indented_code = "\n".join(f"    {line}" for line in code.split("\n"))
-                async_wrapper = f"async def __async_exec__():\n{indented_code}\n"
+                async_wrapper = f"async def __async_exec__():\n{indented_code}\n    return locals()\n"
 
                 # Compile and execute the wrapper definition
                 exec(compile(async_wrapper, "<string>", "exec"), namespace)
 
-                # Await the async function directly (we're already in async context)
-                await namespace["__async_exec__"]()
+                # Await the async function and capture its local variables
+                async_locals = await namespace["__async_exec__"]()
+
+                # Merge async locals back into namespace (excluding internals)
+                for k, v in async_locals.items():
+                    if not k.startswith("_"):
+                        namespace[k] = v
             else:
                 # Sync code - simple exec
                 exec(code, namespace)
+
+            # Persist user-defined variables for next code block
+            for k, v in namespace.items():
+                if k not in builtin_names and not k.startswith("_"):
+                    self._user_namespace[k] = v
 
             output = stdout_capture.getvalue().strip()
 

@@ -101,11 +101,11 @@ def load_agent_scope(
 
     if not existing:
         # Create agent with initial inventory
-        # Args: udp_port, set_global_pos (bool), set_unique_forces (bool), force_name, initial_inventory
+        # Args: udp_port, set_unique_forces (bool), force_name, initial_inventory
         # set_unique_forces=false ensures agent uses the 'player' force
         rcon.send_command(
             f'/c local inv = {{["burner-mining-drill"] = 1, ["stone-furnace"] = 1, ["wood"] = 1}}; '
-            f"local res = remote.call('agent', 'create_agent', {requested_udp_port}, true, false, \"player\", inv); "
+            f"local res = remote.call('agent', 'create_agent', {requested_udp_port}, false, \"player\", inv); "
             f"rcon.print(helpers.table_to_json(res))"
         )
         actual_udp_port = requested_udp_port

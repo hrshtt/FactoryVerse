@@ -325,6 +325,15 @@ CraftingActions.process_crafting = function(self)
             end
         end
 
+        -- Track manual crafting in storage for verification
+        -- This allows distinguishing automation-produced items from hand-crafted items
+        storage.agent_manual_crafted = storage.agent_manual_crafted or {}
+        storage.agent_manual_crafted[self.agent_id] = storage.agent_manual_crafted[self.agent_id] or {}
+        for item_name, amount in pairs(actual_products) do
+            local current = storage.agent_manual_crafted[self.agent_id][item_name] or 0
+            storage.agent_manual_crafted[self.agent_id][item_name] = current + amount
+        end
+
         -- Calculate actual time taken
         local actual_ticks = nil
         if tracking.start_tick then

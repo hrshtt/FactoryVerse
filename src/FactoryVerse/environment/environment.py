@@ -107,6 +107,10 @@ class Environment:
             TierPrerequisiteError: If prerequisites fail
             TierInitializationError: If tier initialization fails
         """
+        # Sync agent_id between tier3 and tier4 configs
+        # This ensures the UDP port tier3 listens on matches what tier4 tells Lua
+        self._sync_agent_id()
+
         tier_classes = [
             (Tier.FACTORIO_INFRA, Tier1Factorio, "_tier1"),
             (Tier.SETTINGS, Tier2Settings, "_tier2"),
@@ -217,6 +221,33 @@ class Environment:
             statuses.tier6 = await self._tier6.verify_ready()
 
         return statuses
+
+    # =========================================================================
+    # Configuration Helpers
+    # =========================================================================
+
+    def _sync_agent_id(self) -> None:
+        """Synchronize agent_id between tier3 and tier4 configs.
+
+        This ensures the UDP port tier3 listens on matches what tier4 tells Lua.
+        Priority: tier4.agent_id (the runtime agent) wins if set differently.
+        """
+        tier3_agent_id = self._config.tier3.agent_id
+        tier4_agent_id = self._config.tier4.agent_id
+
+        if tier3_agent_id != tier4_agent_id:
+            # tier4 is the "real" agent, sync tier3 to match
+            logger.warning(
+                f"Environment: agent_id mismatch - tier3='{tier3_agent_id}', tier4='{tier4_agent_id}'. "
+                f"Syncing tier3 to match tier4."
+            )
+            # Create a new PythonConfig with the correct agent_id
+            # (pydantic models are immutable by default, so we need to recreate)
+            from .config import PythonConfig
+            tier3_dict = self._config.tier3.model_dump()
+            tier3_dict["agent_id"] = tier4_agent_id
+            self._config.tier3 = PythonConfig(**tier3_dict)
+            logger.info(f"Environment: tier3.agent_id synced to '{tier4_agent_id}'")
 
     # =========================================================================
     # Context Manager

@@ -108,7 +108,12 @@ class PythonConfig(BaseModel):
         default=True, description="Enable UDP listener for async notifications"
     )
     udp_port: Optional[int] = Field(
-        default=None, description="UDP port (auto-allocated if None)"
+        default=None,
+        description="UDP port for agent action notifications. If None, calculated from agent_id."
+    )
+    agent_id: str = Field(
+        default="agent_1",
+        description="Agent ID used to calculate UDP port when udp_port is None"
     )
 
 

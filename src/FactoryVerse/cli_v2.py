@@ -538,10 +538,30 @@ def cmd_agent(args):
         else:
             infra_mode = InfraMode.SERVER
 
+        # Calculate agent-specific UDP port
+        # This ensures Tier 3's UDP listener matches Tier 4's Lua agent registration
+        agent_id = args.agent_id  # e.g., "agent_1"
+        try:
+            agent_index = int(agent_id.split("_")[1]) - 1  # agent_1 → 0
+        except (ValueError, IndexError):
+            agent_index = 0
+
+        server_index = None
+        if instance_name.startswith("server_"):
+            try:
+                server_index = int(instance_name.split("_")[1])
+            except (ValueError, IndexError):
+                pass
+
+        agent_udp_port = infra_config.get_agent_port(agent_index, server_index)
+
         config = EnvironmentConfig(
             tier1=InfraConfig(mode=infra_mode),
             tier2=SettingsConfig(scenario=args.scenario or "freeplay"),
-            tier3=PythonConfig(instance=instance_name),
+            tier3=PythonConfig(
+                instance=instance_name,
+                agent_id=args.agent_id,  # Must match tier4 for UDP port calculation
+            ),
             tier4=RuntimeConfig(
                 variant=RuntimeVariant.FULL,
                 agent_id=args.agent_id,
@@ -570,6 +590,7 @@ def cmd_agent(args):
         print(f"   Mode: {args.mode}")
         print(f"   Instance: {instance_name}")
         print(f"   Agent ID: {args.agent_id}")
+        print(f"   Agent UDP Port: {agent_udp_port}")
 
         env = Environment(config=config)
 
@@ -1076,6 +1097,68 @@ def cmd_ui(args):
 
 
 # =============================================================================
+# Docs Commands
+# =============================================================================
+
+
+def cmd_docs_generate(args):
+    """Generate API reference documentation."""
+    from .docs.generator import write_api_reference
+    from .docs.registry import reset_registry
+
+    # Reset registry to ensure clean state
+    reset_registry()
+
+    output_path = Path(args.output) if args.output else None
+
+    print("📝 Generating API reference documentation...")
+
+    try:
+        path = write_api_reference(output_path)
+        print(f"\n✅ Documentation generated: {path}")
+    except Exception as e:
+        print(f"❌ Error generating documentation: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_docs_validate(args):
+    """Validate documentation coverage and examples."""
+    from .docs.reference import register_all_documentation
+    from .docs.registry import get_registry, reset_registry
+    from .docs.validators import CoverageValidator, ExampleValidator
+
+    reset_registry()
+    register_all_documentation()
+
+    registry = get_registry()
+
+    print("🔍 Validating documentation...\n")
+
+    # Coverage validation
+    print("📊 Coverage Report:")
+    coverage_validator = CoverageValidator(registry)
+    coverage_report = coverage_validator.validate()
+    print(coverage_report.summary())
+
+    # Example syntax validation
+    print("\n📝 Example Validation:")
+    example_validator = ExampleValidator(registry)
+    example_report = example_validator.validate_all_syntax()
+    print(example_report.summary())
+
+    # Exit with error if validation failed
+    if not coverage_report.complete and args.strict:
+        print("\n❌ Coverage validation failed (--strict mode)")
+        sys.exit(1)
+
+    if not example_report.all_valid:
+        print("\n❌ Example validation failed")
+        sys.exit(1)
+
+    print("\n✅ All validations passed")
+
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -1187,6 +1270,27 @@ def main():
     ui_parser.add_argument("--port", type=int, default=8080)
     ui_parser.add_argument("--native", action="store_true")
     ui_parser.set_defaults(func=cmd_ui)
+
+    # ========== DOCS COMMANDS ==========
+    docs_parser = subparsers.add_parser("docs", help="Documentation operations")
+    docs_sub = docs_parser.add_subparsers(dest="docs_action")
+
+    # docs generate
+    docs_generate = docs_sub.add_parser("generate", help="Generate API reference")
+    docs_generate.add_argument(
+        "-o", "--output",
+        help="Output path (default: docs/for-llms/api_reference.md)",
+    )
+    docs_generate.set_defaults(func=cmd_docs_generate)
+
+    # docs validate
+    docs_validate = docs_sub.add_parser("validate", help="Validate documentation")
+    docs_validate.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail if coverage is incomplete",
+    )
+    docs_validate.set_defaults(func=cmd_docs_validate)
 
     # ========== PARSE AND EXECUTE ==========
     args = parser.parse_args()

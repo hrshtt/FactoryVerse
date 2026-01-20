@@ -352,7 +352,18 @@ function MiningActions.finalize_mining(self, reason)
         -- Deterministic deplete completed: use expected products
         actual_products = mining_state.expected_products
     end
-    
+
+    -- Track manual mining in storage for verification
+    -- This allows distinguishing automation-produced items from hand-mined items
+    if actual_products and next(actual_products) then
+        storage.agent_manual_mined = storage.agent_manual_mined or {}
+        storage.agent_manual_mined[self.agent_id] = storage.agent_manual_mined[self.agent_id] or {}
+        for item_name, amount in pairs(actual_products) do
+            local current = storage.agent_manual_mined[self.agent_id][item_name] or 0
+            storage.agent_manual_mined[self.agent_id][item_name] = current + amount
+        end
+    end
+
     -- Render completion text for deplete modes using localized string format
     -- Format: +<amount> <icon> <localised name> (<total>)
     -- Multiple products (e.g. huge-rock) are separated by newlines

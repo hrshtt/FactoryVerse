@@ -1,10 +1,10 @@
 """API reference documentation generation for FactoryVerse.
 
-This module generates comprehensive API documentation by introspecting
-the FactoryVerse Python codebase. The generated documentation covers:
+This module generates comprehensive API documentation from the documentation
+registry. The generated documentation covers:
 
 - Top-level accessors (walking, inventory, reachable_view, etc.)
-- Entity types and capabilities (mixins)
+- Entity types and capabilities
 - Response types (dataclasses)
 - Exception types
 - Core data types (MapPosition, Direction, etc.)
@@ -12,13 +12,15 @@ the FactoryVerse Python codebase. The generated documentation covers:
 The generated documentation is suitable for inclusion in LLM system prompts
 to enable agents to understand and use the FactoryVerse DSL.
 
-Note: This module delegates to the existing generate_docs.py script logic.
-Future work will migrate the full introspection logic into this module.
+All documentation is generated from the FactoryVerse.docs registry system,
+which ensures examples are validated and documentation coverage is enforced.
 """
 
 from pathlib import Path
 from typing import Optional
-import sys
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_project_root() -> Path:
@@ -38,31 +40,18 @@ def get_project_root() -> Path:
 
 
 def generate_api_reference() -> str:
-    """Generate API reference documentation via introspection.
+    """Generate API reference documentation from the registry.
 
-    Introspects the FactoryVerse Python codebase to generate comprehensive
-    documentation of all public APIs available to agents.
+    Uses the FactoryVerse.docs module which provides:
+    - Co-located documentation with validated examples
+    - Coverage enforcement
+    - Decision-driven documentation
 
     Returns:
         Complete API reference as markdown string
     """
-    # Import the generate_document function from the existing script
-    root = get_project_root()
-    scripts_dir = root / "scripts"
-
-    # Temporarily add scripts to path
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-
-    try:
-        # Import the generation logic from the existing script
-        from generate_docs import generate_document
-
-        return generate_document()
-    finally:
-        # Clean up path
-        if str(scripts_dir) in sys.path:
-            sys.path.remove(str(scripts_dir))
+    from FactoryVerse.docs.generator import generate_api_reference as registry_generate
+    return registry_generate()
 
 
 def write_api_reference(output_path: Optional[Path] = None) -> Path:

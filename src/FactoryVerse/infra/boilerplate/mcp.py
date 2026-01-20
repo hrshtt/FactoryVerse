@@ -117,6 +117,69 @@ async def mcp_execute_code(
         # Add async support
         exec_globals["asyncio"] = asyncio
 
+        # =================================================================
+        # Import all types documented in API reference for agent use
+        # =================================================================
+        from FactoryVerse.factory.types import (
+            MapPosition,
+            Direction,
+            BoundingBox,
+            CraftingQueueStatus,
+            ResearchQueueItem,
+        )
+        from FactoryVerse.agent.placement_hints import (
+            ConnectionType,
+            ConnectionPosition,
+            WireConnectionPosition,
+            GhostPlan,
+            PolePlacementResult,
+            EntityValidationError,
+        )
+        from FactoryVerse.factory.item.base import (
+            Item,
+            PlaceableItem,
+            ItemStack,
+        )
+        from FactoryVerse.agent.embodied_actions.walking import (
+            WalkingError,
+            WalkingUnreachableError,
+            WalkingEntityNotFoundError,
+            WalkingNoStandableTilesError,
+        )
+        from FactoryVerse.agent.embodied_actions.research import (
+            ResearchStatus,
+            QueuedTechnology,
+        )
+
+        # Add all types to exec globals
+        exec_globals.update({
+            # Core spatial types
+            "MapPosition": MapPosition,
+            "Direction": Direction,
+            "BoundingBox": BoundingBox,
+            # Placement types
+            "ConnectionType": ConnectionType,
+            "ConnectionPosition": ConnectionPosition,
+            "WireConnectionPosition": WireConnectionPosition,
+            "GhostPlan": GhostPlan,
+            "PolePlacementResult": PolePlacementResult,
+            "EntityValidationError": EntityValidationError,
+            # Item types
+            "Item": Item,
+            "PlaceableItem": PlaceableItem,
+            "ItemStack": ItemStack,
+            # Status types
+            "CraftingQueueStatus": CraftingQueueStatus,
+            "ResearchStatus": ResearchStatus,
+            "ResearchQueueItem": ResearchQueueItem,
+            "QueuedTechnology": QueuedTechnology,
+            # Walking exceptions
+            "WalkingError": WalkingError,
+            "WalkingUnreachableError": WalkingUnreachableError,
+            "WalkingEntityNotFoundError": WalkingEntityNotFoundError,
+            "WalkingNoStandableTilesError": WalkingNoStandableTilesError,
+        })
+
         # Check if code contains await
         if "await " in code:
             # Wrap in async function and execute
