@@ -25,6 +25,7 @@ local udp_payloads = require("utils.udp_payloads")
 local Agents = require("__fv_embodied_agent__/game_state/Agents")
 local debug_render = require("__fv_embodied_agent__/utils/debug_render")
 local Resource = require("game_state.Resource")
+local forces = require("utils.forces")
 
 -- Local reference to utility function for performance
 local entity_key = utils.entity_key
@@ -102,15 +103,17 @@ function M.track_chunk_entity_status(chunk_position)
     }
     
     -- Check count first for early exit
+    -- Use dynamic forces to include player + all agent forces
+    local tracked_forces = forces.get_tracked_forces()
     local entity_count = surface.count_entities_filtered {
         area = chunk_area,
-        force = "player",
+        force = tracked_forces,
     }
     if entity_count == 0 then return {} end
-    
+
     local entities = surface.find_entities_filtered {
         area = chunk_area,
-        force = "player",
+        force = tracked_forces,
     }
     local status_records = {}
     for _, entity in ipairs(entities) do
@@ -195,15 +198,17 @@ function M.collect_all_statuses_for_dump(charted_chunks)
         }
         
         -- Check count first for early exit
+        -- Use dynamic forces to include player + all agent forces
+        local tracked_forces = forces.get_tracked_forces()
         local entity_count = surface.count_entities_filtered {
             area = chunk_area,
-            force = "player",
+            force = tracked_forces,
         }
         if entity_count == 0 then goto continue end
-        
+
         local entities = surface.find_entities_filtered {
             area = chunk_area,
-            force = "player",
+            force = tracked_forces,
         }
         
         -- Use numeric for loop for hot path

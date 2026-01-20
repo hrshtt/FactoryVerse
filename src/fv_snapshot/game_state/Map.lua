@@ -17,6 +17,7 @@ local utils = require("utils.utils")
 local Resource = require("game_state.Resource")
 -- local Entities = require("game_state.Entities")
 local snapshot = require("utils.snapshot")
+local forces = require("utils.forces")
 local serialize = require("__fv_embodied_agent__/utils/serialize")
 local udp_payloads = require("utils.udp_payloads")
 
@@ -179,8 +180,8 @@ function ChunkTracker:_get_chunk_entry(chunk_x, chunk_y)
             water = false,
             snapshot_tick = nil,  -- Tick when chunk was last snapshotted (nil = not snapshotted yet)
             dirty = false,  -- TODO: True if chunk needs re-snapshotting due to mutation (not yet implemented)
-            has_player_entities = false,  -- Cache: true if chunk has player force entities
-            player_entity_count = 0,  -- Cache: count of player force entities in chunk
+            has_tracked_entities = false,  -- Cache: true if chunk has entities from tracked forces
+            tracked_entity_count = 0,  -- Cache: count of entities from tracked forces in chunk
         }
         self.chunk_lookup[chunk_key] = chunk_entry
     end
@@ -354,8 +355,8 @@ function M.get_charted_chunks(sort_by_distance)
     
     -- Iterate chunk_lookup (only charted chunks) instead of surface.get_chunks() (all generated chunks)
     for chunk_key, chunk_entry in pairs(tracker.chunk_lookup) do
-        -- Only return chunks with player entities for status tracking
-        if chunk_entry.has_player_entities then
+        -- Only return chunks with tracked force entities for status tracking
+        if chunk_entry.has_tracked_entities then
             -- Parse chunk coordinates from key
             local x, y = chunk_key:match("([^,]+),([^,]+)")
             local chunk_x = tonumber(x)
@@ -582,10 +583,6 @@ function M.set_map_area_state(bounding_box, state)
 end
 
 function M.clear_map_area(bounding_box)
-end
-
-function M.get_player_force()
-    return game.forces["player"]
 end
 
 function M.get_chunk_lookup()
@@ -917,35 +914,37 @@ local function phase_find_entities(state, chunk_x, chunk_y)
             #gathered.resources, #gathered.trees, #gathered.rocks, #gathered.water))
     end
     
-    -- Also gather player-placed entities (excluding ghosts)
+    -- Also gather built entities from tracked forces (excluding ghosts)
     -- PERFORMANCE: count first, then find only if count > 0
-    local player_entities = {}
+    -- Use dynamic forces to include player + all agent forces
+    local tracked_forces = forces.get_tracked_forces()
+    local tracked_entities = {}
     if DEBUG then
-        game.print("[PERF]   Counting player entities...")
+        game.print("[PERF]   Counting tracked force entities...")
     end
     local entity_count = surface.count_entities_filtered {
         area = chunk_area,
-        force = "player",
+        force = tracked_forces,
     }
     if DEBUG then
-        game.print(string_format("[PERF]   Player entity count: %d", entity_count))
+        game.print(string_format("[PERF]   Tracked force entity count: %d", entity_count))
     end
     if entity_count > 0 then
         local all_entities = surface.find_entities_filtered {
             area = chunk_area,
-            force = "player",
+            force = tracked_forces,
         }
-        -- Filter out ghosts and character entities from player entities (in Lua, not C++)
+        -- Filter out ghosts and character entities (in Lua, not C++)
         -- Use numeric for loop for hot path performance
         local all_entities_count = #all_entities
         for i = 1, all_entities_count do
             local entity = all_entities[i]
             if entity and entity.valid and entity.type ~= "entity-ghost" and entity.type ~= "character" then
-                player_entities[#player_entities + 1] = entity
+                tracked_entities[#tracked_entities + 1] = entity
             end
         end
         if DEBUG then
-            game.print(string_format("[PERF]   Player entities after filtering: %d", #player_entities))
+            game.print(string_format("[PERF]   Tracked entities after filtering: %d", #tracked_entities))
         end
     end
     
@@ -975,17 +974,17 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         water = gathered.water,
         trees = gathered.trees,
         rocks = gathered.rocks,
-        player_entities = player_entities,
+        tracked_entities = tracked_entities,
         ghosts = ghosts,
         chunk = chunk,
     }
     
     local end_tick = game.tick
-    local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #player_entities + #ghosts
+    local total = #gathered.resources + #gathered.water + #gathered.trees + #gathered.rocks + #tracked_entities + #ghosts
     if DEBUG then
         local duration = end_tick - start_tick
         game.print(string_format("[PERF] FIND_ENTITIES COMPLETE: chunk (%d,%d) - took %d ticks, found %d items (res=%d, water=%d, trees=%d, rocks=%d, entities=%d, ghosts=%d)", 
-            chunk_x, chunk_y, duration, total, #gathered.resources, #gathered.water, #gathered.trees, #gathered.rocks, #player_entities, #ghosts))
+            chunk_x, chunk_y, duration, total, #gathered.resources, #gathered.water, #gathered.trees, #gathered.rocks, #tracked_entities, #ghosts))
         if duration > 0 then
             game.print(string_format("[PERF] ⚠️  WARNING: FIND_ENTITIES took %d ticks - this should complete in 1 tick!", duration))
         end
@@ -996,7 +995,7 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         resources_json = {},      -- Array of JSON strings for tiles.jsonl
         water_json = {},          -- Array of JSON strings for water-tiles.jsonl
         entities_json = {},       -- Array of JSON strings for entities.jsonl (trees+rocks)
-        player_entity_data = {},  -- Array of {entity, data} for individual entity files
+        entity_data = {},  -- Array of {entity, data} for individual entity files
         ghosts_json = {},         -- Array of JSON strings for chunk-wise ghosts-init.jsonl
     }
     state.serialize_index = 1
@@ -1031,14 +1030,14 @@ local function phase_serialize(state)
     local gathered_water = gathered.water
     local gathered_trees = gathered.trees
     local gathered_rocks = gathered.rocks
-    local gathered_player_entities = gathered.player_entities
+    local gathered_tracked_entities = gathered.tracked_entities
     local gathered_ghosts = gathered.ghosts
     
     -- Cache serialized arrays locally for hot loops
     local serialized_resources_json = serialized.resources_json
     local serialized_water_json = serialized.water_json
     local serialized_entities_json = serialized.entities_json
-    local serialized_player_entity_data = serialized.player_entity_data
+    local serialized_entity_data = serialized.entity_data
     local serialized_ghosts_json = serialized.ghosts_json
     
     -- Calculate total items to serialize (cache lengths for repeated use)
@@ -1046,12 +1045,12 @@ local function phase_serialize(state)
     local total_water = #gathered_water
     local total_trees = #gathered_trees
     local total_rocks = #gathered_rocks
-    local total_player = #gathered_player_entities
+    local total_entities = #gathered_tracked_entities
     local total_ghosts = (gathered_ghosts and #gathered_ghosts) or 0
     local total_trees_rocks = total_trees + total_rocks
     
     if DEBUG and idx == 1 then
-        local total = total_resources + total_water + total_trees + total_rocks + total_player + total_ghosts
+        local total = total_resources + total_water + total_trees + total_rocks + total_entities + total_ghosts
         game.print(string_format("[PERF] SERIALIZE START: tick %d, total=%d items, budget=%d/tick", 
             start_tick, total, budget))
     end
@@ -1112,23 +1111,23 @@ local function phase_serialize(state)
         processed = processed + 1
     end
     
-    -- Serialize player-placed entities (individual files)
+    -- Serialize built entities from tracked forces
     -- For initial chunk snapshot, entities are pre-existing (not built by agent or player during this session)
     local pre_existing_builder_info = {
         label = "pre-existing",
         placed_tick = nil,  -- Unknown when pre-existing entities were placed
     }
-    local player_start = entities_end + 1
-    local player_end = entities_end + total_player
-    local player_offset = entities_offset + total_trees_rocks  -- Pre-calculate offset for performance
-    while idx >= player_start and idx <= player_end and processed < budget do
-        local player_idx = idx - player_offset
-        local entity = gathered_player_entities[player_idx]
+    local entities_start = entities_end + 1
+    local entities_end_idx = entities_end + total_entities
+    local entities_offset = entities_offset + total_trees_rocks  -- Pre-calculate offset for performance
+    while idx >= entities_start and idx <= entities_end_idx and processed < budget do
+        local entity_idx = idx - entities_offset
+        local entity = gathered_tracked_entities[entity_idx]
         if entity and entity.valid then
             -- Use serialize module's serialization with pre-existing builder info
             local entity_data = serialize.serialize_entity(entity, pre_existing_builder_info)
             if entity_data then
-                serialized_player_entity_data[#serialized_player_entity_data + 1] = {
+                serialized_entity_data[#serialized_entity_data + 1] = {
                     entity = entity,
                     data = entity_data,
                 }
@@ -1140,9 +1139,9 @@ local function phase_serialize(state)
     
     -- Serialize ghosts (for chunk-wise ghosts-init.jsonl)
     -- For initial chunk snapshot, ghosts are pre-existing (not placed by agent or player during this session)
-    local ghosts_start = player_end + 1
-    local ghosts_end = player_end + total_ghosts
-    local ghosts_offset = player_offset + total_player  -- Pre-calculate offset for performance
+    local ghosts_start = entities_end_idx + 1
+    local ghosts_end = entities_end_idx + total_ghosts
+    local ghosts_offset = entities_offset + total_entities  -- Pre-calculate offset for performance
     while idx >= ghosts_start and idx <= ghosts_end and processed < budget do
         local ghost_idx = idx - ghosts_offset
         local ghost = gathered_ghosts and gathered_ghosts[ghost_idx]
@@ -1178,7 +1177,7 @@ local function phase_serialize(state)
     end
     
     -- Check if serialization is complete
-    local total_items = total_resources + total_water + total_trees_rocks + total_player + total_ghosts
+    local total_items = total_resources + total_water + total_trees_rocks + total_entities + total_ghosts
     if idx > total_items then
         -- Build write queue - NEW APPROACH: single JSONL files per category
         state.write_queue = {}
@@ -1221,14 +1220,14 @@ local function phase_serialize(state)
             }
         end
         
-        -- NEW: Queue single entities-init.jsonl for ALL player entities
+        -- Queue single entities-init.jsonl for all tracked force entities
         -- Instead of individual files per entity, we write one JSONL file
-        local player_entity_count = #serialized_player_entity_data
-        if player_entity_count > 0 then
+        local serialized_entity_count = #serialized_entity_data
+        if serialized_entity_count > 0 then
             local entity_json_lines = {}
             -- Use numeric for loop for hot path
-            for i = 1, player_entity_count do
-                local item = serialized_player_entity_data[i]
+            for i = 1, serialized_entity_count do
+                local item = serialized_entity_data[i]
                 local entity_data = item.data
                 if entity_data then
                     local json_str = table_to_json(entity_data)
@@ -1275,7 +1274,7 @@ local function phase_serialize(state)
         
         if DEBUG then
             game.print(string_format("[DEBUG Map.phase_serialize] Tick %d: SERIALIZE complete for chunk (%d, %d): %d files queued (%d entities)",
-                game.tick, chunk_x, chunk_y, #write_queue, player_entity_count))
+                game.tick, chunk_x, chunk_y, #write_queue, serialized_entity_count))
         end
     elseif DEBUG and processed > 0 then
         game.print(string_format("[DEBUG Map.phase_serialize] Tick %d: Serialized %d items, index now %d", 
@@ -1660,27 +1659,28 @@ function M._on_chunk_charted(event)
     local chunk_y = event.position.y
     local tracker = M.get_chunk_tracker()
     local surface = game.surfaces[1]
-    
-    -- Count player entities in this chunk
+
+    -- Count tracked force entities in this chunk (player + all agent forces)
     local chunk_area = {
         left_top = { x = chunk_x * 32, y = chunk_y * 32 },
         right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
     }
+    local tracked_forces = forces.get_tracked_forces()
     local entity_count = surface.count_entities_filtered {
         area = chunk_area,
-        force = "player"
+        force = tracked_forces
     }
-    
+
     -- Update chunk tracker with entity count
     -- ChunkTracker IS our cache - no need for separate storage.charted_chunks_cache
     local chunk_entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
-    chunk_entry.has_player_entities = (entity_count > 0)
-    chunk_entry.player_entity_count = entity_count
-    
+    chunk_entry.has_tracked_entities = (entity_count > 0)
+    chunk_entry.tracked_entity_count = entity_count
+
     -- Check if chunk needs snapshotting (not already snapshotted)
     local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
     tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
-    
+
     -- Send chunk_charted payload
     local chunk = { x = chunk_x, y = chunk_y }
     local payload = udp_payloads.chunk_charted(chunk, game.tick, "player", needs_snapshot)
@@ -1696,27 +1696,28 @@ function M._on_agent_chunk_charted(event)
     local chunk_y = event.chunk_y
     local tracker = M.get_chunk_tracker()
     local surface = game.surfaces[1]
-    
-    -- Count player entities in this chunk
+
+    -- Count tracked force entities in this chunk (player + all agent forces)
     local chunk_area = {
         left_top = { x = chunk_x * 32, y = chunk_y * 32 },
         right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
     }
+    local tracked_forces = forces.get_tracked_forces()
     local entity_count = surface.count_entities_filtered {
         area = chunk_area,
-        force = "player"
+        force = tracked_forces
     }
-    
+
     -- Update chunk tracker with entity count
     -- ChunkTracker IS our cache - no need for separate storage.charted_chunks_cache
     local chunk_entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
-    chunk_entry.has_player_entities = (entity_count > 0)
-    chunk_entry.player_entity_count = entity_count
-    
+    chunk_entry.has_tracked_entities = (entity_count > 0)
+    chunk_entry.tracked_entity_count = entity_count
+
     -- Check if chunk needs snapshotting (not already snapshotted)
     local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
     tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
-    
+
     -- Send chunk_charted payload
     local chunk = { x = chunk_x, y = chunk_y }
     local agent_id = event.agent_id or "unknown"
