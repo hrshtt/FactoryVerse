@@ -31,6 +31,7 @@ Usage:
 from enum import IntEnum
 from pathlib import Path
 from typing import Optional, Dict, Any, TYPE_CHECKING
+from factorio_rcon import RCONClient
 
 if TYPE_CHECKING:
     from FactoryVerse.runtime import AgentRuntime
@@ -82,7 +83,7 @@ class BoilerplateContext:
         return self._components.keys()
 
     @property
-    def rcon(self):
+    def rcon(self) -> Optional[RCONClient]:
         """RCON client (available at Scope.RCON+)."""
         return self._components.get("rcon")
 
@@ -138,7 +139,7 @@ class BoilerplateContext:
         rcon = self.rcon
         if rcon is not None:
             try:
-                rcon.disconnect()
+                rcon.close()
             except Exception:
                 pass
 

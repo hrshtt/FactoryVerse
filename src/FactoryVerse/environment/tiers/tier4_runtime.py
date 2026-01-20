@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..environment import Environment
     from FactoryVerse.infra.execution.base import ExecutionEnvironment
     from FactoryVerse.infra.session.file_manager import SessionConfig
+    from FactoryVerse.scenarios.base import ScenarioAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ class Tier4Runtime(TierBase):
         # Execution environment (Jupyter or InProcess)
         self._executor: Optional["ExecutionEnvironment"] = None
         self._notebook_path: Optional[Path] = None
+
+        # Scenario adapter (type-safe interface to scenario-specific capabilities)
+        self._scenario_adapter: Optional["ScenarioAdapter"] = None
 
         # Persistent user namespace for code execution (survives across blocks)
         self._user_namespace: dict = {}
@@ -143,6 +147,20 @@ class Tier4Runtime(TierBase):
         """Get session configuration/metadata (for trajectory tracking)."""
         return self._session_config
 
+    @property
+    def scenario(self) -> Optional["ScenarioAdapter"]:
+        """Get scenario adapter for scenario-specific capabilities.
+
+        Returns the loaded scenario adapter (e.g., LabGridAdapter for lab-grid),
+        or None if no scenario adapter was detected/loaded.
+
+        Example:
+            >>> if tier4.scenario:
+            ...     # Lab-grid specific operations
+            ...     result = tier4.scenario.create_agent_in_cell(cell_index=5)
+        """
+        return self._scenario_adapter
+
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 3 (Python Infra) is ready."""
         tier3 = self._env.tier3
@@ -179,6 +197,9 @@ class Tier4Runtime(TierBase):
             if self.config.variant == RuntimeVariant.FULL:
                 await self._load_database()
                 await self._load_remote_view()
+
+            # Load scenario adapter if a known scenario is detected
+            await self._load_scenario_adapter()
 
             # Note: We intentionally do NOT inject boilerplate into Jupyter kernel.
             # The boilerplate creates its own RCON/UDP connections which conflict
@@ -593,6 +614,32 @@ class Tier4Runtime(TierBase):
 
         logger.info("Tier 4: PlacementHints loaded")
 
+    async def _load_scenario_adapter(self) -> None:
+        """Load scenario adapter if a known scenario is detected.
+
+        Auto-detects the running scenario by checking for registered scenario
+        remote interfaces (e.g., lab_grid). If found, loads the corresponding
+        Python adapter for type-safe access to scenario-specific capabilities.
+
+        The loaded adapter is accessible via `self.scenario`.
+        """
+        from FactoryVerse.scenarios import auto_load_adapter
+
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.rcon_helper is None:
+            logger.debug("Tier 4: Skipping scenario adapter (no RCON)")
+            return
+
+        rcon_client = tier3.rcon_helper.rcon_client
+        adapter = auto_load_adapter(rcon_client)
+
+        if adapter is not None:
+            self._scenario_adapter = adapter
+            self._modules_loaded.append(f"scenario:{adapter.scenario_name}")
+            logger.info(f"Tier 4: Loaded scenario adapter: {adapter.scenario_name}")
+        else:
+            logger.debug("Tier 4: No known scenario detected")
+
     async def _load_database(self) -> None:
         """Load DuckDB database for persistent game state."""
         from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
@@ -852,6 +899,7 @@ class Tier4Runtime(TierBase):
         self._embodied_actions = None
         self._placement_hints = None
         self._ghost_builder = None
+        self._scenario_adapter = None
         self._agent_id = None
 
         # Clear persistent user namespace
@@ -1024,6 +1072,10 @@ class Tier4Runtime(TierBase):
             "remote_view": self._remote_view,
             "ghost_builder": self._ghost_builder,
             "placement_hints": self._placement_hints,
+            # =================================================================
+            # Scenario adapter (if detected)
+            # =================================================================
+            "scenario": self._scenario_adapter,
         }
         namespace.update(builtin_names)
 

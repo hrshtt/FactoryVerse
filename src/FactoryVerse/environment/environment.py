@@ -20,6 +20,7 @@ from .tiers.tier3_python import Tier3Python
 from .tiers.tier4_runtime import Tier4Runtime
 from .tiers.tier5_specification import Tier5Specification
 from .tiers.tier6_interaction import Tier6Interaction
+from .orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class Environment:
         self._tier6: Optional[Tier6Interaction] = None
 
         self._initialized_up_to: Optional[Tier] = None
+        self._orchestrator: Optional[Orchestrator] = None
 
     @property
     def config(self) -> EnvironmentConfig:
@@ -92,6 +94,25 @@ class Environment:
     def tier6(self) -> Optional[Tier6Interaction]:
         """Tier 6: Interaction."""
         return self._tier6
+
+    @property
+    def orchestrator(self) -> Orchestrator:
+        """High-level run orchestration.
+
+        Provides convenient methods for common run patterns:
+        - run_task: Run a task with verification
+        - run_freeplay: Run open-ended exploration
+        - run_batch: Run multiple jobs on available cells
+
+        Example:
+            >>> result = await env.orchestrator.run_task(
+            ...     task="iron_plate_throughput",
+            ...     model="claude-3-opus",
+            ... )
+        """
+        if self._orchestrator is None:
+            self._orchestrator = Orchestrator(self)
+        return self._orchestrator
 
     # =========================================================================
     # Lifecycle Methods

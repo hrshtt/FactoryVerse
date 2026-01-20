@@ -98,8 +98,10 @@ class RCONSource:
         Returns:
             ProductionStats with output and input item counts
         """
+        # Use "agent_N" format for the remote interface category
+        category = f"agent_{agent_id}"
         result = self._rcon.run(
-            category=str(agent_id),
+            category=category,
             method="get_production_statistics",
             args={},
             safe=True,
@@ -124,8 +126,10 @@ class RCONSource:
         Returns:
             ManualStats with crafted and mined item counts
         """
+        # Use "agent_N" format for the remote interface category
+        category = f"agent_{agent_id}"
         result = self._rcon.run(
-            category=str(agent_id),
+            category=category,
             method="get_manual_production_statistics",
             args={},
             safe=True,

@@ -25,6 +25,13 @@ from .config import (
 from .status import TierStatus, TierState, PrerequisiteResult
 from .tiers.base import Tier, TierBase
 from .environment import Environment
+from .orchestrator import (
+    Orchestrator,
+    TaskResult,
+    FreeplayResult,
+    BatchResult,
+    Job,
+)
 
 __all__ = [
     # Main class
@@ -48,4 +55,10 @@ __all__ = [
     "TierStatus",
     "TierState",
     "PrerequisiteResult",
+    # Orchestrator
+    "Orchestrator",
+    "TaskResult",
+    "FreeplayResult",
+    "BatchResult",
+    "Job",
 ]

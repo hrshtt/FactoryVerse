@@ -150,7 +150,9 @@ class TaskRegistry:
 
         if task.verification:
             info["target_item"] = task.verification.target_item
-            info["min_automation_produced"] = task.verification.min_automation_produced
+            info["quota"] = task.verification.quota
+            info["sustained_seconds"] = task.verification.sustained_seconds
+            info["check_interval_seconds"] = task.verification.check_interval_seconds
             if task.verification.max_manual_ratio is not None:
                 info["max_manual_ratio"] = task.verification.max_manual_ratio
 

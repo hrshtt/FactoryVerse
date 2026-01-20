@@ -165,7 +165,9 @@ class Tier5Specification(TierBase):
         if self._task_config.verification:
             self._task_definition["verification"] = {
                 "target_item": self._task_config.verification.target_item,
-                "min_automation_produced": self._task_config.verification.min_automation_produced,
+                "quota": self._task_config.verification.quota,
+                "sustained_seconds": self._task_config.verification.sustained_seconds,
+                "check_interval_seconds": self._task_config.verification.check_interval_seconds,
             }
 
         logger.info(
@@ -217,7 +219,12 @@ class Tier5Specification(TierBase):
             lines.extend([
                 "### Success Criteria",
                 f"- Target item: `{v.target_item}`",
-                f"- Minimum automation-produced: {v.min_automation_produced}",
+                f"- Required rate: {v.quota} items per 60 game seconds",
+                f"- Sustained duration: {v.sustained_seconds:.0f} seconds",
+                "",
+                "**Note:** The system automatically verifies throughput after each action.",
+                "You will receive progress updates showing current rate vs target.",
+                "Do NOT manually check production stats for verification - focus on building.",
             ])
             if v.max_manual_ratio is not None:
                 lines.append(

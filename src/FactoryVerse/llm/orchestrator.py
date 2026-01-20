@@ -7,7 +7,7 @@ using the LLMClient abstraction for provider-agnostic operation.
 import json
 import logging
 import datetime
-from typing import Optional, Dict, Any, Protocol
+from typing import Optional, Dict, Any, Protocol, TYPE_CHECKING, Callable, Awaitable
 import tiktoken
 
 from FactoryVerse.llm.client.base import LLMClient, ChatMessage
@@ -16,7 +16,15 @@ from FactoryVerse.llm.context.validator import ToolValidator
 from FactoryVerse.infra.output.console import ConsoleOutput
 from FactoryVerse.infra.session.trajectory import TrajectoryWriter
 
+if TYPE_CHECKING:
+    from FactoryVerse.tasks.base import TaskConfig, VerificationResult
+    from FactoryVerse.tasks.sources import VerificationSource
+
 logger = logging.getLogger(__name__)
+
+
+# Type alias for verification callback
+VerificationCallback = Callable[[], Awaitable[Optional["VerificationResult"]]]
 
 
 class RuntimeProtocol(Protocol):
@@ -69,6 +77,8 @@ class AgentOrchestrator:
         max_context_tokens: int = 100000,
         keep_recent_turns: int = 10,
         mode: str = "autonomous",
+        task_config: Optional["TaskConfig"] = None,
+        verification_callback: Optional[VerificationCallback] = None,
     ):
         """
         Initialize orchestrator.
@@ -84,6 +94,8 @@ class AgentOrchestrator:
             max_context_tokens: Maximum context window size before compression (default: 100k)
             keep_recent_turns: Number of recent turns to preserve during compression (default: 10)
             mode: 'assisted' or 'autonomous' - determines available tools and behavior
+            task_config: Optional task configuration for verification
+            verification_callback: Optional async callback to run verification
         """
         self.llm_client = llm_client
         self.runtime = runtime
@@ -97,6 +109,10 @@ class AgentOrchestrator:
         self.keep_recent_turns = keep_recent_turns
         self.mode = mode
         self.max_turns: Optional[int] = None  # None = unlimited
+        self._task_completed: bool = False  # Set by verification or done() tool
+        self._task_config: Optional["TaskConfig"] = task_config
+        self._verification_callback: Optional[VerificationCallback] = verification_callback
+        self._last_verification_result: Optional["VerificationResult"] = None
 
         # Load system prompt
         try:
@@ -465,6 +481,26 @@ class AgentOrchestrator:
             # Close tool calls section in chat log
             self._log_to_chat("</details>\n\n")
 
+            # Check task verification after tool execution
+            # This runs the verification callback and injects progress into conversation
+            verification_msg = await self._check_task_verification()
+            if verification_msg:
+                # Add verification progress as user message so agent sees it
+                self.messages.append({"role": "user", "content": verification_msg})
+                self._log_to_chat(f"**Task Progress:**\n```\n{verification_msg}\n```\n\n")
+                self._log_to_chat("---\n\n")
+
+                # Display on console
+                if self._task_completed:
+                    self.console.system_notification(verification_msg)
+                    logger.info("AgentOrchestrator: Task completed via verification")
+                    self.console.turn_complete(self.turn_number)
+                    self.turn_number += 1
+                    return "Task completed successfully!"
+                else:
+                    # Show progress (optional - could be verbose)
+                    logger.debug(f"Task progress: {verification_msg[:100]}...")
+
             # Special handling for respond tool - if used, return immediately
             if any(tc.name == "respond" for tc in tool_calls):
                 # Find the respond tool result
@@ -560,9 +596,154 @@ class AgentOrchestrator:
         Returns:
             True if max_turns is None or turn_number < max_turns, False otherwise
         """
+        if self._task_completed:
+            return False
         if self.max_turns is None:
             return True
         return self.turn_number < self.max_turns
+
+    def mark_task_completed(self) -> None:
+        """Mark the task as completed, causing the loop to exit."""
+        self._task_completed = True
+        logger.info("AgentOrchestrator: Task marked as completed")
+
+    def set_task_config(self, task_config: "TaskConfig") -> None:
+        """Set task configuration for verification.
+
+        Args:
+            task_config: Task configuration with verification criteria
+        """
+        self._task_config = task_config
+
+    def set_verification_callback(
+        self, callback: VerificationCallback
+    ) -> None:
+        """Set verification callback for automatic task verification.
+
+        Args:
+            callback: Async callback that returns VerificationResult
+        """
+        self._verification_callback = callback
+
+    async def _check_task_verification(self) -> Optional[str]:
+        """Check task verification and return progress message.
+
+        Returns:
+            Progress message to inject into conversation, or None if no task/verification
+        """
+        if self._task_config is None or self._verification_callback is None:
+            return None
+
+        try:
+            result = await self._verification_callback()
+            if result is None:
+                return None
+
+            self._last_verification_result = result
+
+            # Format progress message
+            progress_msg = self._format_verification_progress(result)
+
+            # Check if task is complete
+            if result.success:
+                self._task_completed = True
+                logger.info(
+                    f"AgentOrchestrator: Task verification PASSED! "
+                    f"Automation: {result.automation_produced}"
+                )
+
+            return progress_msg
+
+        except Exception as e:
+            logger.warning(f"AgentOrchestrator: Verification error: {e}")
+            return None
+
+    def _format_verification_progress(
+        self, result: "VerificationResult"
+    ) -> str:
+        """Format verification result as progress message.
+
+        For rate-based throughput tasks, shows:
+        - Current rate vs target rate
+        - Sustained check progress (consecutive passes / required)
+        - Recent check history
+
+        Args:
+            result: VerificationResult with production stats and rate info
+
+        Returns:
+            Formatted message showing progress toward task goal
+        """
+        if self._task_config is None or self._task_config.verification is None:
+            return ""
+
+        criteria = self._task_config.verification
+        target = criteria.target_item
+        quota = criteria.quota
+        rate = result.current_rate
+        consecutive = result.consecutive_passes
+        required = result.checks_required
+
+        # Build progress message
+        lines = []
+
+        if result.success:
+            lines.append("=" * 50)
+            lines.append("✅ TASK COMPLETE!")
+            lines.append("=" * 50)
+            lines.append(f"Target: {target}")
+            lines.append(f"Required rate: {quota}/60s")
+            lines.append(f"Sustained rate: {rate:.1f}/60s")
+            lines.append(f"Sustained for: {consecutive} consecutive checks")
+            lines.append("")
+            lines.append("Your factory has sustained the required throughput.")
+            lines.append("The task is complete - you may stop.")
+            lines.append("=" * 50)
+        else:
+            lines.append("-" * 45)
+            lines.append(f"📊 Throughput: {target}")
+            lines.append("-" * 45)
+            lines.append(f"  Target rate: {quota}/60s")
+
+            # Current rate with pass/fail indicator
+            rate_status = "✓" if rate >= quota else "✗"
+            lines.append(f"  Current rate: {rate:.1f}/60s {rate_status}")
+
+            # Sustained progress
+            sustained_seconds = consecutive * criteria.check_interval_seconds
+            required_seconds = criteria.sustained_seconds
+            lines.append(
+                f"  Sustained: {consecutive}/{required} checks "
+                f"({sustained_seconds:.0f}s/{required_seconds:.0f}s)"
+            )
+
+            # Visual progress bar for sustained checks
+            bar_len = required
+            filled = min(consecutive, required)
+            bar = "●" * filled + "○" * (bar_len - filled)
+            lines.append(f"  Progress: [{bar}]")
+
+            # Recent check history (last 5)
+            if result.check_history:
+                history = result.check_history[-5:]
+                history_str = " ".join("✓" if c.passed else "✗" for c in history)
+                lines.append(f"  Last {len(history)}: {history_str}")
+
+                # Show if there was a recent dip (reset)
+                for i, check in enumerate(history):
+                    if not check.passed and i < len(history) - 1:
+                        lines.append(f"           {'  ' * i}↑ dip (reset)")
+                        break
+
+            # Cumulative stats
+            lines.append(f"  Total produced: {result.automation_produced} (automation)")
+
+            if result.failure_reason:
+                lines.append(f"  Note: {result.failure_reason}")
+
+            lines.append("-" * 45)
+
+        return "\n".join(lines)
 
     async def _check_notifications(self) -> list[Dict[str, Any]]:
         """Check for pending game notifications from the AsyncActionListener.

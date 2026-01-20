@@ -336,77 +336,38 @@ def cmd_list_scenarios(args):
 
 
 def cmd_connect(args):
-    """Connect to a running Factorio instance (Tier 3)."""
+    """Connect to a running Factorio instance."""
 
     async def _connect():
-        config = EnvironmentConfig(
-            tier1=InfraConfig(mode=InfraMode.CLIENT),
-            tier3=PythonConfig(
-                instance=args.instance,
-                udp_enabled=not args.no_udp,
-            ),
-        )
-
-        env = Environment(config=config)
+        env = Environment()
 
         print("🔗 Connecting to Factorio...")
         print(f"   Instance: {args.instance or 'auto-detect'}")
 
         try:
-            # Skip tier 1/2 initialization - just connect
-            # We assume Factorio is already running
-            from .environment.tiers.tier3_python import Tier3Python
+            # Use orchestrator's cross-tier connect pattern
+            result = await env.orchestrator.connect_and_verify(instance=args.instance)
 
-            env._tier3 = Tier3Python(env)
-
-            # Mock tier 2 as ready
-            from .environment.tiers.tier2_settings import Tier2Settings
-            from .environment.status import TierState
-
-            env._tier2 = Tier2Settings(env)
-            env._tier2._set_state(TierState.READY)
-
-            await env._tier3.initialize()
-
-            status = await env._tier3.verify_ready()
-
-            if status.is_ready:
-                print(f"✅ Connected to {env._tier3.instance}")
-                print("   RCON: Connected")
-                print(
-                    f"   UDP: {'Listening' if status.details.get('udp_listening') else 'Disabled'}"
-                )
-
-                # Query game state using Tier 3 methods (Lua SSOT)
-                game_tick = env._tier3.get_game_tick()
-                print(f"   Game tick: {game_tick}")
-
-                # Query agents
-                agents = env._tier3.list_game_agents()
-                if agents:
-                    print(f"\n🤖 Agents in Factorio ({len(agents)}):")
-                    for agent in agents:
-                        name = agent.get("interface_name", "unknown")
-                        port = agent.get("udp_port", "?")
-                        valid = "✅" if agent.get("entity_valid", False) else "❌"
-                        force = agent.get("force", "?")
-                        pos = agent.get("position", {})
-                        pos_str = f"at ({pos.get('x', 0):.0f}, {pos.get('y', 0):.0f})" if pos else ""
-                        print(f"   {valid} {name}: UDP {port}, force={force} {pos_str}")
-                else:
-                    print("\n🤖 Agents: None (use 'fv agent' to create one)")
-
-                # Query snapshot status
-                try:
-                    snapshot = env._tier3.get_snapshot_status()
-                    if snapshot:
-                        phase = snapshot.get("phase", "unknown")
-                        print(f"\n📸 Snapshot status: {phase}")
-                except Exception:
-                    pass  # Snapshot might not be available
-            else:
-                print(f"❌ Connection failed: {status.error}")
+            if not result.get("success"):
+                print(f"❌ Connection failed: {result.get('error')}")
                 sys.exit(1)
+
+            print(f"✅ Connected to {result['instance']}")
+            print(f"   Game tick: {result['game_tick']}")
+
+            agents = result.get("agents", [])
+            if agents:
+                print(f"\n🤖 Agents in Factorio ({len(agents)}):")
+                for agent in agents:
+                    name = agent.get("interface_name", "unknown")
+                    port = agent.get("udp_port", "?")
+                    valid = "✅" if agent.get("entity_valid", False) else "❌"
+                    force = agent.get("force", "?")
+                    pos = agent.get("position", {})
+                    pos_str = f"at ({pos.get('x', 0):.0f}, {pos.get('y', 0):.0f})" if pos else ""
+                    print(f"   {valid} {name}: UDP {port}, force={force} {pos_str}")
+            else:
+                print("\n🤖 Agents: None (use 'fv agent' to create one)")
 
         except Exception as e:
             print(f"❌ Error: {e}", file=sys.stderr)
@@ -422,552 +383,337 @@ def cmd_connect(args):
 # =============================================================================
 
 
-def cmd_agent(args):
-    """Run LLM agent with full environment stack."""
-    import logging
+def _detect_instance(args) -> str:
+    """Detect or validate Factorio instance."""
+    from .infra.instance_manager import FactorioInstanceManager
 
-    # Track interrupts for graceful shutdown
-    interrupt_count = 0
-
-    async def _run_agent():
-        nonlocal interrupt_count
-
-        from .infra.instance_manager import FactorioInstanceManager
-        from .llm.client.factory import create_client_from_env
-        from .utils.rcon_utils import validate_rcon_connection
-        from .utils.port_utils import validate_udp_port, find_process_using_port
-
-        # =====================================================================
-        # Pre-flight: Load Infrastructure Config
-        # =====================================================================
-        infra_config = get_config()
-
-        # =====================================================================
-        # Pre-flight: Instance Discovery
-        # =====================================================================
-        instance_name = args.instance
-        if not instance_name:
-            detected = FactorioInstanceManager.detect_active()
-            if detected:
-                instance_name = detected.name
-                print(f"🔍 Auto-detected instance: {instance_name}")
-            else:
-                print("❌ No running Factorio instance detected")
-                print("   Start a server with: fv server start")
-                print("   Or start client with: fv client start")
-                sys.exit(1)
-        else:
-            all_instances = FactorioInstanceManager.list_available()
-            valid_names = [i.name for i in all_instances]
-            if instance_name not in valid_names:
-                print(f"❌ Invalid instance: {instance_name}")
-                print(f"   Available: {', '.join(valid_names)}")
-                sys.exit(1)
-
-        # =====================================================================
-        # Pre-flight: RCON Connection Validation
-        # =====================================================================
-        print("\n🔍 Validating RCON connection...")
-        # Get the instance object based on name
-        if instance_name == "client":
-            instance = FactorioInstanceManager.get_client(config=infra_config)
-        elif instance_name.startswith("server_"):
-            server_num = int(instance_name.split("_")[1])
-            instance = FactorioInstanceManager.get_server(server_num, config=infra_config)
-        else:
-            # Fallback: try to find in available instances
-            all_instances = FactorioInstanceManager.list_available()
-            instance = next((i for i in all_instances if i.name == instance_name), None)
-            if instance is None:
-                print(f"❌ Could not find instance: {instance_name}")
-                sys.exit(1)
-
-        success, error = validate_rcon_connection(
-            instance.rcon_host, instance.rcon_port, instance.rcon_password
-        )
-        if not success:
-            print(f"❌ RCON connection failed: {error}")
-            print(f"\n💡 Make sure Factorio is running with RCON enabled.")
-            print(f"   Expected: {instance.rcon_host}:{instance.rcon_port}")
+    if args.instance:
+        all_instances = FactorioInstanceManager.list_available()
+        valid_names = [i.name for i in all_instances]
+        if args.instance not in valid_names:
+            print(f"❌ Invalid instance: {args.instance}")
+            print(f"   Available: {', '.join(valid_names)}")
             sys.exit(1)
-        print(f"✅ RCON connection validated ({instance.rcon_host}:{instance.rcon_port})")
+        return args.instance
 
-        # =====================================================================
-        # Pre-flight: UDP Port Validation
-        # =====================================================================
-        udp_port = infra_config.agent_port_base
+    detected = FactorioInstanceManager.detect_active()
+    if detected:
+        print(f"🔍 Auto-detected instance: {detected.name}")
+        return detected.name
 
-        print(f"\n🔍 Validating UDP port {udp_port}...")
-        success, error = validate_udp_port(udp_port)
-        if not success:
-            print(f"❌ UDP port validation failed: {error}")
-            process_info = find_process_using_port(udp_port)
-            if process_info:
-                print(f"\n💡 Port is being used by: {process_info}")
-            print(f"\n💡 To fix this:")
-            print(f"   1. Kill the process using the port")
-            print(f"   2. Or set a different port via FV_AGENT_UDP_PORT")
-            sys.exit(1)
-        print(f"✅ UDP port {udp_port} is available")
+    print("❌ No running Factorio instance detected")
+    print("   Start a server with: fv server start")
+    print("   Or start client with: fv client start")
+    sys.exit(1)
 
-        # =====================================================================
-        # Pre-flight: Model Discovery
-        # =====================================================================
-        model_name = args.model
-        if args.provider == "prime_intellect":
-            try:
-                from typing import cast, Any
-                temp_client = create_client_from_env(
-                    provider=args.provider, model="placeholder"
-                )
-                available_models = cast(Any, temp_client).list_models()
-                if available_models:
-                    print(f"\n📋 Available models: {', '.join(available_models[:5])}")
-                    if model_name not in available_models:
-                        default_model = available_models[0]
-                        print(f"⚠️  Model '{model_name}' not found, using '{default_model}'")
-                        model_name = default_model
-            except Exception as e:
-                print(f"⚠️  Could not query models: {e}")
 
-        # =====================================================================
-        # Build Configuration
-        # =====================================================================
-        if instance_name == "client":
-            infra_mode = InfraMode.EXTERNAL
-        else:
-            infra_mode = InfraMode.SERVER
+def _build_environment_config(
+    instance_name: str,
+    scenario: str,
+    provider: str,
+    model: str,
+    mode: str,
+    agent_id: str,
+    max_turns: int = None,
+    task_name: str = None,
+) -> EnvironmentConfig:
+    """Build environment configuration for agent runs."""
+    if instance_name == "client":
+        infra_mode = InfraMode.EXTERNAL
+    else:
+        infra_mode = InfraMode.SERVER
 
-        # Calculate agent-specific UDP port
-        # This ensures Tier 3's UDP listener matches Tier 4's Lua agent registration
-        agent_id = args.agent_id  # e.g., "agent_1"
-        try:
-            agent_index = int(agent_id.split("_")[1]) - 1  # agent_1 → 0
-        except (ValueError, IndexError):
-            agent_index = 0
+    return EnvironmentConfig(
+        tier1=InfraConfig(mode=infra_mode),
+        tier2=SettingsConfig(scenario=scenario),
+        tier3=PythonConfig(instance=instance_name, agent_id=agent_id),
+        tier4=RuntimeConfig(
+            variant=RuntimeVariant.FULL,
+            agent_id=agent_id,
+            provider=provider,
+            model=model,
+            mode=mode,
+        ),
+        tier5=SpecificationConfig(
+            include_api_reference=True,
+            include_schema_reference=True,
+            include_initial_state=True,
+            task_name=task_name,
+        ),
+        tier6=InteractionConfig(
+            mode=InteractionMode(mode),
+            llm_provider=provider,
+            model=model,
+            max_turns=max_turns,
+        ),
+    )
 
-        server_index = None
-        if instance_name.startswith("server_"):
-            try:
-                server_index = int(instance_name.split("_")[1])
-            except (ValueError, IndexError):
-                pass
 
-        agent_udp_port = infra_config.get_agent_port(agent_index, server_index)
+def cmd_eval(args):
+    """Run task evaluation using the Orchestrator.
 
-        config = EnvironmentConfig(
-            tier1=InfraConfig(mode=infra_mode),
-            tier2=SettingsConfig(scenario=args.scenario or "freeplay"),
-            tier3=PythonConfig(
-                instance=instance_name,
-                agent_id=args.agent_id,  # Must match tier4 for UDP port calculation
-            ),
-            tier4=RuntimeConfig(
-                variant=RuntimeVariant.FULL,
-                agent_id=args.agent_id,
-                provider=args.provider,  # Pass provider for session directory structure
-                model=model_name,  # Pass model for session directory structure
-                mode=args.mode,  # Pass mode for session metadata
-            ),
-            tier5=SpecificationConfig(
-                include_api_reference=True,
-                include_schema_reference=True,
-                include_initial_state=True,
-            ),
-            tier6=InteractionConfig(
-                mode=InteractionMode(args.mode),
-                llm_provider=args.provider,
-                model=model_name,
-                max_turns=args.max_turns,
-            ),
-        )
+    This is the new simplified command for running task evaluations.
+    The Orchestrator handles initialization, task injection, verification, and cleanup.
+    """
+
+    async def _run():
+        instance_name = _detect_instance(args)
 
         print("\n" + "=" * 60)
-        print("🤖 Starting FactoryVerse Agent")
+        print("📊 FactoryVerse Task Evaluation")
         print("=" * 60)
+        print(f"   Task: {args.task}")
+        print(f"   Model: {args.model}")
         print(f"   Provider: {args.provider}")
-        print(f"   Model: {model_name}")
-        print(f"   Mode: {args.mode}")
         print(f"   Instance: {instance_name}")
-        print(f"   Agent ID: {args.agent_id}")
-        print(f"   Agent UDP Port: {agent_udp_port}")
+        print(f"   Max turns: {args.max_turns or 'default'}")
+
+        config = _build_environment_config(
+            instance_name=instance_name,
+            scenario=args.scenario or "lab-grid",
+            provider=args.provider,
+            model=args.model,
+            mode="autonomous",
+            agent_id=args.agent_id,
+            max_turns=args.max_turns,
+            task_name=args.task,
+        )
 
         env = Environment(config=config)
 
         try:
-            # Initialize all tiers with detailed progress
-            print("\n📦 Initializing environment tiers...")
-            try:
-                await env.initialize(up_to=Tier.INTERACTION)
-                print("✅ All tiers initialized")
-            except Exception as init_error:
-                print(f"\n❌ Tier initialization failed: {init_error}", file=sys.stderr)
-                # Show which tiers succeeded
-                print("\n   Tier Status:")
-                if env.tier1:
-                    print(f"   ✅ Tier 1 (Factorio Infra): {env.tier1._state}")
-                if env.tier2:
-                    print(f"   ✅ Tier 2 (Settings): {env.tier2._state}")
-                if env.tier3:
-                    status = "✅" if env.tier3.is_ready else "❌"
-                    print(f"   {status} Tier 3 (Python Infra): {env.tier3._state}")
-                    if env.tier3._error:
-                        print(f"      Error: {env.tier3._error}")
-                if env.tier4:
-                    status = "✅" if env.tier4.is_ready else "❌"
-                    print(f"   {status} Tier 4 (Runtime): {env.tier4._state}")
-                    if env.tier4._error:
-                        print(f"      Error: {env.tier4._error}")
-                if env.tier5:
-                    status = "✅" if env.tier5.is_ready else "❌"
-                    print(f"   {status} Tier 5 (Specification): {env.tier5._state}")
-                    if env.tier5._error:
-                        print(f"      Error: {env.tier5._error}")
-                if env.tier6:
-                    status = "✅" if env.tier6.is_ready else "❌"
-                    print(f"   {status} Tier 6 (Interaction): {env.tier6._state}")
-                    if env.tier6._error:
-                        print(f"      Error: {env.tier6._error}")
+            # Use Orchestrator for the entire run
+            print("\n🚀 Starting evaluation...")
+            result = await env.orchestrator.run_task(
+                task=args.task,
+                model=args.model,
+                provider=args.provider,
+                max_turns=args.max_turns,
+                cell=args.cell,
+            )
 
-                # Show full traceback for debugging
-                import traceback
-                print("\n   Full traceback:", file=sys.stderr)
-                traceback.print_exc()
-                raise
+            # Display results
+            print("\n" + "=" * 60)
+            print("📊 Evaluation Results")
+            print("=" * 60)
+
+            if result.task_success:
+                print("✅ Task PASSED")
+            else:
+                print("❌ Task FAILED")
+                if result.error:
+                    print(f"   Error: {result.error}")
+
+            print(f"\n   Total turns: {result.total_turns}")
+            print(f"   Duration: {result.duration_seconds:.1f}s")
+
+            if result.verification:
+                v = result.verification
+                print(f"\n   Verification:")
+                print(f"      Target: {v.task_key}")
+                print(f"      Automation produced: {v.automation_produced}")
+                print(f"      Manual produced: {v.manual_produced}")
+                print(f"      Automation ratio: {v.automation_ratio:.1%}")
+                if v.failure_reason:
+                    print(f"      Failure reason: {v.failure_reason}")
+
+            if result.trajectory_path:
+                print(f"\n📁 Trajectory: {result.trajectory_path}")
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Interrupted")
+        except Exception as e:
+            print(f"\n❌ Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+        finally:
+            await env.shutdown()
+
+    asyncio.run(_run())
+
+
+def cmd_freeplay(args):
+    """Run open-ended freeplay using the Orchestrator.
+
+    No specific task or verification - just let the agent explore and build.
+    """
+
+    async def _run():
+        instance_name = _detect_instance(args)
+
+        print("\n" + "=" * 60)
+        print("🎮 FactoryVerse Freeplay")
+        print("=" * 60)
+        print(f"   Model: {args.model}")
+        print(f"   Provider: {args.provider}")
+        print(f"   Instance: {instance_name}")
+        print(f"   Max turns: {args.max_turns}")
+
+        config = _build_environment_config(
+            instance_name=instance_name,
+            scenario=args.scenario or "freeplay",
+            provider=args.provider,
+            model=args.model,
+            mode="autonomous",
+            agent_id=args.agent_id,
+            max_turns=args.max_turns,
+        )
+
+        env = Environment(config=config)
+
+        try:
+            print("\n🚀 Starting freeplay...")
+            result = await env.orchestrator.run_freeplay(
+                model=args.model,
+                max_turns=args.max_turns,
+                cell=args.cell,
+                provider=args.provider,
+            )
+
+            print("\n" + "=" * 60)
+            print("📊 Freeplay Results")
+            print("=" * 60)
+
+            if result.success:
+                print("✅ Freeplay completed")
+            else:
+                print(f"❌ Error: {result.error}")
+
+            print(f"\n   Total turns: {result.total_turns}")
+            print(f"   Duration: {result.duration_seconds:.1f}s")
+
+            if result.trajectory_path:
+                print(f"\n📁 Trajectory: {result.trajectory_path}")
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Interrupted")
+        finally:
+            await env.shutdown()
+
+    asyncio.run(_run())
+
+
+def cmd_agent(args):
+    """Run LLM agent in assisted (interactive) mode.
+
+    For autonomous task evaluation, use: fv eval --task <task>
+    For autonomous freeplay, use: fv freeplay
+    """
+    import logging
+
+    interrupt_count = 0
+
+    async def _run():
+        nonlocal interrupt_count
+
+        instance_name = _detect_instance(args)
+
+        print("\n" + "=" * 60)
+        print("🤖 FactoryVerse Agent - Assisted Mode")
+        print("=" * 60)
+        print(f"   Model: {args.model}")
+        print(f"   Provider: {args.provider}")
+        print(f"   Instance: {instance_name}")
+
+        config = _build_environment_config(
+            instance_name=instance_name,
+            scenario=args.scenario or "freeplay",
+            provider=args.provider,
+            model=args.model,
+            mode="assisted",
+            agent_id=args.agent_id,
+            max_turns=args.max_turns,
+        )
+
+        env = Environment(config=config)
+
+        try:
+            print("\n📦 Initializing environment...")
+            await env.initialize(up_to=Tier.INTERACTION)
+            print("✅ Ready")
 
             tier4 = env.tier4
-            tier5 = env.tier5
             tier6 = env.tier6
 
-            # =====================================================================
-            # Session Information
-            # =====================================================================
-            print("\n📁 Session Information:")
             if tier4 and tier4.session_dir:
-                print(f"   Session dir: {tier4.session_dir}")
-                print(f"   Chat log: {tier4.chat_log_path}")
-                print(f"   Debug log: {tier4.debug_log_path}")
-                print(f"   System prompt: {tier4.system_prompt_path}")
-                print(f"   Initial state: {tier4.initial_state_path}")
+                print(f"\n📁 Session: {tier4.session_dir}")
 
-                # Configure debug logging to file
-                debug_log = tier4.debug_log_path
-                if debug_log:
-                    file_handler = logging.FileHandler(debug_log)
+                # Setup debug logging
+                if tier4.debug_log_path:
+                    file_handler = logging.FileHandler(tier4.debug_log_path)
                     file_handler.setLevel(logging.INFO)
                     file_handler.setFormatter(
                         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
                     )
                     logging.getLogger().addHandler(file_handler)
-                    logging.getLogger().setLevel(logging.INFO)
-                    # Suppress httpx logs to console
                     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-            # =====================================================================
-            # Environment Status
-            # =====================================================================
-            print("\n📊 Environment Status:")
-            if tier4:
-                print(f"   Tier 4 modules: {', '.join(tier4._modules_loaded)}")
-            if tier5:
-                prompt_len = len(tier5.system_prompt or "")
-                initial_len = len(tier5.initial_state or "")
-                print(f"   Tier 5 system prompt: {prompt_len} chars")
-                print(f"   Tier 5 initial state: {initial_len} chars")
-            if tier6:
-                print(f"   Tier 6 tools: {tier6._tools_registered}")
+            # Interactive loop
+            print("\n" + "-" * 60)
+            print("Commands: /stats, /status, /reload, exit")
+            print("-" * 60)
 
-            # =====================================================================
-            # Run Agent Loop
-            # =====================================================================
-            if args.mode == "autonomous":
-                await _run_autonomous(env, tier6)
-            else:
-                await _run_assisted(env, tier6)
+            orchestrator = tier6._orchestrator if tier6 else None
+
+            while True:
+                try:
+                    user_input = input("\nUser > ").strip()
+
+                    if not user_input:
+                        continue
+
+                    if user_input.lower() in ["exit", "quit"]:
+                        break
+
+                    if user_input.lower() == "/stats":
+                        if orchestrator:
+                            stats = orchestrator.get_statistics()
+                            print(f"📊 Actions: {stats.get('total_actions', 0)}, "
+                                  f"Success: {stats.get('success_count', 0)}, "
+                                  f"Failed: {stats.get('failure_count', 0)}")
+                        continue
+
+                    if user_input.lower() == "/status":
+                        if tier4:
+                            print(f"📊 Modules: {', '.join(tier4._modules_loaded)}")
+                        if orchestrator:
+                            print(f"   Turn: {orchestrator.turn_number}")
+                        continue
+
+                    if user_input.lower().startswith("/reload"):
+                        if tier4:
+                            await tier4.reload_modules()
+                            print("✅ Reloaded")
+                        continue
+
+                    # Run agent turn
+                    if tier6:
+                        response = await tier6.run_turn(user_input)
+                        turn = orchestrator.turn_number if orchestrator else "?"
+                        print(f"\n✅ Turn {turn}")
+                        if response:
+                            display = response[:300] + "..." if len(response) > 300 else response
+                            print(f"Agent: {display}")
+
+                except KeyboardInterrupt:
+                    interrupt_count += 1
+                    if interrupt_count >= 2:
+                        break
+                    print("\n⚠️  Press Ctrl+C again to exit")
+                except EOFError:
+                    break
 
         except TierError as e:
-            print(f"\n❌ Tier Error: {e}", file=sys.stderr)
+            print(f"❌ Error: {e}", file=sys.stderr)
             sys.exit(1)
-        except KeyboardInterrupt:
-            interrupt_count += 1
-            if interrupt_count == 1:
-                print("\n\n⚠️  Interrupt received. Cleaning up...")
-            else:
-                print("\n\n⚠️  Force exit")
         finally:
             print("\n🧹 Cleaning up...")
             await env.shutdown()
-            print("✅ Shutdown complete")
-            # Use env.tier4 instead of local variable (may not be set if init failed)
             if env.tier4 and env.tier4.session_dir:
-                print(f"\n📁 Session saved to: {env.tier4.session_dir}")
+                print(f"📁 Session saved: {env.tier4.session_dir}")
 
-    async def _run_autonomous(env, tier6):
-        """Run agent in autonomous mode."""
-        nonlocal interrupt_count
-
-        max_turns = tier6._orchestrator.max_turns if tier6._orchestrator else None
-        max_display = max_turns if max_turns else "∞"
-
-        print(f"\n🚀 Starting autonomous agent loop (max turns: {max_display})...")
-        print("Press Ctrl+C once to pause, twice to exit.\n")
-
-        if tier6:
-            try:
-                await tier6.run_loop()
-            except KeyboardInterrupt:
-                interrupt_count += 1
-                if interrupt_count == 1:
-                    print("\n⏸️  Paused. Press Ctrl+C again to exit.")
-                    return
-            except Exception as e:
-                print(f"\n❌ Error in autonomous loop: {e}", file=sys.stderr)
-                import traceback
-                tier4 = env.tier4
-                if tier4 and tier4.debug_log_path:
-                    print(f"   See debug log: {tier4.debug_log_path}", file=sys.stderr)
-                # Log full traceback
-                logger = logging.getLogger(__name__)
-                logger.exception("Error in autonomous loop")
-                # Show abbreviated traceback
-                tb_lines = traceback.format_exc().split('\n')
-                for line in tb_lines[-5:]:
-                    if line.strip():
-                        print(f"   {line}", file=sys.stderr)
-                raise
-
-    async def _run_assisted(env, tier6):
-        """Run agent in assisted mode with interactive loop."""
-        nonlocal interrupt_count
-
-        print("\n" + "=" * 60)
-        print("🤖 Agent Online - Assisted Mode")
-        print("=" * 60)
-        print("Commands:")
-        print("  /stats              - Show action statistics")
-        print("  /agents             - List agents in Factorio (Lua SSOT)")
-        print("  /set_max_turns N    - Set max turns (or 'unlimited')")
-        print("  /reload             - Reload Python modules")
-        print("  /reload --lua       - Reload Python + Lua scripts")
-        print("  /debug              - Toggle verbose debug output")
-        print("  /status             - Show environment tier status")
-        print("  exit, quit          - Exit the session")
-        print("=" * 60 + "\n")
-
-        debug_mode = False
-
-        orchestrator = tier6._orchestrator if tier6 else None
-
-        while True:
-            try:
-                user_input = input("\nUser > ").strip()
-
-                if not user_input:
-                    continue
-
-                # Exit commands
-                if user_input.lower() in ["exit", "quit"]:
-                    print("👋 Exiting...")
-                    break
-
-                # Stats command
-                if user_input.lower() == "/stats":
-                    if orchestrator:
-                        stats = orchestrator.get_statistics()
-                        print(f"\n📊 Statistics:")
-                        print(f"   Total actions: {stats.get('total_actions', 0)}")
-                        print(f"   Successful: {stats.get('success_count', 0)}")
-                        print(f"   Failed: {stats.get('failure_count', 0)}")
-                        total = stats.get('total_actions', 0)
-                        if total > 0:
-                            rate = stats.get('success_count', 0) / total
-                            print(f"   Success rate: {rate:.1%}")
-                    continue
-
-                # Set max turns command
-                if user_input.lower().startswith("/set_max_turns"):
-                    parts = user_input.split()
-                    if len(parts) < 2:
-                        current = orchestrator.max_turns if orchestrator else "unknown"
-                        print(f"\n📊 Current max turns: {current or 'unlimited'}")
-                        print("   Usage: /set_max_turns <number> or /set_max_turns unlimited")
-                        continue
-
-                    value = parts[1].lower()
-                    if value in ["unlimited", "none", "inf"]:
-                        if orchestrator:
-                            orchestrator.set_max_turns(None)
-                        print("✅ Max turns set to: unlimited")
-                    else:
-                        try:
-                            max_turns = int(value)
-                            if max_turns < 0:
-                                print("❌ Max turns must be non-negative")
-                                continue
-                            if orchestrator:
-                                orchestrator.set_max_turns(max_turns)
-                                remaining = max_turns - orchestrator.turn_number
-                                print(f"✅ Max turns set to: {max_turns}")
-                                print(f"   Current turn: {orchestrator.turn_number}, Remaining: {remaining}")
-                        except ValueError:
-                            print(f"❌ Invalid value: '{parts[1]}'")
-                    continue
-
-                # Reload command
-                if user_input.lower().startswith("/reload"):
-                    reload_lua = "--lua" in user_input.lower() or "-l" in user_input.lower()
-                    print("\n🔄 Reloading modules...")
-                    try:
-                        tier4 = env.tier4
-                        if tier4:
-                            await tier4.reload_modules()
-                        print("✅ Python modules reloaded")
-                        if reload_lua:
-                            tier3 = env.tier3
-                            if tier3 and tier3.rcon_helper:
-                                tier3.rcon_helper.rcon_client.send_command(
-                                    "/c game.reload_script(); game.print('Scripts reloaded')"
-                                )
-                            print("✅ Lua scripts reloaded")
-                    except Exception as e:
-                        print(f"❌ Reload failed: {e}")
-                    continue
-
-                # Debug toggle command
-                if user_input.lower() == "/debug":
-                    debug_mode = not debug_mode
-                    status = "ON" if debug_mode else "OFF"
-                    print(f"\n🔧 Debug mode: {status}")
-                    if debug_mode:
-                        # Set logging to DEBUG level for console
-                        logging.getLogger().setLevel(logging.DEBUG)
-                        # Add stream handler if not present
-                        root = logging.getLogger()
-                        has_stream = any(isinstance(h, logging.StreamHandler) for h in root.handlers)
-                        if not has_stream:
-                            console_handler = logging.StreamHandler()
-                            console_handler.setLevel(logging.DEBUG)
-                            console_handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
-                            root.addHandler(console_handler)
-                        print("   Verbose logging enabled - errors will show full details")
-                    else:
-                        logging.getLogger().setLevel(logging.WARNING)
-                        print("   Verbose logging disabled")
-                    continue
-
-                # Agents command - list agents from Lua SSOT
-                if user_input.lower() == "/agents":
-                    tier3 = env.tier3
-                    if tier3:
-                        try:
-                            game_tick = tier3.get_game_tick()
-                            agents = tier3.list_game_agents()
-                            print(f"\n🤖 Agents in Factorio (tick {game_tick}):")
-                            if agents:
-                                for agent in agents:
-                                    name = agent.get("interface_name", "unknown")
-                                    port = agent.get("udp_port", "?")
-                                    valid = "✅" if agent.get("entity_valid", False) else "❌"
-                                    force = agent.get("force", "?")
-                                    pos = agent.get("position", {})
-                                    pos_str = f"at ({pos.get('x', 0):.1f}, {pos.get('y', 0):.1f})" if pos else ""
-                                    print(f"   {valid} {name}: UDP {port}, force={force} {pos_str}")
-                            else:
-                                print("   No agents found")
-                        except Exception as e:
-                            print(f"   ❌ Could not query agents: {e}")
-                    else:
-                        print("   ❌ Tier 3 not available")
-                    continue
-
-                # Status command - show tier status
-                if user_input.lower() == "/status":
-                    print("\n📊 Environment Status:")
-                    tier3 = env.tier3
-                    tier4 = env.tier4
-                    tier5 = env.tier5
-
-                    # Query game state from Lua (SSOT)
-                    if tier3:
-                        print(f"   Tier 3 (Python Infra):")
-                        print(f"      RCON: {tier3.rcon_helper.rcon_client.is_connected if tier3.rcon_helper else 'N/A'}")
-                        print(f"      UDP listener: {'active' if tier3._action_listener else 'inactive'}")
-                        try:
-                            game_tick = tier3.get_game_tick()
-                            print(f"      Game tick: {game_tick}")
-                            agents = tier3.list_game_agents()
-                            print(f"      Agents in Factorio: {len(agents)}")
-                        except Exception:
-                            pass
-
-                    if tier4:
-                        print(f"   Tier 4 (Runtime):")
-                        print(f"      Agent ID: {tier4.agent_id}")
-                        print(f"      Session: {tier4.session_dir}")
-                        print(f"      Modules: {', '.join(tier4._modules_loaded) if tier4._modules_loaded else 'none'}")
-                        print(f"      Database: {'connected' if tier4.database else 'not connected'}")
-
-                    if tier5:
-                        print(f"   Tier 5 (Specification):")
-                        print(f"      System prompt: {len(tier5.system_prompt or '')} chars")
-                        print(f"      Initial state: {len(tier5.initial_state or '')} chars")
-
-                    if tier6:
-                        print(f"   Tier 6 (Interaction):")
-                        print(f"      Orchestrator: {'ready' if tier6._orchestrator else 'not ready'}")
-                        print(f"      Tools: {tier6._tools_registered}")
-                        if orchestrator:
-                            print(f"      Turn: {orchestrator.turn_number}")
-                            print(f"      Max turns: {orchestrator.max_turns or 'unlimited'}")
-                    continue
-
-                # Run agent turn
-                if tier6:
-                    try:
-                        response = await tier6.run_turn(user_input)
-                        turn_num = orchestrator.turn_number if orchestrator else "?"
-                        print(f"\n✅ Turn {turn_num} complete")
-                        if response:
-                            print(f"   Agent: {response[:200]}..." if len(response) > 200 else f"   Agent: {response}")
-                        else:
-                            print("   Agent: (no response)")
-
-                        # Show action stats after each turn
-                        if orchestrator:
-                            stats = orchestrator.get_statistics()
-                            if stats.get('failure_count', 0) > 0:
-                                print(f"   ⚠️  Failures this session: {stats['failure_count']}")
-
-                    except Exception as e:
-                        print(f"\n❌ Error during turn: {e}", file=sys.stderr)
-                        import traceback
-                        # Get the debug log path to mention
-                        tier4 = env.tier4
-                        if tier4 and tier4.debug_log_path:
-                            print(f"   See debug log for details: {tier4.debug_log_path}", file=sys.stderr)
-                        # Also log the full traceback to debug log
-                        logger = logging.getLogger(__name__)
-                        logger.exception("Error during agent turn")
-                        # Show abbreviated traceback on console for immediate debugging
-                        tb_lines = traceback.format_exc().split('\n')
-                        # Show last few lines of traceback (most relevant)
-                        for line in tb_lines[-5:]:
-                            if line.strip():
-                                print(f"   {line}", file=sys.stderr)
-
-            except KeyboardInterrupt:
-                interrupt_count += 1
-                if interrupt_count == 1:
-                    print("\n\n⚠️  Interrupt received. Press Ctrl+C again to exit, or continue interacting.")
-                    continue
-                else:
-                    print("\n\n👋 Exiting...")
-                    break
-            except EOFError:
-                print("\n👋 EOF received, exiting...")
-                break
-
-    asyncio.run(_run_agent())
+    asyncio.run(_run())
 
 
 # =============================================================================
@@ -1232,15 +978,43 @@ def main():
     connect_parser.add_argument("--no-udp", action="store_true", help="Disable UDP")
     connect_parser.set_defaults(func=cmd_connect)
 
-    # ========== AGENT COMMAND ==========
-    agent_parser = subparsers.add_parser("agent", help="Run LLM agent")
-    agent_parser.add_argument(
-        "-m", "--mode", choices=["autonomous", "assisted"], default="autonomous"
+    # ========== EVAL COMMAND (Task Evaluation) ==========
+    eval_parser = subparsers.add_parser(
+        "eval", help="Run task evaluation with verification"
     )
-    agent_parser.add_argument("-p", "--provider", default="prime_intellect")
-    agent_parser.add_argument("--model", default="intellect-3")
+    eval_parser.add_argument(
+        "-t", "--task", required=True, help="Task key (e.g., iron_plate_throughput)"
+    )
+    eval_parser.add_argument("-p", "--provider", default="anthropic")
+    eval_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    eval_parser.add_argument("-s", "--scenario", default="lab-grid", help="Scenario")
+    eval_parser.add_argument("-i", "--instance", help="Factorio instance")
+    eval_parser.add_argument("--agent-id", default="agent_1")
+    eval_parser.add_argument("--max-turns", type=int, help="Max turns (default: task's max)")
+    eval_parser.add_argument("--cell", type=int, help="Lab-grid cell index")
+    eval_parser.set_defaults(func=cmd_eval)
+
+    # ========== FREEPLAY COMMAND ==========
+    freeplay_parser = subparsers.add_parser(
+        "freeplay", help="Run open-ended freeplay (no task/verification)"
+    )
+    freeplay_parser.add_argument("-p", "--provider", default="anthropic")
+    freeplay_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    freeplay_parser.add_argument("-s", "--scenario", default="freeplay", help="Scenario")
+    freeplay_parser.add_argument("-i", "--instance", help="Factorio instance")
+    freeplay_parser.add_argument("--agent-id", default="agent_1")
+    freeplay_parser.add_argument("--max-turns", type=int, default=200, help="Max turns")
+    freeplay_parser.add_argument("--cell", type=int, help="Lab-grid cell index")
+    freeplay_parser.set_defaults(func=cmd_freeplay)
+
+    # ========== AGENT COMMAND (Assisted/Interactive) ==========
+    agent_parser = subparsers.add_parser(
+        "agent", help="Run LLM agent in assisted (interactive) mode"
+    )
+    agent_parser.add_argument("-p", "--provider", default="anthropic")
+    agent_parser.add_argument("--model", default="claude-sonnet-4-20250514")
     agent_parser.add_argument("-s", "--scenario", help="Scenario")
-    agent_parser.add_argument("-i", "--instance", help="Instance")
+    agent_parser.add_argument("-i", "--instance", help="Factorio instance")
     agent_parser.add_argument("--agent-id", default="agent_1")
     agent_parser.add_argument("--max-turns", type=int, help="Max turns")
     agent_parser.set_defaults(func=cmd_agent)

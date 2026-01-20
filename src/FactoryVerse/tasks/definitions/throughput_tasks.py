@@ -1,10 +1,14 @@
 """Throughput task definitions.
 
 This module contains 24 throughput tasks ported from the Factorio Learning Environment.
-Each task requires building an automated factory to produce a target item.
+Each task requires building an automated factory that sustains a target production rate.
 
-Task verification uses the formula:
-    automation_produced = force_output - manual_crafted - manual_mined
+Rate-based verification (FLE compatible):
+- quota: Items per 60 game seconds (same as FLE)
+- sustained_seconds: Rate must be sustained for 30 seconds (default)
+- check_interval_seconds: Checks every 5 seconds (default)
+
+Success requires the factory to maintain rate >= quota for 6 consecutive checks.
 
 All tasks use the LAB_STARTING_INVENTORY with all technologies researched.
 """
@@ -44,14 +48,18 @@ def _make_throughput_task(
     target_item: str,
     quota: int,
     item_display_name: str | None = None,
+    sustained_seconds: float = 30.0,
+    check_interval_seconds: float = 5.0,
 ) -> TaskConfig:
-    """Helper to create a throughput task config.
+    """Helper to create a throughput task config (FLE compatible).
 
     Args:
         task_key: Unique identifier for the task
         target_item: Factorio item name (e.g., "iron-plate")
-        quota: Minimum automation-produced items required
+        quota: Items per 60 game seconds (rate target, FLE standard)
         item_display_name: Optional display name for goal description
+        sustained_seconds: How long rate must be sustained (default: 30s)
+        check_interval_seconds: How often to check rate (default: 5s)
 
     Returns:
         TaskConfig for the throughput task
@@ -61,13 +69,17 @@ def _make_throughput_task(
         task_key=task_key,
         task_type=TaskType.THROUGHPUT,
         goal_description=(
-            f"Build an automated factory that produces at least {quota} {display_name} "
-            f"via automation (not hand-crafting). Items produced by machines like "
-            f"assembling machines, furnaces, and chemical plants count as automation."
+            f"Create an automatic {display_name} factory that produces "
+            f"{quota} {display_name} per 60 game seconds. "
+            f"The rate must be sustained for {sustained_seconds:.0f} seconds. "
+            f"Items produced by machines (assembling machines, furnaces, chemical plants) "
+            f"count as automation. Hand-crafted items do NOT count."
         ),
         verification=VerificationCriteria(
             target_item=target_item,
-            min_automation_produced=quota,
+            quota=quota,
+            sustained_seconds=sustained_seconds,
+            check_interval_seconds=check_interval_seconds,
         ),
         starting_inventory=LAB_STARTING_INVENTORY,
         all_technologies_researched=True,

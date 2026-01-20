@@ -711,7 +711,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
                 "/c game.reload_script(); game.print('Scripts reloaded'); rcon.print('Scripts reloaded')"
             )
 
-            client.disconnect()
+            client.close()
 
             return [
                 TextContent(
@@ -752,7 +752,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
             cmd = f'/c local result = remote.call("{agent_id}", "get_inventory_items"); rcon.print(helpers.table_to_json(result))'
             response = client.send_command(cmd)
 
-            client.disconnect()
+            client.close()
 
             # Try to parse as JSON
             try:

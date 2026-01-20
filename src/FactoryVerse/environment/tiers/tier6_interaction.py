@@ -4,7 +4,7 @@ Orchestrates LLM connection and agent turn loop.
 """
 
 import logging
-from typing import Optional, Any, Dict, List, TYPE_CHECKING
+from typing import Optional, Any, Dict, List, TYPE_CHECKING, Callable, Awaitable
 
 from ..config import InteractionConfig, InteractionMode
 from ..status import Tier6Status, TierState, PrerequisiteResult
@@ -12,8 +12,12 @@ from .base import TierBase, Tier, TierInitializationError
 
 if TYPE_CHECKING:
     from ..environment import Environment
+    from FactoryVerse.tasks.base import TaskConfig, VerificationResult
 
 logger = logging.getLogger(__name__)
+
+# Type alias for verification callback
+VerificationCallback = Callable[[], Awaitable[Optional["VerificationResult"]]]
 
 
 class Tier6Interaction(TierBase):
@@ -303,6 +307,30 @@ class Tier6Interaction(TierBase):
         if self._orchestrator:
             return self._orchestrator.get_statistics()
         return {}
+
+    def configure_task_verification(
+        self,
+        task_config: "TaskConfig",
+        verification_callback: VerificationCallback,
+    ) -> None:
+        """Configure automatic task verification.
+
+        This sets up the orchestrator to automatically verify task completion
+        after each tool call. When verification passes, the loop exits.
+
+        Args:
+            task_config: Task configuration with verification criteria
+            verification_callback: Async callback that returns VerificationResult
+        """
+        if not self._orchestrator:
+            raise RuntimeError("Orchestrator not initialized")
+
+        self._orchestrator.set_task_config(task_config)
+        self._orchestrator.set_verification_callback(verification_callback)
+
+        logger.info(
+            f"Tier 6: Task verification configured for '{task_config.task_key}'"
+        )
 
 
 class _RuntimeAdapter:
