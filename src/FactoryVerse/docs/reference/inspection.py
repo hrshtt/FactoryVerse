@@ -302,40 +302,43 @@ def generate_inspection_markdown() -> str:
 
 
 def get_preimported_types() -> List[Tuple[str, str]]:
-    """Extract pre-imported types by parsing the boilerplate script.
+    """Extract pre-imported types available in agent runtime namespace.
 
-    Parses the actual get_runtime_script() output to find imports
-    marked with '# noqa: F401' - these are explicitly exported for agent use.
+    Returns the types that are automatically available in Tier4 execute_code(),
+    which is the execution context for agent code.
 
     Returns:
         List of (type_name, module_path) tuples
     """
-    from FactoryVerse.infra.boilerplate import get_runtime_script
-
-    # Get the actual boilerplate script
-    script = get_runtime_script()
-
-    preimported = []
-
-    # Find lines with '# noqa: F401' - these are the explicitly exported types
-    for line in script.split("\n"):
-        if "# noqa: F401" in line and "from " in line and "import " in line:
-            # Parse: from module import Name1, Name2  # noqa: F401
-            try:
-                # Extract module
-                from_idx = line.index("from ") + 5
-                import_idx = line.index(" import ")
-                module = line[from_idx:import_idx].strip()
-
-                # Extract names
-                names_part = line[import_idx + 8:].split("#")[0].strip()
-                names = [n.strip() for n in names_part.split(",")]
-
-                for name in names:
-                    if name and name[0].isupper():
-                        preimported.append((name, module))
-            except (ValueError, IndexError):
-                continue
+    # These types are injected into the execute_code namespace by Tier4Runtime.
+    # Keep this list in sync with builtin_names in tier4_runtime.py execute_code().
+    preimported = [
+        # Core spatial types
+        ("MapPosition", "FactoryVerse.factory.types"),
+        ("Direction", "FactoryVerse.factory.types"),
+        ("BoundingBox", "FactoryVerse.factory.types"),
+        # Placement planning types
+        ("ConnectionType", "FactoryVerse.agent.placement_hints"),
+        ("ConnectionPosition", "FactoryVerse.agent.placement_hints"),
+        ("WireConnectionPosition", "FactoryVerse.agent.placement_hints"),
+        ("GhostPlan", "FactoryVerse.agent.placement_hints"),
+        ("PolePlacementResult", "FactoryVerse.agent.placement_hints"),
+        ("EntityValidationError", "FactoryVerse.agent.placement_hints"),
+        # Item types
+        ("Item", "FactoryVerse.factory.item.base"),
+        ("PlaceableItem", "FactoryVerse.factory.item.base"),
+        ("ItemStack", "FactoryVerse.factory.item.base"),
+        # Status types
+        ("CraftingQueueStatus", "FactoryVerse.factory.types"),
+        ("ResearchStatus", "FactoryVerse.agent.embodied_actions.research"),
+        ("ResearchQueueItem", "FactoryVerse.factory.types"),
+        ("QueuedTechnology", "FactoryVerse.agent.embodied_actions.research"),
+        # Walking exception types
+        ("WalkingError", "FactoryVerse.agent.embodied_actions.walking"),
+        ("WalkingUnreachableError", "FactoryVerse.agent.embodied_actions.walking"),
+        ("WalkingEntityNotFoundError", "FactoryVerse.agent.embodied_actions.walking"),
+        ("WalkingNoStandableTilesError", "FactoryVerse.agent.embodied_actions.walking"),
+    ]
 
     return preimported
 
@@ -343,7 +346,7 @@ def get_preimported_types() -> List[Tuple[str, str]]:
 def generate_preimported_types_markdown() -> str:
     """Generate markdown documenting types pre-imported in agent runtime.
 
-    Actually parses the boilerplate script to find imports.
+    Documents types available in the Tier4 execute_code() namespace.
     """
     preimported = get_preimported_types()
 

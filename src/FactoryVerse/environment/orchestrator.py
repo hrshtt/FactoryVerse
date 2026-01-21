@@ -750,99 +750,62 @@ class Orchestrator:
     ) -> Optional[int]:
         """Allocate and set up a cell for this run.
 
-        This:
-        1. Allocates the cell (or uses requested)
-        2. Resets the cell (spawns resources)
-        3. Assigns the existing agent (from tier 4) to the cell
-        4. Teleports the agent to cell center
-        5. Sets starting inventory
+        Delegates to the scenario adapter's allocate_cell() method which handles:
+        1. Cell selection/validation
+        2. Reset (spawns resources, triggers snapshot)
+        3. Agent validation/recreation
+        4. Agent assignment and teleportation
+        5. Snapshot coordination
+        6. Inventory setup
         """
-        tier3 = self._env.tier3
         tier4 = self._env.tier4
         if tier4 is None or tier4.scenario is None:
             return None
 
         scenario = tier4.scenario
 
-        if requested is not None:
-            if requested in self._active_cells:
-                raise RuntimeError(f"Cell {requested} is already in use")
-            cell = requested
-        else:
-            available = self._get_available_cells()
-            if not available:
-                raise RuntimeError("No cells available")
-            cell = available[0]
+        # Validate cell not already in use
+        if requested is not None and requested in self._active_cells:
+            raise RuntimeError(f"Cell {requested} is already in use")
 
-        self._active_cells.add(cell)
-
-        # Get the agent ID from tier 4 config (e.g., "agent_1" -> 1)
+        # Get agent numeric ID
         agent_id_str = tier4.config.agent_id or "agent_1"
         try:
             agent_numeric_id = int(agent_id_str.split("_")[1])
         except (IndexError, ValueError):
             agent_numeric_id = 1
 
-        # Reset cell to spawn resources (preserve_agent=True to keep our agent if it's in this cell)
-        logger.info(f"Orchestrator: Resetting cell {cell} (spawning resources)")
-        scenario.reset_cell(cell, preserve_agent=True)
+        # Delegate to adapter's orchestration method
+        result = await scenario.allocate_cell(
+            cell_index=requested,
+            agent_id=agent_numeric_id,
+            starting_inventory=starting_inventory,
+            wait_for_snapshot=True,
+            snapshot_timeout=60.0,
+        )
 
-        # Check if agent entity is valid, recreate if needed
-        if tier3 and tier3.rcon_helper:
-            check_result = tier3.rcon_helper.rcon_client.send_command(
-                f'/silent-command local agents = remote.call("agent", "list_agents"); '
-                f'local a = agents[{agent_numeric_id}]; '
-                f'rcon.print(a and a.entity and a.entity.valid and "valid" or "invalid")'
-            )
-            if check_result.strip() == "invalid":
-                logger.info(f"Orchestrator: Agent {agent_numeric_id} entity invalid, recreating...")
-                # Destroy and recreate the agent
-                tier3.rcon_helper.rcon_client.send_command(
-                    f'/silent-command remote.call("agent", "destroy_agents", {{{agent_numeric_id}}})'
-                )
-                # Get UDP port - should match tier 3's dispatcher (34202 is default for agent_1)
-                udp_port = 34202
-                # create_agent(udp_port, set_unique_forces, default_common_force, initial_inventory)
-                tier3.rcon_helper.rcon_client.send_command(
-                    f'/silent-command remote.call("agent", "create_agent", {udp_port}, false, "player", nil)'
-                )
-                logger.info(f"Orchestrator: Agent recreated with UDP port {udp_port}")
+        if not result.success:
+            raise RuntimeError(result.error or "Cell allocation failed")
 
-        # Assign agent to cell and teleport
-        logger.info(f"Orchestrator: Assigning agent {agent_numeric_id} to cell {cell}")
-        assigned = scenario.assign_agent_to_cell(agent_numeric_id, cell)
-        if not assigned:
-            self._active_cells.discard(cell)
-            raise RuntimeError(f"Failed to assign agent {agent_numeric_id} to cell {cell}")
+        self._active_cells.add(result.cell_index)
+        logger.info(
+            f"Orchestrator: Allocated cell {result.cell_index} "
+            f"(snapshot: {result.snapshot_complete}, chunks: {result.chunks_snapshotted})"
+        )
 
-        # Teleport agent to cell center
-        position = scenario.teleport_agent_to_cell(agent_numeric_id)
-        logger.info(f"Orchestrator: Agent teleported to {position}")
-
-        # Set starting inventory if provided
-        if starting_inventory and tier3 and tier3.rcon_helper:
-            logger.info(f"Orchestrator: Setting starting inventory ({len(starting_inventory)} items)")
-            # Build Lua table for inventory
-            inv_items = ", ".join(
-                f'["{name}"] = {count}' for name, count in starting_inventory.items()
-            )
-            lua_code = f'/silent-command local agent = remote.call("agent", "list_agents")[{agent_numeric_id}]; if agent and agent.entity and agent.entity.valid then agent.entity.clear_items_inside(); local inv = agent.entity.get_main_inventory(); if inv then local items = {{{inv_items}}}; for name, count in pairs(items) do inv.insert({{name=name, count=count}}) end end end'
-            tier3.rcon_helper.rcon_client.send_command(lua_code)
-
-        return cell
+        return result.cell_index
 
     async def _release_cell(self, cell: int, reset: bool = True) -> None:
         """Release a cell back to the pool."""
         self._active_cells.discard(cell)
 
-        if reset:
-            tier4 = self._env.tier4
-            if tier4 and tier4.scenario:
-                try:
-                    tier4.scenario.reset_cell(cell, preserve_agent=False)
-                    logger.debug(f"Orchestrator: Reset cell {cell}")
-                except Exception as e:
-                    logger.warning(f"Orchestrator: Failed to reset cell {cell}: {e}")
+        tier4 = self._env.tier4
+        if tier4 and tier4.scenario:
+            try:
+                await tier4.scenario.release_cell(cell, reset=reset)
+                logger.debug(f"Orchestrator: Released cell {cell}")
+            except Exception as e:
+                logger.warning(f"Orchestrator: Failed to release cell {cell}: {e}")
 
     def _create_verification_callback(
         self, task_config: "TaskConfig"
@@ -886,6 +849,11 @@ class Orchestrator:
     ) -> Optional["VerificationResult"]:
         """Verify task completion.
 
+        Uses file-based statistics from fv_snapshot:
+        - production-statistics.jsonl (force-level, written on change)
+        - crafting-statistics.jsonl (manual crafting, event-driven)
+        - mining-statistics.jsonl (manual mining, event-driven)
+
         Args:
             task_config: Task configuration with verification criteria
             verifier: Optional ThroughputVerifier for rate-based tasks
@@ -895,7 +863,7 @@ class Orchestrator:
         """
         from FactoryVerse.tasks.base import TaskType
         from FactoryVerse.tasks.verification import verify_task, ThroughputVerifier
-        from FactoryVerse.tasks.sources import RCONSource
+        from FactoryVerse.tasks.sources import AgentSnapshotSource
 
         if task_config.task_type == TaskType.FREEPLAY:
             return None
@@ -906,11 +874,16 @@ class Orchestrator:
         tier3 = self._env.tier3
         tier4 = self._env.tier4
 
-        if tier3 is None or tier3.rcon_helper is None:
-            logger.warning("Orchestrator: Cannot verify - no RCON connection")
+        if tier3 is None:
+            logger.warning("Orchestrator: Cannot verify - tier3 not initialized")
             return None
 
-        source = RCONSource(tier3.rcon_helper)
+        # Get snapshot directory for file-based statistics
+        infra_config = self._env.config.infra_config
+        snapshot_dir = infra_config.get_snapshot_dir(tier3.instance)
+
+        # Use file-based source instead of RCON polling
+        source = AgentSnapshotSource(snapshot_dir)
 
         agent_id = 1
         if tier4 and tier4.agent_id:

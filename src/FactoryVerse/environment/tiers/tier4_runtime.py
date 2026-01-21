@@ -189,9 +189,10 @@ class Tier4Runtime(TierBase):
             await self._reconcile_and_create_agent()
 
             # Load modules based on variant
+            # Order matters: embodied_actions -> reachable_view -> ghost_builder (needs reachable_view)
             await self._load_embodied_actions()
-            await self._load_ghost_builder()
             await self._load_reachable_view()
+            await self._load_ghost_builder()
             await self._load_placement_hints()
 
             if self.config.variant == RuntimeVariant.FULL:
@@ -322,52 +323,6 @@ class Tier4Runtime(TierBase):
 
         self._modules_loaded.append("executor")
 
-    async def _inject_boilerplate(self) -> None:
-        """Inject boilerplate into Jupyter kernel.
-
-        This sets up the runtime environment in the kernel namespace,
-        making all embodied actions and views available for code execution.
-        """
-        if self._executor is None:
-            raise RuntimeError("Executor not initialized")
-
-        from FactoryVerse.infra.boilerplate import get_runtime_script
-
-        tier3 = self._env.tier3
-        if tier3 is None:
-            raise RuntimeError("Tier 3 must be initialized")
-
-        # Calculate agent-specific UDP port (not the generic dispatcher port)
-        agent_id = self._agent_id or "agent_1"
-        udp_port = self._calculate_agent_udp_port(agent_id)
-
-        # Generate boilerplate script with current configuration
-        script = get_runtime_script(
-            instance=tier3.instance,
-            agent_id=agent_id,
-            session_dir=str(self._session_dir) if self._session_dir else None,
-            udp_port=udp_port,
-        )
-
-        # Execute boilerplate in the kernel
-        logger.info("Tier 4: Injecting boilerplate into Jupyter kernel...")
-        logger.debug(f"Tier 4: Boilerplate script ({len(script.splitlines())} lines)")
-        result = self._executor.execute(script, timeout=120.0)
-
-        if result.is_error:
-            # Log the full error for debugging
-            logger.error(f"Tier 4: Boilerplate injection error:\n{result.error}")
-            if self._notebook_path:
-                logger.error(f"Tier 4: Check notebook for details: {self._notebook_path}")
-            raise RuntimeError(f"Boilerplate injection failed: {result.error}")
-
-        # Log output for debugging
-        if result.output:
-            logger.debug(f"Tier 4: Boilerplate output:\n{result.output}")
-
-        logger.info("Tier 4: Boilerplate injected successfully")
-        self._modules_loaded.append("boilerplate")
-
     def _calculate_agent_udp_port(self, agent_id: str) -> int:
         """Calculate the correct UDP port for an agent.
 
@@ -438,8 +393,12 @@ class Tier4Runtime(TierBase):
 
             if entity_valid and existing_port == udp_port:
                 # Case 1: BIND - Agent is valid with correct port
+                # Use Lua's interface_name (may differ from requested_id)
+                lua_interface = existing.get("interface_name")
+                if lua_interface:
+                    self._agent_id = lua_interface
                 logger.info(
-                    f"Tier 4: Binding to existing agent '{requested_id}' "
+                    f"Tier 4: Binding to existing agent '{self._agent_id}' "
                     f"(port {udp_port}, entity valid)"
                 )
             else:
@@ -460,19 +419,29 @@ class Tier4Runtime(TierBase):
                     tier3.destroy_game_agents([agent_numeric_id])
 
                 # Create new agent with correct configuration
-                tier3.create_game_agent(
+                result = tier3.create_game_agent(
                     udp_port=udp_port,
                     set_unique_forces=False,
                     default_common_force="player",
+                    initial_inventory=self.config.initial_inventory,
                 )
+                # Use Lua's assigned interface_name (agent_{numeric_id})
+                if result and result.get("interface_name"):
+                    self._agent_id = result["interface_name"]
+                    logger.info(f"Tier 4: Recreated agent, using interface '{self._agent_id}'")
         else:
             # Case 3: CREATE - No existing agent
             logger.info(f"Tier 4: Creating new agent '{requested_id}' (port {udp_port})")
-            tier3.create_game_agent(
+            result = tier3.create_game_agent(
                 udp_port=udp_port,
                 set_unique_forces=False,
                 default_common_force="player",
+                initial_inventory=self.config.initial_inventory,
             )
+            # Use Lua's assigned interface_name (agent_{numeric_id})
+            if result and result.get("interface_name"):
+                self._agent_id = result["interface_name"]
+                logger.info(f"Tier 4: Created agent, using interface '{self._agent_id}'")
 
         # Update Python AgentRegistry as metadata (optional)
         registry = tier3.agent_registry
@@ -568,6 +537,7 @@ class Tier4Runtime(TierBase):
             movement=self._movement,
             placement=self._placement,
             inventory=self._inventory,
+            reachable_view=self._reachable_view,
         )
         self._modules_loaded.append("ghost_builder")
 
@@ -621,9 +591,12 @@ class Tier4Runtime(TierBase):
         remote interfaces (e.g., lab_grid). If found, loads the corresponding
         Python adapter for type-safe access to scenario-specific capabilities.
 
+        For lab-grid, injects database and snapshot_dir for orchestration support.
+
         The loaded adapter is accessible via `self.scenario`.
         """
-        from FactoryVerse.scenarios import auto_load_adapter
+        from FactoryVerse.scenarios import detect_scenario
+        from FactoryVerse.scenarios.lab_grid import LabGridAdapter
 
         tier3 = self._env.tier3
         if tier3 is None or tier3.rcon_helper is None:
@@ -631,12 +604,28 @@ class Tier4Runtime(TierBase):
             return
 
         rcon_client = tier3.rcon_helper.rcon_client
-        adapter = auto_load_adapter(rcon_client)
+        scenario_name = detect_scenario(rcon_client)
 
-        if adapter is not None:
-            self._scenario_adapter = adapter
-            self._modules_loaded.append(f"scenario:{adapter.scenario_name}")
-            logger.info(f"Tier 4: Loaded scenario adapter: {adapter.scenario_name}")
+        if scenario_name == "lab-grid":
+            # Lab-grid gets database and snapshot_dir for orchestration
+            infra_config = self._env.config.infra_config
+            snapshot_dir = infra_config.get_snapshot_dir(tier3.instance) if tier3.instance else None
+
+            self._scenario_adapter = LabGridAdapter(
+                rcon=rcon_client,
+                database=self._database,
+                snapshot_dir=snapshot_dir,
+            )
+            self._modules_loaded.append("scenario:lab-grid")
+            logger.info("Tier 4: Loaded LabGridAdapter with orchestration support")
+        elif scenario_name is not None:
+            # Other scenarios use default adapter loading
+            from FactoryVerse.scenarios import get_scenario_adapter
+            adapter = get_scenario_adapter(scenario_name, rcon_client)
+            if adapter:
+                self._scenario_adapter = adapter
+                self._modules_loaded.append(f"scenario:{scenario_name}")
+                logger.info(f"Tier 4: Loaded scenario adapter: {scenario_name}")
         else:
             logger.debug("Tier 4: No known scenario detected")
 

@@ -124,6 +124,10 @@ class RuntimeConfig(BaseModel):
         default=RuntimeVariant.FULL, description="Runtime variant (minimal or full)"
     )
     agent_id: str = Field(default="agent_1", description="Agent identifier")
+    initial_inventory: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Initial inventory items to give agent on creation: {item_name: count, ...}",
+    )
     session_dir: Optional[Path] = Field(
         default=None, description="Session directory (auto-created if None)"
     )

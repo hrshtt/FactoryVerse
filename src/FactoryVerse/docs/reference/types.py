@@ -107,7 +107,7 @@ Direction.SOUTH  # 4 - Down
 Direction.WEST   # 6 - Left
 
 # Use for entity placement
-await item.place(position, Direction.EAST)
+item.place(position, Direction.EAST)
 
 # Check entity direction
 drill = reachable_view.get_entity("burner-mining-drill")

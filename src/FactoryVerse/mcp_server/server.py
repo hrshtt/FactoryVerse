@@ -3,15 +3,8 @@
 Provides MCP tools for:
 - Infrastructure lifecycle (server/client start/stop)
 - Instance management (list, status)
-- Environment composition (create, reset, shutdown)
-- Session management (create, execute, reload, destroy)
+- Session management (create, execute, reload, destroy, status)
 - Development utilities (run tests, reload scripts)
-
-TODO: Implement executeDSL and executeQuery tools for runtime code execution.
-      These should be behind a feature flag (e.g., FACTORYVERSE_MCP_EXEC_ENABLED=1)
-      since they require stable infrastructure and are optional for development workflows.
-      See: factoryverse_execute_dsl(session_id, action, params)
-           factoryverse_execute_query(session_id, sql)
 """
 
 import asyncio
@@ -26,7 +19,16 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from FactoryVerse.infra.output.error_parser import FactorioErrorParser, ErrorVerbosity
+
 logger = logging.getLogger(__name__)
+
+# Module-level error parser for consistent error formatting
+_error_parser = FactorioErrorParser(
+    verbosity=ErrorVerbosity.MODERATE,
+    max_traceback_frames=3,
+    show_internal_frames=False,
+)
 
 
 class FactoryVerseMCPServer:
@@ -34,7 +36,6 @@ class FactoryVerseMCPServer:
 
     def __init__(self):
         self.server = Server("factoryverse")
-        self._environments: dict = {}  # Environment registry
         self._setup_tools()
 
     def _setup_tools(self):
@@ -115,7 +116,34 @@ class FactoryVerseMCPServer:
                         },
                     },
                 ),
-                # Session management tools
+                Tool(
+                    name="factoryverse_add_inventory",
+                    description="""Add items to an agent's inventory.
+
+Useful for setting up test scenarios or providing items for development.
+Uses the Lua mod's agent.add_items API.
+
+Example: Add 50 transport belts and 20 inserters to agent_1""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent ID (e.g., 'agent_1'). Must be a registered agent interface.",
+                                "default": "agent_1",
+                            },
+                            "items": {
+                                "type": "object",
+                                "description": "Items to add: {item_name: count, ...}. Example: {'transport-belt': 50, 'inserter': 20}",
+                                "additionalProperties": {"type": "integer"},
+                            },
+                        },
+                        "required": ["items"],
+                    },
+                ),
+                # ============================================================
+                # Session Management Tools
+                # ============================================================
                 Tool(
                     name="factoryverse_create_session",
                     description="""Create a FactoryVerse session at specified scope.
@@ -149,6 +177,11 @@ Use this to create isolated environments for testing specific layers.""",
                                 "description": "Agent identifier (default: 'agent_1')",
                                 "default": "agent_1",
                             },
+                            "initial_inventory": {
+                                "type": "object",
+                                "description": "Initial inventory items to give agent: {item_name: count, ...}. Example: {'transport-belt': 50, 'inserter': 20}",
+                                "additionalProperties": {"type": "integer"},
+                            },
                         },
                         "required": ["session_id"],
                     },
@@ -175,8 +208,32 @@ For async code (with 'await'), wrap automatically handled.""",
                                 "type": "string",
                                 "description": "Python code to execute",
                             },
+                            "timeout": {
+                                "type": "number",
+                                "description": "Execution timeout in seconds (default: 120)",
+                                "default": 120,
+                                "minimum": 1,
+                                "maximum": 600,
+                            },
                         },
                         "required": ["session_id", "code"],
+                    },
+                ),
+                Tool(
+                    name="factoryverse_session_status",
+                    description="""Get detailed status of a session including tier information.
+
+Returns the initialization state of each tier (PYTHON_INFRA, RUNTIME, etc.)
+and available components.""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": "Session to get status for",
+                            },
+                        },
+                        "required": ["session_id"],
                     },
                 ),
                 Tool(
@@ -237,8 +294,7 @@ Use this after editing FactoryVerse Python code to pick up changes without resta
 Default behavior reloads common development modules:
 - FactoryVerse.agent.embodied_actions.* (walking, mining, crafting, etc.)
 - FactoryVerse.agent.placement_hints, ghost_builder
-- FactoryVerse.runtime
-- FactoryVerse.infra.boilerplate.*
+- FactoryVerse.environment.*
 
 Caveats:
 - Existing object instances won't pick up new methods
@@ -385,118 +441,8 @@ Returns connection info, game state, and current tick if available.""",
                     },
                 ),
                 # ============================================================
-                # Environment Composition Tools
+                # Utility Tools
                 # ============================================================
-                Tool(
-                    name="factoryverse_env_create",
-                    description="""Create a FactoryVerse environment with tiered composition.
-
-The Environment orchestrates the complete runtime stack through 6 tiers:
-1. FACTORIO_INFRA - Client/Server with mods
-2. SETTINGS - Scenario/save loading
-3. PYTHON_INFRA - RCON + UDP connections
-4. RUNTIME - Agent modules (walking, crafting, etc.)
-5. SPECIFICATION - System prompt configuration
-6. INTERACTION - LLM orchestration
-
-Use this for full control over the runtime stack. For simpler cases,
-use factoryverse_create_session instead.""",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "env_id": {
-                                "type": "string",
-                                "description": "Unique identifier for this environment",
-                            },
-                            "up_to_tier": {
-                                "type": "integer",
-                                "enum": [1, 2, 3, 4, 5, 6],
-                                "description": "Initialize up to this tier (default: 4 for RUNTIME)",
-                                "default": 4,
-                            },
-                            "preset": {
-                                "type": "string",
-                                "enum": ["testing", "agent", "mcp", "notebook"],
-                                "description": "Configuration preset (testing, agent, mcp, notebook)",
-                                "default": "testing",
-                            },
-                            "scenario": {
-                                "type": "string",
-                                "description": "Scenario to use (default: test-ground)",
-                                "default": "test-ground",
-                            },
-                            "instance": {
-                                "type": "string",
-                                "description": "Instance to connect to (auto-detect if not specified)",
-                            },
-                            "agent_id": {
-                                "type": "string",
-                                "description": "Agent identifier (default: agent_1)",
-                                "default": "agent_1",
-                            },
-                        },
-                        "required": ["env_id"],
-                    },
-                ),
-                Tool(
-                    name="factoryverse_env_status",
-                    description="Get status of all tiers in an environment.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "env_id": {
-                                "type": "string",
-                                "description": "Environment ID to query",
-                            },
-                        },
-                        "required": ["env_id"],
-                    },
-                ),
-                Tool(
-                    name="factoryverse_env_reset",
-                    description="""Reset an environment from a specific tier upward.
-
-Lower tiers remain stable, higher tiers are reset.
-Useful for resetting runtime state without restarting infrastructure.""",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "env_id": {
-                                "type": "string",
-                                "description": "Environment ID to reset",
-                            },
-                            "from_tier": {
-                                "type": "integer",
-                                "enum": [1, 2, 3, 4, 5, 6],
-                                "description": "Reset from this tier upward (default: 4 for RUNTIME)",
-                                "default": 4,
-                            },
-                        },
-                        "required": ["env_id"],
-                    },
-                ),
-                Tool(
-                    name="factoryverse_env_shutdown",
-                    description="Shutdown an environment and cleanup all resources.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "env_id": {
-                                "type": "string",
-                                "description": "Environment ID to shutdown",
-                            },
-                        },
-                        "required": ["env_id"],
-                    },
-                ),
-                Tool(
-                    name="factoryverse_list_envs",
-                    description="List all active environments with their tier status.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
                 Tool(
                     name="factoryverse_list_scenarios",
                     description="List available scenarios that can be loaded.",
@@ -519,11 +465,15 @@ Useful for resetting runtime state without restarting infrastructure.""",
                     return await self._reload_server(arguments)
                 elif name == "factoryverse_inspect_inventory":
                     return await self._inspect_inventory(arguments)
+                elif name == "factoryverse_add_inventory":
+                    return await self._add_inventory(arguments)
                 # Session management tools
                 elif name == "factoryverse_create_session":
                     return await self._create_session(arguments)
                 elif name == "factoryverse_execute_in_session":
                     return await self._execute_in_session(arguments)
+                elif name == "factoryverse_session_status":
+                    return await self._session_status(arguments)
                 elif name == "factoryverse_reload_session":
                     return await self._reload_session(arguments)
                 elif name == "factoryverse_destroy_session":
@@ -548,17 +498,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
                     return await self._list_instances(arguments)
                 elif name == "factoryverse_instance_status":
                     return await self._instance_status(arguments)
-                # Environment composition tools
-                elif name == "factoryverse_env_create":
-                    return await self._env_create(arguments)
-                elif name == "factoryverse_env_status":
-                    return await self._env_status(arguments)
-                elif name == "factoryverse_env_reset":
-                    return await self._env_reset(arguments)
-                elif name == "factoryverse_env_shutdown":
-                    return await self._env_shutdown(arguments)
-                elif name == "factoryverse_list_envs":
-                    return await self._list_envs(arguments)
+                # Utility tools
                 elif name == "factoryverse_list_scenarios":
                     return await self._list_scenarios(arguments)
                 else:
@@ -570,10 +510,13 @@ Useful for resetting runtime state without restarting infrastructure.""",
                     ]
             except Exception as e:
                 logger.exception(f"Error executing tool {name}")
+                # Use error parser for better error messages
+                error_text = f"{type(e).__name__}: {str(e)}"
+                formatted_error = _error_parser.parse_and_format(error_text)
                 return [
                     TextContent(
                         type="text",
-                        text=f"Error: {type(e).__name__}: {str(e)}",
+                        text=formatted_error,
                     )
                 ]
 
@@ -633,8 +576,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
         code = args["code"]
         agent_id = args.get("agent_id", "agent_1")
 
-        # For MVP, we'll use a simple subprocess approach
-        # In future, we can integrate with actual FactoryVerseRuntime
         logger.info(f"Executing code for agent {agent_id}")
 
         # Create a temporary script
@@ -687,14 +628,12 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
             config = get_config()
             if instance:
-                # Parse instance name to get the right instance
                 if instance == "client":
                     instance_mgr = FactorioInstanceManager.get_client(config)
                 elif instance.startswith("server_"):
                     server_id = int(instance.split("_")[1])
                     instance_mgr = FactorioInstanceManager.get_server(server_id, config)
                 else:
-                    # Fallback: try auto-detection
                     instance_mgr = FactorioInstanceManager.from_env(config)
             else:
                 instance_mgr = FactorioInstanceManager.from_env(config)
@@ -706,7 +645,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
             )
             client.connect()
 
-            # Reload scripts
             response = client.send_command(
                 "/c game.reload_script(); game.print('Scripts reloaded'); rcon.print('Scripts reloaded')"
             )
@@ -736,7 +674,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
             from FactoryVerse.config import get_config
             from FactoryVerse.infra.instance_manager import FactorioInstanceManager
             from factorio_rcon import RCONClient
-            import json
 
             config = get_config()
             instance_mgr = FactorioInstanceManager.from_env(config)
@@ -748,13 +685,11 @@ Useful for resetting runtime state without restarting infrastructure.""",
             )
             client.connect()
 
-            # Get inventory via RCON
             cmd = f'/c local result = remote.call("{agent_id}", "get_inventory_items"); rcon.print(helpers.table_to_json(result))'
             response = client.send_command(cmd)
 
             client.close()
 
-            # Try to parse as JSON
             try:
                 inventory = json.loads(response)
                 formatted = json.dumps(inventory, indent=2)
@@ -776,27 +711,138 @@ Useful for resetting runtime state without restarting infrastructure.""",
                 )
             ]
 
+    async def _add_inventory(self, args: dict) -> list[TextContent]:
+        """Add items to agent inventory."""
+        agent_id = args.get("agent_id", "agent_1")
+        items = args.get("items", {})
+
+        if not items:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": "No items specified",
+                    }, indent=2),
+                )
+            ]
+
+        try:
+            from FactoryVerse.config import get_config
+            from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+            from factorio_rcon import RCONClient
+
+            config = get_config()
+            instance_mgr = FactorioInstanceManager.from_env(config)
+
+            client = RCONClient(
+                instance_mgr.rcon_host,
+                instance_mgr.rcon_port,
+                instance_mgr.rcon_password,
+            )
+            client.connect()
+
+            # Extract numeric agent ID from interface name (e.g., "agent_1" -> 1)
+            try:
+                numeric_id = int(agent_id.split("_")[1])
+            except (ValueError, IndexError):
+                numeric_id = 1  # Default to agent 1
+
+            # Build Lua table for items: {["item-name"] = count, ...}
+            items_lua = ", ".join(
+                f'["{name}"] = {count}' for name, count in items.items()
+            )
+
+            # Use the agent.add_items API
+            cmd = f'/c remote.call("agent", "add_items", {numeric_id}, {{{items_lua}}})'
+            response = client.send_command(cmd)
+
+            client.close()
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "agent_id": agent_id,
+                        "numeric_id": numeric_id,
+                        "items_added": items,
+                        "rcon_response": response if response else None,
+                    }, indent=2),
+                )
+            ]
+        except Exception as e:
+            logger.exception("Error adding inventory")
+            error_text = f"{type(e).__name__}: {str(e)}"
+            formatted_error = _error_parser.parse_and_format(error_text)
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": formatted_error,
+                    }, indent=2),
+                )
+            ]
+
     # ========================================================================
-    # SESSION MANAGEMENT METHODS
+    # SESSION MANAGEMENT METHODS (Environment-based)
     # ========================================================================
 
     async def _create_session(self, args: dict) -> list[TextContent]:
-        """Create a boilerplate session."""
-        from FactoryVerse.infra.boilerplate import Scope
-        from FactoryVerse.infra.boilerplate.mcp import mcp_create_session
+        """Create an Environment-based session."""
+        from FactoryVerse.environment import (
+            create_session,
+            Tier,
+            RuntimeVariant,
+        )
 
         session_id = args["session_id"]
         scope_int = args.get("scope", 3)
-        scope = Scope(scope_int)
         instance = args.get("instance")
         agent_id = args.get("agent_id", "agent_1")
+        initial_inventory = args.get("initial_inventory")
 
-        result = await mcp_create_session(
-            session_id=session_id,
-            scope=scope,
-            instance=instance,
-            agent_id=agent_id,
-        )
+        # Map scope to tier
+        scope_to_tier = {
+            0: Tier.PYTHON_INFRA,  # RCON only
+            1: Tier.RUNTIME,       # SNAPSHOT -> RUNTIME with database
+            2: Tier.RUNTIME,       # AGENT -> RUNTIME
+            3: Tier.RUNTIME,       # Full RUNTIME
+        }
+        up_to = scope_to_tier.get(scope_int, Tier.RUNTIME)
+
+        try:
+            env = await create_session(
+                session_id=session_id,
+                up_to=up_to,
+                scenario="test-ground",
+                instance=instance,
+                agent_id=agent_id,
+                variant=RuntimeVariant.MINIMAL,
+                initial_inventory=initial_inventory,
+            )
+
+            result = {
+                "success": True,
+                "session_id": session_id,
+                "initialized_up_to": up_to.name,
+                "instance": env.tier3.instance if env.tier3 else None,
+                "agent_id": agent_id,
+                "components": self._get_available_components(env),
+            }
+        except ValueError as e:
+            result = {
+                "success": False,
+                "error": str(e),
+                "error_type": "session_exists",
+            }
+        except Exception as e:
+            result = {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
 
         return [
             TextContent(
@@ -805,30 +851,245 @@ Useful for resetting runtime state without restarting infrastructure.""",
             )
         ]
 
+    def _get_available_components(self, env) -> list[str]:
+        """Get list of available components in environment."""
+        components = []
+        if env.tier3:
+            components.extend(["rcon", "instance"])
+        if env.tier4:
+            if env.tier4.database:
+                components.append("database")
+            if env.tier4.reachable_view:
+                components.append("reachable_view")
+            if env.tier4.remote_view:
+                components.append("remote_view")
+            if env.tier4.placement_hints:
+                components.append("placement_hints")
+            if env.tier4.ghost_builder:
+                components.append("ghost_builder")
+            if env.tier4.embodied_actions:
+                components.extend([
+                    "walking", "crafting", "research", "inventory",
+                    "placement", "entity_ops", "resources"
+                ])
+        return components
+
     async def _execute_in_session(self, args: dict) -> list[TextContent]:
-        """Execute code in a session."""
-        from FactoryVerse.infra.boilerplate.mcp import mcp_execute_code
+        """Execute code in a session with proper output capture and timeout."""
+        from FactoryVerse.environment import get_session, get_session_components
+        import sys
+        from io import StringIO
+        import traceback
 
         session_id = args["session_id"]
         code = args["code"]
+        timeout = args.get("timeout", 120)  # Default 120 seconds
 
-        result = await mcp_execute_code(session_id=session_id, code=code)
+        env = get_session(session_id)
+        if env is None:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"Session '{session_id}' not found",
+                        "error_type": "session_not_found",
+                    }, indent=2),
+                )
+            ]
 
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(result, indent=2),
-            )
-        ]
+        try:
+            # Build execution namespace from session components
+            exec_globals = get_session_components(session_id)
+            exec_globals["__builtins__"] = __builtins__
+            exec_globals["asyncio"] = asyncio
+
+            # Add common types
+            from FactoryVerse.factory.types import MapPosition, Direction, BoundingBox
+            from FactoryVerse.agent.placement_hints import ConnectionType, GhostPlan
+            exec_globals.update({
+                "MapPosition": MapPosition,
+                "Direction": Direction,
+                "BoundingBox": BoundingBox,
+                "ConnectionType": ConnectionType,
+                "GhostPlan": GhostPlan,
+            })
+
+            # Capture stdout
+            stdout_capture = StringIO()
+            old_stdout = sys.stdout
+
+            async def execute_with_timeout():
+                """Execute code with timeout wrapper."""
+                nonlocal stdout_capture, old_stdout
+                try:
+                    sys.stdout = stdout_capture
+
+                    # Execute code
+                    if "await " in code:
+                        # Wrap async code
+                        indented = "\n".join("    " + line for line in code.split("\n"))
+                        wrapped = f"async def __exec__():\n{indented}\n    return locals()"
+                        exec(wrapped, exec_globals)
+                        result = await exec_globals["__exec__"]()
+                    else:
+                        exec(code, exec_globals)
+                        result = None
+
+                    return result
+
+                finally:
+                    sys.stdout = old_stdout
+
+            # Execute with timeout
+            try:
+                result = await asyncio.wait_for(
+                    execute_with_timeout(),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                sys.stdout = old_stdout  # Ensure stdout is restored
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": f"Execution timed out after {timeout} seconds",
+                            "error_type": "timeout",
+                            "partial_stdout": stdout_capture.getvalue()[:1000] if stdout_capture.getvalue() else None,
+                        }, indent=2),
+                    )
+                ]
+
+            stdout_output = stdout_capture.getvalue()
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": True,
+                        "session_id": session_id,
+                        "stdout": stdout_output if stdout_output else None,
+                        "result": str(result) if result else None,
+                    }, indent=2),
+                )
+            ]
+
+        except Exception as e:
+            # Use error parser for cleaner error messages
+            raw_traceback = traceback.format_exc()
+            formatted_error = _error_parser.parse_and_format(raw_traceback)
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "formatted_error": formatted_error,
+                    }, indent=2),
+                )
+            ]
+
+    async def _session_status(self, args: dict) -> list[TextContent]:
+        """Get detailed status of a session including tier information."""
+        from FactoryVerse.environment import get_session
+
+        session_id = args["session_id"]
+
+        env = get_session(session_id)
+        if env is None:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"Session '{session_id}' not found",
+                    }, indent=2),
+                )
+            ]
+
+        try:
+            status = await env.status()
+
+            def tier_to_dict(tier_status):
+                if tier_status is None:
+                    return None
+                return {
+                    "is_ready": tier_status.is_ready,
+                    "error": tier_status.error,
+                }
+
+            result = {
+                "success": True,
+                "session_id": session_id,
+                "initialized_up_to": env._initialized_up_to.name if env._initialized_up_to else None,
+                "tiers": {
+                    "tier1_factorio": tier_to_dict(status.tier1),
+                    "tier2_settings": tier_to_dict(status.tier2),
+                    "tier3_python": tier_to_dict(status.tier3),
+                    "tier4_runtime": tier_to_dict(status.tier4),
+                    "tier5_spec": tier_to_dict(status.tier5),
+                    "tier6_interaction": tier_to_dict(status.tier6),
+                },
+                "components": self._get_available_components(env),
+            }
+
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(result, indent=2),
+                )
+            ]
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    }, indent=2),
+                )
+            ]
 
     async def _reload_session(self, args: dict) -> list[TextContent]:
         """Reload a session."""
-        from FactoryVerse.infra.boilerplate.mcp import mcp_reload_session
+        from FactoryVerse.environment import reload_session, get_session, Tier
 
         session_id = args["session_id"]
         reload_lua = args.get("reload_lua", False)
 
-        result = await mcp_reload_session(session_id=session_id, reload_lua=reload_lua)
+        env = get_session(session_id)
+        if env is None:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": f"Session '{session_id}' not found",
+                    }, indent=2),
+                )
+            ]
+
+        try:
+            await reload_session(
+                session_id=session_id,
+                reload_lua=reload_lua,
+                from_tier=Tier.RUNTIME,
+            )
+
+            result = {
+                "success": True,
+                "session_id": session_id,
+                "lua_reloaded": reload_lua,
+            }
+        except Exception as e:
+            result = {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
 
         return [
             TextContent(
@@ -839,11 +1100,22 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
     async def _destroy_session(self, args: dict) -> list[TextContent]:
         """Destroy a session."""
-        from FactoryVerse.infra.boilerplate.mcp import mcp_destroy_session
+        from FactoryVerse.environment import destroy_session
 
         session_id = args["session_id"]
 
-        result = await mcp_destroy_session(session_id=session_id)
+        try:
+            destroyed = await destroy_session(session_id)
+            result = {
+                "success": True,
+                "session_id": session_id,
+                "destroyed": destroyed,
+            }
+        except Exception as e:
+            result = {
+                "success": False,
+                "error": str(e),
+            }
 
         return [
             TextContent(
@@ -854,14 +1126,18 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
     async def _list_sessions(self, args: dict) -> list[TextContent]:
         """List active sessions."""
-        from FactoryVerse.infra.boilerplate.mcp import mcp_list_sessions
+        from FactoryVerse.environment import list_sessions
 
-        result = await mcp_list_sessions()
+        sessions = list_sessions()
 
         return [
             TextContent(
                 type="text",
-                text=json.dumps(result, indent=2),
+                text=json.dumps({
+                    "success": True,
+                    "count": len(sessions),
+                    "sessions": list(sessions.values()),
+                }, indent=2),
             )
         ]
 
@@ -872,7 +1148,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
         modules_arg = args.get("modules", None)
         clear_all = args.get("clear_all", False)
 
-        # Default modules to reload - these are the most commonly edited during development
+        # Default modules to reload
         default_patterns = [
             "FactoryVerse.agent.embodied_actions.*",
             "FactoryVerse.agent.ghost_builder",
@@ -880,9 +1156,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
             "FactoryVerse.agent.reachable_view",
             "FactoryVerse.agent.remote_view",
             "FactoryVerse.agent.infra.snapshot.*",
-            "FactoryVerse.runtime",
-            "FactoryVerse.runtime.*",
-            "FactoryVerse.infra.boilerplate.*",
+            "FactoryVerse.environment.*",
             "FactoryVerse.factory.entity.*",
         ]
 
@@ -892,7 +1166,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
         errors = []
 
         if clear_all:
-            # Nuclear option: clear all FactoryVerse modules
             to_clear = [
                 name for name in list(sys.modules.keys())
                 if name.startswith("FactoryVerse.")
@@ -904,27 +1177,22 @@ Useful for resetting runtime state without restarting infrastructure.""",
                 except Exception as e:
                     errors.append({"module": name, "error": str(e)})
         else:
-            # Match modules against patterns
             all_modules = list(sys.modules.keys())
             matched_modules = set()
 
             for pattern in patterns:
                 for mod_name in all_modules:
-                    # Convert glob pattern to work with module names
                     if pattern.endswith(".*"):
-                        # Pattern like "FactoryVerse.agent.embodied_actions.*"
                         prefix = pattern[:-2]
                         if mod_name == prefix or mod_name.startswith(prefix + "."):
                             matched_modules.add(mod_name)
                     elif fnmatch.fnmatch(mod_name, pattern):
                         matched_modules.add(mod_name)
 
-            # Sort by depth (deepest first) to handle dependencies correctly
             sorted_modules = sorted(matched_modules, key=lambda x: x.count("."), reverse=True)
 
             for mod_name in sorted_modules:
                 try:
-                    # Clear from cache to force fresh import
                     if mod_name in sys.modules:
                         del sys.modules[mod_name]
                         cleared.append(mod_name)
@@ -934,7 +1202,7 @@ Useful for resetting runtime state without restarting infrastructure.""",
         result = {
             "success": len(errors) == 0,
             "cleared_count": len(cleared),
-            "cleared": cleared[:20] if len(cleared) > 20 else cleared,  # Truncate for readability
+            "cleared": cleared[:20] if len(cleared) > 20 else cleared,
             "truncated": len(cleared) > 20,
             "patterns_used": patterns if not clear_all else ["*"],
             "clear_all": clear_all,
@@ -974,7 +1242,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
             server_mgr = FactorioServerManager(work_dir, config)
 
-            # Validate scenario
             if not server_mgr.validate_scenario(scenario):
                 available = server_mgr.list_scenarios()
                 return [
@@ -988,14 +1255,10 @@ Useful for resetting runtime state without restarting infrastructure.""",
                     )
                 ]
 
-            # Clear server snapshot directories
             server_mgr.clear_all_server_snapshot_dirs(num_servers)
-
-            # Consolidate scenarios and prepare mods
             server_mgr.consolidate_scenarios()
             server_mgr.prepare_mods(scenario)
 
-            # Build compose file
             compose_mgr = DockerComposeManager(work_dir)
 
             if not no_jupyter:
@@ -1008,18 +1271,15 @@ Useful for resetting runtime state without restarting infrastructure.""",
             )
             compose_mgr.write_compose()
 
-            # Start services
             compose_mgr.up()
 
-            # Configure snapshot ports
             configure_all_server_snapshot_ports(num_servers, config)
 
-            # Wait for servers to be ready (RCON responsive)
             from FactoryVerse.infra.instance_manager import FactorioInstanceManager
             import time
 
             ready_servers = []
-            max_wait = 60  # seconds
+            max_wait = 60
             start_time = time.time()
 
             while len(ready_servers) < num_servers and (time.time() - start_time) < max_wait:
@@ -1031,7 +1291,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
                 if len(ready_servers) < num_servers:
                     await asyncio.sleep(2)
 
-            # Build result
             server_info = []
             for i in range(num_servers):
                 rcon_port = config.get_rcon_port(f"server_{i}")
@@ -1151,7 +1410,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
             client_mgr = FactorioClientManager(work_dir)
             server_mgr = FactorioServerManager(work_dir, config)
 
-            # Resolve paths
             save_path = Path(save_file) if save_file else None
             if save_path and not save_path.is_absolute():
                 save_path = work_dir / save_path
@@ -1277,7 +1535,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
 
             config = get_config()
 
-            # Get instance
             if instance_name == "client":
                 instance = FactorioInstanceManager.get_client(config)
             elif instance_name.startswith("server_"):
@@ -1303,7 +1560,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
                 "snapshot_dir": str(instance.snapshot_dir),
             }
 
-            # Test connection and get game state
             if instance.test_connection():
                 result["active"] = True
                 try:
@@ -1314,11 +1570,9 @@ Useful for resetting runtime state without restarting infrastructure.""",
                     )
                     client.connect()
 
-                    # Get game tick
                     tick_response = client.send_command("/c rcon.print(game.tick)")
                     result["game_tick"] = int(tick_response.strip()) if tick_response.strip().isdigit() else None
 
-                    # Get surface info
                     surface_response = client.send_command(
                         '/c local s = game.surfaces[1]; rcon.print(string.format("%s,%d,%d", s.name, s.map_gen_settings.seed or 0, #game.players))'
                     )
@@ -1354,313 +1608,8 @@ Useful for resetting runtime state without restarting infrastructure.""",
             ]
 
     # ========================================================================
-    # ENVIRONMENT COMPOSITION METHODS
+    # UTILITY METHODS
     # ========================================================================
-
-    async def _env_create(self, args: dict) -> list[TextContent]:
-        """Create a FactoryVerse environment."""
-        env_id = args["env_id"]
-        up_to_tier = args.get("up_to_tier", 4)
-        preset = args.get("preset", "testing")
-        scenario = args.get("scenario", "test-ground")
-        instance = args.get("instance")
-        agent_id = args.get("agent_id", "agent_1")
-
-        try:
-            from FactoryVerse.environment import Environment, create_environment
-            from FactoryVerse.environment.config import (
-                EnvironmentConfig,
-                SettingsConfig,
-                PythonConfig,
-                RuntimeConfig,
-                RuntimeVariant,
-            )
-            from FactoryVerse.environment.tiers.base import Tier
-
-            # Check if already exists
-            if env_id in self._environments:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({
-                            "success": False,
-                            "error": f"Environment '{env_id}' already exists. Use factoryverse_env_shutdown first.",
-                        }, indent=2),
-                    )
-                ]
-
-            # Create config based on preset
-            if preset == "testing":
-                config = EnvironmentConfig.for_testing(scenario=scenario)
-            elif preset == "agent":
-                config = EnvironmentConfig.for_agent(scenario=scenario)
-            elif preset == "mcp":
-                config = EnvironmentConfig.for_mcp(instance=instance)
-            elif preset == "notebook":
-                config = EnvironmentConfig.for_notebook(instance=instance or "client")
-            else:
-                config = EnvironmentConfig(
-                    tier2=SettingsConfig(scenario=scenario),
-                    tier3=PythonConfig(instance=instance),
-                    tier4=RuntimeConfig(agent_id=agent_id),
-                )
-
-            # Override with explicit settings
-            if instance:
-                config.tier3 = PythonConfig(instance=instance)
-            if agent_id != "agent_1":
-                config.tier4 = RuntimeConfig(
-                    agent_id=agent_id,
-                    variant=config.tier4.variant,
-                )
-
-            # Create environment
-            env = Environment(config=config)
-
-            # Map tier number to Tier enum
-            tier_map = {
-                1: Tier.FACTORIO_INFRA,
-                2: Tier.SETTINGS,
-                3: Tier.PYTHON_INFRA,
-                4: Tier.RUNTIME,
-                5: Tier.SPECIFICATION,
-                6: Tier.INTERACTION,
-            }
-            target_tier = tier_map.get(up_to_tier, Tier.RUNTIME)
-
-            # Initialize
-            await env.initialize(up_to=target_tier)
-
-            # Store in registry
-            self._environments[env_id] = env
-
-            # Get status
-            status = await env.status()
-
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": True,
-                        "env_id": env_id,
-                        "preset": preset,
-                        "scenario": scenario,
-                        "initialized_up_to": target_tier.name,
-                        "status": {
-                            "tier1": status.tier1.to_dict() if status.tier1 else None,
-                            "tier2": status.tier2.to_dict() if status.tier2 else None,
-                            "tier3": status.tier3.to_dict() if status.tier3 else None,
-                            "tier4": status.tier4.to_dict() if status.tier4 else None,
-                            "tier5": status.tier5.to_dict() if status.tier5 else None,
-                            "tier6": status.tier6.to_dict() if status.tier6 else None,
-                        },
-                    }, indent=2),
-                )
-            ]
-        except Exception as e:
-            logger.exception("Error creating environment")
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": f"{type(e).__name__}: {str(e)}",
-                    }, indent=2),
-                )
-            ]
-
-    async def _env_status(self, args: dict) -> list[TextContent]:
-        """Get status of an environment."""
-        env_id = args["env_id"]
-
-        try:
-            if env_id not in self._environments:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({
-                            "success": False,
-                            "error": f"Environment '{env_id}' not found",
-                            "available": list(self._environments.keys()),
-                        }, indent=2),
-                    )
-                ]
-
-            env = self._environments[env_id]
-            status = await env.status()
-
-            def tier_to_dict(tier_status):
-                if tier_status is None:
-                    return None
-                return {
-                    "is_ready": tier_status.is_ready,
-                    "error": tier_status.error,
-                }
-
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": True,
-                        "env_id": env_id,
-                        "status": {
-                            "tier1_factorio": tier_to_dict(status.tier1),
-                            "tier2_settings": tier_to_dict(status.tier2),
-                            "tier3_python": tier_to_dict(status.tier3),
-                            "tier4_runtime": tier_to_dict(status.tier4),
-                            "tier5_spec": tier_to_dict(status.tier5),
-                            "tier6_interaction": tier_to_dict(status.tier6),
-                        },
-                    }, indent=2),
-                )
-            ]
-        except Exception as e:
-            logger.exception("Error getting environment status")
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": f"{type(e).__name__}: {str(e)}",
-                    }, indent=2),
-                )
-            ]
-
-    async def _env_reset(self, args: dict) -> list[TextContent]:
-        """Reset an environment from a specific tier."""
-        env_id = args["env_id"]
-        from_tier = args.get("from_tier", 4)
-
-        try:
-            from FactoryVerse.environment.tiers.base import Tier
-
-            if env_id not in self._environments:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({
-                            "success": False,
-                            "error": f"Environment '{env_id}' not found",
-                        }, indent=2),
-                    )
-                ]
-
-            tier_map = {
-                1: Tier.FACTORIO_INFRA,
-                2: Tier.SETTINGS,
-                3: Tier.PYTHON_INFRA,
-                4: Tier.RUNTIME,
-                5: Tier.SPECIFICATION,
-                6: Tier.INTERACTION,
-            }
-            target_tier = tier_map.get(from_tier, Tier.RUNTIME)
-
-            env = self._environments[env_id]
-            await env.reset(from_tier=target_tier)
-
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": True,
-                        "env_id": env_id,
-                        "reset_from": target_tier.name,
-                        "message": f"Reset from {target_tier.name} upward",
-                    }, indent=2),
-                )
-            ]
-        except Exception as e:
-            logger.exception("Error resetting environment")
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": f"{type(e).__name__}: {str(e)}",
-                    }, indent=2),
-                )
-            ]
-
-    async def _env_shutdown(self, args: dict) -> list[TextContent]:
-        """Shutdown an environment."""
-        env_id = args["env_id"]
-
-        try:
-            if env_id not in self._environments:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({
-                            "success": False,
-                            "error": f"Environment '{env_id}' not found",
-                        }, indent=2),
-                    )
-                ]
-
-            env = self._environments[env_id]
-            await env.shutdown()
-            del self._environments[env_id]
-
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": True,
-                        "env_id": env_id,
-                        "message": "Environment shutdown complete",
-                    }, indent=2),
-                )
-            ]
-        except Exception as e:
-            logger.exception("Error shutting down environment")
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": f"{type(e).__name__}: {str(e)}",
-                    }, indent=2),
-                )
-            ]
-
-    async def _list_envs(self, args: dict) -> list[TextContent]:
-        """List all active environments."""
-        try:
-            result = []
-            for env_id, env in self._environments.items():
-                status = await env.status()
-                result.append({
-                    "env_id": env_id,
-                    "tiers_ready": {
-                        "tier1": status.tier1.is_ready if status.tier1 else False,
-                        "tier2": status.tier2.is_ready if status.tier2 else False,
-                        "tier3": status.tier3.is_ready if status.tier3 else False,
-                        "tier4": status.tier4.is_ready if status.tier4 else False,
-                        "tier5": status.tier5.is_ready if status.tier5 else False,
-                        "tier6": status.tier6.is_ready if status.tier6 else False,
-                    },
-                })
-
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "environments": result,
-                        "count": len(result),
-                    }, indent=2),
-                )
-            ]
-        except Exception as e:
-            logger.exception("Error listing environments")
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": f"{type(e).__name__}: {str(e)}",
-                    }, indent=2),
-                )
-            ]
 
     async def _list_scenarios(self, args: dict) -> list[TextContent]:
         """List available scenarios."""
@@ -1670,7 +1619,6 @@ Useful for resetting runtime state without restarting infrastructure.""",
             config = get_config()
             scenarios = config.list_scenarios(include_local=True)
 
-            # Get repo-only scenarios
             repo_scenarios = set(config._list_scenarios_in_dir(config.scenarios_dir))
 
             result = []
@@ -1730,7 +1678,6 @@ def main():
     """Entry point for MCP server."""
     import sys
 
-    # Handle --help flag
     if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
         print("FactoryVerse MCP Server")
         print("\nThis server provides MCP tools for FactoryVerse development:")
@@ -1739,9 +1686,11 @@ def main():
         print("  - factoryverse_execute_code: Execute Python code for debugging")
         print("  - factoryverse_server_reload: Reload Factorio Lua scripts")
         print("  - factoryverse_inspect_inventory: Get agent inventory state")
+        print("  - factoryverse_add_inventory: Add items to agent inventory")
         print("\n=== Session Management ===")
         print("  - factoryverse_create_session: Create session at scope (RCON/SNAPSHOT/AGENT/RUNTIME)")
         print("  - factoryverse_execute_in_session: Execute code in session context")
+        print("  - factoryverse_session_status: Get detailed session status with tier info")
         print("  - factoryverse_reload_session: Reload session (Python modules + optional Lua)")
         print("  - factoryverse_destroy_session: Destroy session and cleanup")
         print("  - factoryverse_list_sessions: List active sessions")
@@ -1754,32 +1703,25 @@ def main():
         print("\n=== Instance Management ===")
         print("  - factoryverse_list_instances: List all instances with status")
         print("  - factoryverse_instance_status: Get detailed instance status")
-        print("\n=== Environment Composition ===")
-        print("  - factoryverse_env_create: Create environment at tier level (1-6)")
-        print("  - factoryverse_env_status: Get tier status of environment")
-        print("  - factoryverse_env_reset: Reset from specific tier upward")
-        print("  - factoryverse_env_shutdown: Shutdown environment")
-        print("  - factoryverse_list_envs: List all active environments")
+        print("\n=== Utilities ===")
         print("  - factoryverse_list_scenarios: List available scenarios")
+        print("  - factoryverse_reload_python: Hot-reload Python modules")
         print("\nThe server communicates via stdio (JSON-RPC).")
         print("Configure it in your IDE's MCP settings (see mcp.json.example).")
         print("\nUsage: factoryverse-mcp [--verbose]")
         print("  --verbose, -v: Enable verbose logging to stderr")
         sys.exit(0)
 
-    # Check for verbose flag
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     log_level = logging.DEBUG if verbose else logging.INFO
 
-    # Configure logging to stderr (stdout is used for JSON-RPC)
     logging.basicConfig(
         level=log_level,
         format="[MCP] %(asctime)s - %(levelname)s - %(message)s",
-        stream=sys.stderr,  # Important: use stderr so stdout is free for JSON-RPC
+        stream=sys.stderr,
         datefmt="%H:%M:%S",
     )
 
-    # Always log startup (even without verbose)
     logger.info("=" * 60)
     logger.info("FactoryVerse MCP Server Starting")
     logger.info("=" * 60)

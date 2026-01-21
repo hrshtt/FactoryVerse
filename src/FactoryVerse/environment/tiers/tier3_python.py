@@ -114,21 +114,84 @@ class Tier3Python(TierBase):
             self._set_state(TierState.ERROR, str(e))
             raise TierInitializationError(self.tier_level, str(e)) from e
 
+    async def _wait_for_port(self, host: str, port: int, timeout: float = 60.0) -> None:
+        """Wait for a TCP port to accept connections.
+
+        This checks if the server is accepting connections at the socket level,
+        before attempting RCON authentication. Useful when waiting for Docker
+        containers to fully start.
+
+        Args:
+            host: Host to connect to
+            port: Port to check
+            timeout: Maximum seconds to wait (default 60)
+
+        Raises:
+            TimeoutError: If port doesn't become available within timeout
+        """
+        import asyncio
+        import socket
+
+        start_time = asyncio.get_event_loop().time()
+        attempt = 0
+
+        while True:
+            attempt += 1
+            elapsed = asyncio.get_event_loop().time() - start_time
+
+            if elapsed >= timeout:
+                raise TimeoutError(
+                    f"Port {host}:{port} not available after {timeout}s"
+                )
+
+            try:
+                # Try to open a TCP connection
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2.0)
+                result = sock.connect_ex((host, port))
+                sock.close()
+
+                if result == 0:
+                    logger.info(
+                        f"Tier 3: Port {host}:{port} is ready (attempt {attempt}, {elapsed:.1f}s)"
+                    )
+                    return
+                else:
+                    logger.debug(
+                        f"Tier 3: Port {host}:{port} not ready (attempt {attempt}), waiting..."
+                    )
+            except (socket.error, OSError) as e:
+                logger.debug(
+                    f"Tier 3: Port check failed ({e}), waiting..."
+                )
+
+            await asyncio.sleep(1.0)
+
     async def _init_rcon(self, host: str, port: int, password: str) -> None:
-        """Initialize RCON client connection with retry logic."""
+        """Initialize RCON client connection with port readiness check and retry logic.
+
+        First waits for the port to accept TCP connections, then attempts RCON
+        authentication with retries.
+        """
         from factorio_rcon import RCONClient, RCONConnectError
         import asyncio
 
-        max_retries = 30  # 30 seconds total
+        # Phase 1: Wait for port to be accepting connections
+        logger.info(f"Tier 3: Waiting for RCON port {host}:{port} to be ready...")
+        await self._wait_for_port(host, port, timeout=60.0)
+
+        # Phase 2: Attempt RCON authentication with retries
+        # Server may accept connections but not be ready for RCON yet
+        max_retries = 30
         for i in range(max_retries):
             try:
                 self._rcon = RCONClient(host, port, password)
-                logger.info(f"Tier 3: RCON client created for {host}:{port}")
+                logger.info(f"Tier 3: RCON client connected to {host}:{port}")
                 return
-            except RCONConnectError:
+            except RCONConnectError as e:
                 if i < max_retries - 1:
                     logger.debug(
-                        f"Tier 3: RCON connection failed, retrying ({i + 1}/{max_retries})..."
+                        f"Tier 3: RCON auth failed ({e}), retrying ({i + 1}/{max_retries})..."
                     )
                     await asyncio.sleep(1.0)
                 else:

@@ -208,7 +208,7 @@ if positions:
     # Create and place inserter
     item = inventory.get_item("inserter")
     if item:
-        await item.place(pos, direction)""",
+        item.place(pos, direction)""",
                 decision_context="Automating item transfer between entities",
                 expected_outcome="Returns list of (MapPosition, Direction) tuples",
                 validation_level=ValidationLevel.SYNTAX,

@@ -1,14 +1,14 @@
 """Unified session management for FactoryVerse.
 
 This module provides session management that combines:
-- Execution environment (Jupyter or InProcess)
-- Domain context (boilerplate loading)
+- Execution environment (Jupyter or InProcess via Environment)
+- Domain context (Environment tier4 runtime)
 - File management (run directories, metadata)
 - Trajectory streaming (event log)
 - Lifecycle management (heartbeat, status)
 
 Key abstractions:
-- FactoryVerseSession: Combined execution + domain context
+- FactoryVerseSession: Combined execution + domain context (wraps Environment)
 - FileManager: Run directory and metadata management
 - TrajectoryWriter/Reader: File-based event streaming
 - SessionLifecycle: Heartbeat and status tracking
@@ -16,17 +16,24 @@ Key abstractions:
 Usage:
     from FactoryVerse.infra.session import FactoryVerseSession
     from FactoryVerse.infra.execution import JupyterExecutor
-    from FactoryVerse.infra.boilerplate import Scope
 
     # Create session with Jupyter execution
     session = FactoryVerseSession(
         session_id="my-run",
         executor=JupyterExecutor("/path/to/notebook.ipynb"),
-        scope=Scope.RUNTIME
+        agent_id="agent_1"
     )
     await session.start()
-    result = session.execute("print(runtime.agent_id)")
+    result = session.execute("print(walking)")
     await session.stop()
+
+For direct Environment usage (recommended for new code):
+    from FactoryVerse.environment import Environment, Tier
+
+    env = Environment.for_testing()
+    await env.initialize(up_to=Tier.RUNTIME)
+    result = await env.tier4.execute_code("print(walking)")
+    await env.shutdown()
 """
 
 from FactoryVerse.infra.session.session import FactoryVerseSession

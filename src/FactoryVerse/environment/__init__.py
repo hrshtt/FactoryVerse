@@ -32,6 +32,15 @@ from .orchestrator import (
     BatchResult,
     Job,
 )
+from .sessions import (
+    create_session,
+    get_session,
+    list_sessions,
+    destroy_session,
+    destroy_all_sessions,
+    reload_session,
+    get_session_components,
+)
 
 __all__ = [
     # Main class
@@ -61,4 +70,12 @@ __all__ = [
     "FreeplayResult",
     "BatchResult",
     "Job",
+    # Session management
+    "create_session",
+    "get_session",
+    "list_sessions",
+    "destroy_session",
+    "destroy_all_sessions",
+    "reload_session",
+    "get_session_components",
 ]

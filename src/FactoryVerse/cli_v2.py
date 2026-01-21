@@ -151,11 +151,14 @@ def cmd_client_start(args):
     """Start Factorio client with scenario or save file."""
 
     async def _start():
+        # scenario is None if not provided (launches to main menu)
+        scenario = args.scenario
+
         # Build configuration
         config = EnvironmentConfig(
             tier1=InfraConfig(mode=InfraMode.CLIENT),
             tier2=SettingsConfig(
-                scenario=args.scenario or "test-ground",
+                scenario=scenario,
                 save_path=Path(args.save_file) if args.save_file else None,
                 peaceful=not args.no_peaceful,
             ),
@@ -164,7 +167,10 @@ def cmd_client_start(args):
         env = Environment(config=config)
 
         print("🚀 Starting Factorio client...")
-        print(f"   Scenario: {config.tier2.scenario}")
+        if scenario:
+            print(f"   Scenario: {scenario}")
+        else:
+            print("   Mode: Main menu (no scenario)")
         if config.tier2.save_path:
             print(f"   Save: {config.tier2.save_path}")
 
@@ -932,7 +938,7 @@ def main():
 
     # client start
     client_start = client_sub.add_parser("start", help="Start Factorio client")
-    client_start.add_argument("-s", "--scenario", help="Scenario to load")
+    client_start.add_argument("-s", "--scenario", help="Scenario to load (omit for main menu)")
     client_start.add_argument("--save-file", help="Save file to load")
     client_start.add_argument(
         "--no-peaceful", action="store_true", help="Disable peaceful mode"

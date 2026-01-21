@@ -1,41 +1,50 @@
-"""Test Ground utilities for boilerplate.
+"""Test Ground utilities for functional tests.
 
-Provides TestGround-like helpers for use with boilerplate sessions.
-These can be loaded on top of any scope that has RCON.
+Provides TestGroundHelper for use with RCON clients in functional tests.
+These utilities call the test_ground remote interface for placing entities,
+resources, and managing test areas.
+
+TODO: test-ground is a scenario, and this helper should eventually be ported
+to use the scenario adapter pattern (similar to LabGridAdapter). The adapter
+would be auto-detected by Tier4Runtime and accessible via tier4.scenario.
 
 Usage:
-    >>> from FactoryVerse.infra.boilerplate import load, Scope
-    >>> from FactoryVerse.infra.boilerplate.test_ground import TestGroundHelper
-    >>> ctx = load(scope=Scope.RCON)
-    >>> tg = TestGroundHelper(ctx)
+    >>> from FactoryVerse.testing import TestGroundHelper
+    >>> # With an RCON client (from tier3 or fixtures)
+    >>> tg = TestGroundHelper(rcon_client)
     >>> tg.place_entity('iron-chest', 10, 10)
+    >>> tg.clear_area((0, 0), (50, 50))
 """
 
 import json
-from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, Tuple, Union
 
-if TYPE_CHECKING:
-    from . import BoilerplateContext
+from factorio_rcon import RCONClient
 
 
-class TestGroundHelper:  # noqa: B903
-    """Test Ground helper for boilerplate contexts.
+class TestGroundHelper:
+    """Test Ground helper for functional tests.
 
     Provides resource placement, entity placement, and area management
-    for testing and development workflows.
+    for testing and development workflows. Requires only an RCON client.
     """
 
     # Test area bounds (from test-ground scenario)
     AREA_SIZE = 512
     BOUNDS = {"left_top": {"x": -256, "y": -256}, "right_bottom": {"x": 256, "y": 256}}
 
-    def __init__(self, ctx: "BoilerplateContext"):
-        """Initialize with boilerplate context.
+    def __init__(self, rcon: Union[RCONClient, Dict[str, Any]]):
+        """Initialize with RCON client.
 
         Args:
-            ctx: BoilerplateContext with at least RCON scope
+            rcon: Either an RCONClient directly, or a dict with 'rcon' key
+                  (for backwards compatibility with boilerplate context pattern)
         """
-        self.rcon = ctx["rcon"]
+        if isinstance(rcon, dict):
+            # Support dict-like context for backwards compatibility
+            self.rcon = rcon["rcon"]
+        else:
+            self.rcon = rcon
 
     # ========================================================================
     # RESOURCE PLACEMENT
@@ -199,15 +208,3 @@ class TestGroundHelper:  # noqa: B903
             return "{" + items + "}"
         else:
             return str(value)
-
-
-def load_test_ground(ctx: "BoilerplateContext") -> TestGroundHelper:
-    """Load TestGroundHelper for a boilerplate context.
-
-    Args:
-        ctx: BoilerplateContext with at least RCON scope
-
-    Returns:
-        TestGroundHelper instance
-    """
-    return TestGroundHelper(ctx)

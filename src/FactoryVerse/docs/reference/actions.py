@@ -199,7 +199,7 @@ for stack in items:
 items = await crafting.craft("stone-furnace", count=3)
 # Each ItemStack has .place() capability
 furnace_stack = items[0]
-# Can place via: await furnace_stack.place(position, direction)""",
+# Can place via: furnace_stack.place(position, direction)""",
                 decision_context="Crafting items for placement",
                 expected_outcome="Returns ItemStack with placement capability",
                 validation_level=ValidationLevel.SYNTAX,

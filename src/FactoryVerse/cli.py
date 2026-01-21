@@ -769,7 +769,6 @@ def cmd_agent(args):
     async def run_agent():
         from .infra.session import FactoryVerseSession
         from .infra.execution import JupyterExecutor
-        from .infra.boilerplate import Scope
 
         # Create executor
         executor = JupyterExecutor(notebook_path)
@@ -778,7 +777,6 @@ def cmd_agent(args):
         session = FactoryVerseSession(
             session_id=f"agent_{args.agent_id}",
             executor=executor,
-            scope=Scope.RUNTIME,
             instance=args.instance,
             agent_id=args.agent_id,
             session_dir=output_dir,

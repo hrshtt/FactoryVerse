@@ -65,11 +65,10 @@ class FactorioClientManager:
 
         server_mgr = FactorioServerManager(self.work_dir, config)
 
-        # Use provided scenario or default to test-ground for mod setup
-        setup_scenario = scenario if scenario else "test-ground"
+        # Setup mods and optionally scenario (None = mods only)
         setup_client(
             self.work_dir,
-            scenario=setup_scenario,
+            scenario=scenario,  # Pass through as-is (None = mods only, no scenario)
             force=force_setup,
             project_scenarios_dir=project_scenarios_dir or server_mgr.scenarios_dir,
         )

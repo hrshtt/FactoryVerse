@@ -20,7 +20,6 @@ from FactoryVerse.infra.session.file_manager import (
 from FactoryVerse.infra.session.trajectory import TrajectoryWriter
 from FactoryVerse.infra.session.lifecycle import SessionLifecycle, SessionStatus
 from FactoryVerse.infra.execution import JupyterExecutor
-from FactoryVerse.infra.boilerplate import Scope
 from FactoryVerse.llm.client.factory import create_client_from_env
 from FactoryVerse.llm.orchestrator import AgentOrchestrator, RuntimeProtocol
 from FactoryVerse.llm.context import InitialStateGenerator
@@ -198,8 +197,7 @@ class AgentService:
         fv_session = FactoryVerseSession(
             session_id=session_id,
             executor=executor,
-            scope=Scope.RUNTIME,
-            instance=instance,
+                        instance=instance,
             agent_id=agent_id,
             session_dir=paths.session_dir,
         )
@@ -346,8 +344,7 @@ class AgentService:
         fv_session = FactoryVerseSession(
             session_id=session_id,
             executor=executor,
-            scope=Scope.RUNTIME,
-            instance=instance,
+                        instance=instance,
             agent_id=agent_id,
             session_dir=paths.session_dir,
         )

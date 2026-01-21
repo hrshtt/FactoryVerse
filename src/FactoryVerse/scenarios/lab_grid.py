@@ -1,20 +1,28 @@
-"""Lab Grid scenario adapter.
+"""Lab Grid scenario adapter with snapshot orchestration.
 
 Provides type-safe Python interface to the lab-grid scenario's remote interface.
 The lab-grid scenario creates an 8x8 grid of isolated play areas for parallel
 multi-agent evaluation.
 
+This adapter handles:
+- Cell allocation/release with snapshot coordination
+- Waiting for cell snapshots to complete
+- Loading cell-specific data into DuckDB
+- Agent lifecycle within cells
+
 Usage:
-    >>> from FactoryVerse.scenarios.lab_grid import LabGridAdapter
-    >>> adapter = LabGridAdapter(rcon_client)
-    >>> if adapter.is_available():
-    ...     config = adapter.config
-    ...     result = adapter.create_agent_in_cell(cell_index=5)
-    ...     print(f"Agent {result.agent_id} in cell {result.cell_index}")
+    >>> adapter = LabGridAdapter(rcon_client, snapshot_loader=loader)
+    >>> result = await adapter.allocate_cell(cell_index=5, starting_inventory={...})
+    >>> # Cell is now ready with snapshot data loaded
 """
 
+import asyncio
+import json
+import logging
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from FactoryVerse.scenarios.base import (
     ScenarioAdapter,
@@ -23,6 +31,11 @@ from FactoryVerse.scenarios.base import (
     BoundingBox,
     RCONClientProtocol,
 )
+
+if TYPE_CHECKING:
+    import duckdb
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -138,6 +151,31 @@ class ResetResult:
         )
 
 
+@dataclass
+class CellSnapshotStatus:
+    """Snapshot status for a cell."""
+
+    complete: bool
+    chunks_total: int
+    chunks_snapshotted: int
+    chunks_pending: int
+    elapsed_seconds: float = 0.0
+
+
+@dataclass
+class CellAllocationResult:
+    """Result of allocating a cell with snapshot coordination."""
+
+    success: bool
+    cell_index: Optional[int] = None
+    agent_id: Optional[int] = None
+    spawn_position: Optional[Position] = None
+    force_name: Optional[str] = None
+    snapshot_complete: bool = False
+    chunks_snapshotted: int = 0
+    error: Optional[str] = None
+
+
 class LabGridAdapter(ScenarioAdapter):
     """Type-safe Python adapter for the lab-grid scenario.
 
@@ -170,9 +208,19 @@ class LabGridAdapter(ScenarioAdapter):
     scenario_name = "lab-grid"
     interface_name = "lab_grid"
 
-    def __init__(self, rcon: RCONClientProtocol):
+    # Each cell is 4x4 chunks = 16 chunks
+    CHUNKS_PER_CELL = 16
+
+    def __init__(
+        self,
+        rcon: RCONClientProtocol,
+        database: Optional["duckdb.DuckDBPyConnection"] = None,
+        snapshot_dir: Optional[Path] = None,
+    ):
         super().__init__(rcon)
         self._config: Optional[GridConfig] = None
+        self._database = database
+        self._snapshot_dir = snapshot_dir
 
     def is_available(self) -> bool:
         """Check if lab_grid remote interface is available."""
@@ -451,6 +499,344 @@ class LabGridAdapter(ScenarioAdapter):
             Cell index (0-63)
         """
         return grid_y * self.config.grid_size + grid_x
+
+    # =========================================================================
+    # Snapshot Orchestration
+    # =========================================================================
+
+    def get_cell_chunk_coordinates(self, cell_index: int) -> List[Tuple[int, int]]:
+        """Get chunk coordinates for a cell (4x4 = 16 chunks).
+
+        Args:
+            cell_index: Cell index (0-63)
+
+        Returns:
+            List of (chunk_x, chunk_y) tuples for the 16 chunks in this cell
+        """
+        cfg = self.config
+        grid_x, grid_y = self.cell_index_to_grid(cell_index)
+
+        # Cell origin in tiles
+        cell_origin_x = grid_x * cfg.cell_size
+        cell_origin_y = grid_y * cfg.cell_size
+
+        # Convert to chunk coordinates (32 tiles per chunk)
+        base_chunk_x = cell_origin_x // cfg.chunk_size
+        base_chunk_y = cell_origin_y // cfg.chunk_size
+
+        # 4x4 chunks per cell
+        chunks = []
+        for dy in range(cfg.play_area_chunks):
+            for dx in range(cfg.play_area_chunks):
+                chunks.append((base_chunk_x + dx, base_chunk_y + dy))
+
+        return chunks
+
+    def get_snapshot_status(self) -> Dict[str, Any]:
+        """Get snapshot system status via RCON.
+
+        Returns:
+            Dict with system_phase, pending_chunks, completed_chunks, etc.
+        """
+        cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
+        result = self._rcon.send_command(cmd)
+        if result is None or result.strip() == "":
+            return {}
+        try:
+            return json.loads(result.strip())
+        except json.JSONDecodeError:
+            return {}
+
+    async def wait_for_cell_snapshot(
+        self,
+        cell_index: int,
+        timeout: float = 60.0,
+        poll_interval: float = 0.5,
+    ) -> CellSnapshotStatus:
+        """Wait for a cell's chunks to be fully snapshotted.
+
+        The lab-grid scenario triggers snapshot_area() when resetting a cell.
+        This method polls the snapshot system to check when those chunks complete.
+
+        Args:
+            cell_index: Cell to wait for
+            timeout: Max seconds to wait
+            poll_interval: Seconds between polls
+
+        Returns:
+            CellSnapshotStatus with completion info
+        """
+        start_time = time.time()
+        cell_chunks = set(self.get_cell_chunk_coordinates(cell_index))
+        chunks_total = len(cell_chunks)
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                return CellSnapshotStatus(
+                    complete=False,
+                    chunks_total=chunks_total,
+                    chunks_snapshotted=0,
+                    chunks_pending=chunks_total,
+                    elapsed_seconds=elapsed,
+                )
+
+            # Check snapshot status
+            status = self.get_snapshot_status()
+            system_phase = status.get("system_phase", "")
+            pending = status.get("pending_chunks", 0)
+
+            # In SELECTIVE mode, chunks are done when pending == 0
+            # and system has processed the queued chunks
+            if system_phase == "MAINTENANCE" or pending == 0:
+                # Give a brief moment for file writes to complete
+                await asyncio.sleep(0.2)
+                return CellSnapshotStatus(
+                    complete=True,
+                    chunks_total=chunks_total,
+                    chunks_snapshotted=chunks_total,
+                    chunks_pending=0,
+                    elapsed_seconds=time.time() - start_time,
+                )
+
+            await asyncio.sleep(poll_interval)
+
+    async def allocate_cell(
+        self,
+        cell_index: Optional[int] = None,
+        agent_id: int = 1,
+        starting_inventory: Optional[Dict[str, int]] = None,
+        wait_for_snapshot: bool = True,
+        snapshot_timeout: float = 60.0,
+    ) -> CellAllocationResult:
+        """Allocate a cell with full snapshot coordination.
+
+        Orchestrates:
+        1. Find/validate cell
+        2. Reset cell (triggers re_snapshot_area in Lua)
+        3. Assign agent to cell
+        4. Teleport agent to cell center
+        5. Wait for snapshot completion (if requested)
+        6. Set starting inventory
+
+        Args:
+            cell_index: Specific cell (0-63), or None to auto-allocate
+            agent_id: Numeric agent ID to assign
+            starting_inventory: Items to give agent
+            wait_for_snapshot: Whether to wait for snapshot completion
+            snapshot_timeout: Max time to wait for snapshot
+
+        Returns:
+            CellAllocationResult with cell info and snapshot status
+        """
+        # 1. Find cell
+        if cell_index is None:
+            cell_index = self.find_empty_cell()
+            if cell_index is None:
+                return CellAllocationResult(
+                    success=False,
+                    error="No empty cells available",
+                )
+
+        # Validate cell index
+        if cell_index < 0 or cell_index >= self.config.total_cells:
+            return CellAllocationResult(
+                success=False,
+                error=f"Invalid cell index: {cell_index}",
+            )
+
+        logger.info(f"LabGrid: Allocating cell {cell_index} for agent {agent_id}")
+
+        # 2. Reset cell (spawns resources, triggers re_snapshot_area)
+        reset_result = self.reset_cell(cell_index, preserve_agent=True)
+        if not reset_result.success:
+            return CellAllocationResult(
+                success=False,
+                cell_index=cell_index,
+                error="Failed to reset cell",
+            )
+
+        # 3. Check if agent entity is valid, recreate if needed
+        agents = self._list_game_agents()
+        existing = next((a for a in agents if a.get("id") == agent_id), None)
+
+        if existing:
+            entity_valid = existing.get("entity_valid", True)
+            if not entity_valid:
+                logger.info(f"LabGrid: Agent {agent_id} entity invalid, recreating...")
+                self._destroy_agent(agent_id)
+                self._create_agent(agent_id)
+        else:
+            logger.info(f"LabGrid: Creating agent {agent_id}")
+            self._create_agent(agent_id)
+
+        # 4. Assign agent to cell
+        assigned = self.assign_agent_to_cell(agent_id, cell_index)
+        if not assigned:
+            return CellAllocationResult(
+                success=False,
+                cell_index=cell_index,
+                agent_id=agent_id,
+                error=f"Failed to assign agent {agent_id} to cell {cell_index}",
+            )
+
+        # 5. Teleport agent to cell center
+        try:
+            position = self.teleport_agent_to_cell(agent_id)
+        except ScenarioError as e:
+            return CellAllocationResult(
+                success=False,
+                cell_index=cell_index,
+                agent_id=agent_id,
+                error=str(e),
+            )
+
+        # 6. Wait for snapshot if requested
+        snapshot_status = CellSnapshotStatus(
+            complete=False,
+            chunks_total=self.CHUNKS_PER_CELL,
+            chunks_snapshotted=0,
+            chunks_pending=self.CHUNKS_PER_CELL,
+        )
+        if wait_for_snapshot:
+            logger.info(f"LabGrid: Waiting for cell {cell_index} snapshot...")
+            snapshot_status = await self.wait_for_cell_snapshot(
+                cell_index, timeout=snapshot_timeout
+            )
+            if snapshot_status.complete:
+                logger.info(
+                    f"LabGrid: Cell {cell_index} snapshot complete "
+                    f"({snapshot_status.elapsed_seconds:.1f}s)"
+                )
+
+        # 7. Set starting inventory
+        if starting_inventory:
+            self._set_agent_inventory(agent_id, starting_inventory)
+
+        force_name = self.get_cell_force(cell_index)
+
+        return CellAllocationResult(
+            success=True,
+            cell_index=cell_index,
+            agent_id=agent_id,
+            spawn_position=position,
+            force_name=force_name,
+            snapshot_complete=snapshot_status.complete,
+            chunks_snapshotted=snapshot_status.chunks_snapshotted,
+        )
+
+    async def release_cell(
+        self,
+        cell_index: int,
+        reset: bool = True,
+    ) -> None:
+        """Release a cell back to the pool.
+
+        Args:
+            cell_index: Cell to release
+            reset: Whether to reset cell (clears entities, respawns resources)
+        """
+        if reset:
+            self.reset_cell(cell_index, preserve_agent=False)
+            logger.debug(f"LabGrid: Released and reset cell {cell_index}")
+        else:
+            logger.debug(f"LabGrid: Released cell {cell_index} (no reset)")
+
+    def get_cell_query_bounds(self, cell_index: int) -> Dict[str, float]:
+        """Get bounding box values for SQL WHERE clauses.
+
+        Args:
+            cell_index: Cell index (0-63)
+
+        Returns:
+            Dict with min_x, max_x, min_y, max_y for SQL filtering
+        """
+        bounds = self.get_cell_bounds(cell_index)
+        return {
+            "min_x": bounds.left_top.x,
+            "max_x": bounds.right_bottom.x,
+            "min_y": bounds.left_top.y,
+            "max_y": bounds.right_bottom.y,
+        }
+
+    def get_verification_source(self, agent_id: Optional[int] = None):
+        """Get a verification source for reading agent statistics.
+
+        Returns an AgentSnapshotSource that reads from the statistics files
+        written by fv_snapshot:
+        - production-statistics.jsonl (force-level, written on change)
+        - crafting-statistics.jsonl (manual crafting, event-driven)
+        - mining-statistics.jsonl (manual mining, event-driven)
+
+        For lab-grid, each agent is on a cell-specific force, so production
+        statistics are isolated per cell.
+
+        Args:
+            agent_id: Optional agent ID (not used, but available for filtering)
+
+        Returns:
+            AgentSnapshotSource configured with snapshot_dir
+
+        Raises:
+            ValueError: If snapshot_dir was not provided to constructor
+        """
+        from FactoryVerse.tasks.sources import AgentSnapshotSource
+
+        if self._snapshot_dir is None:
+            raise ValueError(
+                "Cannot create verification source: snapshot_dir not provided. "
+                "Pass snapshot_dir to LabGridAdapter constructor."
+            )
+
+        return AgentSnapshotSource(self._snapshot_dir)
+
+    # =========================================================================
+    # Private Helpers for Agent Management
+    # =========================================================================
+
+    def _list_game_agents(self) -> List[Dict[str, Any]]:
+        """List agents via RCON."""
+        cmd = '/c rcon.print(helpers.table_to_json(remote.call("agent", "list_agents")))'
+        result = self._rcon.send_command(cmd)
+        if result is None or result.strip() == "":
+            return []
+        try:
+            agents = json.loads(result.strip())
+            return list(agents.values()) if isinstance(agents, dict) else agents
+        except json.JSONDecodeError:
+            return []
+
+    def _create_agent(self, agent_id: int, udp_port: int = 34202) -> None:
+        """Create an agent via RCON."""
+        cmd = f'/c remote.call("agent", "create_agent", {udp_port}, false, "player", nil)'
+        self._rcon.send_command(cmd)
+
+    def _destroy_agent(self, agent_id: int) -> None:
+        """Destroy an agent via RCON."""
+        cmd = f'/c remote.call("agent", "destroy_agents", {{{agent_id}}})'
+        self._rcon.send_command(cmd)
+
+    def _set_agent_inventory(
+        self, agent_id: int, inventory: Dict[str, int]
+    ) -> None:
+        """Set agent inventory via RCON using admin API.
+
+        Uses the add_items and clear_inventory admin API methods which
+        properly access the agent's character inventory by agent_id.
+        """
+        # First clear existing inventory
+        self._rcon.send_command(
+            f'/c remote.call("agent", "clear_inventory", {agent_id})'
+        )
+
+        # Then add new items
+        if inventory:
+            inv_items = ", ".join(
+                f'["{name}"] = {count}' for name, count in inventory.items()
+            )
+            self._rcon.send_command(
+                f'/c remote.call("agent", "add_items", {agent_id}, {{{inv_items}}})'
+            )
 
     def __repr__(self) -> str:
         if self._config:
