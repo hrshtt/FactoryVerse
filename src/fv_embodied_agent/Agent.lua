@@ -616,53 +616,14 @@ end
 
 function Agent:get_production_statistics()
     local stats = self.character.force.get_item_production_statistics(game.surfaces[1]);
+    -- Factorio API: input_counts = consumed, output_counts = produced
+    -- We swap to match inventory perspective:
+    --   input = items entering inventory (produced by machines)
+    --   output = items leaving inventory (consumed by machines)
     return {
-        input = stats.input_counts,
-        output = stats.output_counts,
+        input = stats.output_counts,
+        output = stats.input_counts,
     }
-end
-
---- Get manual production statistics for this agent
---- Returns items that were hand-crafted or hand-mined (not from automation)
---- Used for verification to distinguish automation vs manual production
---- @return table {crafted = {item_name = count}, mined = {item_name = count}}
-function Agent:get_manual_production_statistics()
-    local crafted = {}
-    local mined = {}
-
-    -- Get manual crafting stats
-    if storage.agent_manual_crafted and storage.agent_manual_crafted[self.agent_id] then
-        for item_name, count in pairs(storage.agent_manual_crafted[self.agent_id]) do
-            crafted[item_name] = count
-        end
-    end
-
-    -- Get manual mining stats
-    if storage.agent_manual_mined and storage.agent_manual_mined[self.agent_id] then
-        for item_name, count in pairs(storage.agent_manual_mined[self.agent_id]) do
-            mined[item_name] = count
-        end
-    end
-
-    return {
-        crafted = crafted,
-        mined = mined,
-        agent_id = self.agent_id,
-        tick = game.tick,
-    }
-end
-
---- Reset manual production statistics for this agent
---- Clears the crafted and mined counters
---- @return table {success = true}
-function Agent:reset_manual_production_statistics()
-    if storage.agent_manual_crafted then
-        storage.agent_manual_crafted[self.agent_id] = nil
-    end
-    if storage.agent_manual_mined then
-        storage.agent_manual_mined[self.agent_id] = nil
-    end
-    return { success = true, agent_id = self.agent_id, tick = game.tick }
 end
 
 -- ============================================================================

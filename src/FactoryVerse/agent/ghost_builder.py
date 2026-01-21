@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from FactoryVerse.agent.embodied_actions.walking import MovementAction
     from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
     from FactoryVerse.agent.embodied_actions.inventory import AgentInventory
+    from FactoryVerse.agent.reachable_view import ReachableView
     from FactoryVerse.factory.entity.base_entity import BaseEntity
     from FactoryVerse.factory.types import MapPosition
     from FactoryVerse.agent.placement_hints import GhostPlan
@@ -51,6 +52,7 @@ class GhostBuilderAction:
         movement: "MovementAction",
         placement: "PlacementAction",
         inventory: "AgentInventory",
+        reachable_view: "ReachableView | None" = None,
     ):
         """Initialize ghost builder.
 
@@ -58,10 +60,12 @@ class GhostBuilderAction:
             movement: Movement action for walking to ghost positions
             placement: Placement action for placing entities
             inventory: Agent inventory for checking available items
+            reachable_view: ReachableView for querying placed ghosts (needed for build_plan)
         """
         self._movement = movement
         self._placement = placement
         self._inventory = inventory
+        self._reachable_view = reachable_view
 
     def _extract_ghost_info(self, ghost: "BaseEntity") -> GhostInfo:
         """Extract name and position from a ghost entity.
@@ -157,10 +161,12 @@ class GhostBuilderAction:
                 await self._movement.walk_to(info.position)
 
                 # Place entity at position
+                # Handle None direction (default to NORTH)
+                direction = Direction(info.direction) if info.direction is not None else Direction.NORTH
                 result = self._placement.place(
                     info.name,
                     info.position,
-                    direction=Direction(info.direction),
+                    direction=direction,
                 )
 
                 if result.success:
@@ -229,11 +235,23 @@ class GhostBuilderAction:
                 "built_count": 0,
                 "failed_count": 0,
                 "total_processed": 0,
-                "built_ghosts": [],
-                "failed_ghosts": [],
+                "placed_count": 0,
                 "error": "GhostPlan is not valid (validation failed)",
             }
-        
+
+        # Strict mode: validate inventory BEFORE placing anything
+        if strict:
+            required_count = len(plan.positions)
+            available = self._inventory.check_total(plan.entity_name)
+            if available < required_count:
+                return {
+                    "built_count": 0,
+                    "failed_count": 0,
+                    "total_processed": 0,
+                    "placed_count": 0,
+                    "error": f"Strict mode: insufficient {plan.entity_name} (have {available}, need {required_count})",
+                }
+
         # Place all ghosts from the plan
         print(f"Placing {len(plan.positions)} ghosts for plan: {plan.description}")
         placed_count = 0
@@ -253,15 +271,54 @@ class GhostBuilderAction:
                 print(f"  Failed to place ghost at {position}: {e}")
         
         print(f"Placed {placed_count}/{len(plan.positions)} ghosts")
-        
-        # Now query the ghosts we just placed and build them
-        # We need to get them from the remote view since they're now in the DB
-        # This is a bit circular - we'd need remote_view access here
-        # For now, return placement stats
+
+        # Now build the ghosts by walking to each position
+        if self._reachable_view is None:
+            return {
+                "built_count": 0,
+                "failed_count": 0,
+                "total_processed": placed_count,
+                "placed_count": placed_count,
+                "error": "build_plan requires reachable_view to query and build placed ghosts",
+            }
+
+        # Build ghosts by walking to each plan position and placing real entity
+        built_count = 0
+        failed_count = 0
+        total = len(plan.positions)
+
+        print(f"Building {total} entities from plan...")
+
+        for i, (position, direction) in enumerate(plan.positions, 1):
+            try:
+                # Walk to the position
+                await self._movement.walk_to(position)
+
+                # Place real entity (not ghost)
+                place_direction = direction if direction is not None else Direction.NORTH
+                result = self._placement.place(
+                    plan.entity_name,
+                    position,
+                    direction=place_direction,
+                    ghost=False,  # Place real entity
+                )
+
+                if result.success:
+                    built_count += 1
+                    print(f"  ({built_count}/{total}) Built {plan.entity_name} at {position}")
+                else:
+                    failed_count += 1
+                    print(f"  Failed at {position}: {result.message or 'Unknown'}")
+
+            except Exception as e:
+                failed_count += 1
+                print(f"  Error at {position}: {e}")
+
+        print(f"\nBuild summary: {built_count} built, {failed_count} failed")
+
         return {
-            "built_count": 0,
-            "failed_count": 0,
-            "total_processed": placed_count,
+            "built_count": built_count,
+            "failed_count": failed_count,
+            "total_processed": total,
             "placed_count": placed_count,
-            "error": "build_plan needs remote_view integration to query placed ghosts",
         }

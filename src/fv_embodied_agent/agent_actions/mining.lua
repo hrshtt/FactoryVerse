@@ -353,15 +353,19 @@ function MiningActions.finalize_mining(self, reason)
         actual_products = mining_state.expected_products
     end
 
-    -- Track manual mining in storage for verification
-    -- This allows distinguishing automation-produced items from hand-mined items
+    -- Raise mining completed event for fv_snapshot to log
+    -- Only raise when there are actual products (not for cancelled with 0 products)
     if actual_products and next(actual_products) then
-        storage.agent_manual_mined = storage.agent_manual_mined or {}
-        storage.agent_manual_mined[self.agent_id] = storage.agent_manual_mined[self.agent_id] or {}
-        for item_name, amount in pairs(actual_products) do
-            local current = storage.agent_manual_mined[self.agent_id][item_name] or 0
-            storage.agent_manual_mined[self.agent_id][item_name] = current + amount
-        end
+        script.raise_event(custom_events.on_agent_mining_completed, {
+            agent_id = self.agent_id,
+            tick = game.tick,
+            entity_name = mining_state.entity_name,
+            entity_type = mining_state.entity_type,
+            position = mining_state.entity_position,
+            mode = mining_state.mode,
+            reason = reason,
+            products = actual_products,
+        })
     end
 
     -- Render completion text for deplete modes using localized string format

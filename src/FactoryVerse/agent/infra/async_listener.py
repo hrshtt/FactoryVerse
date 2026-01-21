@@ -189,8 +189,8 @@ class AsyncActionListener:
 
                 return
 
-            if status in ("completed", "cancelled"):
-                # Finish await
+            if status in ("completed", "cancelled", "failed"):
+                # Finish await - completed, cancelled, or failed are all terminal states
                 self.action_results[action_id] = payload
                 event = self.pending_actions[action_id]
 
@@ -208,6 +208,7 @@ class AsyncActionListener:
 
     async def stop(self):
         """Stop listening for UDP messages."""
+        was_running = self.running
         self.running = False
 
         if self.agent_port is not None and self.sock:
@@ -217,9 +218,11 @@ class AsyncActionListener:
             if self.sock:
                 self.sock.close()
                 self.sock = None
-        elif self.udp_dispatcher and self.running:
+            logger.info(f"AsyncActionListener stopped (direct port {self.agent_port})")
+        elif self.udp_dispatcher is not None and was_running:
             # Dispatcher mode - unsubscribe
             self.udp_dispatcher.unsubscribe("*", self._handle_udp_message)
+            logger.info("AsyncActionListener stopped (dispatcher mode)")
 
     def register_action(
         self, action_id: str, initial_timeout_deadline: Optional[float] = None

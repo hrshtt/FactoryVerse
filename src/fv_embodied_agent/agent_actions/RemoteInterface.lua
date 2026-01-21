@@ -459,7 +459,7 @@ Use for testing/debugging. For normal gameplay, use walk_to instead.]],
             },
         },
         func = function(self, position)
-            return self:teleport(position)
+            return self.character.teleport(position)
         end,
     },
 
@@ -823,46 +823,6 @@ These are aggregate stats that include both automation and manual production.]],
         },
         func = function(self)
             return self:get_production_statistics()
-        end,
-    },
-    get_manual_production_statistics = {
-        category = "query",
-        is_async = false,
-        doc = [[Get manual production statistics for this agent.
-Returns items that were hand-crafted or hand-mined by this agent (not from automation).
-Use this with get_production_statistics to calculate automation-produced items:
-  automation_produced = force_output - manual_crafted - manual_mined]],
-        paramspec = { _param_order = {} },
-        returns = {
-            type = "manual_production_stats",
-            schema = {
-                crafted = { type = "table", doc = "Hand-crafted items: {item_name: count}" },
-                mined = { type = "table", doc = "Hand-mined items: {item_name: count}" },
-                agent_id = { type = "number", doc = "Agent ID" },
-                tick = { type = "number", doc = "Game tick" },
-            },
-        },
-        func = function(self)
-            return self:get_manual_production_statistics()
-        end,
-    },
-    reset_manual_production_statistics = {
-        category = "lifecycle",
-        is_async = false,
-        doc = [[Reset manual production statistics for this agent.
-Clears the hand-crafted and hand-mined counters. Call this at the start of a task
-to get clean statistics for verification.]],
-        paramspec = { _param_order = {} },
-        returns = {
-            type = "result",
-            schema = {
-                success = { type = "boolean", doc = "True if reset succeeded" },
-                agent_id = { type = "number", doc = "Agent ID" },
-                tick = { type = "number", doc = "Game tick" },
-            },
-        },
-        func = function(self)
-            return self:reset_manual_production_statistics()
         end,
     },
 

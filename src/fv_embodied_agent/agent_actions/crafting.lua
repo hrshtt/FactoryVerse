@@ -3,6 +3,8 @@
 --- State is stored in self.crafting (in_progress)
 --- These methods are mixed into the Agent class at module level
 
+local custom_events = require("utils.custom_events")
+
 local CraftingActions = {}
 
 local valid_recipe_categories = {
@@ -325,14 +327,14 @@ CraftingActions.process_crafting = function(self)
             end
         end
 
-        -- Track manual crafting in storage for verification
-        -- This allows distinguishing automation-produced items from hand-crafted items
-        storage.agent_manual_crafted = storage.agent_manual_crafted or {}
-        storage.agent_manual_crafted[self.agent_id] = storage.agent_manual_crafted[self.agent_id] or {}
-        for item_name, amount in pairs(actual_products) do
-            local current = storage.agent_manual_crafted[self.agent_id][item_name] or 0
-            storage.agent_manual_crafted[self.agent_id][item_name] = current + amount
-        end
+        -- Raise crafting completed event for fv_snapshot to log
+        script.raise_event(custom_events.on_agent_crafting_completed, {
+            agent_id = self.agent_id,
+            tick = current_tick,
+            recipe = tracking.recipe,
+            count_crafted = count_crafted,
+            products = actual_products,
+        })
 
         -- Calculate actual time taken
         local actual_ticks = nil
