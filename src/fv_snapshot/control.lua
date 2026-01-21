@@ -61,7 +61,16 @@ local function aggregate_all_events()
         end
     end
 
-    -- 2. Aggregate events (defined_events and nth_tick) from all modules
+    -- Custom events (from fv_embodied_agent)
+    local custom_events = {}
+    local function add_custom_event(event_id, handler)
+        if not custom_events[event_id] then
+            custom_events[event_id] = {}
+        end
+        table.insert(custom_events[event_id], handler)
+    end
+
+    -- 2. Aggregate events (defined_events, nth_tick, and custom_events) from all modules
     for _, module in ipairs(modules) do
         if module and module.get_events then
             local events = module.get_events()
@@ -88,6 +97,13 @@ local function aggregate_all_events()
                         end
                     end
                 end
+
+                -- Aggregate custom events (from fv_embodied_agent)
+                if events.custom_events then
+                    for event_id, handler in pairs(events.custom_events) do
+                        add_custom_event(event_id, handler)
+                    end
+                end
             end
         end
     end
@@ -108,7 +124,8 @@ local function aggregate_all_events()
 
     return {
         defined_events = defined_events,
-        nth_tick = nth_tick_handlers
+        nth_tick = nth_tick_handlers,
+        custom_events = custom_events
     }
 end
 
@@ -135,9 +152,19 @@ local function register_all_events()
         end)
     end
 
+    -- Register custom events (from fv_embodied_agent) - these use script.generate_event_name() IDs
+    for event_id, handlers_list in pairs(aggregated.custom_events) do
+        script.on_event(event_id, function(event)
+            for _, handler in ipairs(handlers_list) do
+                handler(event)
+            end
+        end)
+    end
+
     log("Event dispatcher initialized: registered " ..
-        count_keys(aggregated.defined_events) .. " defined events and " ..
-        count_keys(aggregated.nth_tick) .. " nth_tick event groups")
+        count_keys(aggregated.defined_events) .. " defined events, " ..
+        count_keys(aggregated.nth_tick) .. " nth_tick event groups, and " ..
+        count_keys(aggregated.custom_events) .. " custom events")
 end
 
 -- ============================================================================
@@ -185,18 +212,22 @@ register_all_remote_interfaces()
 -- SNAPSHOT DIRECTORY CLEANUP
 -- ============================================================================
 
---- Clear the snapshot directory to ensure a clean state for new maps
+--- Clear all snapshot directories to ensure a clean state for new maps
 --- This prevents stale data from previous map sessions from being loaded
-local function clear_snapshot_directory()
-    local snapshot_base_dir = snapshot.SNAPSHOT_BASE_DIR
-    
-    -- Attempt to remove the entire snapshot directory tree
-    local ok = helpers.remove_path(snapshot_base_dir)
-    
-    if ok then
-        log("🧹 Cleared snapshot directory: " .. snapshot_base_dir)
-    else
-        log("⚠️  Failed to clear snapshot directory: " .. snapshot_base_dir) -- err is not available
+--- Clears: factoryverse/snapshots, factoryverse/agent-snapshots, factoryverse/status
+local function clear_snapshot_directories()
+    -- List of all directories to clear on initialization
+    local dirs_to_clear = {
+        snapshot.SNAPSHOT_BASE_DIR,           -- "factoryverse/snapshots"
+        "factoryverse/agent-snapshots",       -- Agent production/crafting/mining statistics
+        "factoryverse/status",                -- Entity status dumps
+    }
+
+    for _, dir_path in ipairs(dirs_to_clear) do
+        -- Attempt to remove the directory tree
+        -- Note: remove_path returns nil, no way to know if deletion succeeded
+        helpers.remove_path(dir_path)
+        log("🧹 Cleared directory: " .. dir_path)
     end
 end
 
@@ -207,12 +238,16 @@ end
 script.on_init(function()
     log("hello from fv_snapshot on_init")
 
-    -- Clear snapshot directory FIRST to ensure clean state for new map
+    -- Clear all snapshot directories FIRST to ensure clean state for new map
     -- This is critical when starting a new map with a fresh seed
-    clear_snapshot_directory()
+    clear_snapshot_directories()
 
-    -- Initialize game state modules (must happen before event registration)
-    -- This generates custom event IDs that will be used in event handlers
+    -- Initialize storage for Map module (ONLY in on_init, not on_load!)
+    -- This creates storage.chunk_tracker and storage.system_state
+    Map.init_storage()
+
+    -- Initialize game state modules (builds module-level tables)
+    -- These do NOT modify storage, only set M.disk_write_snapshot tables
     Entities.init()
     Resource.init()
     Map.init()
@@ -229,11 +264,14 @@ end)
 script.on_load(function()
     log("hello from fv_snapshot on_load")
 
-    -- Initialize game state modules (must happen before event registration)
-    -- Custom events are preserved across reload, but we need to rebuild disk_write_snapshot tables
+    -- IMPORTANT: on_load CANNOT modify storage! Only rebuild module-level tables.
+    -- Storage is already populated from the save file.
+
+    -- Rebuild module-level tables (disk_write_snapshot, etc.)
+    -- These do NOT modify storage
     Entities.init()
     Resource.init()
-    Map.init() -- Will check and queue chunks if needed
+    Map.init()
 
     log("Re-initialized fv_snapshot game state modules after mod reload")
 
@@ -248,7 +286,19 @@ end)
 
 script.on_configuration_changed(function()
     log("hello from fv_snapshot on_configuration_changed")
+
     -- Also clear on configuration changed (e.g. mod update) to be safe
-    clear_snapshot_directory()
+    clear_snapshot_directories()
+
+    -- Run storage migrations (e.g., adding new fields to existing saves)
+    -- This is safe because on_configuration_changed CAN modify storage
+    Map.init_storage()
+
+    -- Rebuild module-level tables
+    Entities.init()
+    Resource.init()
+    Map.init()
+
+    log("Migrated fv_snapshot storage after configuration change")
 end)
 

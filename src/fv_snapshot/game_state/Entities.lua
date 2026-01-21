@@ -17,12 +17,13 @@ local string_format = string.format
 local table_to_json = helpers.table_to_json
 
 -- EntityInterface is from fv_embodied_agent mod (dependency)
+-- NOTE: These requires are for utility functions/constants only.
+-- fv_embodied_agent's storage is isolated - must use remote.call for agent data.
 local EntityInterface = require("__fv_embodied_agent__.game_state.EntityInterface")
 local serialize = require("__fv_embodied_agent__/utils/serialize")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
 local udp_payloads = require("utils.udp_payloads")
-local Agents = require("__fv_embodied_agent__/game_state/Agents")
 local debug_render = require("__fv_embodied_agent__/utils/debug_render")
 local Resource = require("game_state.Resource")
 local forces = require("utils.forces")
@@ -1028,32 +1029,16 @@ end
 --- Build disk write snapshot events table
 --- Called after init() to populate events
 function M._build_disk_write_snapshot()
-    -- Get Agent custom events from storage (preferred) or remote call (fallback)
-    -- Storage is the source of truth for cross-mod event ID sharing
+    -- Get Agent custom events via remote.call
+    -- IMPORTANT: Cannot access fv_embodied_agent's storage directly - each mod has isolated storage
+    -- Must use remote.call to access custom event IDs from fv_embodied_agent
     local agent_events = nil
-    
-    -- Try storage first (fastest, no remote call overhead)
-    if storage.custom_events then
-        agent_events = storage.custom_events
-    -- Fallback to remote call if storage not available
-    elseif remote and remote.interfaces then
-        -- Check if agent interface exists and has get_custom_events function
-        if remote.interfaces.agent and remote.interfaces.agent.get_custom_events then
-            local result = remote.call("agent", "get_custom_events")
-            if result then
-                agent_events = result
-            end
+
+    if remote and remote.interfaces then
+        -- Use custom_events interface from fv_embodied_agent
+        if remote.interfaces.custom_events and remote.interfaces.custom_events.get_custom_events then
+            agent_events = remote.call("custom_events", "get_custom_events")
         end
-        -- Check if custom_events interface exists and has get_custom_events function
-        if not agent_events and remote.interfaces.custom_events and remote.interfaces.custom_events.get_custom_events then
-            local result = remote.call("custom_events", "get_custom_events")
-            if result then
-                agent_events = result
-            end
-        end
-    -- Last resort: try module require (may not work across mods reliably)
-    elseif Agents and Agents.custom_events then
-        agent_events = Agents.custom_events
     end
     
     local events = {

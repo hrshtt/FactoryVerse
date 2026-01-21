@@ -80,6 +80,66 @@ local SystemPhase = {
     MAINTENANCE = "MAINTENANCE"
 }
 
+-- ============================================================================
+-- ORCHESTRATION MODE - Controls when/how snapshotting is triggered
+-- ============================================================================
+--
+-- AUTO: Snapshot immediately on chunk charted (default, backward compatible)
+--   - on_chunk_charted triggers immediate queue for snapshotting
+--   - Standard flow: INITIAL_SNAPSHOTTING -> MAINTENANCE
+--
+-- DEFERRED: Track charted chunks but wait for explicit trigger
+--   - on_chunk_charted records chunks but doesn't queue for snapshotting
+--   - Call trigger_initial_snapshot() to start processing
+--   - Useful when scenario needs setup before snapshotting
+--
+-- SELECTIVE: Only snapshot areas explicitly requested
+--   - on_chunk_charted is ignored for snapshotting purposes
+--   - Call snapshot_area() to snapshot specific regions
+--   - Essential for lab-grid cell isolation
+--
+local OrchestrationMode = {
+    AUTO = "AUTO",
+    DEFERRED = "DEFERRED",
+    SELECTIVE = "SELECTIVE"
+}
+
+--- Get the configured orchestration mode
+--- Reads from mod settings if available, falls back to storage override, then default
+--- @return string OrchestrationMode enum value
+local function get_orchestration_mode()
+    -- Check if runtime override is set (via remote interface)
+    if storage.orchestration_mode then
+        return storage.orchestration_mode
+    end
+
+    -- Try to read from mod settings
+    if settings and settings.global then
+        local setting_value = settings.global["fv-snapshot-orchestration-mode"]
+        if setting_value and setting_value.value then
+            return setting_value.value
+        end
+    end
+
+    -- Fallback to AUTO (backward compatible)
+    return OrchestrationMode.AUTO
+end
+
+--- Set the orchestration mode at runtime (via remote interface)
+--- @param mode string OrchestrationMode enum value
+--- @return boolean success
+local function set_orchestration_mode(mode)
+    if mode ~= OrchestrationMode.AUTO and
+       mode ~= OrchestrationMode.DEFERRED and
+       mode ~= OrchestrationMode.SELECTIVE then
+        log(string.format("[Map] Invalid orchestration mode: %s", tostring(mode)))
+        return false
+    end
+    storage.orchestration_mode = mode
+    log(string.format("[Map] Orchestration mode set to: %s", mode))
+    return true
+end
+
 -- Tunable performance parameters
 -- These control how much work is done per tick
 local SnapshotConfig = {
@@ -142,10 +202,10 @@ script.register_metatable('ChunkTracker', ChunkTracker)
 -- CHUNK TRACKER CREATION
 -- ============================================================================
 
---- Create or get the singleton ChunkTracker instance
---- @return ChunkTracker
-function ChunkTracker:new()
-    -- If tracker already exists, return it
+--- Initialize ChunkTracker storage (only call in on_init or on_configuration_changed!)
+--- IMPORTANT: This modifies storage, so it CANNOT be called in on_load()
+function ChunkTracker:init_storage()
+    -- Only create if it doesn't exist
     if storage.chunk_tracker then
         return storage.chunk_tracker
     end
@@ -160,6 +220,26 @@ function ChunkTracker:new()
     storage.chunk_tracker = tracker
 
     return tracker
+end
+
+--- Get the singleton ChunkTracker instance (assumes already initialized)
+--- For on_load, storage is already populated from save
+--- @return ChunkTracker|nil
+function ChunkTracker:get()
+    return storage.chunk_tracker
+end
+
+--- Create or get the singleton ChunkTracker instance
+--- DEPRECATED: Use init_storage() in on_init and get() in on_load
+--- @return ChunkTracker
+function ChunkTracker:new()
+    -- If tracker already exists, return it
+    if storage.chunk_tracker then
+        return storage.chunk_tracker
+    end
+
+    -- Fallback: create if doesn't exist (only safe in on_init/on_configuration_changed)
+    return self:init_storage()
 end
 
 -- ============================================================================
@@ -593,13 +673,15 @@ end
 -- SYSTEM STATE MANAGEMENT
 -- ============================================================================
 
---- Get or initialize the system state
---- @return SystemState
-local function get_system_state()
-    if not storage.system_state then
+--- Initialize system state storage (only call in on_init or on_configuration_changed!)
+--- IMPORTANT: This modifies storage, so it CANNOT be called in on_load()
+--- @param force boolean|nil If true, reinitialize even if exists (for migration)
+local function init_system_state_storage(force)
+    if force or not storage.system_state then
         storage.system_state = {
             phase = SystemPhase.INITIAL_SNAPSHOTTING,
             pending_chunks = {},  -- Queue of {x, y, priority}
+            deferred_chunks = {},  -- Chunks tracked but not yet queued (DEFERRED mode)
             stats = {
                 chunks_snapshotted = 0,
                 chunks_pending = 0,
@@ -614,6 +696,18 @@ local function get_system_state()
             current_wait_tick = 0,
         }
     end
+    -- Migration: Ensure deferred_chunks exists for existing saves
+    -- This is safe here because this function is only called from on_init/on_configuration_changed
+    if storage.system_state and not storage.system_state.deferred_chunks then
+        storage.system_state.deferred_chunks = {}
+    end
+end
+
+--- Get the system state (assumes already initialized)
+--- @return SystemState
+local function get_system_state()
+    -- In on_load, storage is already populated from save
+    -- In on_init, init_system_state_storage() must be called first
     return storage.system_state
 end
 
@@ -845,6 +939,151 @@ function M.get_system_phase()
     return get_system_phase()
 end
 
+-- ============================================================================
+-- ORCHESTRATION MODE API
+-- ============================================================================
+
+--- Get the current orchestration mode
+--- @return string OrchestrationMode enum value ("AUTO", "DEFERRED", or "SELECTIVE")
+function M.get_orchestration_mode()
+    return get_orchestration_mode()
+end
+
+--- Set the orchestration mode at runtime
+--- @param mode string OrchestrationMode enum value ("AUTO", "DEFERRED", or "SELECTIVE")
+--- @return table {success: boolean, mode?: string, error?: string}
+function M.set_orchestration_mode(mode)
+    if set_orchestration_mode(mode) then
+        return { success = true, mode = mode }
+    else
+        return { success = false, error = "Invalid mode: " .. tostring(mode) .. ". Must be AUTO, DEFERRED, or SELECTIVE." }
+    end
+end
+
+--- Trigger initial snapshotting for DEFERRED mode
+--- Moves all deferred chunks to the pending queue
+--- @return table {success: boolean, chunks_queued: number}
+function M.trigger_initial_snapshot()
+    local sys_state = get_system_state()
+    local tracker = M.get_chunk_tracker()
+    local chunks_queued = 0
+
+    -- Move all deferred chunks to pending queue
+    for chunk_key, chunk in pairs(sys_state.deferred_chunks) do
+        tracker:mark_chunk_needs_snapshot(chunk.x, chunk.y)
+        chunks_queued = chunks_queued + 1
+    end
+
+    -- Clear deferred list
+    sys_state.deferred_chunks = {}
+
+    -- If we queued chunks and we're not already snapshotting, start
+    if chunks_queued > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+        sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
+        sys_state.stats.phase_start_tick = game.tick
+    end
+
+    if DEBUG and game and game.print then
+        game.print(string.format("[Map] trigger_initial_snapshot: queued %d chunks", chunks_queued))
+    end
+
+    return { success = true, chunks_queued = chunks_queued }
+end
+
+--- Convert world bounds to chunk coordinates
+--- @param bounds table {left_top: {x, y}, right_bottom: {x, y}}
+--- @return table List of {x, y} chunk coordinates
+local function bounds_to_chunks(bounds)
+    local chunks = {}
+    local min_chunk_x = math.floor(bounds.left_top.x / 32)
+    local min_chunk_y = math.floor(bounds.left_top.y / 32)
+    local max_chunk_x = math.floor((bounds.right_bottom.x - 1) / 32)
+    local max_chunk_y = math.floor((bounds.right_bottom.y - 1) / 32)
+
+    for cy = min_chunk_y, max_chunk_y do
+        for cx = min_chunk_x, max_chunk_x do
+            table.insert(chunks, { x = cx, y = cy })
+        end
+    end
+
+    return chunks
+end
+
+--- Snapshot a specific area (for SELECTIVE mode or targeted re-snapshotting)
+--- Enqueues all chunks overlapping the bounding box for snapshotting
+--- @param bounds table {left_top: {x, y}, right_bottom: {x, y}} in world coordinates
+--- @param priority number|nil Priority for queue (higher = processed first, default 10)
+--- @return table {success: boolean, chunks_queued: number, chunks: table}
+function M.snapshot_area(bounds, priority)
+    if not bounds or not bounds.left_top or not bounds.right_bottom then
+        return { success = false, error = "Invalid bounds: must have left_top and right_bottom" }
+    end
+
+    priority = priority or 10  -- Higher priority for explicit requests
+    local chunks = bounds_to_chunks(bounds)
+    local tracker = M.get_chunk_tracker()
+    local sys_state = get_system_state()
+
+    for _, chunk in ipairs(chunks) do
+        -- Mark for snapshotting (this enqueues the chunk)
+        tracker:mark_chunk_needs_snapshot(chunk.x, chunk.y)
+        enqueue_chunk_for_snapshot(chunk.x, chunk.y, priority)
+    end
+
+    -- If we're in maintenance and chunks were queued, switch to initial snapshotting
+    -- This ensures the snapshot state machine processes them
+    if #chunks > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+        sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
+        sys_state.stats.phase_start_tick = game.tick
+    end
+
+    if DEBUG and game and game.print then
+        game.print(string.format("[Map] snapshot_area: queued %d chunks from bounds (%d,%d) to (%d,%d)",
+            #chunks, bounds.left_top.x, bounds.left_top.y, bounds.right_bottom.x, bounds.right_bottom.y))
+    end
+
+    return { success = true, chunks_queued = #chunks, chunks = chunks }
+end
+
+--- Re-snapshot an area (clears existing snapshot state and re-processes)
+--- Useful after cell reset in lab-grid scenario
+--- @param bounds table {left_top: {x, y}, right_bottom: {x, y}} in world coordinates
+--- @param priority number|nil Priority for queue (higher = processed first, default 10)
+--- @return table {success: boolean, chunks_queued: number, chunks: table}
+function M.re_snapshot_area(bounds, priority)
+    if not bounds or not bounds.left_top or not bounds.right_bottom then
+        return { success = false, error = "Invalid bounds: must have left_top and right_bottom" }
+    end
+
+    priority = priority or 10
+    local chunks = bounds_to_chunks(bounds)
+    local tracker = M.get_chunk_tracker()
+    local sys_state = get_system_state()
+
+    for _, chunk in ipairs(chunks) do
+        -- Clear the snapshot tick to force re-processing
+        local entry = tracker:_get_chunk_entry(chunk.x, chunk.y)
+        entry.snapshot_tick = nil
+
+        -- Mark for snapshotting and enqueue
+        tracker:mark_chunk_needs_snapshot(chunk.x, chunk.y)
+        enqueue_chunk_for_snapshot(chunk.x, chunk.y, priority)
+    end
+
+    -- Switch to initial snapshotting if needed
+    if #chunks > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+        sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
+        sys_state.stats.phase_start_tick = game.tick
+    end
+
+    if DEBUG and game and game.print then
+        game.print(string.format("[Map] re_snapshot_area: cleared and queued %d chunks from bounds (%d,%d) to (%d,%d)",
+            #chunks, bounds.left_top.x, bounds.left_top.y, bounds.right_bottom.x, bounds.right_bottom.y))
+    end
+
+    return { success = true, chunks_queued = #chunks, chunks = chunks }
+end
+
 M.admin_api = {
     get_charted_chunks = M.get_charted_chunks,
     get_map_area_state = M.get_map_area_state,
@@ -855,6 +1094,12 @@ M.admin_api = {
     set_snapshot_config = M.set_snapshot_config,
     get_system_phase = M.get_system_phase,
     enqueue_chunk_for_snapshot = M.enqueue_chunk_for_snapshot,  -- For test-driven forced re-snapshotting
+    -- Orchestration mode API
+    get_orchestration_mode = M.get_orchestration_mode,
+    set_orchestration_mode = M.set_orchestration_mode,
+    trigger_initial_snapshot = M.trigger_initial_snapshot,
+    snapshot_area = M.snapshot_area,
+    re_snapshot_area = M.re_snapshot_area,
 }
 
 M.event_based_snapshot = {}
@@ -1623,27 +1868,29 @@ end
 -- INITIALIZATION
 -- ============================================================================
 
---- Initialize Map module
---- Must be called during on_init/on_load
---- Builds event handlers for resource snapshotting
+--- Initialize Map storage (only call in on_init or on_configuration_changed!)
+--- IMPORTANT: This modifies storage, so it CANNOT be called in on_load()
+function M.init_storage()
+    -- Initialize ChunkTracker storage
+    ChunkTracker:init_storage()
+
+    -- Initialize system state storage
+    init_system_state_storage()
+end
+
+--- Initialize Map module (safe to call in on_load)
+--- Rebuilds module-level tables from existing storage
+--- Does NOT modify storage
 function M.init()
-    -- Initialize ChunkTracker singleton
-    ChunkTracker:new()
-    
-    -- Initialize system state (also initializes charted_chunks_cache)
-    get_system_state()
-    
     -- Build disk_write_snapshot table after events are initialized
+    -- This only sets module-level tables, not storage
     M.disk_write_snapshot = M._build_disk_write_snapshot()
-    
-    -- NOTE: Bootstrap scan is NOT called here because M.init() is called during on_load
-    -- where 'game' global is not available. Bootstrap scan is called separately during on_init.
 end
 
 --- Get the ChunkTracker singleton instance
---- @return ChunkTracker
+--- @return ChunkTracker|nil
 function M.get_chunk_tracker()
-    return ChunkTracker:new()
+    return ChunkTracker:get()
 end
 
 
@@ -1652,7 +1899,10 @@ end
 -- ============================================================================
 
 --- Handle chunk charted event (by players)
---- Mark chunk as needing snapshot (on_tick handler will process it)
+--- Behavior depends on orchestration mode:
+---   AUTO: Mark chunk as needing snapshot immediately
+---   DEFERRED: Track chunk but don't queue until trigger_initial_snapshot() called
+---   SELECTIVE: Just track chunk, snapshotting only via explicit snapshot_area() calls
 --- @param event table - on_chunk_charted event
 function M._on_chunk_charted(event)
     local chunk_x = event.position.x
@@ -1679,16 +1929,31 @@ function M._on_chunk_charted(event)
 
     -- Check if chunk needs snapshotting (not already snapshotted)
     local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
-    tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
 
-    -- Send chunk_charted payload
+    -- Handle based on orchestration mode
+    local mode = get_orchestration_mode()
+    if mode == OrchestrationMode.AUTO then
+        -- AUTO: Queue for immediate snapshotting
+        tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+    elseif mode == OrchestrationMode.DEFERRED then
+        -- DEFERRED: Track in deferred list, don't queue yet
+        local sys_state = get_system_state()
+        local chunk_key = chunk_x .. "," .. chunk_y
+        if not sys_state.deferred_chunks[chunk_key] then
+            sys_state.deferred_chunks[chunk_key] = { x = chunk_x, y = chunk_y }
+        end
+    end
+    -- SELECTIVE: Don't auto-queue, only snapshot via explicit snapshot_area() calls
+
+    -- Send chunk_charted payload (always, regardless of mode)
     local chunk = { x = chunk_x, y = chunk_y }
     local payload = udp_payloads.chunk_charted(chunk, game.tick, "player", needs_snapshot)
+    payload.orchestration_mode = mode
     udp_payloads.send_event(payload)
 end
 
 --- Handle agent chunk charted event
---- Mark chunk as needing snapshot (on_tick handler will process it)
+--- Behavior depends on orchestration mode (same as _on_chunk_charted)
 --- Note: Agents also mark chunks directly in charting.lua, but this handles the event for consistency
 --- @param event table - Agent.on_chunk_charted event with {chunk_x, chunk_y}
 function M._on_agent_chunk_charted(event)
@@ -1716,13 +1981,28 @@ function M._on_agent_chunk_charted(event)
 
     -- Check if chunk needs snapshotting (not already snapshotted)
     local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
-    tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
 
-    -- Send chunk_charted payload
+    -- Handle based on orchestration mode
+    local mode = get_orchestration_mode()
+    if mode == OrchestrationMode.AUTO then
+        -- AUTO: Queue for immediate snapshotting
+        tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+    elseif mode == OrchestrationMode.DEFERRED then
+        -- DEFERRED: Track in deferred list, don't queue yet
+        local sys_state = get_system_state()
+        local chunk_key = chunk_x .. "," .. chunk_y
+        if not sys_state.deferred_chunks[chunk_key] then
+            sys_state.deferred_chunks[chunk_key] = { x = chunk_x, y = chunk_y }
+        end
+    end
+    -- SELECTIVE: Don't auto-queue, only snapshot via explicit snapshot_area() calls
+
+    -- Send chunk_charted payload (always, regardless of mode)
     local chunk = { x = chunk_x, y = chunk_y }
     local agent_id = event.agent_id or "unknown"
     local payload = udp_payloads.chunk_charted(chunk, game.tick, "agent", needs_snapshot)
     payload.agent_id = agent_id  -- Include agent_id if available
+    payload.orchestration_mode = mode
     udp_payloads.send_event(payload)
 end
 
