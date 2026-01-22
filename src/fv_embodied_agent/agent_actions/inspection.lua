@@ -875,6 +875,58 @@ local function inspect_accumulator(entity)
     return data
 end
 
+--- Inspect Pipe entities
+--- Entities: pipe, pipe-to-ground, storage-tank
+--- @param entity LuaEntity
+--- @return table Category-specific data
+local function inspect_pipe(entity)
+    local data = {}
+
+    -- Fluidbox contents
+    if entity.fluidbox and #entity.fluidbox > 0 then
+        local fluidboxes = {}
+        for i = 1, #entity.fluidbox do
+            local fluid = entity.fluidbox[i]
+            if fluid then
+                table.insert(fluidboxes, {
+                    index = i,
+                    name = fluid.name,
+                    amount = fluid.amount or 0,
+                    temperature = fluid.temperature or 15
+                })
+            end
+        end
+        if next(fluidboxes) ~= nil then
+            data.fluidbox = fluidboxes
+        end
+    end
+
+    -- Pipe-to-ground specific: linked underground neighbour
+    if entity.type == "pipe-to-ground" then
+        local success, neighbour = pcall(function() return entity.neighbours end)
+        if success and neighbour then
+            -- For pipe-to-ground, neighbours is a single entity (the paired underground)
+            if neighbour.valid then
+                data.underground_neighbour = make_entity_ref(neighbour)
+            end
+        end
+    end
+
+    -- Storage tank specific: capacity info
+    if entity.type == "storage-tank" then
+        -- Get fluidbox capacity
+        if entity.fluidbox and #entity.fluidbox > 0 then
+            local fb = entity.fluidbox
+            local capacity = fb.get_capacity(1)
+            if capacity then
+                data.capacity = capacity
+            end
+        end
+    end
+
+    return data
+end
+
 --- Inspect ResourceEntity entities
 --- Entities: resource (iron-ore, copper-ore, stone, coal, etc.)
 --- @param entity LuaEntity
@@ -994,7 +1046,12 @@ function M.inspect_entity(entity)
         
     elseif entity_type == "accumulator" then
         category_data = inspect_accumulator(entity)
-        
+
+    elseif entity_type == "pipe" or
+           entity_type == "pipe-to-ground" or
+           entity_type == "storage-tank" then
+        category_data = inspect_pipe(entity)
+
     elseif entity_type == "resource" then
         category_data = inspect_resource_entity(entity)
     end

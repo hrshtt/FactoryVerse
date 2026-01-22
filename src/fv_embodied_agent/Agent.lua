@@ -616,13 +616,9 @@ end
 
 function Agent:get_production_statistics()
     local stats = self.character.force.get_item_production_statistics(game.surfaces[1]);
-    -- Factorio API: input_counts = consumed, output_counts = produced
-    -- We swap to match inventory perspective:
-    --   input = items entering inventory (produced by machines)
-    --   output = items leaving inventory (consumed by machines)
     return {
-        input = stats.output_counts,
-        output = stats.input_counts,
+        input = stats.input_counts,
+        output = stats.output_counts,
     }
 end
 

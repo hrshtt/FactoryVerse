@@ -68,24 +68,38 @@ function M.get_item_drop_connections(source_name, source_position, target_name, 
     local surface = game.surfaces[1]
     local build_check = ghost and defines.build_check_type.manual_ghost or defines.build_check_type.manual
 
-    -- Generate candidate positions around the drop position
-    -- Strategy: try positions where the target entity would receive items at drop_pos
-    local candidates = {}
-    local search_radius = 3  -- Search within 3 tiles of drop position
+    -- Identify the drop tile (the 1x1 tile containing the drop position)
+    -- Tile (n, m) has center (n + 0.5, m + 0.5) and covers [n, n+1) × [m, m+1)
+    local drop_tile_x = math.floor(drop_pos.x)
+    local drop_tile_y = math.floor(drop_pos.y)
 
-    for dx = -search_radius, search_radius do
-        for dy = -search_radius, search_radius do
+    -- Get target entity tile dimensions
+    local target_tile_w = target_proto.tile_width or math.ceil(target_half_w * 2)
+    local target_tile_h = target_proto.tile_height or math.ceil(target_half_h * 2)
+
+    -- Generate candidate positions using footprint intersection model:
+    -- For a w×h entity to cover tile (tx, ty), its top-left corner must be at:
+    --   x in [tx - w + 1, tx]  (so rightmost column covers tx)
+    --   y in [ty - h + 1, ty]  (so bottom row covers ty)
+    -- Entity center = top_left + (w/2, h/2), snapped to tile grid
+    local candidates = {}
+
+    for corner_x = drop_tile_x - target_tile_w + 1, drop_tile_x do
+        for corner_y = drop_tile_y - target_tile_h + 1, drop_tile_y do
+            -- Entity center for a w×h entity with top-left at (corner_x, corner_y)
+            -- is at (corner_x + w/2, corner_y + h/2)
             local candidate_pos = {
-                x = math.floor(drop_pos.x) + dx + 0.5,
-                y = math.floor(drop_pos.y) + dy + 0.5,
+                x = corner_x + target_tile_w / 2,
+                y = corner_y + target_tile_h / 2,
             }
 
-            -- Check if candidate position overlaps with source entity
+            -- Check if candidate footprint overlaps with source entity footprint
             local candidate_bbox = geometry.bbox_from_center(candidate_pos, target_half_w, target_half_h)
             if not geometry.bbox_overlap(candidate_bbox, source_bbox) then
                 -- Calculate perpendicular offset for alignment quality
+                -- Use drop_pos so offset=0 means perfect alignment with item output
                 local perp_offset = geometry.perpendicular_offset(
-                    source_info.position,
+                    drop_pos,
                     source_direction,
                     candidate_pos
                 )

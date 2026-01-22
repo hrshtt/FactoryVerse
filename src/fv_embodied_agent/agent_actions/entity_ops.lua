@@ -343,15 +343,17 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
                 if removed > 0 then
                     local inserted = agent_inventory.insert({ name = item_name_in_inv, count = removed })
                     if inserted < removed then
-                        -- Rollback: put remaining items back
+                        -- Rollback: put remaining items back into entity inventory
                         entity_inventory.insert({ name = item_name_in_inv, count = removed - inserted })
-                        error("Agent: Partial transfer failed for " .. item_name_in_inv .. " - only " .. inserted .. " of " .. removed .. " items inserted")
                     end
-                    total_transferred = total_transferred + inserted
-                    table.insert(results, {
-                        item_name = item_name_in_inv,
-                        count = inserted
-                    })
+                    if inserted > 0 then
+                        total_transferred = total_transferred + inserted
+                        table.insert(results, {
+                            item_name = item_name_in_inv,
+                            count = inserted,
+                            requested_count = transfer_count
+                        })
+                    end
                 end
             end
             ::continue::
@@ -415,15 +417,17 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
     
     -- Transfer items
     local removed = entity_inventory.remove({ name = item_name, count = transfer_count })
+    local actual_transferred = 0
+
     if removed > 0 then
         local inserted = agent_inventory.insert({ name = item_name, count = removed })
         if inserted < removed then
-            -- Rollback: put remaining items back
+            -- Rollback: put remaining items back into entity inventory
             entity_inventory.insert({ name = item_name, count = removed - inserted })
-            error("Agent: Partial transfer failed - only " .. inserted .. " of " .. removed .. " items inserted")
         end
+        actual_transferred = inserted
     end
-    
+
     -- Enqueue completion message (sync action)
     self:enqueue_message({
         action = "get_inventory_item",
@@ -432,17 +436,19 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
         position = { x = entity.position.x, y = entity.position.y },
         inventory_type = inventory_type,
         item_name = item_name,
-        count = transfer_count,
+        count = actual_transferred,
+        requested_count = transfer_count,
         tick = game.tick or 0,
     }, "entity_ops")
-    
+
     return {
         success = true,
         entity_name = entity_name,
         position = { x = entity.position.x, y = entity.position.y },
         inventory_type = inventory_type,
         item_name = item_name,
-        count = transfer_count,
+        count = actual_transferred,
+        requested_count = transfer_count,
     }
 end
 
@@ -551,9 +557,11 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
     
     -- Transfer items
     local removed = agent_inventory.remove({ name = item_name, count = count })
+    local actual_transferred = 0
+
     if removed > 0 then
         local inserted = 0
-        
+
         if use_auto_routing then
             -- Use entity.insert() - engine automatically routes to correct inventory
             -- Coal goes to fuel, ore goes to input, etc.
@@ -562,14 +570,15 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
             -- Manual inventory insertion for specific cases
             inserted = entity_inventory.insert({ name = item_name, count = removed })
         end
-        
+
         if inserted < removed then
-            -- Rollback: put remaining items back
+            -- Rollback: put remaining items back into agent inventory
             agent_inventory.insert({ name = item_name, count = removed - inserted })
-            error("Agent: Partial transfer failed - only " .. inserted .. " of " .. removed .. " items inserted")
         end
+
+        actual_transferred = inserted
     end
-    
+
     -- Enqueue completion message (sync action)
     self:enqueue_message({
         action = "put_inventory_item",
@@ -578,17 +587,19 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         position = { x = entity.position.x, y = entity.position.y },
         inventory_type = inventory_type or "auto",
         item_name = item_name,
-        count = count,
+        count = actual_transferred,
+        requested_count = count,
         tick = game.tick or 0,
     }, "entity_ops")
-    
+
     return {
         success = true,
         entity_name = entity_name,
         position = { x = entity.position.x, y = entity.position.y },
         inventory_type = inventory_type or "auto",
         item_name = item_name,
-        count = count,
+        count = actual_transferred,
+        requested_count = count,
     }
 end
 

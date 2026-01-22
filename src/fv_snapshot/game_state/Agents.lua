@@ -4,11 +4,13 @@
 ---
 --- File structure:
 ---   factoryverse/agent-snapshots/{agent_id}/
----     production-statistics.jsonl  - Force-level production (polled every 300 ticks)
+---     production-statistics.jsonl  - Force-level production (polled every 60 ticks / 1 second)
 ---     crafting-statistics.jsonl    - Manual crafting counts (event-driven)
 ---     mining-statistics.jsonl      - Manual mining counts (event-driven)
 ---
 --- Production stats use nth_tick polling since they're cumulative force-level stats.
+--- Polling at 60 ticks (1 second) provides responsive rate calculation for throughput verification.
+--- Deduplication ensures we only write to disk when stats actually change.
 --- Crafting and mining stats use custom events for precise action logging.
 ---
 --- IMPORTANT: fv_embodied_agent data must be accessed via remote.call(), not require().
@@ -299,8 +301,10 @@ function M.get_events()
     local events = {
         defined_events = {},
         nth_tick = {
-            -- Production stats polled every 300 ticks (5 seconds)
-            [300] = {
+            -- Production stats polled every 60 ticks (1 second)
+            -- Frequent polling enables responsive rate calculation for throughput verification
+            -- Deduplication ensures we only write to disk when stats actually change
+            [60] = {
                 M._on_nth_tick_agent_production_snapshot,
             }
         },

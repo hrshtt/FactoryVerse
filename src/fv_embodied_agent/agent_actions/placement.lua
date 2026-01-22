@@ -70,10 +70,100 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
         can_place_params.build_check_type = defines.build_check_type.manual_ghost
     end
 
-    if not game.surfaces[1].can_place_entity(can_place_params) then
+    -- Check if agent's own character might be blocking placement
+    -- move_stuck_players in create_entity may not work for non-player characters,
+    -- and can_place_entity has no way to account for character movement.
+    -- Solution: temporarily teleport character out of the way for validation.
+    local surface = game.surfaces[1]
+    local original_char_pos = nil
+
+    if proto.collision_box then
+        local char_pos = self.character.position
+        local cb = proto.collision_box
+        -- Check if character center is within the entity's collision box at placement position
+        local min_x = position.x + cb.left_top.x - 0.5  -- 0.5 buffer for character radius
+        local max_x = position.x + cb.right_bottom.x + 0.5
+        local min_y = position.y + cb.left_top.y - 0.5
+        local max_y = position.y + cb.right_bottom.y + 0.5
+
+        if char_pos.x >= min_x and char_pos.x <= max_x and
+           char_pos.y >= min_y and char_pos.y <= max_y then
+            -- Character is potentially blocking - teleport it out of the way
+            original_char_pos = { x = char_pos.x, y = char_pos.y }
+
+            -- Find a safe non-colliding position that's OUTSIDE the placement collision box.
+            -- We search from a point offset from placement position, not from the center,
+            -- because find_non_colliding_position may return the center itself if there's
+            -- no entity collision there (e.g., on resource tiles like iron-ore).
+            -- Search from 4 cardinal directions and pick the first valid one.
+            local search_offset = math.max(
+                math.abs(cb.right_bottom.x),
+                math.abs(cb.right_bottom.y)
+            ) + 1.5  -- Collision box extent + buffer for character radius
+
+            local search_offsets = {
+                {x = search_offset, y = 0},   -- East
+                {x = -search_offset, y = 0},  -- West
+                {x = 0, y = search_offset},   -- South
+                {x = 0, y = -search_offset},  -- North
+            }
+
+            local safe_pos = nil
+            for _, offset in ipairs(search_offsets) do
+                local search_start = {
+                    x = position.x + offset.x,
+                    y = position.y + offset.y
+                }
+                local candidate = surface.find_non_colliding_position("character", search_start, 5, 0.5)
+                if candidate then
+                    -- Verify the candidate is actually outside the collision box
+                    if candidate.x < min_x or candidate.x > max_x or
+                       candidate.y < min_y or candidate.y > max_y then
+                        safe_pos = candidate
+                        break
+                    end
+                end
+            end
+
+            if not safe_pos then
+                -- Fallback: search with larger radius from original position
+                safe_pos = surface.find_non_colliding_position("character", char_pos, 10, 0.5)
+                -- If still inside collision box, offset it
+                if safe_pos and safe_pos.x >= min_x and safe_pos.x <= max_x and
+                   safe_pos.y >= min_y and safe_pos.y <= max_y then
+                    safe_pos = {x = max_x + 1, y = max_y + 1}
+                end
+            end
+
+            if not safe_pos then
+                error("Agent: Cannot find safe position to step back for placement at " .. position.x .. ", " .. position.y)
+            end
+
+            self.character.teleport(safe_pos)
+            if DEBUG then
+                game.print(string.format("[placement] Temporarily moved agent from (%f,%f) to (%f,%f) for placement check",
+                    original_char_pos.x, original_char_pos.y, safe_pos.x, safe_pos.y))
+            end
+        end
+    end
+
+    local can_place = surface.can_place_entity(can_place_params)
+
+    if not can_place then
+        -- Restore character position if we moved it
+        if original_char_pos then
+            self.character.teleport(original_char_pos)
+            if DEBUG then
+                game.print(string.format("[placement] Restored agent to (%f,%f) after failed placement check",
+                    original_char_pos.x, original_char_pos.y))
+            end
+        end
         -- TODO: Need to implement proper diagnostics for why it can't be placed
         error("Agent: Cannot place entity at position " .. position.x .. ", " .. position.y)
     end
+
+    -- Note: We intentionally leave the character at the safe position if validation passed.
+    -- create_entity will handle the final placement, and the character is already out of the way.
     
     -- Build placement parameters
     local placement = {
