@@ -83,19 +83,30 @@ class InventoryItemTaken(ActionResponse):
     """Response when items are taken from entity inventory.
 
     RCON Contract: RemoteInterface.lua take_inventory_item.returns
+
+    Note: count is the actual number transferred, which may be less than
+    requested_count if the destination inventory couldn't accept all items.
     """
 
     entity_name: str = ""
     position: Optional[Dict[str, float]] = None
     inventory_type: str = ""
     item_name: str = ""
-    count: int = 0
+    count: int = 0  # Actual count transferred
+    requested_count: Optional[int] = None  # Originally requested count
     items: Optional[list] = field(default_factory=list)  # For "take all" operations
 
     @property
     def has_multiple_items(self) -> bool:
         """True if multiple item types were taken."""
         return bool(self.items and len(self.items) > 1)
+
+    @property
+    def is_partial(self) -> bool:
+        """True if fewer items were transferred than requested."""
+        if self.requested_count is None:
+            return False
+        return self.count < self.requested_count
 
     def to_item_stacks(self, placement: Optional["PlacementAction"] = None) -> List["ItemStack"]:
         """Convert to list of ItemStacks with placement injected.
@@ -126,13 +137,24 @@ class InventoryItemPut(ActionResponse):
     """Response when items are put into entity inventory.
 
     RCON Contract: RemoteInterface.lua put_inventory_item.returns
+
+    Note: count is the actual number transferred, which may be less than
+    requested_count if the destination inventory couldn't accept all items.
     """
 
     entity_name: str = ""
     position: Optional[Dict[str, float]] = None
     inventory_type: str = ""
     item_name: str = ""
-    count: int = 0
+    count: int = 0  # Actual count transferred
+    requested_count: Optional[int] = None  # Originally requested count
+
+    @property
+    def is_partial(self) -> bool:
+        """True if fewer items were transferred than requested."""
+        if self.requested_count is None:
+            return False
+        return self.count < self.requested_count
 
 
 @dataclass

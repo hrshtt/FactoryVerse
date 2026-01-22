@@ -43,6 +43,15 @@ from .implementations import (
     BurnerMiningDrill,
     # Pumpjack
     Pumpjack,
+    # Pumps
+    OffshorePump,
+    Pump,
+    # Pipes and fluid storage
+    Pipe,
+    PipeToGround,
+    StorageTank,
+    # Solar panel
+    SolarPanel,
     # Inserters
     Inserter,
     FastInserter,
@@ -106,6 +115,15 @@ ENTITY_CLASS_MAP: Dict[str, type] = {
     "burner-mining-drill": BurnerMiningDrill,
     # Pumpjack
     "pumpjack": Pumpjack,
+    # Pumps
+    "offshore-pump": OffshorePump,
+    "pump": Pump,
+    # Pipes and fluid storage
+    "pipe": Pipe,
+    "pipe-to-ground": PipeToGround,
+    "storage-tank": StorageTank,
+    # Solar panel
+    "solar-panel": SolarPanel,
     # Inserters
     "inserter": Inserter,
     "fast-inserter": FastInserter,

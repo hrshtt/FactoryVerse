@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Optional, Any, List, TYPE_CHECKING
 
-from ..config import RuntimeConfig, RuntimeVariant, ExecutionMode
+from ..config import RuntimeConfig, RuntimeVariant, ExecutionMode, SessionMode
 from ..status import Tier4Status, TierState, PrerequisiteResult
 from .base import TierBase, Tier, TierInitializationError
 
@@ -64,6 +64,12 @@ class Tier4Runtime(TierBase):
         # Scenario adapter (type-safe interface to scenario-specific capabilities)
         self._scenario_adapter: Optional["ScenarioAdapter"] = None
 
+        # EventStream for temporal perception (game events over time)
+        self._event_stream: Optional[Any] = None
+
+        # Trajectory writer for mechanistic event logging (source of truth)
+        self._trajectory_writer: Optional[Any] = None
+
         # Persistent user namespace for code execution (survives across blocks)
         self._user_namespace: dict = {}
 
@@ -101,6 +107,22 @@ class Tier4Runtime(TierBase):
     def system_prompt_path(self) -> Optional[Path]:
         """Get system prompt path (ephemeral, session-scoped)."""
         return self._session_dir / "system_prompt.md" if self._session_dir else None
+
+    @property
+    def trajectory_path(self) -> Optional[Path]:
+        """Get trajectory file path (source of truth for run history)."""
+        return self._session_dir / "trajectory.jsonl" if self._session_dir else None
+
+    @property
+    def trajectory_writer(self) -> Optional[Any]:
+        """Get TrajectoryWriter for event logging.
+
+        The trajectory writer is the source of truth for what happened during
+        a run. Both LLM and eval runs use this for mechanistic event logging.
+
+        Tier 4 creates the writer; Tier 6 (if used) adds LLM-specific events.
+        """
+        return self._trajectory_writer
 
     @property
     def database(self) -> Optional[Any]:
@@ -161,6 +183,32 @@ class Tier4Runtime(TierBase):
         """
         return self._scenario_adapter
 
+    @property
+    def events(self) -> Optional[Any]:
+        """Get EventStream for temporal perception of game events.
+
+        The EventStream provides the agent's view of asynchronous game state
+        changes - the temporal complement to spatial views (ReachableView, RemoteView).
+
+        Events include:
+        - Research completions (unlocks new capabilities)
+        - Crafting completions (for fire-and-forget NQ/DQ pattern)
+        - Other game state changes
+
+        Example:
+            >>> # Drain pending events
+            >>> events = await tier4.events.drain()
+            >>> for event in events:
+            ...     print(f"Event: {event}")
+            >>>
+            >>> # Wait for specific event
+            >>> event = await tier4.events.wait_for(
+            ...     "research_finished",
+            ...     predicate=lambda e: e.data.get("technology") == "automation"
+            ... )
+        """
+        return self._event_stream
+
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 3 (Python Infra) is ready."""
         tier3 = self._env.tier3
@@ -182,6 +230,9 @@ class Tier4Runtime(TierBase):
             self._agent_id = self.config.agent_id
             self._session_dir = await self._setup_session_dir()
 
+            # Setup trajectory writer (source of truth for run history)
+            await self._setup_trajectory_writer()
+
             # Create execution environment based on config
             await self._setup_executor()
 
@@ -194,6 +245,9 @@ class Tier4Runtime(TierBase):
             await self._load_reachable_view()
             await self._load_ghost_builder()
             await self._load_placement_hints()
+
+            # Load EventStream for temporal perception (game events)
+            await self._load_event_stream()
 
             if self.config.variant == RuntimeVariant.FULL:
                 await self._load_database()
@@ -213,24 +267,86 @@ class Tier4Runtime(TierBase):
             self._set_state(TierState.ERROR, str(e))
             raise TierInitializationError(self.tier_level, str(e)) from e
 
-    async def _setup_session_dir(self) -> Path:
+    async def _setup_session_dir(self) -> Optional[Path]:
         """Setup session directory for this agent run.
 
-        Uses FileManager to create session directories in a consistent structure:
-        - .fv-output/runs/{model}/{run_id}/ when model is specified
-        - .fv-output/sessions/session_{timestamp}/ as fallback
+        Session structure depends on session_mode:
+        - LLM: .fv-output/runs/{provider}/{model}/{run_id}/ (full LLM artifacts)
+        - EVAL: .fv-output/evals/{task_name}/{run_id}/ (trajectory + notebook only)
+        - NONE: No session directory (testing only)
 
-        This matches the structure used by run_agent.py for trajectory tracking.
+        Both LLM and EVAL modes create trajectory.jsonl and notebook.ipynb for
+        reproducibility. LLM mode additionally creates system_prompt.md, initial_state.md, etc.
         """
+        # Check for explicit session_dir override first
         if self.config.session_dir:
-            # Explicit session directory provided
             session_dir = self.config.session_dir
             session_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Tier 4: Using explicit session directory: {session_dir}")
             return session_dir
 
-        # Use FileManager for consistent session structure
-        from FactoryVerse.infra.session.file_manager import FileManager, SessionConfig
+        session_mode = self.config.session_mode
+
+        # NONE mode: no session directory (for lightweight testing)
+        if session_mode == SessionMode.NONE:
+            logger.info("Tier 4: SessionMode.NONE - no session directory")
+            return None
+
+        # EVAL mode: create eval-specific session structure
+        if session_mode == SessionMode.EVAL:
+            return await self._setup_eval_session_dir()
+
+        # LLM mode: create full LLM session structure
+        return await self._setup_llm_session_dir()
+
+    async def _setup_eval_session_dir(self) -> Path:
+        """Setup session directory for evaluation runs.
+
+        Directory structure: .fv-output/evals/{task_name}/{run_id}/
+
+        Artifacts created:
+        - config.json: Task + environment configuration
+        - trajectory.jsonl: Mechanistic source of truth
+        - notebook.ipynb: Reproducibility (via _setup_executor)
+        - result.json: Verification result (written by eval harness, not here)
+        """
+        import datetime
+        import json
+
+        infra_config = self._env.config.infra_config
+        task_name = self.config.task_name or "unknown_task"
+        run_id = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Directory: .fv-output/evals/{task_name}/{run_id}/
+        session_dir = infra_config.fv_output_dir / "evals" / task_name / run_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write config.json with task and environment settings
+        config_data = {
+            "task_name": task_name,
+            "run_id": run_id,
+            "agent_id": self.config.agent_id,
+            "scenario": self._env.config.tier2.scenario if self._env.config.tier2 else None,
+            "variant": self.config.variant.value if hasattr(self.config.variant, 'value') else self.config.variant,
+            "started_at": datetime.datetime.now().isoformat(),
+        }
+
+        config_path = session_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f, indent=2)
+
+        logger.info(f"Tier 4: Eval session directory: {session_dir}")
+        logger.info(f"Tier 4: Task: {task_name}, Run ID: {run_id}")
+        return session_dir
+
+    async def _setup_llm_session_dir(self) -> Path:
+        """Setup session directory for LLM agent runs.
+
+        Directory structure: .fv-output/runs/{provider}/{model}/{run_id}/
+
+        Uses FileManager for consistent session structure with full LLM artifacts.
+        """
+        from FactoryVerse.infra.session.file_manager import FileManager
 
         infra_config = self._env.config.infra_config
 
@@ -277,9 +393,52 @@ class Tier4Runtime(TierBase):
         paths = file_manager.get_session_paths(session_config)
         session_dir = paths.session_dir
 
-        logger.info(f"Tier 4: Session directory: {session_dir}")
+        logger.info(f"Tier 4: LLM session directory: {session_dir}")
         logger.info(f"Tier 4: Session ID: {session_config.run_id}")
         return session_dir
+
+    async def _setup_trajectory_writer(self) -> None:
+        """Setup trajectory writer for mechanistic event logging.
+
+        The trajectory writer is the source of truth for what happened during a run.
+        Both LLM and eval sessions use this - it's about the game run, not the LLM.
+
+        For SessionMode.NONE, no trajectory is created.
+        """
+        if self._session_dir is None:
+            # SessionMode.NONE - no trajectory
+            logger.info("Tier 4: No session directory, skipping trajectory writer")
+            return
+
+        from FactoryVerse.infra.session.trajectory import TrajectoryWriter
+
+        trajectory_path = self._session_dir / "trajectory.jsonl"
+        self._trajectory_writer = TrajectoryWriter(trajectory_path)
+
+        # Write run_start event with basic metadata
+        # Note: LLM sessions will add llm_session_start via Tier 6
+        session_mode = self.config.session_mode
+        task_name = self.config.task_name
+
+        # Use a generic run_start that works for both eval and LLM modes
+        # The trajectory writer's session_start takes model/mode which are LLM concepts
+        # For eval, we'll write a simpler start event
+        if session_mode == SessionMode.EVAL:
+            # For eval, write a minimal start event
+            self._trajectory_writer._write(
+                "run_start",
+                session_mode="eval",
+                task_name=task_name,
+                agent_id=self._agent_id,
+                scenario=self._env.config.tier2.scenario if self._env.config.tier2 else None,
+            )
+        else:
+            # For LLM mode, Tier 6 will call session_start with model/mode
+            # Just log that trajectory is ready
+            pass
+
+        logger.info(f"Tier 4: Trajectory writer initialized: {trajectory_path}")
+        self._modules_loaded.append("trajectory_writer")
 
     async def _setup_executor(self) -> None:
         """Setup execution environment for code execution.
@@ -584,6 +743,36 @@ class Tier4Runtime(TierBase):
 
         logger.info("Tier 4: PlacementHints loaded")
 
+    async def _load_event_stream(self) -> None:
+        """Load EventStream for temporal perception of game events.
+
+        The EventStream wraps Tier 3's notification queue to provide a clean,
+        typed API for consuming asynchronous game events. This is the temporal
+        complement to spatial views (ReachableView, RemoteView).
+
+        Events include:
+        - Research completions (unlocks new capabilities)
+        - Crafting completions (for fire-and-forget NQ/DQ pattern)
+        - Other game state changes
+        """
+        from FactoryVerse.agent.event_stream import EventStream
+
+        tier3 = self._env.tier3
+        if tier3 is None or tier3._action_listener is None:
+            logger.warning("Tier 4: Skipping EventStream (no action listener)")
+            return
+
+        # Get notification queue from Tier 3's AsyncActionListener
+        notification_queue = tier3._action_listener.notification_queue
+
+        self._event_stream = EventStream(
+            notification_queue=notification_queue,
+            listener=tier3._action_listener,
+        )
+        self._modules_loaded.append("event_stream")
+
+        logger.info("Tier 4: EventStream loaded (temporal perception)")
+
     async def _load_scenario_adapter(self) -> None:
         """Load scenario adapter if a known scenario is detected.
 
@@ -662,10 +851,10 @@ class Tier4Runtime(TierBase):
             asyncio.TimeoutError: If bootstrap doesn't complete within timeout
         """
         tier3 = self._env.tier3
-        if tier3 is None or tier3.rcon_helper is None:
+        if tier3 is None or tier3.map_api is None:
             raise RuntimeError("Tier 3 must be initialized with RCON")
 
-        rcon_client = tier3.rcon_helper.rcon_client
+        map_api = tier3.map_api
         start_time = time.time()
         check_interval = 1.0  # Check every second
         last_log_time = 0.0
@@ -682,56 +871,33 @@ class Tier4Runtime(TierBase):
                     "The game may still be in INITIAL_SNAPSHOTTING phase."
                 )
 
-            # Poll snapshot status via RCON
+            # Poll snapshot status via adapter
             try:
-                cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
-                result = rcon_client.send_command(cmd)
-
-                if result is None or result.strip() == "":
-                    logger.debug("Tier 4: Empty RCON result, retrying...")
-                    await asyncio.sleep(check_interval)
-                    continue
-
-                status = json.loads(result)
-                system_phase = status.get("system_phase")
+                status = map_api.get_snapshot_status()
+                system_phase = status.system_phase
 
                 if system_phase == "MAINTENANCE":
                     # Bootstrap complete!
-                    completed = status.get("completed_chunks", 0)
                     logger.info(
                         f"Tier 4: Snapshot bootstrap complete! "
-                        f"{completed} chunks snapshotted, entering MAINTENANCE mode."
+                        f"{status.chunks_snapshotted} chunks snapshotted, entering MAINTENANCE mode."
                     )
                     return
 
                 elif system_phase == "INITIAL_SNAPSHOTTING":
                     # Still bootstrapping - log progress periodically
-                    pending = status.get("pending_chunks", 0)
-                    completed = status.get("completed_chunks", 0)
-                    bootstrap_wait = status.get("bootstrap_wait", {})
-                    current_tick = bootstrap_wait.get("current_tick", 0)
-                    total_ticks = bootstrap_wait.get("total_ticks", 300)
-                    waiting = bootstrap_wait.get("waiting", False)
-
                     # Log every 5 seconds
                     if elapsed - last_log_time >= 5.0:
                         last_log_time = elapsed
-                        if waiting:
-                            logger.info(
-                                f"Tier 4: Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
-                                f"{pending} pending chunks, {completed} completed"
-                            )
-                        else:
-                            logger.info(
-                                f"Tier 4: Processing chunks: {pending} pending, {completed} completed"
-                            )
+                        logger.info(
+                            f"Tier 4: Processing chunks: {status.chunks_pending} pending, "
+                            f"{status.chunks_snapshotted} completed"
+                        )
 
                 else:
                     # Unknown phase - treat as still bootstrapping
                     logger.debug(f"Tier 4: Unknown snapshot phase: {system_phase}")
 
-            except json.JSONDecodeError as e:
-                logger.warning(f"Tier 4: Failed to parse snapshot status JSON: {e}")
             except Exception as e:
                 logger.warning(f"Tier 4: Error checking snapshot status: {e}")
 
@@ -889,6 +1055,7 @@ class Tier4Runtime(TierBase):
         self._placement_hints = None
         self._ghost_builder = None
         self._scenario_adapter = None
+        self._event_stream = None
         self._agent_id = None
 
         # Clear persistent user namespace
@@ -1065,6 +1232,10 @@ class Tier4Runtime(TierBase):
             # Scenario adapter (if detected)
             # =================================================================
             "scenario": self._scenario_adapter,
+            # =================================================================
+            # EventStream (temporal perception of game events)
+            # =================================================================
+            "events": self._event_stream,
         }
         namespace.update(builtin_names)
 
@@ -1223,3 +1394,35 @@ class Tier4Runtime(TierBase):
         """Force database sync with game state."""
         if self._database:
             await self._sync_database()
+
+    def reload_snapshot_data(self) -> None:
+        """Reload snapshot files into DuckDB without waiting for bootstrap.
+
+        Use this after triggering a snapshot (e.g., via allocate_cell in lab-grid)
+        when you know the snapshot files have been written but the bootstrap
+        wait already completed earlier.
+
+        This is different from sync_database() which waits for bootstrap first.
+        """
+        if self._database is None:
+            logger.warning("Tier 4: Cannot reload - database not initialized")
+            return
+
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.instance is None:
+            logger.warning("Tier 4: Cannot reload - tier3 not initialized")
+            return
+
+        from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
+
+        infra_config = self._env.config.infra_config
+        snapshot_dir = infra_config.get_snapshot_dir(tier3.instance)
+
+        loader = SnapshotLoader(
+            db=self._database,
+            snapshot_dir=snapshot_dir,
+        )
+
+        logger.info("Tier 4: Reloading snapshot data into database...")
+        result = loader.load_all()
+        logger.info(f"Tier 4: Snapshot reload complete - {result.entity_count} entities, {result.resource_count} resources")

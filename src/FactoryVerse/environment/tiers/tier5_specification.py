@@ -213,6 +213,23 @@ class Tier5Specification(TierBase):
             "",
         ]
 
+        # Add starting inventory section if present
+        if self._task_config.starting_inventory:
+            lines.extend([
+                "### Starting Resources",
+                "Your inventory has been stocked with building materials for this task:",
+                "",
+            ])
+            # Group items by category for readability
+            inv = self._task_config.starting_inventory
+            for item, count in sorted(inv.items()):
+                lines.append(f"- {item}: {count}")
+            lines.extend([
+                "",
+                "These materials are ready to use for constructing your factory.",
+                "",
+            ])
+
         # Add verification info if present
         if self._task_config.verification:
             v = self._task_config.verification

@@ -205,7 +205,7 @@ coal = reachable_view.get_resource("coal", MapPosition(x=5, y=5))""",
                 code="""# Get all ore patches
 ores = reachable_view.get_resources(resource_type="ore")
 for patch in ores:
-    print(f"{patch.name}: {patch.total_amount} total")""",
+    print(f"{patch.name}: {patch.total} total")""",
                 decision_context="Surveying available resources",
                 expected_outcome="Returns list of resources/patches",
                 validation_level=ValidationLevel.SYNTAX,

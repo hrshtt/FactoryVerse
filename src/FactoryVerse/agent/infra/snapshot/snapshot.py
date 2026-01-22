@@ -7,9 +7,10 @@ import logging
 from pathlib import Path
 from typing import Optional, Union
 from factorio_rcon import RCONClient
-from .db.loader import load_all        
+from .db.loader import load_all
 from .db.schema import connect
 from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
+from FactoryVerse.infra.remote_adapters import MapSnapshotInterface
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,11 @@ class BootstrapStage(Enum):
 
 class SnapshotHandler:
     _rcon: RCONClient
+    _map_api: MapSnapshotInterface
 
     def __init__(self, rcon: RCONClient, snapshot_directory: Path):
         self._rcon = rcon
+        self._map_api = MapSnapshotInterface(rcon)
         self._snapshot_directory = snapshot_directory
 
         if self._snapshot_directory is None:
@@ -303,16 +306,13 @@ class SnapshotHandler:
                 
                 # Poll snapshot system status via RCON as fallback
                 try:
-                    cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
-                    result = self._rcon.send_command(cmd)
-                    
+                    status = self._map_api.get_snapshot_status()
+
                     # Handle None result (happens when command fails)
-                    if result is None or result.strip() == "":
-                        logger.debug("Empty or None result from RCON, retrying...")
+                    if status is None:
+                        logger.debug("Empty or None result from get_snapshot_status, retrying...")
                         await asyncio.sleep(check_interval)
                         continue
-                        
-                    status = json.loads(result)
                     
                     system_phase = status.get("system_phase")
                     

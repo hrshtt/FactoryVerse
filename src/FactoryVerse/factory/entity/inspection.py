@@ -71,6 +71,34 @@ class EntityInspection(BaseModel):
         use_enum_values = True
         extra = "forbid"  # Strict schema - no unknown fields
 
+    def _format_status(self) -> str:
+        """Format status as human-readable name."""
+        if self.status is None:
+            return None
+        # Handle both enum objects and raw int values (use_enum_values=True)
+        if isinstance(self.status, int):
+            try:
+                return EntityStatus(self.status).name
+            except (ValueError, TypeError):
+                return str(self.status)
+        return self.status.name
+
+    def _format_direction(self) -> str:
+        """Format direction as human-readable name."""
+        if self.direction is None:
+            return None
+        # Handle both enum objects and raw int values (use_enum_values=True)
+        if isinstance(self.direction, int):
+            try:
+                return Direction(self.direction).name
+            except (ValueError, TypeError):
+                return str(self.direction)
+        return self.direction.name
+
+    def __str__(self) -> str:
+        """Human-readable string for agents - shows enum names not values."""
+        return self.__repr__()
+
     def __repr__(self) -> str:
         """Show inspection with status name instead of enum value."""
         # Build base representation
@@ -79,25 +107,13 @@ class EntityInspection(BaseModel):
             f"position={{'x': {self.position['x']}, 'y': {self.position['y']}}}",
         ]
 
-        if self.direction is not None:
-            # Handle both enum objects and raw int values (use_enum_values=True)
-            if isinstance(self.direction, int):
-                try:
-                    parts.append(f"direction={Direction(self.direction).name}")
-                except (ValueError, TypeError):
-                    parts.append(f"direction={self.direction}")
-            else:
-                parts.append(f"direction={self.direction.name}")
+        direction_str = self._format_direction()
+        if direction_str:
+            parts.append(f"direction={direction_str}")
 
-        if self.status is not None:
-            # Handle both enum objects and raw int values (use_enum_values=True)
-            if isinstance(self.status, int):
-                try:
-                    parts.append(f"status={EntityStatus(self.status).name}")
-                except (ValueError, TypeError):
-                    parts.append(f"status={self.status}")
-            else:
-                parts.append(f"status={self.status.name}")
+        status_str = self._format_status()
+        if status_str:
+            parts.append(f"status={status_str}")
 
         if self.is_ghost:
             parts.append("is_ghost=True")

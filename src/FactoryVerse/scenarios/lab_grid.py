@@ -31,6 +31,11 @@ from FactoryVerse.scenarios.base import (
     BoundingBox,
     RCONClientProtocol,
 )
+from FactoryVerse.infra.remote_adapters import (
+    AgentInterface,
+    AdminInterface,
+    MapSnapshotInterface,
+)
 
 if TYPE_CHECKING:
     import duckdb
@@ -221,6 +226,11 @@ class LabGridAdapter(ScenarioAdapter):
         self._config: Optional[GridConfig] = None
         self._database = database
         self._snapshot_dir = snapshot_dir
+
+        # Remote interface adapters
+        self._agent_api = AgentInterface(rcon)
+        self._admin_api = AdminInterface(rcon)
+        self._map_api = MapSnapshotInterface(rcon)
 
     def is_available(self) -> bool:
         """Check if lab_grid remote interface is available."""
@@ -538,14 +548,17 @@ class LabGridAdapter(ScenarioAdapter):
         Returns:
             Dict with system_phase, pending_chunks, completed_chunks, etc.
         """
-        cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
-        result = self._rcon.send_command(cmd)
-        if result is None or result.strip() == "":
-            return {}
-        try:
-            return json.loads(result.strip())
-        except json.JSONDecodeError:
-            return {}
+        status = self._map_api.get_snapshot_status()
+        return {
+            "system_phase": status.system_phase,
+            "orchestration_mode": status.orchestration_mode,
+            "total_chunks_tracked": status.total_chunks_tracked,
+            "chunks_snapshotted": status.chunks_snapshotted,
+            "pending_chunks": status.chunks_pending,
+            "chunks_processing": status.chunks_processing,
+            "last_snapshot_tick": status.last_snapshot_tick,
+            "game_tick": status.game_tick,
+        }
 
     async def wait_for_cell_snapshot(
         self,
@@ -656,19 +669,31 @@ class LabGridAdapter(ScenarioAdapter):
                 error="Failed to reset cell",
             )
 
-        # 3. Check if agent entity is valid, recreate if needed
+        # 3. Check if agent entity is valid and has correct force, recreate if needed
+        # Get the cell's force name (e.g., "cell_0", "cell_5")
+        cell_force = self.get_cell_force(cell_index)
+
         agents = self._list_game_agents()
         existing = next((a for a in agents if a.get("id") == agent_id), None)
 
         if existing:
             entity_valid = existing.get("entity_valid", True)
-            if not entity_valid:
-                logger.info(f"LabGrid: Agent {agent_id} entity invalid, recreating...")
+            existing_force = existing.get("force", "")
+
+            # Recreate if entity invalid OR if force doesn't match the cell's force
+            needs_recreate = not entity_valid or existing_force != cell_force
+            if needs_recreate:
+                reasons = []
+                if not entity_valid:
+                    reasons.append("entity invalid")
+                if existing_force != cell_force:
+                    reasons.append(f"force mismatch ({existing_force} != {cell_force})")
+                logger.info(f"LabGrid: Agent {agent_id} needs recreation: {', '.join(reasons)}")
                 self._destroy_agent(agent_id)
-                self._create_agent(agent_id)
+                self._create_agent(agent_id, force=cell_force)
         else:
-            logger.info(f"LabGrid: Creating agent {agent_id}")
-            self._create_agent(agent_id)
+            logger.info(f"LabGrid: Creating agent {agent_id} with force {cell_force}")
+            self._create_agent(agent_id, force=cell_force)
 
         # 4. Assign agent to cell
         assigned = self.assign_agent_to_cell(agent_id, cell_index)
@@ -796,25 +821,43 @@ class LabGridAdapter(ScenarioAdapter):
 
     def _list_game_agents(self) -> List[Dict[str, Any]]:
         """List agents via RCON."""
-        cmd = '/c rcon.print(helpers.table_to_json(remote.call("agent", "list_agents")))'
-        result = self._rcon.send_command(cmd)
-        if result is None or result.strip() == "":
-            return []
-        try:
-            agents = json.loads(result.strip())
-            return list(agents.values()) if isinstance(agents, dict) else agents
-        except json.JSONDecodeError:
-            return []
+        agents = self._agent_api.list_agents()
+        # Convert to dict format for backward compatibility
+        return [
+            {
+                "id": a.id,
+                "interface_name": a.interface_name,
+                "force": a.force,
+                "udp_port": a.udp_port,
+                "entity_valid": a.entity_valid,
+                "position": a.position,
+            }
+            for a in agents
+        ]
 
-    def _create_agent(self, agent_id: int, udp_port: int = 34202) -> None:
-        """Create an agent via RCON."""
-        cmd = f'/c remote.call("agent", "create_agent", {udp_port}, false, "player", nil)'
-        self._rcon.send_command(cmd)
+    def _create_agent(
+        self,
+        agent_id: int,
+        udp_port: int = 34202,
+        force: Optional[str] = None,
+    ) -> None:
+        """Create an agent via RCON.
+
+        Args:
+            agent_id: Numeric agent ID (not used by Lua, ID is auto-assigned)
+            udp_port: UDP port for agent notifications
+            force: Force name for the agent. If None, uses "player".
+                   For lab-grid cells, use the cell's force (e.g., "cell_0").
+        """
+        self._agent_api.create_agent(
+            udp_port=udp_port,
+            set_unique_forces=False,
+            force=force,
+        )
 
     def _destroy_agent(self, agent_id: int) -> None:
         """Destroy an agent via RCON."""
-        cmd = f'/c remote.call("agent", "destroy_agents", {{{agent_id}}})'
-        self._rcon.send_command(cmd)
+        self._agent_api.destroy_agents([agent_id])
 
     def _set_agent_inventory(
         self, agent_id: int, inventory: Dict[str, int]
@@ -825,18 +868,11 @@ class LabGridAdapter(ScenarioAdapter):
         properly access the agent's character inventory by agent_id.
         """
         # First clear existing inventory
-        self._rcon.send_command(
-            f'/c remote.call("agent", "clear_inventory", {agent_id})'
-        )
+        self._admin_api.clear_inventory(agent_id)
 
         # Then add new items
         if inventory:
-            inv_items = ", ".join(
-                f'["{name}"] = {count}' for name, count in inventory.items()
-            )
-            self._rcon.send_command(
-                f'/c remote.call("agent", "add_items", {agent_id}, {{{inv_items}}})'
-            )
+            self._admin_api.add_items(agent_id, inventory)
 
     def __repr__(self) -> str:
         if self._config:

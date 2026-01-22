@@ -41,11 +41,15 @@ logger = logging.getLogger(__name__)
 
 
 class ConnectionType(Enum):
-    """Connection types for solving entity placement puzzles."""
+    """Connection types for solving entity placement puzzles.
 
-    ITEM_DROP = "item_drop"  # Mining drill -> Chest/Belt
+    ITEM_DROP: Mining drills push items directly into adjacent entities. Cannot use inserters with drills.
+    INSERTER_REACH: Inserters pick from ground/belts/entities and drop to ground/belts/entities.
+    """
+
+    ITEM_DROP = "item_drop"  # Mining drill -> Chest/Belt (direct push, no inserters)
     FLUID_PIPE = "fluid_pipe"  # Pipe -> Machine/Pipe
-    INSERTER_REACH = "inserter"  # Inserter -> Source/Target
+    INSERTER_REACH = "inserter"  # Inserter -> Source/Target (picks from ground/belts/entities, NOT drills)
     BELT_FLOW = "belt_flow"  # Belt -> Belt
     ELECTRIC_WIRE = "wire"  # Pole -> Pole
 
@@ -117,11 +121,20 @@ def validate_entity_for_connection(
 
 @dataclass
 class ConnectionPosition:
-    """A valid position for placing a target entity to connect to a source entity."""
+    """A valid position for placing a target entity to connect to a source entity.
+
+    Results are pre-sorted by alignment quality - the first position is the best.
+    Just use positions[0] for optimal placement.
+
+    Attributes:
+        position: The map position where the target entity should be placed.
+        direction: The direction the target entity should face (if applicable).
+        perpendicular_offset: Alignment quality metric - lower is better (0.0 = perfectly aligned).
+    """
 
     position: MapPosition
     direction: Optional[Direction]
-    perpendicular_offset: float  # Lower = better alignment (0.0 = perfectly aligned)
+    perpendicular_offset: float = 0.0  # Lower = better alignment
 
     def __post_init__(self):
         if self.perpendicular_offset < 0:
@@ -132,8 +145,8 @@ class ConnectionPosition:
 class WireConnectionPosition(ConnectionPosition):
     """Connection position for ELECTRIC_WIRE connections (pole to pole)."""
 
-    wire_distance: float
-    wire_distance_utilization: float  # Ratio of distance / max wire distance
+    wire_distance: float = 0.0
+    wire_distance_utilization: float = 0.0  # Ratio of distance / max wire distance
 
     def __post_init__(self):
         super().__post_init__()

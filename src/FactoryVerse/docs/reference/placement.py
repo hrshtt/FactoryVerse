@@ -30,7 +30,7 @@ def _register_placement():
         description="Spatial reasoning engine for entity placement. Generates validated GhostPlan "
         "objects for lines, connections, and pole coverage. No side effects - validation only.",
         decision_context="Use placement_hints to plan entity layouts before placement. Get validated "
-        "positions for belts, pipes, poles, and connection puzzles (drill→chest, inserter placement).",
+        "positions for belts, pipes, poles, and connection puzzles (drill→furnace, inserter placement).",
         notes=[
             "Pure computation - never mutates game state",
             "Uses Lua mod for engine values (drop_position, fluidbox, wire_connector)",
@@ -64,18 +64,18 @@ if plan.valid:
                 validation_level=ValidationLevel.SYNTAX,
             ),
             Example(
-                code="""# Plan a wall line
-wall_plan = placement_hints.get_placement_line(
-    entity_name="stone-wall",
+                code="""# Plan a pipe line
+pipe_plan = placement_hints.get_placement_line(
+    entity_name="pipe",
     start=MapPosition(x=0, y=0),
     end=MapPosition(x=0, y=20),
     validate=True  # Default, validates all positions
 )
 # Check for invalid positions
-invalid_count = sum(1 for pos, dir in wall_plan.positions if not plan.valid)
+invalid_count = sum(1 for pos, dir in pipe_plan.positions if not pipe_plan.valid)
 print(f"Invalid positions: {invalid_count}")""",
-                decision_context="Planning defensive structures",
-                expected_outcome="Returns validated wall positions",
+                decision_context="Planning fluid transport lines",
+                expected_outcome="Returns validated pipe positions",
                 validation_level=ValidationLevel.SYNTAX,
             ),
         ],
@@ -92,28 +92,27 @@ print(f"Invalid positions: {invalid_count}")""",
         description="Find valid positions where target entity can connect to source entity.",
         examples=[
             Example(
-                code="""# ITEM_DROP: Returns List[ConnectionPosition]
-# ConnectionPosition has: position, direction, perpendicular_offset
+                code="""# ITEM_DROP: Place furnace directly at drill's drop position
+# No inserter needed - drill outputs directly into furnace!
 
 drill = reachable_view.get_entity("burner-mining-drill")
 positions = placement_hints.get_connection_positions(
     source_entity=drill,
-    target_entity_name="iron-chest",
+    target_entity_name="stone-furnace",
     connection_type=ConnectionType.ITEM_DROP
 )
 
 if positions:
     # Positions sorted by perpendicular_offset (lower = better aligned)
     best = positions[0]
-    print(f"Position: {best.position}")
-    print(f"Direction: {best.direction}")  # May be None for chests
-    print(f"Alignment: {best.perpendicular_offset}")
+    print(f"Furnace position: {best.position}")
 
-    # Place the chest
-    item = inventory.get_item("iron-chest")
-    item.place(best.position, best.direction)""",
-                decision_context="Placing chest to receive drill output (ITEM_DROP)",
-                expected_outcome="Returns List[ConnectionPosition] sorted by alignment",
+    # Place furnace at drill's drop position - it receives ore directly
+    item = inventory.get_item("stone-furnace")
+    item.place(best.position, best.direction)
+    # Furnace will automatically receive ore from drill - no inserter needed!""",
+                decision_context="Placing furnace to receive drill output directly (most efficient)",
+                expected_outcome="Returns List[ConnectionPosition] - furnace receives ore without inserters",
                 validation_level=ValidationLevel.SYNTAX,
             ),
             Example(
@@ -177,7 +176,7 @@ if optimal:
             ),
         ],
         decision_points=[
-            "ITEM_DROP: burner/electric-mining-drill → chest/belt → Returns ConnectionPosition",
+            "ITEM_DROP: mining-drill → furnace/chest/belt (furnace is most common - direct output, no inserter needed!)",
             "FLUID_PIPE: fluid machines (boiler, pump, etc.) → pipe → Returns ConnectionPosition",
             "ELECTRIC_WIRE: electric poles → electric poles → Returns WireConnectionPosition",
             "Lower perpendicular_offset = better alignment with source entity",

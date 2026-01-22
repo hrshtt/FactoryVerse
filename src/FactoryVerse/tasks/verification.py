@@ -266,6 +266,15 @@ class ThroughputVerifier:
                         lines.append(f"           {'  ' * i}↑ dip (reset)")
                         break
 
+            # Cumulative stats
+            lines.append(f"  Total produced: {result.automation_produced} (automation)")
+
+            # Tick information for staleness awareness
+            # Stats are polled every 60 ticks (1 second), so data may be up to 1s old
+            snapshot_tick = result.measured_at_tick
+            snapshot_seconds = snapshot_tick / 60.0
+            lines.append(f"  Snapshot tick: {snapshot_tick} ({snapshot_seconds:.1f}s game time)")
+
             if result.failure_reason:
                 lines.append(f"  Note: {result.failure_reason}")
 
@@ -293,6 +302,7 @@ async def calculate_automation_score(
 
     Returns:
         Tuple of (automation_produced, manual_produced, force_total, tick)
+        The tick is from production stats (force-level), not manual stats.
     """
     # Get force-level production (includes both automation and manual)
     force_stats = await source.get_force_production(agent_id)
@@ -301,7 +311,12 @@ async def calculate_automation_score(
     manual_stats = await source.get_manual_production(agent_id)
 
     # Extract counts for target item
-    force_total = force_stats["output"].get(target_item, 0)
+    # Factorio FlowStatistics semantics for item_production_statistics:
+    #   input_counts = items PRODUCED by automation (machines creating items)
+    #   output_counts = items CONSUMED by automation (machines using items as ingredients)
+    # We want items PRODUCED for throughput verification → use input_counts
+    force_total = force_stats["input"].get(target_item, 0)
+
     manual_crafted = manual_stats["crafted"].get(target_item, 0)
     manual_mined = manual_stats["mined"].get(target_item, 0)
 
@@ -319,7 +334,9 @@ async def calculate_automation_score(
         )
         automation_produced = 0
 
-    tick = manual_stats.get("tick", 0)
+    # Use tick from production stats (force-level), NOT manual stats
+    # This ensures rate calculations work even when no manual crafting/mining occurs
+    tick = force_stats.get("tick", 0)
 
     logger.debug(
         f"Automation score for {target_item}: "

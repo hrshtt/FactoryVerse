@@ -9,6 +9,7 @@ from typing import Optional, Any, TYPE_CHECKING
 from ..config import PythonConfig
 from ..status import Tier3Status, TierState, PrerequisiteResult
 from .base import TierBase, Tier, TierInitializationError
+from FactoryVerse.infra.remote_adapters import AgentInterface, MapSnapshotInterface
 
 if TYPE_CHECKING:
     from ..environment import Environment
@@ -40,6 +41,10 @@ class Tier3Python(TierBase):
         self._instance: Optional[str] = None
         self._agent_registry: Optional[Any] = None
 
+        # Remote interface adapters (initialized when RCON connects)
+        self._agent_api: Optional[AgentInterface] = None
+        self._map_api: Optional[MapSnapshotInterface] = None
+
     @property
     def config(self) -> PythonConfig:
         """Get tier 3 configuration."""
@@ -64,6 +69,16 @@ class Tier3Python(TierBase):
     def agent_registry(self) -> Optional[Any]:
         """Get agent registry service."""
         return self._agent_registry
+
+    @property
+    def agent_api(self) -> Optional[AgentInterface]:
+        """Get agent remote interface adapter."""
+        return self._agent_api
+
+    @property
+    def map_api(self) -> Optional[MapSnapshotInterface]:
+        """Get map/snapshot remote interface adapter."""
+        return self._map_api
 
     async def verify_prerequisites(self) -> PrerequisiteResult:
         """Verify Tier 2 (Settings) is ready."""
@@ -187,6 +202,10 @@ class Tier3Python(TierBase):
             try:
                 self._rcon = RCONClient(host, port, password)
                 logger.info(f"Tier 3: RCON client connected to {host}:{port}")
+
+                # Initialize remote interface adapters
+                self._agent_api = AgentInterface(self._rcon)
+                self._map_api = MapSnapshotInterface(self._rcon)
                 return
             except RCONConnectError as e:
                 if i < max_retries - 1:
@@ -407,16 +426,21 @@ class Tier3Python(TierBase):
             - entity_valid: Whether agent entity is valid
             - position: {x, y} position
         """
-        import json
-
-        if not self._rcon:
+        if not self._agent_api:
             raise RuntimeError("RCON not connected")
 
-        result = self._rcon.send_command(
-            "/c local res = remote.call('agent', 'list_agents'); "
-            "rcon.print(helpers.table_to_json(res))"
-        )
-        return json.loads(result) if result else []
+        agents = self._agent_api.list_agents()
+        return [
+            {
+                "id": a.id,
+                "interface_name": a.interface_name,
+                "force": a.force,
+                "udp_port": a.udp_port,
+                "entity_valid": a.entity_valid,
+                "position": a.position,
+            }
+            for a in agents
+        ]
 
     def get_snapshot_status(self) -> dict:
         """Query snapshot system status from Factorio.
@@ -430,16 +454,20 @@ class Tier3Python(TierBase):
             - bootstrap_wait: Bootstrap wait status
             - config: Snapshot configuration
         """
-        import json
-
-        if not self._rcon:
+        if not self._map_api:
             raise RuntimeError("RCON not connected")
 
-        result = self._rcon.send_command(
-            "/c local res = remote.call('map', 'get_snapshot_status'); "
-            "rcon.print(helpers.table_to_json(res))"
-        )
-        return json.loads(result) if result else {}
+        status = self._map_api.get_snapshot_status()
+        return {
+            "system_phase": status.system_phase,
+            "orchestration_mode": status.orchestration_mode,
+            "pending_chunks": status.chunks_pending,
+            "completed_chunks": status.chunks_snapshotted,
+            "total_chunks_tracked": status.total_chunks_tracked,
+            "chunks_processing": status.chunks_processing,
+            "last_snapshot_tick": status.last_snapshot_tick,
+            "game_tick": status.game_tick,
+        }
 
     def get_game_tick(self) -> int:
         """Get current game tick from Factorio.
@@ -465,20 +493,11 @@ class Tier3Python(TierBase):
         Returns:
             Dict with: destroyed (list), errors (list)
         """
-        import json
-
-        if not self._rcon:
+        if not self._agent_api:
             raise RuntimeError("RCON not connected")
 
-        # Format agent IDs as Lua table
-        ids_lua = "{" + ", ".join(str(id) for id in agent_ids) + "}"
-        remove_str = "true" if remove_forces else "false"
-
-        result = self._rcon.send_command(
-            f"/c local res = remote.call('agent', 'destroy_agents', {ids_lua}, {remove_str}); "
-            "rcon.print(helpers.table_to_json(res))"
-        )
-        return json.loads(result) if result else {"destroyed": [], "errors": []}
+        result = self._agent_api.destroy_agents(agent_ids, destroy_forces=remove_forces)
+        return result if result else {"destroyed": [], "errors": []}
 
     def create_game_agent(
         self,
@@ -489,9 +508,6 @@ class Tier3Python(TierBase):
     ) -> dict:
         """Create a new agent in Factorio with correct parameter mapping.
 
-        This matches the Lua API signature:
-        remote.call('agent', 'create_agent', udp_port, set_unique_forces, default_common_force, initial_inventory)
-
         Args:
             udp_port: UDP port for agent notifications
             set_unique_forces: If True, create unique force per agent; if False, use default_common_force
@@ -501,42 +517,22 @@ class Tier3Python(TierBase):
         Returns:
             Dict with: agent_id, force_name, interface_name, udp_port
         """
-        import json
-
-        if not self._rcon:
+        if not self._agent_api:
             raise RuntimeError("RCON not connected")
 
-        # Build Lua command with correct parameter order
-        # Args: udp_port, set_unique_forces, default_common_force, initial_inventory
-        set_unique_str = "true" if set_unique_forces else "false"
-
-        if initial_inventory:
-            inv_lua = (
-                "{"
-                + ", ".join(f'["{k}"] = {v}' for k, v in initial_inventory.items())
-                + "}"
-            )
-            cmd = (
-                f"/c local res = remote.call('agent', 'create_agent', "
-                f"{udp_port}, {set_unique_str}, \"{default_common_force}\", {inv_lua}); "
-                "rcon.print(helpers.table_to_json(res))"
-            )
-        else:
-            cmd = (
-                f"/c local res = remote.call('agent', 'create_agent', "
-                f"{udp_port}, {set_unique_str}, \"{default_common_force}\"); "
-                "rcon.print(helpers.table_to_json(res))"
-            )
-
-        result = self._rcon.send_command(cmd)
-
-        if result and result.strip():
-            parsed = json.loads(result)
-            logger.info(f"Tier 3: Created agent: {parsed}")
-            return parsed
-        else:
-            logger.warning("Tier 3: Agent creation returned empty result")
-            return {}
+        result = self._agent_api.create_agent(
+            udp_port=udp_port,
+            set_unique_forces=set_unique_forces,
+            force=default_common_force,
+            initial_inventory=initial_inventory,
+        )
+        logger.info(f"Tier 3: Created agent: {result}")
+        return {
+            "agent_id": result.agent_id,
+            "force_name": result.force_name,
+            "interface_name": result.interface_name,
+            "udp_port": result.udp_port,
+        }
 
     # =========================================================================
     # Helper Methods

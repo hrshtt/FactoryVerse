@@ -6,7 +6,6 @@ This module registers documentation for all embodied action classes:
 - CraftingAction (crafting)
 - ResearchAction (research)
 - AgentInventory (inventory)
-- MiningAction (mining)
 
 Documentation is decision-driven: examples show WHEN to use each method,
 not just HOW.
@@ -83,46 +82,6 @@ except WalkingUnreachableError as e:
 
     registry.register_method(
         cls=MovementAction,
-        method_name="walk_to_entity",
-        description="Walk to an entity with intelligent fallback logic. Computes candidate approach "
-        "tiles and tries each until path succeeds or all exhausted.",
-        examples=[
-            Example(
-                code="""# Walk to a specific furnace
-furnace = reachable_view.get_entity("stone-furnace", MapPosition(x=10, y=10))
-if furnace:
-    pos = await walking.walk_to_entity(furnace.name, furnace.position)
-    print(f"Arrived near furnace at {pos}")""",
-                decision_context="Walking to interact with a nearby entity",
-                expected_outcome="Agent walks to an accessible position near the entity",
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-        ],
-        error_cases=[
-            ErrorCase(
-                exception="WalkingEntityNotFoundError",
-                when="Entity no longer exists at the specified position",
-                resolution="Refresh entity reference via reachable_view/remote_view",
-            ),
-            ErrorCase(
-                exception="WalkingNoStandableTilesError",
-                when="No walkable tiles exist near the entity",
-                resolution="Entity may be completely surrounded - clear obstacles",
-            ),
-            ErrorCase(
-                exception="WalkingUnreachableError",
-                when="All approach paths to the entity are blocked",
-                resolution="Clear obstacles or find alternate route",
-            ),
-        ],
-        decision_points=[
-            "Prefer entity.walk_to() over walking.walk_to_entity() for cleaner code",
-            "Use when entity reference is not a BaseEntity object",
-        ],
-    )
-
-    registry.register_method(
-        cls=MovementAction,
         method_name="stop",
         description="Stop current walking action immediately.",
         examples=[
@@ -131,7 +90,7 @@ if furnace:
 result = walking.stop()
 if result.position:
     print(f"Stopped at {result.position}")""",
-                decision_context="Interrupting navigation (e.g., danger detected)",
+                decision_context="Interrupting navigation (e.g., code errors out and agent is stuck in walking state)",
                 expected_outcome="Walking stops, returns WalkingStopped with position",
                 validation_level=ValidationLevel.SYNTAX,
             ),
@@ -197,11 +156,12 @@ for stack in items:
             Example(
                 code="""# Craft placeable items
 items = await crafting.craft("stone-furnace", count=3)
-# Each ItemStack has .place() capability
+# Access the PlaceableItem from the stack via indexing
 furnace_stack = items[0]
-# Can place via: furnace_stack.place(position, direction)""",
+# Place via: furnace_stack[0].place(position, direction)
+# Or via: furnace_stack.item.place(position, direction)""",
                 decision_context="Crafting items for placement",
-                expected_outcome="Returns ItemStack with placement capability",
+                expected_outcome="Returns ItemStack - access item via [0] or .item for placement",
                 validation_level=ValidationLevel.SYNTAX,
             ),
         ],
@@ -487,85 +447,6 @@ except ValueError as e:
             "Use number_of_stacks='max' to use all available items",
         ],
     )
-
-    # =========================================================================
-    # MiningAction (mining)
-    # =========================================================================
-
-    from FactoryVerse.agent.embodied_actions.mining import MiningAction
-
-    registry.register_class(
-        cls=MiningAction,
-        accessor_name="mining",
-        description="Handles resource mining (hand-mining). Mine ores, trees, and rocks.",
-        decision_context="Use mining to gather resources by hand when starting or when drill placement isn't practical.",
-        notes=[
-            "Mining is async - waits for resources to be gathered",
-            "max_count caps at 25 per call",
-            "Returns ItemStack objects with obtained resources",
-        ],
-        related_classes=["ReachableView"],
-    )
-    registry.register_required_class(MiningAction)
-
-    registry.register_method(
-        cls=MiningAction,
-        method_name="mine",
-        description="Mine a resource. Waits for completion and returns obtained items.",
-        examples=[
-            Example(
-                code="""# Mine some iron ore (up to 10)
-items = await mining.mine("iron-ore", max_count=10)
-for stack in items:
-    print(f"Mined: {stack.name} x{stack.count}")""",
-                decision_context="Gathering resources early game or topping off inventory",
-                expected_outcome="Returns list of ItemStack with mined resources",
-                preconditions=["Standing near the resource"],
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-            Example(
-                code="""# Mine coal at a specific position
-items = await mining.mine(
-    "coal",
-    max_count=5,
-    position=MapPosition(x=10, y=20)
-)""",
-                decision_context="Mining a specific resource tile",
-                expected_outcome="Returns items from the specified resource",
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-        ],
-        error_cases=[
-            ErrorCase(
-                exception="RuntimeError",
-                when="No resource found at position or agent not in range",
-                resolution="Walk closer to the resource first",
-            ),
-        ],
-        decision_points=[
-            "Use mining for early game resource gathering",
-            "Prefer automated mining (drills) for sustained production",
-            "Mine only what you need for your immediate next step",
-        ],
-    )
-
-    registry.register_method(
-        cls=MiningAction,
-        method_name="cancel",
-        description="Cancel current mining action.",
-        examples=[
-            Example(
-                code="""# Cancel mining in progress
-result = mining.cancel()
-if result.was_active:
-    print(f"Mining cancelled, obtained: {result.items_obtained}")""",
-                decision_context="Interrupting mining (e.g., to respond to threats)",
-                expected_outcome="Mining stops, returns any items obtained so far",
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-        ],
-    )
-
 
 # Register on import
 _register_actions()

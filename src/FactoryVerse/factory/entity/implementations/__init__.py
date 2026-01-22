@@ -26,6 +26,15 @@ from .mining_drill import ElectricMiningDrill, BurnerMiningDrill
 # Pumpjack
 from .pumpjack import Pumpjack
 
+# Pumps
+from .pump import OffshorePump, Pump
+
+# Pipes and fluid storage
+from .pipe import Pipe, PipeToGround, StorageTank
+
+# Solar panel
+from .solar_panel import SolarPanel
+
 # Inserters
 from .inserter import (
     Inserter,
@@ -92,6 +101,15 @@ __all__ = [
     "BurnerMiningDrill",
     # Pumpjack
     "Pumpjack",
+    # Pumps
+    "OffshorePump",
+    "Pump",
+    # Pipes and fluid storage
+    "Pipe",
+    "PipeToGround",
+    "StorageTank",
+    # Solar panel
+    "SolarPanel",
     # Inserters
     "Inserter",
     "FastInserter",

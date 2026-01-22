@@ -43,6 +43,17 @@ class InteractionMode(str, Enum):
     MCP = "mcp"  # MCP server mode
 
 
+class SessionMode(str, Enum):
+    """Session directory and trajectory mode.
+
+    Controls how session directories are structured and what artifacts are created.
+    """
+
+    LLM = "llm"  # Full LLM agent session: .fv-output/runs/{provider}/{model}/{run_id}/
+    EVAL = "eval"  # Eval run session: .fv-output/evals/{task_key}/{run_id}/
+    NONE = "none"  # No session directory (testing only, no trajectory)
+
+
 class InfraConfig(BaseModel):
     """Tier 1: Factorio Infrastructure configuration."""
 
@@ -68,9 +79,9 @@ class SettingsConfig(BaseModel):
     generating a save first, then launching with that save.
     """
 
-    scenario: str = Field(
-        default="test-ground",
-        description="Scenario to load (freeplay, test-ground, or task-specific)",
+    scenario: Optional[str] = Field(
+        default=None,
+        description="Scenario to load (freeplay, test-ground, or task-specific). None launches to main menu.",
     )
     save_path: Optional[Path] = Field(
         default=None,
@@ -139,7 +150,16 @@ class RuntimeConfig(BaseModel):
         default="fv",
         description="Jupyter kernel name (only used when execution_mode=JUPYTER)",
     )
-    # Session metadata for trajectory tracking
+    # Session mode controls directory structure and artifacts
+    session_mode: SessionMode = Field(
+        default=SessionMode.LLM,
+        description="Session mode: 'llm' for agent runs, 'eval' for evaluation, 'none' for testing",
+    )
+    task_name: Optional[str] = Field(
+        default=None,
+        description="Task name for eval sessions. Used in directory path: .fv-output/evals/{task_name}/{run_id}/",
+    )
+    # Session metadata for trajectory tracking (LLM mode only)
     provider: Optional[str] = Field(
         default=None,
         description="LLM provider for session organization (e.g., 'prime_intellect'). Used in session directory path.",
@@ -268,4 +288,47 @@ class EnvironmentConfig(BaseModel):
             tier3=PythonConfig(instance=instance),
             tier4=RuntimeConfig(variant=RuntimeVariant.FULL),
             tier6=InteractionConfig(mode=InteractionMode.MCP),
+        )
+
+    @classmethod
+    def for_eval(
+        cls,
+        task_name: str,
+        scenario: str = "test-ground",
+        agent_id: str = "agent_1",
+        initial_inventory: Optional[Dict[str, int]] = None,
+    ) -> "EnvironmentConfig":
+        """Create config for evaluation runs.
+
+        Eval runs track trajectories and create notebooks for reproducibility,
+        but skip LLM-specific artifacts (system_prompt, initial_state, chat).
+
+        Session directory: .fv-output/evals/{task_name}/{run_id}/
+        Artifacts created:
+        - trajectory.jsonl (mechanistic source of truth)
+        - notebook.ipynb (reproducibility)
+        - config.json (task + environment config)
+        - result.json (verification result, written by eval harness)
+
+        Args:
+            task_name: Task key for directory organization and verification
+            scenario: Scenario to load (default: test-ground)
+            agent_id: Agent identifier (default: agent_1)
+            initial_inventory: Optional inventory override (task inventory used if None)
+
+        Returns:
+            EnvironmentConfig suitable for eval runs (initialize up to Tier 4 only)
+        """
+        return cls(
+            tier2=SettingsConfig(scenario=scenario, peaceful=True),
+            tier3=PythonConfig(agent_id=agent_id),
+            tier4=RuntimeConfig(
+                variant=RuntimeVariant.FULL,  # Need DuckDB for verification
+                agent_id=agent_id,
+                session_mode=SessionMode.EVAL,
+                task_name=task_name,
+                initial_inventory=initial_inventory,
+                execution_mode=ExecutionMode.JUPYTER,  # Notebook for reproducibility
+            ),
+            # Tier 5 & 6 not configured - no LLM
         )

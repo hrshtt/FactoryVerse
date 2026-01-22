@@ -232,6 +232,7 @@ def get_session_components(session_id: str) -> Dict[str, Any]:
         components["reachable_view"] = env.tier4.reachable_view
         components["placement_hints"] = env.tier4.placement_hints
         components["ghost_builder"] = env.tier4.ghost_builder
+        components["events"] = env.tier4.events  # EventStream for temporal perception
 
         # Embodied actions (if available) - stored as dict in tier4
         ea = env.tier4.embodied_actions

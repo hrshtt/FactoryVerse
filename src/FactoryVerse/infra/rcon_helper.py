@@ -206,23 +206,11 @@ class RconHelper:
         use Tier 3's create_game_agent() method instead.
         """
         try:
-            # Use correct Lua API signature:
-            # remote.call('agent', 'create_agent', udp_port, set_unique_forces, force_name, initial_inventory)
-            if udp_port is not None:
-                create_cmd = (
-                    f"/c local res = remote.call('agent', 'create_agent', {udp_port}, false, 'player'); "
-                    "rcon.print(helpers.table_to_json(res))"
-                )
-            else:
-                create_cmd = (
-                    "/c local res = remote.call('agent', 'create_agent', nil, false, 'player'); "
-                    "rcon.print(helpers.table_to_json(res))"
-                )
-            result = self.rcon_client.send_command(create_cmd)
-            if result and result.strip():
-                print(f"Created agent: {result}")
-            else:
-                print("Agent creation returned empty result")
+            from FactoryVerse.infra.remote_adapters import AgentInterface
+
+            agent_api = AgentInterface(self.rcon_client)
+            result = agent_api.create_agent(udp_port=udp_port)
+            print(f"Created agent: {result}")
         except Exception as e:
             print(f"Error creating agent: {e}")
             # Don't raise - allow initialization to continue even if agent creation fails

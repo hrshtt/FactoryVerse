@@ -730,6 +730,7 @@ Returns connection info, game state, and current tick if available.""",
         try:
             from FactoryVerse.config import get_config
             from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+            from FactoryVerse.infra.remote_adapters import AdminInterface
             from factorio_rcon import RCONClient
 
             config = get_config()
@@ -748,14 +749,9 @@ Returns connection info, game state, and current tick if available.""",
             except (ValueError, IndexError):
                 numeric_id = 1  # Default to agent 1
 
-            # Build Lua table for items: {["item-name"] = count, ...}
-            items_lua = ", ".join(
-                f'["{name}"] = {count}' for name, count in items.items()
-            )
-
-            # Use the agent.add_items API
-            cmd = f'/c remote.call("agent", "add_items", {numeric_id}, {{{items_lua}}})'
-            response = client.send_command(cmd)
+            # Use the admin interface adapter for add_items
+            admin_api = AdminInterface(client)
+            admin_api.add_items(numeric_id, items)
 
             client.close()
 
@@ -767,7 +763,6 @@ Returns connection info, game state, and current tick if available.""",
                         "agent_id": agent_id,
                         "numeric_id": numeric_id,
                         "items_added": items,
-                        "rcon_response": response if response else None,
                     }, indent=2),
                 )
             ]
@@ -867,6 +862,8 @@ Returns connection info, game state, and current tick if available.""",
                 components.append("placement_hints")
             if env.tier4.ghost_builder:
                 components.append("ghost_builder")
+            if env.tier4.events:
+                components.append("events")
             if env.tier4.embodied_actions:
                 components.extend([
                     "walking", "crafting", "research", "inventory",

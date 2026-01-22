@@ -144,13 +144,16 @@ for pos, direction in positions:
         registry.register_type(
             type_cls=ConnectionType,
             description="Connection types for solving entity placement puzzles. Each type represents "
-            "a different way entities can connect (item drop, fluid, wire, etc.).",
+            "a different way entities can connect (item drop, fluid, wire, etc.). "
+            "CRITICAL: ITEM_DROP is for mining drills (push directly to adjacent entities). "
+            "INSERTER_REACH is for inserters (pick from ground/belts/entities). "
+            "Cannot use inserters with drills as source.",
             examples=[
                 Example(
                     code="""# Available connection types
-ConnectionType.ITEM_DROP    # Mining drill -> Chest/Belt
+ConnectionType.ITEM_DROP    # Mining drill -> Chest/Belt (drills push directly, no inserters)
 ConnectionType.FLUID_PIPE   # Pipe -> Machine/Pipe
-ConnectionType.INSERTER_REACH  # Inserter -> Source/Target
+ConnectionType.INSERTER_REACH  # Inserter -> Source/Target (picks from ground/belts/entities, NOT drills)
 ConnectionType.BELT_FLOW    # Belt -> Belt
 ConnectionType.ELECTRIC_WIRE   # Pole -> Pole
 

@@ -103,14 +103,27 @@ class Tier6Interaction(TierBase):
         )
 
     async def _init_trajectory_writer(self) -> None:
-        """Initialize trajectory writer for logging."""
-        from FactoryVerse.infra.session.trajectory import TrajectoryWriter
+        """Get trajectory writer from Tier 4 and add LLM session metadata.
 
+        Tier 4 owns the trajectory writer (source of truth for the run).
+        Tier 6 adds LLM-specific events (model, provider, mode).
+        """
         tier4 = self._env.tier4
-        if tier4 and tier4.session_dir:
-            trajectory_path = tier4.session_dir / "trajectory.jsonl"
-            self._trajectory_writer = TrajectoryWriter(trajectory_path)
-            logger.info(f"Tier 6: Trajectory writer initialized at {trajectory_path}")
+        if tier4 and tier4.trajectory_writer:
+            # Use Tier 4's trajectory writer
+            self._trajectory_writer = tier4.trajectory_writer
+
+            # Add LLM session start event with model/mode info
+            self._trajectory_writer.session_start(
+                model=self.config.model,
+                mode=self.config.mode.value if hasattr(self.config.mode, 'value') else str(self.config.mode),
+            )
+            logger.info(
+                f"Tier 6: Using Tier 4 trajectory writer, added LLM session start "
+                f"({self.config.llm_provider}/{self.config.model})"
+            )
+        else:
+            logger.warning("Tier 6: No trajectory writer available from Tier 4")
 
     async def _init_console_output(self) -> None:
         """Initialize console output for streaming agent thoughts/actions."""
@@ -340,7 +353,8 @@ class _RuntimeAdapter:
     - execute_code: Run Python code with access to embodied actions
     - execute_dsl: Run Lua code via RCON
     - execute_duckdb: Query the game state database
-    - _listener: Access to AsyncActionListener for notifications
+    - events: EventStream for temporal perception (preferred)
+    - _listener: Access to AsyncActionListener (legacy, for backwards compat)
     """
 
     def __init__(self, tier3, tier4):
@@ -348,8 +362,29 @@ class _RuntimeAdapter:
         self._tier4 = tier4
 
     @property
+    def events(self):
+        """Get EventStream for temporal perception of game events.
+
+        The EventStream provides a clean, typed API for consuming
+        asynchronous game events (research completions, crafting, etc.).
+
+        This is the preferred way to access game notifications:
+            events = await runtime.events.drain()
+            for event in events:
+                print(f"Event: {event}")
+
+        Returns:
+            EventStream instance or None if not available
+        """
+        if self._tier4:
+            return self._tier4.events
+        return None
+
+    @property
     def _listener(self):
         """Expose the AsyncActionListener for notification access.
+
+        DEPRECATED: Use runtime.events instead for cleaner API.
 
         The orchestrator uses this to check for async notifications:
             await runtime._listener.get_notifications(timeout=0.05)

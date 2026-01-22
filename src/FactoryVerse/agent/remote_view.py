@@ -100,6 +100,12 @@ class RemoteView:
         self._walking_action = walking_action
         self._mining_action = mining_action
 
+        # Remote interface adapter for snapshot status polling
+        self._map_api = None
+        if rcon_client is not None:
+            from FactoryVerse.infra.remote_adapters import MapSnapshotInterface
+            self._map_api = MapSnapshotInterface(rcon_client)
+
         # Core components
         self._database = SnapshotDatabase(db_path)
 
@@ -727,61 +733,37 @@ class RemoteView:
                     print(f"✅ Bootstrap complete! {completed} chunks snapshotted.")
                     return
 
-                # Poll snapshot system status via RCON as fallback
+                # Poll snapshot system status via adapter as fallback
                 try:
-                    cmd = "/c rcon.print(helpers.table_to_json(remote.call('map', 'get_snapshot_status')))"
-                    result = self._rcon_client.send_command(cmd)
-
-                    # Handle None result (happens when command fails)
-                    if result is None or result.strip() == "":
-                        logger.debug("Empty or None result from RCON, retrying...")
+                    if self._map_api is None:
+                        logger.debug("No map_api available, retrying...")
                         await asyncio.sleep(check_interval)
                         continue
 
-                    status = json.loads(result)
+                    status = self._map_api.get_snapshot_status()
 
-                    system_phase = status.get("system_phase")
-
-                    if system_phase == "MAINTENANCE":
+                    if status.system_phase == "MAINTENANCE":
                         # Bootstrap complete! (detected via polling)
-                        stats = status.get("bootstrap_wait", {})
-                        completed = status.get("completed_chunks", 0)
                         logger.info(
                             "✅ Bootstrap complete! Transitioned to MAINTENANCE mode (via polling)."
                         )
                         logger.info(
-                            f"✅ {completed} chunks snapshotted during bootstrap."
+                            f"✅ {status.chunks_snapshotted} chunks snapshotted during bootstrap."
                         )
-                        print(f"✅ Bootstrap complete! {completed} chunks snapshotted.")
+                        print(f"✅ Bootstrap complete! {status.chunks_snapshotted} chunks snapshotted.")
                         return
 
-                    elif system_phase == "INITIAL_SNAPSHOTTING":
+                    elif status.system_phase == "INITIAL_SNAPSHOTTING":
                         # Still bootstrapping
-                        pending = status.get("pending_chunks", 0)
-                        completed = status.get("completed_chunks", 0)
-                        bootstrap_wait = status.get("bootstrap_wait", {})
-                        current_tick = bootstrap_wait.get("current_tick", 0)
-                        total_ticks = bootstrap_wait.get("total_ticks", 300)
-                        waiting = bootstrap_wait.get("waiting", False)
-
-                        if waiting:
+                        if int(elapsed) % 5 == 0:  # Log every 5 seconds
                             logger.debug(
-                                f"Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
-                                f"{pending} pending chunks, {completed} completed"
+                                f"Processing chunks: {status.chunks_pending} pending, "
+                                f"{status.chunks_snapshotted} completed"
                             )
-                            if int(elapsed) % 5 == 0:  # Log every 5 seconds
-                                print(
-                                    f"  ⏱️  Bootstrap waiting: {current_tick}/{total_ticks} ticks, "
-                                    f"{pending} pending, {completed} completed"
-                                )
-                        else:
-                            logger.debug(
-                                f"Processing chunks: {pending} pending, {completed} completed"
+                            print(
+                                f"  📦 Processing: {status.chunks_pending} pending, "
+                                f"{status.chunks_snapshotted} completed"
                             )
-                            if int(elapsed) % 5 == 0:
-                                print(
-                                    f"  📦 Processing: {pending} pending, {completed} completed"
-                                )
 
                 except Exception as e:
                     logger.warning(f"Error checking bootstrap status: {e}")

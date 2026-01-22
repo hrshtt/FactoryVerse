@@ -31,6 +31,7 @@ class ProductionStats(TypedDict):
 
     output: dict[str, int]  # Items produced: {item_name: count}
     input: dict[str, int]  # Items consumed: {item_name: count}
+    tick: int  # Game tick when these stats were recorded
 
 
 class ManualStats(TypedDict):
@@ -234,7 +235,7 @@ class RCONSource:
             agent_id: The agent ID to get stats for
 
         Returns:
-            ProductionStats with output and input item counts
+            ProductionStats with output, input item counts, and tick
         """
         # Use "agent_N" format for the remote interface category
         category = f"agent_{agent_id}"
@@ -250,9 +251,21 @@ class RCONSource:
         if "result" in result:
             result = result["result"]
 
+        # Get current game tick for staleness tracking
+        tick = self._rcon.run(
+            category="map",
+            method="get_game_tick",
+            args={},
+            safe=True,
+            verbose=False,
+        )
+        if isinstance(tick, dict) and "result" in tick:
+            tick = tick["result"]
+
         return ProductionStats(
             output=result.get("output", {}),
             input=result.get("input", {}),
+            tick=tick if isinstance(tick, int) else 0,
         )
 
     async def get_manual_production(self, agent_id: int) -> ManualStats:
@@ -307,8 +320,30 @@ class AgentSnapshotSource:
         Args:
             script_output_dir: Path to Factorio's script-output directory
                              (contains factoryverse/agent-snapshots/)
+
+        Raises:
+            ValueError: If path looks malformed (contains duplicate factoryverse segments)
         """
         self._script_output_dir = Path(script_output_dir)
+
+        # Guard against common misconfiguration: passing get_snapshot_dir() instead of get_script_output_dir()
+        # get_snapshot_dir returns script-output/factoryverse/snapshots, but we need just script-output
+        path_str = str(self._script_output_dir)
+        if "factoryverse/snapshots" in path_str or "factoryverse\\snapshots" in path_str:
+            raise ValueError(
+                f"AgentSnapshotSource received path containing 'factoryverse/snapshots': {path_str}\n"
+                f"This suggests get_snapshot_dir() was used instead of get_script_output_dir().\n"
+                f"Expected: script-output directory (e.g., ~/Library/.../factorio/script-output)\n"
+                f"Received: {script_output_dir}"
+            )
+
+        # Validate the expected directory structure exists
+        agent_snapshots_dir = self._script_output_dir / "factoryverse" / "agent-snapshots"
+        if not agent_snapshots_dir.exists():
+            logger.warning(
+                f"AgentSnapshotSource: agent-snapshots directory does not exist: {agent_snapshots_dir}\n"
+                f"Verification will return empty data until fv_snapshot writes statistics."
+            )
 
     async def get_force_production(self, agent_id: int) -> ProductionStats:
         """Get force-level production statistics from snapshot.
@@ -317,14 +352,31 @@ class AgentSnapshotSource:
             agent_id: The agent ID to get stats for
 
         Returns:
-            ProductionStats with output and input item counts
+            ProductionStats with output, input item counts, and tick
         """
         agent_dir = _get_agent_snapshot_dir(self._script_output_dir, agent_id)
-        output, input_items, _ = _load_latest_production_stats(agent_dir)
+        stats_file = agent_dir / "production-statistics.jsonl"
+
+        # Warn if stats file doesn't exist - helps catch path misconfiguration early
+        if not stats_file.exists():
+            logger.warning(
+                f"AgentSnapshotSource: production-statistics.jsonl not found at {stats_file}\n"
+                f"Returning empty stats. Check if fv_snapshot mod is writing to expected location."
+            )
+
+        output, input_items, tick = _load_latest_production_stats(agent_dir)
+
+        # Warn if we got empty data from an existing file (unusual)
+        if stats_file.exists() and tick == 0 and not output:
+            logger.warning(
+                f"AgentSnapshotSource: File exists but returned empty data: {stats_file}\n"
+                f"File may be empty or malformed."
+            )
 
         return ProductionStats(
             output=output,
             input=input_items,
+            tick=tick,
         )
 
     async def get_manual_production(self, agent_id: int) -> ManualStats:
@@ -392,16 +444,17 @@ class DuckDBSource:
             agent_id: The agent ID to get stats for
 
         Returns:
-            ProductionStats with output and input item counts
+            ProductionStats with output, input item counts, and tick
         """
         output: dict[str, int] = {}
         input_items: dict[str, int] = {}
+        tick: int = 0
 
         try:
             # Get latest production snapshot for this agent
             result = self._conn.execute(
                 """
-                SELECT output, input
+                SELECT output, input, tick
                 FROM agent_production_statistics
                 WHERE agent_id = ?
                 ORDER BY tick DESC
@@ -413,12 +466,14 @@ class DuckDBSource:
             if result:
                 output = result[0] if result[0] else {}
                 input_items = result[1] if result[1] else {}
+                tick = result[2] if result[2] else 0
         except Exception as e:
             logger.warning(f"Failed to query production stats: {e}")
 
         return ProductionStats(
             output=output,
             input=input_items,
+            tick=tick,
         )
 
     async def get_manual_production(self, agent_id: int) -> ManualStats:

@@ -422,12 +422,30 @@ def _build_environment_config(
     agent_id: str,
     max_turns: int = None,
     task_name: str = None,
+    is_eval: bool = False,
 ) -> EnvironmentConfig:
-    """Build environment configuration for agent runs."""
+    """Build environment configuration for agent runs.
+
+    Args:
+        instance_name: Factorio instance (client/server_N)
+        scenario: Scenario to load
+        provider: LLM provider
+        model: Model name
+        mode: Interaction mode (assisted/autonomous)
+        agent_id: Agent identifier
+        max_turns: Maximum turns
+        task_name: Task name for eval runs
+        is_eval: If True, uses SessionMode.EVAL for .fv-output/evals/ directory
+    """
+    from .environment.config import SessionMode
+
     if instance_name == "client":
         infra_mode = InfraMode.EXTERNAL
     else:
         infra_mode = InfraMode.SERVER
+
+    # Determine session mode based on run type
+    session_mode = SessionMode.EVAL if is_eval else SessionMode.LLM
 
     return EnvironmentConfig(
         tier1=InfraConfig(mode=infra_mode),
@@ -439,6 +457,8 @@ def _build_environment_config(
             provider=provider,
             model=model,
             mode=mode,
+            session_mode=session_mode,
+            task_name=task_name if is_eval else None,
         ),
         tier5=SpecificationConfig(
             include_api_reference=True,
@@ -472,6 +492,8 @@ def cmd_eval(args):
         print(f"   Model: {args.model}")
         print(f"   Provider: {args.provider}")
         print(f"   Instance: {instance_name}")
+        print(f"   Agent ID: {args.agent_id}")
+        print(f"   Scenario: {args.scenario or 'lab-grid'}")
         print(f"   Max turns: {args.max_turns or 'default'}")
 
         config = _build_environment_config(
@@ -483,12 +505,33 @@ def cmd_eval(args):
             agent_id=args.agent_id,
             max_turns=args.max_turns,
             task_name=args.task,
+            is_eval=True,  # Use SessionMode.EVAL for .fv-output/evals/
         )
 
         env = Environment(config=config)
 
         try:
-            # Use Orchestrator for the entire run
+            # Initialize environment first to get session paths
+            print("\n📦 Initializing environment...")
+            await env.initialize(up_to=Tier.INTERACTION)
+
+            # Display paths BEFORE the run starts (so user knows where to find outputs)
+            tier4 = env.tier4
+            if tier4 and tier4.session_dir:
+                print("\n📁 Output Paths:")
+                print(f"   Session Dir: {tier4.session_dir}")
+                if tier4.trajectory_path:
+                    print(f"   Trajectory:  {tier4.trajectory_path}")
+                if tier4.notebook_path:
+                    print(f"   Notebook:    {tier4.notebook_path}")
+                if tier4.debug_log_path:
+                    print(f"   Debug Log:   {tier4.debug_log_path}")
+                # Config.json is written in _setup_eval_session_dir
+                config_path = tier4.session_dir / "config.json"
+                if config_path.exists():
+                    print(f"   Config:      {config_path}")
+
+            # Use Orchestrator for the task run
             print("\n🚀 Starting evaluation...")
             result = await env.orchestrator.run_task(
                 task=args.task,
@@ -523,8 +566,10 @@ def cmd_eval(args):
                 if v.failure_reason:
                     print(f"      Failure reason: {v.failure_reason}")
 
-            if result.trajectory_path:
-                print(f"\n📁 Trajectory: {result.trajectory_path}")
+            # Final summary of output location (reference back to paths shown earlier)
+            tier4 = env.tier4
+            if tier4 and tier4.session_dir:
+                print(f"\n📁 Artifacts saved to: {tier4.session_dir}")
 
         except KeyboardInterrupt:
             print("\n\n⚠️  Interrupted")

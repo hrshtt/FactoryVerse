@@ -793,6 +793,15 @@ class Orchestrator:
             f"(snapshot: {result.snapshot_complete}, chunks: {result.chunks_snapshotted})"
         )
 
+        # CRITICAL: Reload DuckDB after cell allocation triggers snapshot
+        # With DEFERRED/SELECTIVE snapshotting (lab-grid), the initial bootstrap
+        # completes with 0 chunks because nothing is triggered until allocate_cell.
+        # We need to reload the database now that snapshot files have been written.
+        if result.snapshot_complete and tier4 is not None:
+            logger.info("Orchestrator: Reloading snapshot data after cell allocation...")
+            tier4.reload_snapshot_data()
+            logger.info("Orchestrator: Snapshot data reloaded")
+
         return result.cell_index
 
     async def _release_cell(self, cell: int, reset: bool = True) -> None:
@@ -878,12 +887,14 @@ class Orchestrator:
             logger.warning("Orchestrator: Cannot verify - tier3 not initialized")
             return None
 
-        # Get snapshot directory for file-based statistics
+        # Get script-output directory for file-based statistics
+        # NOTE: AgentSnapshotSource expects the BASE script-output directory,
+        # NOT get_snapshot_dir() which returns script-output/factoryverse/snapshots
         infra_config = self._env.config.infra_config
-        snapshot_dir = infra_config.get_snapshot_dir(tier3.instance)
+        script_output_dir = infra_config.get_script_output_dir(tier3.instance)
 
         # Use file-based source instead of RCON polling
-        source = AgentSnapshotSource(snapshot_dir)
+        source = AgentSnapshotSource(script_output_dir)
 
         agent_id = 1
         if tier4 and tier4.agent_id:

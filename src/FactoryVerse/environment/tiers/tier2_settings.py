@@ -73,9 +73,9 @@ class Tier2Settings(TierBase):
                 message="Factorio infrastructure must be initialized first",
             )
 
-        # Validate scenario exists
+        # Validate scenario exists (if specified)
         scenario = self.config.scenario
-        if not self.config.save_path:
+        if scenario and not self.config.save_path:
             # Only validate scenario if not using a save file
             if not self._validate_scenario(scenario):
                 return PrerequisiteResult.failed(

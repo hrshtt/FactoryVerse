@@ -17,6 +17,7 @@ class ValidationLevel(Enum):
     """How thoroughly to validate examples."""
 
     SYNTAX = "syntax"  # Check Python syntax only
+    STATIC = "static"  # Check attribute accesses against class definitions (no runtime)
     IMPORT = "import"  # Check imports resolve
     EXECUTION = "execution"  # Run in test environment
 

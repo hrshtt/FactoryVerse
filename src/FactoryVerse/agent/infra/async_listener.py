@@ -104,9 +104,23 @@ class AsyncActionListener:
             if not self.udp_dispatcher.is_running():
                 await self.udp_dispatcher.start()
 
-            self.udp_dispatcher.subscribe("*", self._handle_udp_message)
+            self.udp_dispatcher.subscribe("*", self._route_udp_message)
             self.running = True
             logger.info("✅ AsyncActionListener started via UDPDispatcher")
+
+    def _route_udp_message(self, payload: Dict[str, Any]):
+        """Route incoming UDP message to appropriate handler based on event_type.
+
+        This is the dispatcher callback that mirrors the routing logic in _direct_listen_loop.
+        """
+        event_type = payload.get("event_type")
+
+        if event_type == "action":
+            self._handle_udp_message(payload)
+        elif event_type == "notification":
+            self._handle_notification(payload)
+        else:
+            logger.warning(f"Unknown event_type in UDP message: {event_type}")
 
     def _direct_listen_loop(self):
         """Background thread loop for receiving UDP packets directly."""
@@ -221,7 +235,7 @@ class AsyncActionListener:
             logger.info(f"AsyncActionListener stopped (direct port {self.agent_port})")
         elif self.udp_dispatcher is not None and was_running:
             # Dispatcher mode - unsubscribe
-            self.udp_dispatcher.unsubscribe("*", self._handle_udp_message)
+            self.udp_dispatcher.unsubscribe("*", self._route_udp_message)
             logger.info("AsyncActionListener stopped (dispatcher mode)")
 
     def register_action(

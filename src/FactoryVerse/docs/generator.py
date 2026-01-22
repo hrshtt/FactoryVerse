@@ -135,7 +135,7 @@ class MarkdownGenerator:
         classes = self._registry.get_all_classes()
         action_classes = [
             c for c in classes
-            if c.accessor_name in ("walking", "crafting", "research", "inventory", "mining")
+            if c.accessor_name in ("walking", "crafting", "research", "inventory")
         ]
 
         if not action_classes:
@@ -181,33 +181,7 @@ class MarkdownGenerator:
 
         lines = ["## Placement & Spatial Reasoning", ""]
 
-        # Add placement workflow overview
-        lines.extend([
-            "### Placement Workflow",
-            "",
-            "Before placing ANY entity, follow this workflow:",
-            "",
-            "1. **Identify connection type** - What are you connecting?",
-            "2. **Use placement_hints** - Get validated positions",
-            "3. **Check validity** - Inspect `plan.valid` or individual positions",
-            "4. **Commit the plan** - Use `ghost_builder.commit(plan)` or `item.place()`",
-            "",
-            "| Scenario | Method | Returns |",
-            "|----------|--------|---------|",
-            "| Drill → Chest/Belt | `get_connection_positions(drill, 'chest', ITEM_DROP)` | `List[ConnectionPosition]` |",
-            "| Drill → Furnace (via inserter) | `get_inserter_placement_positions(drill, furnace)` | `List[(MapPosition, Direction)]` |",
-            "| Pole → Pole | `get_connection_positions(pole, 'pole', ELECTRIC_WIRE)` | `List[WireConnectionPosition]` |",
-            "| Line of belts | `get_placement_line('transport-belt', start, end)` | `GhostPlan` |",
-            "| Line of poles | `get_pole_line(start, end, 'medium-electric-pole')` | `GhostPlan` |",
-            "| Cover machines with power | `get_pole_coverage_plan(machines)` | `(GhostPlan, uncovered)` |",
-            "| Single entity placement | `validator.validate_placement(name, pos)` | `bool` |",
-            "",
-            "**IMPORTANT:** Never call `item.place()` directly for connection scenarios.",
-            "Always use `placement_hints` first to find valid positions.",
-            "",
-        ])
-
-        # Add detailed documentation for each class
+        # Add detailed documentation for each class (from registry)
         for cls_doc in placement_classes:
             lines.extend(self._generate_class_section(cls_doc))
             lines.append("")

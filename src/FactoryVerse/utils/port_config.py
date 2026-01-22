@@ -8,6 +8,7 @@ from typing import Optional
 from factorio_rcon import RCONClient
 
 from FactoryVerse.config import FactoryVerseConfig, get_config
+from FactoryVerse.infra.remote_adapters import MapSnapshotInterface
 from FactoryVerse.utils.rcon_utils import create_rcon_client
 
 
@@ -43,16 +44,17 @@ def configure_server_snapshot_port(
                 password=cfg.rcon_password,
                 initialize=True
             )
-            
+
+            # Use MapSnapshotInterface adapter
+            map_api = MapSnapshotInterface(rcon)
+
             # Call the remote interface to set snapshot port
-            command = f'/c remote.call("snapshot", "set_udp_port", {snapshot_port})'
-            result = rcon.send_command(command)
-            
+            map_api.set_udp_port(snapshot_port)
+
             # Verify it was set correctly
-            verify_cmd = '/c rcon.print(remote.call("snapshot", "get_udp_port"))'
-            verify_result = rcon.send_command(verify_cmd)
-            
-            if verify_result and str(snapshot_port) in verify_result:
+            verify_result = map_api.get_udp_port()
+
+            if verify_result == snapshot_port:
                 print(f"✅ Server {server_id}: Snapshot port configured to {snapshot_port}")
                 return True
             else:
