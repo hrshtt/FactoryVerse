@@ -30,16 +30,18 @@ dependencies = [
 
 # CLI entry points
 [project.scripts]
-# Full name (primary)
+# Full name (primary) - Environment-based CLI
 factoryverse = "FactoryVerse.cli:main"
 # Short alias for convenience
 fv = "FactoryVerse.cli:main"
-# MCP server - separate for IDE integration config
-factoryverse-mcp = "FactoryVerse.mcp_server:main"
+# MCP server - development (full tools for testing, infrastructure, sessions)
+factoryverse-mcp = "FactoryVerse.infra.mcp:main"
+# MCP server - gameplay (minimal tools for AI agents playing the game)
+factoryverse-play = "FactoryVerse.infra.mcp.gameplay_server:main"
 # Agent runner - direct invocation
 factoryverse-agent = "FactoryVerse.cli:cmd_agent"
 # UI entry point
-fv-ui = "FactoryVerse.ui.app:run_app"
+fv-ui = "FactoryVerse.infra.ui.app:run_app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/FactoryVerse"]
@@ -54,6 +56,7 @@ dev = [
     "ruff>=0.9.0",
     "shapely>=2.1.2",
     "tiktoken>=0.12.0",
+    "trafilatura>=2.0.0",
 ]
 
 # Pyrefly configuration
