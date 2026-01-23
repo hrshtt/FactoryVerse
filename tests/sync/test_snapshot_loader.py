@@ -13,8 +13,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
-from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
+from FactoryVerse.game.infra.duckdb.database import SnapshotDatabase
+from FactoryVerse.game.infra.duckdb.loader import SnapshotLoader
 
 
 class TestSnapshotLoaderInit:

@@ -16,11 +16,8 @@ Tests are organized by **domain** to enable targeted test runs and encourage reu
 
 ```
 tests/
-├── conftest.py                 # Root fixtures (server, RCON, agent, etc.)
+├── conftest.py                 # Root fixtures (Environment-based)
 ├── README.md                   # This file
-├── helpers/                    # Shared test utilities
-│   ├── server.py              # FactorioServer, RconConnection
-│   └── test_ground.py         # TestGround helper
 │
 ├── actions/                    # Agent action tests
 │   ├── test_walking.py        # walk_to, stop_walking
@@ -76,15 +73,47 @@ tests/
 │   └── test_metrics.py        # Performance/progress metrics
 │
 ├── infra/                      # Infrastructure tests
-│   ├── conftest.py            # Infrastructure-specific fixtures (Jupyter runtime, etc.)
-│   ├── test_boilerplate_integration.py # LLM boilerplate E2E integration tests
+│   ├── conftest.py            # Infrastructure-specific fixtures
 │   ├── test_server.py         # Server startup, health checks
 │   ├── test_rcon.py           # RCON connection, commands
 │   └── test_docker.py         # Docker compose, containers
 │
+├── unit/                       # Unit tests for Environment module
+│   └── test_environment_tiers.py # Environment tier initialization tests
+│
 └── mod/                        # Lua mod tests (run inside Factorio)
     ├── test_remote_interfaces.py # Remote interface availability
     └── test_events.py         # Event handlers, custom events
+```
+
+---
+
+## Configuration Discovery
+
+The fixture system distinguishes between **runtime-discovered** and **static** configurations:
+
+### Runtime-Discovered (Dynamic)
+- **Scenarios**: Discovered from filesystem at test collection time
+  - Scans `src/factorio/scenarios/` for directories with `control.lua`
+  - Only repo scenarios are included (not local Factorio scenarios)
+  - Automatically included in `environment_scenario` parametrization
+
+### Static (Enum-Based)
+- **Runtime Variants**: `MINIMAL`, `FULL` (hardcoded enum values)
+- **Infra Modes**: `CLIENT`, `SERVER`, `CLIENT_AND_SERVER` (hardcoded enum values)
+
+**Why this matters:**
+- Scenarios change as you add/remove scenario directories → discovered automatically
+- Variants are fixed enum values → can be hardcoded in fixtures
+- Tests automatically adapt to available scenarios without code changes
+
+**Accessing discovered scenarios:**
+```python
+async def test_with_scenario_list(available_scenarios):
+    """Access the list of discovered scenarios."""
+    assert "test-ground" in available_scenarios
+    assert "freeplay" in available_scenarios
+    # ... use for custom parametrization
 ```
 
 ---
@@ -100,7 +129,7 @@ uv run pytest tests/actions/
 uv run pytest tests/entities/
 uv run pytest tests/factory/
 uv run pytest tests/functional/
-uv run pytest tests/infra/  # Infrastructure tests (boilerplate, Jupyter runtime)
+uv run pytest tests/infra/  # Infrastructure tests
 
 # Run multiple domains
 uv run pytest tests/actions/ tests/entities/
@@ -113,83 +142,103 @@ uv run pytest -m "not slow"
 uv run pytest -m "integration"
 ```
 
+**Key test files for verifying the test harness:**
+- `tests/unit/test_environment_tiers.py`: Unit tests for Environment tier initialization
+- `tests/test_infrastructure.py`: Smoke tests for the testing infrastructure using Environment
+- `tests/test_parametrized_fixtures.py`: Tests verifying parametrized fixtures work correctly
+
 ---
 
 ## Fixture Hierarchy
 
+The test fixtures are organized around the `Environment` architecture, which provides a tiered initialization system:
+
 ```
-factorio_server (session)     # Auto-starts Docker, manages RCON
-    └── rcon (function)       # RCON connection with xpcall error handling
-        ├── agent (function)  # Fresh agent per test
-        ├── test_ground       # Test area setup helpers
-        ├── admin             # Admin commands (add items, unlock, etc.)
-        └── game_world        # Combined access to all of the above
+environment (function)              # Minimal Environment (default: test-ground, MINIMAL)
+    ├── tier4                       # Access to Tier 4 Runtime
+    │   ├── agent                   # Access to embodied actions (acting as 'agent')
+    │   └── reachable_view          # Entity querying
+    ├── rcon                        # Tier 3 RconHelper
+    │
+    ├── full_environment            # Full Environment (adds DuckDB + RemoteView)
+    │   └── remote_view             # SQL-based querying
+    │
+    ├── environment_variant         # Parametrized: MINIMAL and FULL variants
+    ├── environment_scenario        # Parametrized: All discovered scenarios
+    ├── environment_factory         # Factory for custom configurations
+    │
+    └── Named scenario fixtures:
+        ├── freeplay_environment    # Freeplay scenario
+        └── lab_environment         # Lab scenario
 ```
+
+**Key fixtures:**
+- `environment`: Basic setup for most tests (minimal runtime, no DuckDB, test-ground scenario)
+- `full_environment`: For tests needing DuckDB/RemoteView
+- `environment_variant`: **Parametrized** - runs tests for both MINIMAL and FULL variants
+- `environment_scenario`: **Parametrized** - runs tests for all discovered scenarios
+- `environment_factory`: Factory for creating custom environment configurations
+- `tier4`: Direct access to the `Tier4Runtime` instance
+- `agent`: Provides the `embodied_actions` dictionary (walking, crafting, etc.)
+- `rcon`: Access to the RCON client via `Tier3Python`
+- `reachable_view`: Lua-based entity querying (always available)
+- `remote_view`: SQL-based querying (requires `full_environment`)
+- `available_scenarios`: List of discovered scenarios (session-scoped)
 
 ---
 
 ## Agent Lifecycle
 
-Agents must be properly created and destroyed to avoid resource leaks and test interference.
+The `Environment` fixture automatically handles agent lifecycle management. You no longer need to manually create or destroy agents.
 
-### Creating an Agent
+### Automatic Lifecycle Management
+
+When you use the `environment` fixture, the following happens automatically:
+
+1. **Initialization**: `Tier4Runtime` initializes the session during `await env.initialize()`
+2. **Agent Creation**: `_create_agent()` is called automatically, which:
+   - Creates the agent entity in Factorio via RCON
+   - Sets up the UDP port for action feedback
+   - Registers the agent interface
+3. **Cleanup**: The `environment` fixture teardown automatically:
+   - Shuts down the runtime
+   - Cleans up the session directory
+   - Stops the Factorio server
+
+### Using the Agent in Tests
+
+Simply request the `agent` fixture to access embodied actions:
 
 ```python
-# Via RCON - returns agent interface name (e.g., "agent_4")
-cmd = '/c local result = remote.call("agent", "create_agent", 34210, true, false, "player", {}); rcon.print(result.interface_name)'
-result = rcon_client.send_command(cmd)
-interface_name = result.strip()  # e.g., "agent_4"
-
-# Extract agent index from name
-agent_idx = int(interface_name.split("_")[1])  # e.g., 4
+async def test_walking(agent, rcon):
+    """Test agent walking capability."""
+    # 'agent' provides embodied actions directly
+    result = await agent["walking"].walk_to(x=10, y=10)
+    assert result["success"]
+    
+    # Access other actions
+    await agent["crafting"].enqueue("iron-plate", count=10)
+    await agent["placement"].place_entity("iron-chest", x=5, y=5)
 ```
 
-### Using the Agent
+### Accessing Agent State
+
+You can access the agent ID and other runtime properties via the `tier4` fixture:
 
 ```python
-# Teleport agent
-rcon_client.send_command(f'/c rcon.print(helpers.table_to_json(remote.call("{interface_name}", "teleport", {{x=100, y=100}})))')
-
-# Give agent items via admin
-rcon_client.send_command(f'/c remote.call("admin", "add_items", {agent_idx}, {{["iron-plate"]=50, ["transport-belt"]=20}})')
-
-# Place entity (ghost or real)
-rcon_client.send_command(f'/c rcon.print(helpers.table_to_json(remote.call("{interface_name}", "place_entity", "iron-chest", {{x=100, y=100}}, nil, false, nil)))')
-```
-
-### Destroying an Agent
-
-**Important**: Always destroy agents after tests to prevent resource leaks.
-
-```python
-# Destroy a specific agent by ID (preferred)
-rcon_client.send_command(f'/c remote.call("agent", "destroy_agents", {{{agent_idx}}})')
-
-# Destroy multiple agents
-rcon_client.send_command('/c remote.call("agent", "destroy_agents", {1, 2, 3})')
-```
-
-### Fixture Pattern
-
-Use pytest fixtures to ensure proper cleanup:
-
-```python
-@pytest.fixture(scope="function")
-def agent_name(rcon_client):
-    """Create a fresh agent for each test."""
-    # Create agent
-    cmd = '/c local result = remote.call("agent", "create_agent", 34210, true, false, "player", {}); rcon.print(result.interface_name)'
-    result = rcon_client.send_command(cmd)
-    interface_name = result.strip()
-    agent_idx = int(interface_name.split("_")[1])
-
-    yield interface_name
-
-    # Cleanup - destroy this specific agent
-    rcon_client.send_command(f'/c remote.call("agent", "destroy_agents", {{{agent_idx}}})')
+async def test_agent_state(tier4, rcon):
+    """Access agent state via RCON."""
+    agent_id = tier4.agent_id  # e.g., "agent_1"
+    
+    # Get position via RCON
+    pos = rcon.run(agent_id, "get_position", {})
+    assert "x" in pos
+    assert "y" in pos
 ```
 
 ### Agent Remote Interface Methods
+
+The agent is accessible via RCON using the interface name (same as `agent_id`):
 
 | Method | Description |
 |--------|-------------|
@@ -199,72 +248,219 @@ def agent_name(rcon_client):
 | `get_position()` | Get current position |
 | `get_inventory_items()` | Get inventory contents |
 | `get_reachable(attach_ghosts)` | Get nearby entities |
+| `inspect()` | Get agent internal state |
+
+## Core Fixtures from `tests/conftest.py`
+
+The root `conftest.py` provides the following core fixtures:
+
+### `environment` (function-scoped)
+
+Basic setup for most tests. Provides:
+- Factorio server (Docker)
+- Settings configuration
+- RCON connection (Tier 3)
+- Runtime with embodied actions (Tier 4, minimal variant)
+
+```python
+async def test_basic_setup(environment: Environment):
+    """Test basic environment access."""
+    assert environment.tier3 is not None
+    assert environment.tier4 is not None
+    assert environment.tier4.embodied_actions is not None
+```
+
+### `full_environment` (function-scoped)
+
+Full environment with DuckDB and RemoteView. Use when you need SQL-based queries:
+
+```python
+async def test_remote_view(full_environment: Environment):
+    """Test RemoteView SQL queries."""
+    remote_view = full_environment.tier4.remote_view
+    entities = await remote_view.query("SELECT * FROM entities WHERE name = 'iron-chest'")
+    assert len(entities) > 0
+```
+
+### `tier4` (function-scoped)
+
+Direct access to the `Tier4Runtime` instance:
+
+```python
+async def test_runtime_access(tier4):
+    """Access runtime properties."""
+    assert tier4.agent_id is not None
+    assert tier4.session_dir is not None
+    assert tier4.embodied_actions is not None
+```
+
+### `agent` (function-scoped)
+
+Provides the `embodied_actions` dictionary for direct action access:
+
+```python
+async def test_walking(agent):
+    """Test walking action."""
+    result = await agent["walking"].walk_to(x=10, y=10)
+    assert result["success"]
+```
+
+### `rcon` (function-scoped)
+
+Access to the RCON client via `Tier3Python`:
+
+```python
+async def test_rcon_commands(rcon):
+    """Test RCON commands."""
+    response = rcon.rcon_client.send_command("/h")
+    assert response is not None
+```
+
+### `reachable_view` (function-scoped)
+
+Lua-based entity querying (always available):
+
+```python
+async def test_reachable_entities(reachable_view):
+    """Test reachable entity queries."""
+    entities = reachable_view.get_entities()
+    assert entities is not None
+```
+
+### `remote_view` (function-scoped)
+
+SQL-based querying (requires `full_environment`):
+
+```python
+async def test_remote_queries(remote_view):
+    """Test SQL queries."""
+    entities = await remote_view.query("SELECT * FROM entities")
+    assert entities is not None
+```
+
+### `environment_variant` (function-scoped, parametrized)
+
+**Parametrized fixture** that runs tests for both MINIMAL and FULL runtime variants. This ensures features work in both configurations.
+
+```python
+async def test_embodied_actions_work_all_variants(environment_variant: Environment):
+    """Test runs twice: once for MINIMAL, once for FULL."""
+    # This test automatically runs for both variants
+    actions = environment_variant.tier4.embodied_actions
+    assert actions is not None
+    assert "walking" in actions
+    
+    # FULL variant has remote_view, MINIMAL does not
+    if environment_variant.tier4.config.variant == RuntimeVariant.FULL:
+        assert environment_variant.tier4.remote_view is not None
+    else:
+        assert environment_variant.tier4.remote_view is None
+```
+
+**When to use:**
+- Testing features that should work in both variants
+- Ensuring core functionality doesn't depend on DuckDB/RemoteView
+- Systematic coverage of variant differences
+
+### `environment_scenario` (function-scoped, parametrized)
+
+**Parametrized fixture** that runs tests for all discovered scenarios. Scenarios are discovered from the filesystem at test collection time.
+
+```python
+async def test_scenario_behavior(environment_scenario: Environment):
+    """Test runs once per discovered scenario."""
+    # Automatically runs for: test-ground, freeplay, lab, etc.
+    scenario = environment_scenario.tier2.current_scenario
+    assert scenario is not None
+    
+    # Test scenario-specific behavior
+    reachable = environment_scenario.tier4.reachable_view
+    entities = reachable.get_entities()
+    assert entities is not None
+```
+
+**When to use:**
+- Testing features that should work across all scenarios
+- Verifying scenario-specific behavior
+- Systematic coverage of scenario differences
+
+**Note:** Scenarios are discovered at test collection time by scanning for directories with `control.lua` files. Only repo scenarios (not local Factorio scenarios) are included for test reproducibility.
+
+### `environment_factory` (function-scoped)
+
+Factory fixture for creating environments with custom configurations:
+
+```python
+async def test_custom_config(environment_factory):
+    """Test with custom scenario and variant."""
+    env = await environment_factory(
+        tier2={"scenario": "freeplay"},
+        tier4={"variant": RuntimeVariant.FULL},
+    )
+    try:
+        assert env.tier2.current_scenario == "freeplay"
+        assert env.tier4.config.variant == RuntimeVariant.FULL
+        assert env.tier4.remote_view is not None
+    finally:
+        await env.shutdown()
+```
+
+**When to use:**
+- Custom configurations not covered by parametrized fixtures
+- Testing specific scenario × variant combinations
+- One-off tests with unique requirements
+
+### `available_scenarios` (session-scoped)
+
+Provides the list of discovered scenarios for manual parametrization:
+
+```python
+async def test_custom_parametrization(environment_factory, available_scenarios):
+    """Manually parametrize over scenarios."""
+    for scenario in available_scenarios:
+        env = await environment_factory(tier2={"scenario": scenario})
+        try:
+            # Test logic
+            assert env.tier2.current_scenario == scenario
+        finally:
+            await env.shutdown()
+```
+
+### Named Scenario Fixtures
+
+Convenience fixtures for common scenarios:
+
+- `freeplay_environment`: Environment with freeplay scenario
+- `lab_environment`: Environment with lab scenario
+
+```python
+async def test_freeplay_specific(freeplay_environment: Environment):
+    """Test specific to freeplay scenario."""
+    assert freeplay_environment.tier2.current_scenario == "freeplay"
+```
 
 ## Domain-Specific Fixtures
 
-Each domain can define its own `conftest.py` for specialized fixtures:
-
-### `tests/factory/conftest.py`
-
-```python
-import pytest
-from FactoryVerse.runtime import create_runtime
-from FactoryVerse.config import get_config
-from FactoryVerse.infra.instance_manager import FactorioInstanceManager
-
-@pytest.fixture(scope="function")
-async def agent_runtime(rcon: RconConnection, agent_id: str):
-    """Create and start an AgentRuntime for tests.
-    
-    Auto-detects Docker server's script-output directory for snapshots.
-    Provides same affordances as boilerplate without Jupyter kernel.
-    """
-    # Detect the Docker server's script-output directory
-    config = get_config()
-    instance = FactorioInstanceManager.from_env(config)
-    snapshot_dir = instance.script_output_dir
-    
-    # Create runtime with auto-allocated UDP port
-    runtime = create_runtime(
-        rcon_client=rcon.client,
-        agent_id=agent_id,
-        udp_port=None,  # Auto-allocate
-        snapshot_dir=snapshot_dir,  # Use Docker's script-output directory
-    )
-    
-    await runtime.start()
-    
-    try:
-        yield runtime
-    finally:
-        await runtime.stop()
-
-@pytest.fixture(scope="function")
-def dsl_context(agent_runtime, test_ground, admin):
-    """Complete DSL context with AgentRuntime.
-    
-    Provides:
-    - runtime: AgentRuntime with all affordances
-    - test_ground: TestGround helper for entity/resource placement
-    - admin: AdminInterface for inventory/tech management
-    """
-    return DSLTestContext(agent_runtime, test_ground, admin)
-```
-
-**Key improvement**: The `agent_runtime` fixture now auto-detects the correct snapshot directory:
-- Uses `FactorioInstanceManager.from_env()` to detect Docker vs client
-- Configures runtime with `instance.script_output_dir`
-- RemoteView can now properly load snapshots from Docker server
+Each domain can define its own `conftest.py` for specialized fixtures that build on the core fixtures:
 
 ### `tests/entities/conftest.py`
 
 ```python
 @pytest.fixture(scope="function")
-def furnace_setup(test_ground, admin, agent):
+def furnace_setup(environment, agent, rcon):
     """Pre-placed furnace with coal for entity tests."""
-    test_ground.place_entity("stone-furnace", 10, 10)
-    agent.teleport(10, 10)
-    admin.add_items(1, {"coal": 50, "iron-ore": 50})
+    # Use RCON to place entity
+    agent_id = environment.tier4.agent_id
+    rcon.run(agent_id, "place_entity", {
+        "name": "stone-furnace",
+        "position": {"x": 10, "y": 10}
+    })
+    
+    # Add items via admin
+    agent_index = int(agent_id.split("_")[-1])
+    cmd = f"/c remote.call('admin', 'add_items', {agent_index}, {{['coal'] = 50, ['iron-ore'] = 50}})"
+    rcon.rcon_client.send_command(cmd)
+    
     return {"position": (10, 10), "entity": "stone-furnace"}
 ```
 
@@ -272,37 +468,11 @@ def furnace_setup(test_ground, admin, agent):
 
 ```python
 @pytest.fixture(scope="function") 
-def resource_area(clean_area):
+def resource_area(environment, rcon):
     """Area with iron and coal patches for workflow tests."""
-    clean_area.place_iron_patch(50, 50, size=32)
-    clean_area.place_coal_patch(50, 80, size=16)
-    return clean_area
-```
-
-### `tests/infra/conftest.py`
-
-```python
-@pytest.fixture(scope="function")
-def jupyter_runtime(temp_notebook_path, rcon, agent_id, temp_session_dir):
-    """Create a FactoryVerseRuntime with boilerplate loaded.
-    
-    Simulates what run_agent.py does:
-    1. Creates a Jupyter kernel
-    2. Sets up environment variables for boilerplate
-    3. Loads boilerplate.py into the kernel
-    4. Loads map database
-    
-    Usage:
-        def test_boilerplate_loaded(jupyter_runtime):
-            result = jupyter_runtime.execute_code("print(runtime.agent_id)")
-            assert agent_id in result
-    """
-    # Sets up environment and loads boilerplate
-    runtime = FactoryVerseRuntime(notebook_path=str(temp_notebook_path))
-    runtime.setup_boilerplate()
-    runtime.load_map_database()
-    yield runtime
-    runtime.stop()
+    # Use admin interface to place resource patches
+    # Implementation depends on available helpers
+    return {"iron_patch": (50, 50), "coal_patch": (50, 80)}
 ```
 
 ---
@@ -322,7 +492,7 @@ def jupyter_runtime(temp_notebook_path, rcon, agent_id, temp_session_dir):
 | Multiple agents | `multiagent/` |
 | Scenarios/benchmarks | `eval/` |
 | Server/Docker/RCON | `infra/` |
-| LLM boilerplate/Jupyter runtime | `infra/` |
+| Environment module/Infrastructure | `infra/`, `unit/` |
 | Lua mod behavior | `mod/` |
 
 ### 2. Use Domain Fixtures
@@ -374,73 +544,123 @@ Use docstrings to explain what server state/scenario the test expects.
 ### 5. Handle async properly
 Async actions (walk_to, mine_resource) complete via UDP. Use wait helpers or poll for completion.
 
-### 6. Testing boilerplate integration
-The `tests/infra/test_boilerplate_integration.py` suite validates the complete LLM boilerplate system. It:
-- Loads boilerplate.py into a Jupyter kernel (simulating `run_agent.py`)
-- Validates all runtime affordances are available
-- Tests all action types (walking, mining, crafting, etc.)
-- Tests entity operations and ghost building
-- Tests remote view DuckDB queries
+### 6. Testing Environment integration
+The `tests/test_infrastructure.py` suite validates the Environment module integration. It:
+- Tests RCON connection via Tier 3
+- Validates agent creation in Tier 4
+- Tests embodied actions loading
+- Verifies agent state access
 
-This is the **final validation** that the system is ready for agent trajectories.
-
-**Running boilerplate tests:**
+**Running infrastructure tests:**
 ```bash
 # Run all infrastructure tests
 uv run pytest tests/infra/
 
-# Run just boilerplate integration tests
-uv run pytest tests/infra/test_boilerplate_integration.py -v
+# Run environment smoke tests
+uv run pytest tests/test_infrastructure.py -v
+
+# Run unit tests for Environment tiers
+uv run pytest tests/unit/test_environment_tiers.py -v
 ```
 
-**Interactive exploration:**
-See `notebooks/test_boilerplate_exploration.py` for a comprehensive exploration script that can be run in Jupyter notebooks.
+### 9. Parametrized Testing for Comprehensive Coverage
 
-### 7. Testing without Jupyter: Direct Runtime Usage
+Use parametrized fixtures to test features across multiple configurations:
 
-**Problem**: Jupyter-based testing (via `FactoryVerseRuntime` and kernel execution) adds complexity:
-- Kernel management overhead
-- String-based code execution
-- Async coordination between kernel and test process
-- Snapshot timing issues
+**Test across variants:**
+```python
+async def test_feature_works_all_variants(environment_variant: Environment):
+    """Automatically tests both MINIMAL and FULL variants."""
+    # Test runs twice (once per variant)
+    assert environment_variant.tier4.embodied_actions is not None
+```
 
-**Solution**: Use `AgentRuntime` directly in tests via the `agent_runtime` fixture.
+**Test across scenarios:**
+```python
+async def test_feature_works_all_scenarios(environment_scenario: Environment):
+    """Automatically tests all discovered scenarios."""
+    # Test runs once per scenario (test-ground, freeplay, lab, etc.)
+    scenario = environment_scenario.tier2.current_scenario
+    assert scenario is not None
+```
 
-This approach (used in `tests/factory/test_entity_walking_di.py`) provides:
-- ✅ Direct access to all runtime affordances (walking, crafting, reachable, remote_view)
+**Test all combinations:**
+```python
+from FactoryVerse.environment.config import RuntimeVariant
+from tests.conftest import _AVAILABLE_SCENARIOS
+
+@pytest.mark.parametrize("scenario", _AVAILABLE_SCENARIOS)
+@pytest.mark.parametrize("variant", [RuntimeVariant.MINIMAL, RuntimeVariant.FULL])
+async def test_all_combinations(environment_factory, scenario, variant):
+    """Test all scenario × variant combinations."""
+    env = await environment_factory(
+        tier2={"scenario": scenario},
+        tier4={"variant": variant},
+    )
+    try:
+        # Test logic
+        assert env.tier2.current_scenario == scenario
+        assert env.tier4.config.variant == variant
+    finally:
+        await env.shutdown()
+```
+
+**Benefits:**
+- ✅ Automatic coverage of all configurations
+- ✅ Catches bugs in specific scenarios/variants
+- ✅ Documents which configs are supported
+- ✅ No manual test duplication
+
+**When to parametrize:**
+- Features that should work in both variants → use `environment_variant`
+- Features that should work in all scenarios → use `environment_scenario`
+- Testing configuration-specific behavior → use `environment_factory` with custom configs
+
+### 7. Testing without Jupyter: Tier 4 Access
+
+**Solution**: Use the `tier4` or `agent` fixtures to interact with the Python runtime directly.
+
+This approach provides:
+- ✅ Direct access to all runtime affordances (walking, crafting, reachable_view, remote_view)
 - ✅ Normal Python scoping (no string execution)
 - ✅ Proper async/await support
-- ✅ Same boilerplate initialization (just without Jupyter kernel)
 - ✅ Faster test execution
+- ✅ No Jupyter kernel overhead
 
 **Example:**
 ```python
-async def test_entity_has_walk_to(dsl_context):
-    """Test entity walking capability."""
-    # dsl_context.runtime is an AgentRuntime instance
-    # Same as 'runtime' variable in boilerplate
-    runtime = dsl_context.runtime
+async def test_example(agent, rcon):
+    """Test using agent actions directly."""
+    # 'agent' provides embodied actions directly
+    result = await agent["walking"].walk_to(x=10, y=10)
+    assert result["success"]
     
-    # Place entity
-    dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
-    
-    # Get reachable entity (same API as boilerplate)
-    furnace = runtime.reachable.get_entity("stone-furnace")
-    
-    # Access capabilities directly
-    assert hasattr(furnace, "walk_to")
-    assert furnace._walking_action is runtime.walking
+    # Access other actions
+    await agent["crafting"].enqueue("iron-plate", count=10)
+    await agent["placement"].place_entity("iron-chest", x=5, y=5)
 ```
 
-**Key insight**: The boilerplate's affordances come from `AgentRuntime`, not from Jupyter. Tests can use `AgentRuntime` directly and get the same functionality without the kernel overhead.
+**Accessing Tier 4 Runtime:**
+```python
+async def test_runtime_access(tier4, reachable_view):
+    """Access runtime components directly."""
+    # Access embodied actions
+    walking = tier4.embodied_actions["walking"]
+    
+    # Access views
+    entities = reachable_view.get_entities()
+    
+    # Access agent ID
+    agent_id = tier4.agent_id
+```
 
 **When to use each approach:**
 
 | Approach | Use When | Example Tests |
 |----------|----------|---------------|
-| **Direct AgentRuntime** | Testing DI pipeline, method presence, API structure, unit tests | `test_entity_walking_di.py` |
-| **Jupyter Runtime** | Testing boilerplate loading, code execution in kernel, full integration | `test_boilerplate_integration.py` |
-| **Agent Interface (RCON)** | Testing Lua mod behavior, low-level RCON commands | `test_remote_interfaces.py` |
+| **Tier 4 / Agent fixtures** | Testing actions, runtime components, API structure | `test_crafting_status.py`, `test_infrastructure.py` |
+| **Full Environment** | Testing RemoteView SQL queries, DuckDB integration | Tests requiring `remote_view` fixture |
+| **RCON directly** | Testing Lua mod behavior, low-level RCON commands | `test_remote_interfaces.py` |
 
 ### 8. Testing DI pipelines and structure
 
@@ -448,19 +668,15 @@ When testing dependency injection and API structure (rather than end-to-end beha
 
 **Focus on contracts, not integration:**
 ```python
-async def test_walking_action_injected(dsl_context):
+async def test_walking_action_injected(tier4):
     """Verify walking_action flows through DI pipeline."""
-    runtime = dsl_context.runtime
-    
     # Check the pipeline
-    assert runtime.walking is not None
-    assert runtime.remote_view._walking_action is runtime.walking
-    assert runtime.remote_view._query._walking_action is runtime.walking
+    assert tier4.embodied_actions["walking"] is not None
     
-    # Place entity and verify injection
-    dsl_context.test_ground.place_entity("chest", 2, 2)
-    entity = runtime.reachable.get_entity("chest")
-    assert entity._walking_action is runtime.walking
+    # Access reachable view
+    reachable = tier4.reachable_view
+    # Verify injection if applicable
+    # (Implementation depends on current architecture)
 ```
 
 **Why this approach?**
@@ -475,43 +691,101 @@ async def test_walking_action_injected(dsl_context):
 - Multi-step workflows
 - Performance validation
 
-See `tests/factory/test_entity_walking_di.py` for a complete example of this methodology.
-
 ---
 
-## Example Test
+## Example Tests
+
+### Basic Test with Default Environment
 
 ```python
-# tests/entities/test_furnaces.py
+# tests/actions/test_crafting_status.py
+import pytest
+from FactoryVerse.environment.environment import Environment
+
+@pytest.mark.asyncio
+class TestCraftingStatus:
+    """Test crafting.status() returns proper queue information."""
+
+    async def test_status_returns_typed_queue(self, environment_variant: Environment):
+        """Test runs for both MINIMAL and FULL variants."""
+        # Setup: Ensure agent has items
+        agent_id_str = environment_variant.tier4.agent_id
+        agent_index = int(agent_id_str.split("_")[-1]) if "_" in agent_id_str else 1
+
+        # Add items via RCON admin interface
+        cmd = f"/c rcon.print(helpers.table_to_json(remote.call('admin', 'add_items', {agent_index}, {{['iron-plate'] = 20}})))"
+        res = environment_variant.tier3.rcon_helper.rcon_client.send_command(cmd)
+        assert "success" in res
+
+        # Access crafting action via embodied_actions
+        crafting_action = environment_variant.tier4.embodied_actions["crafting"]
+
+        # Get initial status (should be empty)
+        status = crafting_action.status()
+
+        # Verify type structure
+        assert isinstance(status, dict), "Should return a dict"
+        assert "queue" in status, "Should have 'queue' field"
+        assert len(status["queue"]) == 0, "Queue should be empty initially"
+```
+
+### Using Parametrized Fixtures
+
+```python
+# tests/actions/test_walking.py
 import pytest
 
-class TestFurnaceInspection:
-    """Tests for furnace entity inspection and status."""
+@pytest.mark.asyncio
+async def test_walk_to_all_variants(environment_variant):
+    """Test walking works in both MINIMAL and FULL variants."""
+    # Automatically runs twice (once per variant)
+    result = await environment_variant.tier4.embodied_actions["walking"].walk_to(x=10, y=10)
+    assert result["success"]
+
+@pytest.mark.asyncio
+async def test_walk_to_all_scenarios(environment_scenario):
+    """Test walking works in all scenarios."""
+    # Automatically runs for each discovered scenario
+    walking = environment_scenario.tier4.embodied_actions["walking"]
+    result = await walking.walk_to(x=10, y=10)
+    assert result["success"]
+```
+
+### Using the Agent Fixture
+
+```python
+# tests/actions/test_walking.py
+import pytest
+
+@pytest.mark.asyncio
+async def test_walk_to(agent, tier4):
+    """Test walking action."""
+    # Use agent fixture for direct action access
+    result = await agent["walking"].walk_to(x=10, y=10)
+    assert result["success"]
     
-    def test_furnace_shows_fuel_status(self, furnace_setup, agent, dsl_context):
-        """Furnace inspection should show fuel and input/output contents."""
-        # Arrange: furnace_setup provides placed furnace with coal
-        with dsl_context.playing_factory as factory:
-            furnace = factory.reachable.get_entity("stone-furnace")
-            
-            # Act
-            info = furnace.inspect()
-            
-            # Assert
-            assert "coal" in info.lower()
-            assert "Status:" in info
-    
-    def test_furnace_smelts_ore(self, furnace_setup, agent, game_world):
-        """Furnace should smelt iron ore into plates."""
-        # Add ore to furnace input
-        agent.put_inventory_item("stone-furnace", 10, 10, "fuel", "coal", 5)
-        agent.put_inventory_item("stone-furnace", 10, 10, "input", "iron-ore", 10)
-        
-        # Wait for smelting (async)
-        import time
-        time.sleep(2)
-        
-        # Check output
-        result = agent.take_inventory_item("stone-furnace", 10, 10, "output", "iron-plate", 10)
-        assert result["success"]
+    # Access agent ID if needed
+    agent_id = tier4.agent_id
+```
+
+### Using Factory for Custom Configurations
+
+```python
+# tests/actions/test_custom.py
+import pytest
+from FactoryVerse.environment.config import RuntimeVariant
+
+@pytest.mark.asyncio
+async def test_custom_config(environment_factory):
+    """Test with custom scenario and variant."""
+    env = await environment_factory(
+        tier2={"scenario": "freeplay"},
+        tier4={"variant": RuntimeVariant.FULL},
+    )
+    try:
+        # Test logic
+        assert env.tier2.current_scenario == "freeplay"
+        assert env.tier4.remote_view is not None
+    finally:
+        await env.shutdown()
 ```

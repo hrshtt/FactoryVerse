@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Generator, Any, Dict, List, Optional
 from dataclasses import dataclass
 
-from FactoryVerse.config import FactoryVerseConfig
-from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
-from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
+from FactoryVerse.environment.config import FactoryVerseConfig
+from FactoryVerse.game.infra.duckdb.database import SnapshotDatabase
+from FactoryVerse.game.infra.duckdb.loader import SnapshotLoader
 
 
 @dataclass
@@ -33,7 +33,7 @@ class UDPCapture:
 
     def __init__(self, port: Optional[int] = None):
         if port is None:
-            from FactoryVerse.config import get_config
+            from FactoryVerse.environment.config import get_config
 
             port = get_config().snapshot_port_base  # Use server 0 default for tests
         self.port = port

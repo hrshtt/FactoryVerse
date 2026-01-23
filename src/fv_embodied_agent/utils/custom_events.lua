@@ -25,6 +25,12 @@ M.on_agent_entity_configuration_changed = script.generate_event_name()
 -- Regular entities should use script_raised_destroy via destroy({raise_destroy=true})
 M.on_agent_resource_mined = script.generate_event_name()
 
+-- Agent action completion events (for statistics logging by fv_snapshot)
+-- These are raised when the agent completes crafting or mining actions
+-- Payload includes: agent_id, tick, products (items gained)
+M.on_agent_crafting_completed = script.generate_event_name()
+M.on_agent_mining_completed = script.generate_event_name()
+
 -- ============================================================================
 -- STORAGE INITIALIZATION
 -- ============================================================================
@@ -43,6 +49,8 @@ function M.initialize_storage()
     storage.custom_events.on_agent_entity_rotated = M.on_agent_entity_rotated
     storage.custom_events.on_agent_entity_configuration_changed = M.on_agent_entity_configuration_changed
     storage.custom_events.on_agent_resource_mined = M.on_agent_resource_mined
+    storage.custom_events.on_agent_crafting_completed = M.on_agent_crafting_completed
+    storage.custom_events.on_agent_mining_completed = M.on_agent_mining_completed
     log("Custom events storage initialized")
 end
 

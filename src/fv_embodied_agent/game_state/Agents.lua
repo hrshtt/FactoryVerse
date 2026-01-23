@@ -593,6 +593,15 @@ M.AdminApiSpecs = {
         _param_order = {"force_name"},
         force_name = {type = "string", required = true},
     },
+    add_items = {
+        _param_order = {"agent_id", "items"},
+        agent_id = {type = "number", required = true},
+        items = {type = "table", required = true},
+    },
+    clear_inventory = {
+        _param_order = {"agent_id"},
+        agent_id = {type = "number", required = true},
+    },
 }
 
 -- ============================================================================
@@ -795,6 +804,8 @@ M.admin_api = {
     list_agents = M.list_agents,
     reset_research = M.reset_research,
     inspect_research = M.inspect_research,
+    add_items = M.add_items,
+    clear_inventory = M.clear_inventory,
 }
 
 M.testing_api = {

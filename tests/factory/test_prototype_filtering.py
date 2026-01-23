@@ -6,13 +6,13 @@ that pass the filter.
 """
 
 import pytest
-from FactoryVerse.factory.prototypes import (
+from FactoryVerse.game.factory.prototypes import (
     get_entity_prototypes,
     get_item_prototypes,
     get_recipe_prototypes,
     reset_prototypes,
 )
-from FactoryVerse.prototype_data import reset_prototype_manager
+from FactoryVerse.game.factory.prototype_data import reset_prototype_manager
 from FactoryVerse.utils.filters import reset_filter_config
 
 

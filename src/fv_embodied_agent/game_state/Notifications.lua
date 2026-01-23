@@ -4,6 +4,7 @@
 
 local M = {}
 local udp = require("utils.udp")
+local custom_events = require("utils.custom_events")
 
 -- ============================================================================
 -- NOTIFICATION HELPERS
@@ -164,16 +165,41 @@ function M.on_research_reversed(event)
     if not tech or not tech.valid then
         return
     end
-    
+
     local force = tech.force
-    
+
     local data = {
         technology = tech.name,
         researched_by_script = event.by_script,
         level = tech.level
     }
-    
+
     send_force_notification(force, "research_reversed", data)
+end
+
+-- ============================================================================
+-- CRAFTING EVENT HANDLERS
+-- ============================================================================
+
+--- Called when agent crafting completes (custom event from crafting.lua)
+--- This notification is sent for the fire-and-forget NQ/DQ pattern, allowing
+--- agents to queue crafting and continue with other work while being notified
+--- when items are ready.
+--- @param event table Custom event with agent_id, recipe, count_crafted, products
+function M.on_agent_crafting_completed(event)
+    local agent_id = event.agent_id
+    if not agent_id then
+        return
+    end
+
+    local data = {
+        recipe = event.recipe,
+        count = event.count_crafted or 0,
+        products = event.products or {},
+        action_id = event.action_id,  -- Link back to original action if available
+    }
+
+    send_agent_notification(agent_id, "crafting_finished", data)
 end
 
 -- ============================================================================
@@ -185,12 +211,15 @@ end
 function M.get_events()
     return {
         defined_events = {
+            -- Research events (built-in Factorio events)
             [defines.events.on_research_finished] = M.on_research_finished,
             [defines.events.on_research_started] = M.on_research_started,
             [defines.events.on_research_cancelled] = M.on_research_cancelled,
             [defines.events.on_research_queued] = M.on_research_queued,
             [defines.events.on_research_moved] = M.on_research_moved,
             [defines.events.on_research_reversed] = M.on_research_reversed,
+            -- Crafting events (custom events from crafting.lua)
+            [custom_events.on_agent_crafting_completed] = M.on_agent_crafting_completed,
         }
     }
 end

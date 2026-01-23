@@ -1,0 +1,9 @@
+{
+  "name": "fv_placement_hints",
+  "version": "0.1.0",
+  "factorio_version": "2.0",
+  "title": "FactoryVerse Placement Hints",
+  "author": "FactoryVerse Contributors",
+  "description": "Spatial reasoning mod providing placement validation, connection solving, and visual cue replication for AI agents. Exposes engine-level placement information that replicates what human players see (green/red tiles, valid directions).",
+  "dependencies": ["base >= 2.0"]
+}

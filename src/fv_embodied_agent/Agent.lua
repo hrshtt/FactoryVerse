@@ -59,7 +59,6 @@
 --- @field craft_dequeue fun(self: Agent, recipe_name: string, count?: number): table
 --- @field process_crafting fun(self: Agent)
 --- @field place_entity fun(self: Agent, entity_name: string, position: {x: number, y: number}, options?: table): table
---- @field get_placement_cues fun(self: Agent, entity_name: string): table
 --- @field set_entity_recipe fun(self: Agent, entity_name: string, position?: {x: number, y: number}, recipe_name?: string): table
 --- @field set_entity_filter fun(self: Agent, entity_name: string, position?: {x: number, y: number}, inventory_type: number|string, filter_index?: number, filter_item?: string): table
 --- @field set_inventory_limit fun(self: Agent, entity_name: string, position?: {x: number, y: number}, inventory_type: number|string, limit: number): table
@@ -436,7 +435,7 @@ end
 -- - types/agent/walking.lua: walk_to, stop_walking
 -- - types/agent/mining.lua: mine_resource, stop_mining
 -- - types/agent/crafting.lua: craft_enqueue, craft_dequeue
--- - types/agent/placement.lua: place_entity, get_placement_cues
+-- - types/agent/placement.lua: place_entity
 -- - types/agent/entity_ops.lua: set_entity_recipe, set_entity_filter, set_inventory_limit, get_inventory_item, set_inventory_item, pickup_entity
 -- ============================================================================
 

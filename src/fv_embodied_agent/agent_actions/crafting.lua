@@ -3,6 +3,8 @@
 --- State is stored in self.crafting (in_progress)
 --- These methods are mixed into the Agent class at module level
 
+local custom_events = require("utils.custom_events")
+
 local CraftingActions = {}
 
 local valid_recipe_categories = {
@@ -325,6 +327,15 @@ CraftingActions.process_crafting = function(self)
             end
         end
 
+        -- Raise crafting completed event for fv_snapshot to log
+        script.raise_event(custom_events.on_agent_crafting_completed, {
+            agent_id = self.agent_id,
+            tick = current_tick,
+            recipe = tracking.recipe,
+            count_crafted = count_crafted,
+            products = actual_products,
+        })
+
         -- Calculate actual time taken
         local actual_ticks = nil
         if tracking.start_tick then
@@ -349,6 +360,55 @@ CraftingActions.process_crafting = function(self)
         self.crafting.in_progress = nil
     end
     -- Note: Cancellation is handled entirely in craft_dequeue() which clears tracking
+end
+
+--- Get current crafting queue with full details
+--- @return table Crafting queue with items, size, and progress
+function CraftingActions.get_crafting_queue(self)
+    if not (self.character and self.character.valid) then
+        error("Agent: Agent entity is invalid")
+    end
+    
+    local queue = self.character.crafting_queue or {}
+    local queue_items = {}
+    
+    -- Convert Lua queue to array format
+    -- Factorio's crafting_queue is an array of CraftingQueueItem objects
+    -- The queue is indexed by position (1-based), and each item has:
+    --   - index: position in queue
+    --   - recipe: LuaRecipe object (has .name property) OR recipe name string
+    --   - count: number of items to craft
+    --   - prerequisite: boolean
+    for i = 1, #queue do
+        local item = queue[i]
+        if item then
+            local recipe_name = ""
+            if item.recipe then
+                -- Recipe might be a LuaRecipe object (with .name) or a string
+                if type(item.recipe) == "string" then
+                    recipe_name = item.recipe
+                elseif item.recipe.name then
+                    recipe_name = item.recipe.name
+                end
+            end
+            
+            table.insert(queue_items, {
+                index = item.index or i,
+                recipe = recipe_name,
+                count = item.count or 0,
+                prerequisite = item.prerequisite or false,
+            })
+        end
+    end
+    
+    -- Sort by index to ensure correct order
+    table.sort(queue_items, function(a, b) return a.index < b.index end)
+    
+    return {
+        queue = queue_items,
+        queue_size = self.character.crafting_queue_size or 0,
+        progress = self.character.crafting_queue_progress or 0.0,
+    }
 end
 
 return CraftingActions

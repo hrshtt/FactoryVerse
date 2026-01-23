@@ -8,11 +8,12 @@ Uses the unified FactoryVerseConfig from config.py.
 import json
 import shutil
 import subprocess
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional
 from factorio_rcon import RCONClient
 
-from FactoryVerse.config import FactoryVerseConfig, get_config
+from FactoryVerse.environment.config import FactoryVerseConfig, get_config
 
 
 def _load_mod_list(mod_path: Path) -> dict:
@@ -73,6 +74,7 @@ class FactorioServerManager:
         self.verse_mod_dir = self.work_dir / "src" / "factorio_verse"
         self.embodied_agent_mod_dir = self.config.embodied_agent_mod_dir
         self.snapshot_mod_dir = self.config.snapshot_mod_dir
+        self.placement_hints_mod_dir = self.config.placement_hints_mod_dir
         self.scenarios_dir = self.config.scenarios_dir
         self.config_dir = self.config.server_config_dir
         self.mod_path = self.config.mods_dir
@@ -102,45 +104,6 @@ class FactorioServerManager:
             True if scenario exists and has control.lua
         """
         return self.config.validate_scenario(scenario)
-
-    def consolidate_scenarios(self) -> int:
-        """Consolidate local scenarios to repo scenarios directory.
-
-        Copies scenarios from local Factorio directory to repo's scenarios
-        directory for server access. Repo scenarios take precedence (won't
-        be overwritten by local copies).
-
-        Returns:
-            Number of scenarios copied
-        """
-        local_dir = self.config.local_scenarios_dir
-        repo_dir = self.config.scenarios_dir
-
-        if not local_dir.exists():
-            return 0
-
-        copied = 0
-        for scenario_dir in local_dir.iterdir():
-            if not scenario_dir.is_dir():
-                continue
-            if not (scenario_dir / "control.lua").exists():
-                continue
-
-            target_dir = repo_dir / scenario_dir.name
-
-            # Skip if already exists in repo (repo takes precedence)
-            if target_dir.exists():
-                continue
-
-            # Copy scenario
-            print(f"📦 Copying local scenario '{scenario_dir.name}' to repo...")
-            shutil.copytree(scenario_dir, target_dir)
-            copied += 1
-
-        if copied > 0:
-            print(f"✓ Copied {copied} local scenario(s) to repo")
-
-        return copied
 
     # =========================================================================
     # Directory Management
@@ -198,6 +161,7 @@ class FactorioServerManager:
         for old_mod_pattern in [
             "fv_embodied_agent*",
             "fv_snapshot*",
+            "fv_placement_hints*",
             "factorio_verse*",
         ]:
             for old_mod in self.mod_path.glob(old_mod_pattern):
@@ -206,17 +170,70 @@ class FactorioServerManager:
                     shutil.rmtree(old_mod)
 
         # Prepare fv_embodied_agent mod
-        self._copy_mod(self.embodied_agent_mod_dir, "fv_embodied_agent")
+        self._copy_mod(self.embodied_agent_mod_dir, "fv_embodied_agent", force=False)
 
         # Prepare fv_snapshot mod
-        self._copy_mod(self.snapshot_mod_dir, "fv_snapshot")
+        self._copy_mod(self.snapshot_mod_dir, "fv_snapshot", force=False)
+
+        # Prepare fv_placement_hints mod (if it exists)
+        if self.placement_hints_mod_dir.exists():
+            self._copy_mod(self.placement_hints_mod_dir, "fv_placement_hints", force=False)
+        else:
+            print("⚠️  fv_placement_hints mod not found, skipping...")
 
         # Ensure DLC mods are disabled
         for dlc_mod in ["space-age", "quality", "elevated-rails"]:
             _update_mod_list(self.mod_path, dlc_mod, False)
         print("✓ DLC mods disabled in mod-list")
 
-    def _copy_mod(self, source_dir: Path, default_name: str) -> None:
+    def _calculate_directory_hash(self, directory: Path) -> str:
+        """Calculate SHA256 hash of all files in a directory."""
+        hasher = hashlib.sha256()
+        all_files = sorted(directory.rglob("*"))
+        
+        for file_path in all_files:
+            if file_path.is_file():
+                rel_path = file_path.relative_to(directory)
+                hasher.update(str(rel_path).encode())
+                try:
+                    with open(file_path, "rb") as f:
+                        hasher.update(f.read())
+                except (IOError, OSError):
+                    pass
+        
+        return hasher.hexdigest()
+
+    def _get_mod_hash_file(self, mod_name: str) -> Path:
+        """Get path to hash file for a mod."""
+        return self.mod_path / f".{mod_name}.hash"
+
+    def _get_mod_hash(self, mod_name: str) -> Optional[str]:
+        """Get stored hash for a mod."""
+        hash_file = self._get_mod_hash_file(mod_name)
+        if hash_file.exists():
+            return hash_file.read_text().strip()
+        return None
+
+    def _save_mod_hash(self, mod_name: str, hash_value: str) -> None:
+        """Save hash for a mod."""
+        hash_file = self._get_mod_hash_file(mod_name)
+        hash_file.write_text(hash_value)
+
+    def _mod_needs_update(self, source_dir: Path, mod_name: str) -> bool:
+        """Check if mod needs to be updated based on hash comparison."""
+        if not source_dir.exists():
+            return True
+        
+        current_hash = self._calculate_directory_hash(source_dir)
+        stored_hash = self._get_mod_hash(mod_name)
+        
+        if stored_hash != current_hash:
+            self._save_mod_hash(mod_name, current_hash)
+            return True
+        
+        return False
+
+    def _copy_mod(self, source_dir: Path, default_name: str, force: bool = False) -> None:
         """Copy a mod to the Factorio mods directory."""
         info_json_path = source_dir / "info.json"
         if info_json_path.exists():
@@ -227,12 +244,24 @@ class FactorioServerManager:
             mod_name = default_name
             mod_version = "1.0.0"
 
-        print(f"📦 Preparing {mod_name} mod...")
+        print(f"📦 Checking {mod_name} mod...")
         target_dir = self.mod_path / f"{mod_name}_{mod_version}"
 
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        shutil.copytree(source_dir, target_dir)
+        # Check if mod needs update based on hash
+        if force or self._mod_needs_update(source_dir, mod_name):
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            print(f"   Updating {mod_name} mod (hash changed or --force)...")
+            shutil.copytree(source_dir, target_dir)
+            print(f"✓ {mod_name} mod updated as {target_dir.name}")
+        else:
+            # Ensure mod directory exists even if hash matches
+            if not target_dir.exists():
+                print(f"   Mod directory missing, copying {mod_name}...")
+                shutil.copytree(source_dir, target_dir)
+                print(f"✓ {mod_name} mod copied as {target_dir.name}")
+            else:
+                print(f"✓ {mod_name} mod up to date (hash unchanged)")
 
         _update_mod_list(self.mod_path, mod_name, True)
         print(f"✓ {mod_name} mod copied as {target_dir.name}")
@@ -269,7 +298,10 @@ class FactorioServerManager:
         services = {}
 
         for i in range(num_instances):
+            # Add Factorio server
             services[f"factorio_{i}"] = self._build_service_config(i, scenario)
+            # Add UDP forwarder sidecar (Alpine + socat)
+            services[f"udp_forwarder_{i}"] = self._build_udp_forwarder_config(i)
 
         return services
 
@@ -306,26 +338,14 @@ class FactorioServerManager:
 
         command = " ".join(command_parts)
 
-        # Build port mappings
+        # Build port mappings - only game and RCON
+        # Agent/snapshot UDP ports are handled by the sidecar forwarder
         ports = [
             f"{game_port}:{cfg.internal_game_port}/udp",  # Game UDP
             f"{rcon_port}:{cfg.internal_rcon_port}/tcp",  # RCON TCP
         ]
 
-        # Add agent ports (Factorio sends OUT to these, Python listens)
-        # These are exposed so Python on host can receive UDP from container
-        # Each server gets its own agent port range for isolation
-        for agent_idx in range(self.effective_max_agents):
-            agent_port = cfg.get_agent_port(agent_idx, server_index=instance_id)
-            # Note: We expose on host, but Factorio sends to localhost:port inside container
-            # This works because UDP from container can reach host's bound ports
-            ports.append(f"{agent_port}:{agent_port}/udp")
-
-        # Add snapshot port (per-server)
-        snapshot_port = cfg.get_snapshot_port(f"server_{instance_id}")
-        ports.append(f"{snapshot_port}:{snapshot_port}/udp")
-
-        # Optionally expose Factorio's incoming UDP listener
+        # Optionally expose Factorio's incoming UDP listener (for external control)
         if cfg.expose_incoming_udp:
             ports.append(f"{cfg.enable_udp_port}:{cfg.enable_udp_port}/udp")
 
@@ -343,9 +363,56 @@ class FactorioServerManager:
                 f"{self.config_dir.resolve()}:/factorio/config",
                 f"{output_dir.resolve()}:/opt/factorio/script-output",
             ],
+            # extra_hosts needed here since sidecar shares network namespace
+            "extra_hosts": ["host.docker.internal:host-gateway"],
             "restart": "unless-stopped",
-            # Network mode for UDP to work properly
-            # Container sends to localhost:port, needs host network or port forwarding
+        }
+
+    def _build_udp_forwarder_config(self, instance_id: int) -> dict:
+        """Build UDP forwarder sidecar service config.
+
+        This Alpine-based container runs socat to forward UDP from Factorio's
+        localhost (inside the Factorio container's network namespace) to
+        host.docker.internal where Python on the host listens.
+
+        Factorio's helpers.send_udp() sends to localhost:port, which this
+        sidecar intercepts and forwards to the host.
+        """
+        cfg = self.config
+        snapshot_port = cfg.get_snapshot_port(f"server_{instance_id}")
+
+        # Build socat commands for all agent ports + snapshot port
+        socat_commands = []
+        for agent_idx in range(self.effective_max_agents):
+            agent_port = cfg.get_agent_port(agent_idx, server_index=instance_id)
+            # socat listens on localhost:port and forwards to host.docker.internal:port
+            socat_commands.append(
+                f"socat UDP-LISTEN:{agent_port},fork,reuseaddr UDP:host.docker.internal:{agent_port}"
+            )
+        # Also forward snapshot port
+        socat_commands.append(
+            f"socat UDP-LISTEN:{snapshot_port},fork,reuseaddr UDP:host.docker.internal:{snapshot_port}"
+        )
+
+        # Run all socat instances in parallel, keep container alive
+        # Using & to background all but the last one (which keeps container running)
+        if len(socat_commands) > 1:
+            command = " & ".join(socat_commands[:-1]) + " & " + socat_commands[-1]
+        else:
+            command = socat_commands[0]
+
+        return {
+            "image": "alpine/socat",
+            "platform": cfg.docker_platform,
+            # Share network namespace with Factorio container
+            # (inherits extra_hosts from factorio service)
+            "network_mode": f"service:factorio_{instance_id}",
+            # Override entrypoint since alpine/socat has "socat" as entrypoint
+            # Use list format to ensure command is passed as single argument to -c
+            "entrypoint": ["/bin/sh", "-c"],
+            "command": [command],
+            "depends_on": [f"factorio_{instance_id}"],
+            "restart": "unless-stopped",
         }
 
     # =========================================================================

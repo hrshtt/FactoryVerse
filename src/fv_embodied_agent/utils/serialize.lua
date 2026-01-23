@@ -50,7 +50,7 @@ end
 --- @param out table Output table to populate
 local function _serialize_base_properties(entity, out)
     local proto = entity.prototype
-    
+
     -- Cache frequently accessed properties for performance
     local pos = entity.position
     local dir = entity.direction
@@ -73,10 +73,50 @@ local function _serialize_base_properties(entity, out)
     end
 
     -- Tile dimensions from prototype
+    local tile_width = 1
+    local tile_height = 1
     if proto then
-        if proto.tile_width ~= nil then out.tile_width = proto.tile_width end
-        if proto.tile_height ~= nil then out.tile_height = proto.tile_height end
+        if proto.tile_width ~= nil then
+            out.tile_width = proto.tile_width
+            tile_width = proto.tile_width
+        end
+        if proto.tile_height ~= nil then
+            out.tile_height = proto.tile_height
+            tile_height = proto.tile_height
+        end
     end
+
+    -- Anchor tile: the tile containing the entity's center
+    out.anchor_tile = {
+        x = math.floor(pos.x),
+        y = math.floor(pos.y)
+    }
+
+    -- Footprint tiles: all tiles occupied by this entity
+    -- For asymmetric entities (width != height), swap dimensions for EAST/WEST
+    local effective_width = tile_width
+    local effective_height = tile_height
+    if dir and (dir == defines.direction.east or dir == defines.direction.west) then
+        if tile_width ~= tile_height then
+            effective_width, effective_height = tile_height, tile_width
+        end
+    end
+
+    local half_w = effective_width / 2
+    local half_h = effective_height / 2
+
+    local min_x = math.floor(pos.x - half_w)
+    local max_x = math.floor(pos.x + half_w - 0.001)  -- epsilon for exact boundaries
+    local min_y = math.floor(pos.y - half_h)
+    local max_y = math.floor(pos.y + half_h - 0.001)
+
+    local tiles = {}
+    for x = min_x, max_x do
+        for y = min_y, max_y do
+            tiles[#tiles + 1] = {x = x, y = y}
+        end
+    end
+    out.footprint_tiles = tiles
 
     -- Crafting / recipe (gate to crafting machines only)
     -- Only call get_recipe() on entity types that actually support it
@@ -332,37 +372,84 @@ function M.serialize_ghost(ghost, builder_info)
     if not (ghost and ghost.valid) then
         return nil
     end
-    
+
+    local pos = ghost.position
+    local dir = ghost.direction
+
     -- Generate position key (format: "x,y" with 1 decimal precision)
-    local pos_key = string.format("%.1f,%.1f", ghost.position.x, ghost.position.y)
-    
+    local pos_key = string.format("%.1f,%.1f", pos.x, pos.y)
+
     local data = {
         name = ghost.name,  -- "entity-ghost"
         type = ghost.type,  -- "entity-ghost"
-        position = { x = ghost.position.x, y = ghost.position.y },
+        position = { x = pos.x, y = pos.y },
         position_key = pos_key,
         ghost_name = ghost.ghost_name,  -- The entity this ghost represents
     }
-    
+
     -- Add direction if available
-    if ghost.direction then
-        data.direction = ghost.direction
-        data.direction_name = utils.direction_to_name(ghost.direction and tonumber(tostring(ghost.direction)) or nil)
+    if dir then
+        data.direction = dir
+        data.direction_name = utils.direction_to_name(dir and tonumber(tostring(dir)) or nil)
     end
-    
+
     -- Add force if available
     if ghost.force and ghost.force.name then
         data.force = ghost.force.name
     end
-    
-    
-    -- Key removed - using composite (ghost_name, position) in database
-    
+
+    -- Get tile dimensions from ghost prototype
+    local ghost_proto = ghost.ghost_prototype
+    local tile_width = 1
+    local tile_height = 1
+    if ghost_proto then
+        if ghost_proto.tile_width then
+            data.tile_width = ghost_proto.tile_width
+            tile_width = ghost_proto.tile_width
+        end
+        if ghost_proto.tile_height then
+            data.tile_height = ghost_proto.tile_height
+            tile_height = ghost_proto.tile_height
+        end
+    end
+
+    -- Anchor tile: the tile containing the ghost's center
+    data.anchor_tile = {
+        x = math.floor(pos.x),
+        y = math.floor(pos.y)
+    }
+
+    -- Footprint tiles: all tiles occupied by this ghost
+    -- For asymmetric entities (width != height), swap dimensions for EAST/WEST
+    local effective_width = tile_width
+    local effective_height = tile_height
+    if dir and (dir == defines.direction.east or dir == defines.direction.west) then
+        if tile_width ~= tile_height then
+            effective_width, effective_height = tile_height, tile_width
+        end
+    end
+
+    local half_w = effective_width / 2
+    local half_h = effective_height / 2
+
+    local min_x = math.floor(pos.x - half_w)
+    local max_x = math.floor(pos.x + half_w - 0.001)
+    local min_y = math.floor(pos.y - half_h)
+    local max_y = math.floor(pos.y + half_h - 0.001)
+
+    local tiles = {}
+    for x = min_x, max_x do
+        for y = min_y, max_y do
+            tiles[#tiles + 1] = {x = x, y = y}
+        end
+    end
+    data.footprint_tiles = tiles
+
     -- Add builder metadata if provided
     if builder_info then
         data.builder = builder_info
     end
-    
+
     return data
 end
 

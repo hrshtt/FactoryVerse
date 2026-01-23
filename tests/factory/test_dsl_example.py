@@ -4,7 +4,7 @@ This test validates the new factory-based architecture.
 """
 
 import pytest
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 
 class TestAgentRuntimeFixture:
@@ -32,7 +32,7 @@ class TestAgentRuntimeFixture:
         assert hasattr(dsl_context, "runtime")
 
         # Verify convenience accessors
-        assert dsl_context.reachable is dsl_context.runtime.reachable
+        assert dsl_context.reachable_view is dsl_context.runtime.reachable
         assert dsl_context.walking is dsl_context.runtime.walking
 
 
@@ -46,7 +46,7 @@ class TestEntityInspection:
 
         # Act - use runtime directly
         runtime = dsl_context.runtime
-        furnace = runtime.reachable.get_entity("stone-furnace")
+        furnace = runtime.reachable_view.get_entity("stone-furnace")
 
         # Assert
         assert furnace is not None
@@ -60,7 +60,7 @@ class TestEntityInspection:
         dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
 
         # Act
-        furnace = dsl_context.reachable.get_entity("stone-furnace")
+        furnace = dsl_context.reachable_view_view.get_entity("stone-furnace")
         info = furnace.inspect()
 
         # Assert
@@ -96,7 +96,7 @@ class TestReachable:
         dsl_context.test_ground.place_entity("iron-chest", 6, 6)
 
         # Act
-        furnaces = dsl_context.reachable.get_entities("stone-furnace")
+        furnaces = dsl_context.reachable_view_view.get_entities("stone-furnace")
 
         # Assert
         assert len(furnaces) >= 2
@@ -109,7 +109,7 @@ class TestReachable:
         dsl_context.test_ground.place_entity("stone-furnace", 4, 4)
 
         # Act - get by name AND position
-        furnace = dsl_context.reachable.get_entity(
+        furnace = dsl_context.reachable_view_view.get_entity(
             "stone-furnace", position=MapPosition(4, 4)
         )
 
@@ -128,7 +128,7 @@ class TestEntityViews:
         dsl_context.test_ground.place_entity("stone-furnace", 2, 2)
 
         # Act
-        furnace = dsl_context.reachable.get_entity("stone-furnace")
+        furnace = dsl_context.reachable_view_view.get_entity("stone-furnace")
 
         # Assert - Reachable should have all methods
         assert hasattr(furnace, "inspect")
@@ -147,7 +147,7 @@ class TestPrototypes:
 
     def test_prototypes_loaded(self, with_prototypes):
         """Prototype data should be available."""
-        from FactoryVerse.factory.prototypes import (
+        from FactoryVerse.game.factory.prototypes import (
             get_entity_prototypes,
             get_item_prototypes,
         )

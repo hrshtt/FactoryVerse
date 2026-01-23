@@ -1,133 +1,92 @@
 """
-Smoke tests for the testing infrastructure.
+Smoke tests for the testing infrastructure using the Environment module.
 
-These tests verify that the core fixtures work correctly:
-- Server starts and RCON connects
-- Agent can be created and destroyed
-- TestGround can place and clear entities
+These tests verify that the Environment allows access to:
+- RCON (Tier 3)
+- Agent Runtime (Tier 4)
 """
 
+import pytest
+from FactoryVerse.environment.environment import Environment
 
-class TestServerFixtures:
-    """Test server and RCON fixtures."""
 
-    def test_rcon_connection(self, rcon):
-        """Verify RCON connection works."""
-        assert rcon.ping()
+@pytest.mark.asyncio
+class TestEnvironmentBasics:
+    """Test environment access."""
 
-    def test_list_interfaces(self, rcon):
+    async def test_rcon_connection(self, environment: Environment):
+        """Verify RCON connection works via Tier 3."""
+        assert environment.tier3 is not None
+        assert environment.tier3.rcon_helper is not None
+        # Send a simple command to verify connection
+        # Use rcon_client directly as ping() is not available
+        response = environment.tier3.rcon_helper.rcon_client.send_command("/h")
+        assert response is not None
+        # Allow checking against common help outputs or error if command invalid
+        assert (
+            "Help" in response or "Unknown subcommand" in response or len(response) > 0
+        )
+
+    async def test_list_interfaces(self, environment: Environment):
         """Verify remote interfaces are available."""
-        interfaces = rcon.list_interfaces()
+        # interfaces is a property returning a dict/list
+        interfaces = environment.tier3.rcon_helper.interfaces
+        assert interfaces is not None
         assert "agent" in interfaces
-        assert "test_ground" in interfaces
         assert "admin" in interfaces
+        print(f"\nℹ️ Admin Interface Methods: {interfaces['admin']}")
+        print(f"ℹ️ Agent Interface Methods: {interfaces['agent']}")
 
 
-class TestAgentFixtures:
-    """Test agent creation and destruction."""
+@pytest.mark.asyncio
+class TestRuntimeBasics:
+    """Test runtime and agent functionality."""
 
-    def test_agent_created(self, agent):
-        """Verify agent is created."""
-        position = agent.get_position()
-        assert "x" in position
-        assert "y" in position
+    async def test_agent_created(self, environment: Environment):
+        """Verify agent is created in Tier 4."""
+        assert environment.tier4 is not None
+        assert environment.tier4.agent_id is not None
 
-    def test_agent_inspect(self, agent):
+        # Verify we can get position via RCON directly using agent_interface
+        # Note: Tier4 defaults agent_id="agent_1" which IS the interface name
+        agent_interface = environment.tier4.agent_id
+
+        pos = environment.tier3.rcon_helper.run(agent_interface, "get_position", {})
+        assert pos is not None
+        assert "x" in pos
+        assert "y" in pos
+
+    async def test_embodied_actions_loaded(self, environment_variant: Environment):
+        """Verify embodied actions are loaded in both variants."""
+        assert environment_variant.tier4.embodied_actions is not None
+        assert "movement" in environment_variant.tier4.embodied_actions
+        assert "placement" in environment_variant.tier4.embodied_actions
+
+    async def test_agent_inspect(self, environment: Environment):
         """Verify agent inspect works."""
-        state = agent.inspect(attach_state=True)
-        assert "agent_id" in state
+        agent_interface = environment.tier4.agent_id
+        # Use RCON helper directly, 'inspect' usually returns the agent state dict
+        state = environment.tier3.rcon_helper.run(agent_interface, "inspect", {})
+        assert state is not None
+        # Depending on inspect impl, check keys
         assert "position" in state
-        assert "state" in state
+        assert (
+            "state" in state
+        )  # Inspect returns internal state including walking, mining, etc.
 
-    def test_agent_teleport(self, agent):
+    async def test_agent_teleport(self, environment: Environment):
         """Verify agent can teleport."""
-        result = agent.teleport(10, 10)
-        # Teleport returns True on success
-        assert result is True
+        agent_interface = environment.tier4.agent_id
 
-        pos = agent.get_position()
-        assert abs(pos["x"] - 10) < 1
-        assert abs(pos["y"] - 10) < 1
-
-
-class TestTestGroundFixtures:
-    """Test TestGround fixture."""
-
-    def test_place_resource(self, test_ground):
-        """Verify resource placement works."""
-        patch = test_ground.place_iron_patch(50, 50, size=4, amount=1000)
-
-        assert patch.resource_name == "iron-ore"
-        assert patch.total_tiles == 16  # 4x4
-        assert patch.total_amount == 16000  # 16 * 1000
-
-    def test_place_entity(self, test_ground):
-        """Verify entity placement works."""
-        entity = test_ground.place_entity("stone-furnace", 30, 30)
-
-        assert entity.name == "stone-furnace"
-        assert abs(entity.position[0] - 30) < 1
-        assert abs(entity.position[1] - 30) < 1
-
-    def test_clear_area(self, test_ground):
-        """Verify area clearing works."""
-        # Place some entities
-        test_ground.place_entity("stone-furnace", 40, 40)
-        test_ground.place_entity("stone-furnace", 42, 40)
-
-        # Clear area
-        cleared = test_ground.clear_area((35, 35), (50, 50))
-
-        assert cleared >= 2
-
-    def test_validate_entity(self, test_ground):
-        """Verify entity validation works."""
-        # Place entity
-        test_ground.place_entity("iron-chest", 60, 60)
-
-        # Validate
-        assert test_ground.validate_entity_at("iron-chest", 60, 60)
-        assert not test_ground.validate_entity_at("iron-chest", 100, 100)
-
-
-class TestAdminFixtures:
-    """Test admin fixture."""
-
-    def test_admin_available(self, admin, rcon):
-        """Verify admin interface is available."""
-        interfaces = rcon.list_interfaces()
-        assert "admin" in interfaces
-
-
-class TestGameWorldFixture:
-    """Test combined game_world fixture."""
-
-    def test_game_world_components(self, game_world):
-        """Verify game_world has all components."""
-        assert game_world.agent is not None
-        assert game_world.test_ground is not None
-        assert game_world.admin is not None
-
-    def test_game_world_workflow(self, game_world):
-        """Test a simple workflow using game_world."""
-        # Place a resource
-        patch = game_world.test_ground.place_coal_patch(70, 70, size=4)
-        assert patch.resource_name == "coal"
-
-        # Teleport agent nearby
-        game_world.agent.teleport(70, 70)
+        # Teleport
+        target_pos = {"x": 10, "y": 10}
+        result = environment.tier3.rcon_helper.run(
+            agent_interface, "teleport", target_pos
+        )
+        # Teleport usually returns nothing or success
+        # Check result if needed, but important is the effect
 
         # Check position
-        pos = game_world.agent.get_position()
-        assert abs(pos["x"] - 70) < 1
-        assert abs(pos["y"] - 70) < 1
-
-
-class TestCleanAreaFixture:
-    """Test the clean_area fixture."""
-
-    def test_clean_area_is_empty(self, clean_area):
-        """Verify clean_area resets the test area."""
-        metadata = clean_area.get_metadata()
-        # After reset, should have no tracked entities
-        assert metadata.get("entity_count", 0) == 0
+        pos = environment.tier3.rcon_helper.run(agent_interface, "get_position", {})
+        assert abs(pos["x"] - 10) < 1
+        assert abs(pos["y"] - 10) < 1

@@ -317,8 +317,8 @@ local function mark_entity_update_written(chunk_x, chunk_y)
             water = false,
             snapshot_tick = nil,
             dirty = false,
-            has_player_entities = false,
-            player_entity_count = 0,
+            has_tracked_entities = false,
+            tracked_entity_count = 0,
             entity_updates_written = true,  -- NEW FLAG
         }
         storage.chunk_tracker.chunk_lookup[chunk_key] = chunk_entry
@@ -368,8 +368,8 @@ local function mark_trees_rocks_update_written(chunk_x, chunk_y)
             water = false,
             snapshot_tick = nil,
             dirty = false,
-            has_player_entities = false,
-            player_entity_count = 0,
+            has_tracked_entities = false,
+            tracked_entity_count = 0,
             trees_rocks_updates_written = true,  -- NEW FLAG
         }
         storage.chunk_tracker.chunk_lookup[chunk_key] = chunk_entry

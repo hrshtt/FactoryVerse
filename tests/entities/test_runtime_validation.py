@@ -23,7 +23,7 @@ from typing import List
 
 def get_entity_mixins(entity_class) -> List[str]:
     """Get list of mixin names for an entity class."""
-    from FactoryVerse.factory.entity.capabilities import (
+    from FactoryVerse.game.factory.entity.capabilities import (
         BurnerMixin,
         ElectricMixin,
         MinerMixin,
@@ -62,7 +62,7 @@ class TestRuntimeBurnerStateValidation:
 
     def test_stone_furnace_burner_state_parsing(self, rcon, test_ground, agent_id):
         """Stone furnace runtime burner data should parse into BurnerState."""
-        from FactoryVerse.factory.entity.capabilities import BurnerState
+        from FactoryVerse.game.factory.entity.capabilities import BurnerState
 
         # Place furnace
         test_ground.clear_area((95, 95), (105, 105))
@@ -105,7 +105,7 @@ class TestRuntimeMinerStateValidation:
 
     def test_burner_mining_drill_miner_state_parsing(self, rcon, test_ground, agent_id):
         """Burner mining drill runtime data should parse into MinerState."""
-        from FactoryVerse.factory.entity.capabilities import MinerState, MiningTarget
+        from FactoryVerse.game.factory.entity.capabilities import MinerState, MiningTarget
 
         # Place ore and drill
         test_ground.place_resource_patch("iron-ore", 110, 100, size=8, amount=5000)
@@ -145,7 +145,7 @@ class TestRuntimeInserterStateValidation:
 
     def test_inserter_state_parsing(self, rcon, test_ground, agent_id):
         """Inserter runtime data should parse into InserterState."""
-        from FactoryVerse.factory.entity.capabilities import InserterState, HeldItem
+        from FactoryVerse.game.factory.entity.capabilities import InserterState, HeldItem
 
         test_ground.clear_area((115, 95), (125, 105))
         placed = test_ground.place_entity("inserter", 120, 100, direction=0)
@@ -182,7 +182,7 @@ class TestRuntimeContainerStateValidation:
 
     def test_wooden_chest_container_state_parsing(self, rcon, test_ground, agent_id):
         """Wooden chest runtime data should parse into ContainerState."""
-        from FactoryVerse.factory.entity.implementations.container import ContainerState
+        from FactoryVerse.game.factory.entity.implementations.container import ContainerState
 
         test_ground.clear_area((125, 95), (135, 105))
         placed = test_ground.place_entity("wooden-chest", 130, 100)
@@ -268,9 +268,9 @@ class TestFullInspectionRoundtrip:
 
     def test_stone_furnace_full_inspect_roundtrip(self, rcon, test_ground, agent_id):
         """Test complete inspect() call on stone furnace."""
-        from FactoryVerse.factory.entity.implementations import StoneFurnace
-        from FactoryVerse.factory.entity.base_entity import EntityView
-        from FactoryVerse.factory.types import MapPosition
+        from FactoryVerse.game.factory.entity.implementations import StoneFurnace
+        from FactoryVerse.game.factory.entity.base_entity import EntityView
+        from FactoryVerse.game.factory.types import MapPosition
 
         # Place furnace
         test_ground.clear_area((155, 95), (165, 105))
@@ -293,8 +293,8 @@ class TestFullInspectionRoundtrip:
 
     def test_ghost_furnace_inspect_works_without_ops(self, rcon, test_ground):
         """Ghost entity inspect() should work without entity_ops."""
-        from FactoryVerse.factory.entity.implementations import StoneFurnace
-        from FactoryVerse.factory.types import MapPosition
+        from FactoryVerse.game.factory.entity.implementations import StoneFurnace
+        from FactoryVerse.game.factory.types import MapPosition
 
         # Create ghost entity (no live placement needed)
         furnace = StoneFurnace(
@@ -323,7 +323,7 @@ class TestStateTypeConsistency:
     def test_all_capability_states_are_pydantic_models(self):
         """All capability states should be Pydantic BaseModels."""
         from pydantic import BaseModel
-        from FactoryVerse.factory.entity.capabilities import (
+        from FactoryVerse.game.factory.entity.capabilities import (
             BurnerState,
             ElectricState,
             CrafterState,
@@ -351,15 +351,15 @@ class TestStateTypeConsistency:
     def test_all_category_states_are_pydantic_models(self):
         """All category-specific states should be Pydantic BaseModels."""
         from pydantic import BaseModel
-        from FactoryVerse.factory.entity.implementations.container import ContainerState
-        from FactoryVerse.factory.entity.implementations.lab import LabState
-        from FactoryVerse.factory.entity.implementations.accumulator import (
+        from FactoryVerse.game.factory.entity.implementations.container import ContainerState
+        from FactoryVerse.game.factory.entity.implementations.lab import LabState
+        from FactoryVerse.game.factory.entity.implementations.accumulator import (
             AccumulatorState,
         )
-        from FactoryVerse.factory.entity.implementations.electric_pole import (
+        from FactoryVerse.game.factory.entity.implementations.electric_pole import (
             ElectricPoleState,
         )
-        from FactoryVerse.factory.entity.implementations.generator import GeneratorState
+        from FactoryVerse.game.factory.entity.implementations.generator import GeneratorState
 
         states = [
             ContainerState,
@@ -376,7 +376,7 @@ class TestStateTypeConsistency:
 
     def test_entity_inspection_imports_all_states(self):
         """EntityInspection should import all state types correctly."""
-        from FactoryVerse.factory.entity.inspection import EntityInspection
+        from FactoryVerse.game.factory.entity.inspection import EntityInspection
         import inspect
 
         # Get the source file and check imports

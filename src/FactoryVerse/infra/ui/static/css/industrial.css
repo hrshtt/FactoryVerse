@@ -1,0 +1,358 @@
+/* =========================================
+   🏭 FACTORIO-INSPIRED INDUSTRIAL THEME
+   ========================================= */
+
+/* Import industrial/mechanical font */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@400;500;700;900&display=swap');
+
+:root {
+    --primary: #D97706;
+    --primary-dark: #B45309;
+    --secondary: #78716C;
+    --success: #65A30D;
+    --warning: #FBBF24;
+    --danger: #DC2626;
+    --surface: #1C1917;
+    --surface-alt: #292524;
+    --text: #D6D3D1;
+    --text-muted: #A8A29E;
+    --border: #57534E;
+    --metal: #44403C;
+    --rust: #9A3412;
+}
+
+/* Base body - dark industrial with subtle grid pattern */
+body {
+    background:
+        linear-gradient(rgba(28, 25, 23, 0.97), rgba(28, 25, 23, 0.97)),
+        repeating-linear-gradient(0deg,
+            transparent,
+            transparent 20px,
+            rgba(87, 83, 78, 0.1) 20px,
+            rgba(87, 83, 78, 0.1) 21px),
+        repeating-linear-gradient(90deg,
+            transparent,
+            transparent 20px,
+            rgba(87, 83, 78, 0.1) 20px,
+            rgba(87, 83, 78, 0.1) 21px);
+    background-color: #1C1917;
+    min-height: 100vh;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Industrial panel card - NO rounded corners, metal look */
+.glass-card {
+    background: linear-gradient(180deg, #292524 0%, #1C1917 100%);
+    backdrop-filter: none;
+    border: 2px solid #57534E;
+    border-radius: 0 !important;
+    /* Sharp corners! */
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+        0 4px 12px rgba(0, 0, 0, 0.5);
+    position: relative;
+}
+
+/* Corner rivets/bolts decoration */
+.glass-card::before {
+    content: "●";
+    position: absolute;
+    top: 6px;
+    left: 8px;
+    font-size: 8px;
+    color: #57534E;
+    text-shadow:
+        0 0 0 #57534E,
+        16px 0 0 #57534E;
+}
+
+.glass-card::after {
+    content: "●";
+    position: absolute;
+    bottom: 6px;
+    right: 8px;
+    font-size: 8px;
+    color: #57534E;
+    text-shadow:
+        0 0 0 #57534E,
+        -16px 0 0 #57534E;
+}
+
+/* Sidebar - dark steel panel */
+.sidebar {
+    background: linear-gradient(180deg, #292524 0%, #1C1917 100%);
+    border-right: 3px solid #57534E;
+    box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-item {
+    transition: all 0.15s ease;
+    border-radius: 0 !important;
+    margin: 2px 4px;
+    border-left: 3px solid transparent;
+    font-family: 'Orbitron', sans-serif;
+    text-transform: uppercase;
+    font-size: 0.85rem;
+    letter-spacing: 1px;
+}
+
+.sidebar-item:hover {
+    background: rgba(217, 119, 6, 0.15);
+    border-left-color: #D97706;
+    transform: none;
+    /* No slide effect - industrial is solid */
+}
+
+.sidebar-item.active {
+    background: linear-gradient(90deg, rgba(217, 119, 6, 0.25) 0%, transparent 100%);
+    border-left: 3px solid #D97706;
+}
+
+/* Status indicator - LED lights on control panel */
+.status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    border: 2px solid #44403C;
+    box-shadow:
+        0 0 4px currentColor,
+        inset 0 -2px 4px rgba(0, 0, 0, 0.5);
+    animation: led-pulse 2s infinite;
+}
+
+.status-dot.running {
+    background: radial-gradient(circle at 30% 30%, #84CC16, #65A30D);
+    box-shadow: 0 0 8px #65A30D, inset 0 -2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.status-dot.stopped {
+    background: radial-gradient(circle at 30% 30%, #78716C, #57534E);
+}
+
+.status-dot.warning {
+    background: radial-gradient(circle at 30% 30%, #FCD34D, #FBBF24);
+    box-shadow: 0 0 8px #FBBF24, inset 0 -2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.status-dot.error {
+    background: radial-gradient(circle at 30% 30%, #F87171, #DC2626);
+    box-shadow: 0 0 8px #DC2626, inset 0 -2px 4px rgba(0, 0, 0, 0.3);
+}
+
+@keyframes led-pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.7;
+    }
+}
+
+/* Industrial text - stencil/mechanical style */
+.gradient-text {
+    background: linear-gradient(180deg, #FBBF24 0%, #D97706 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+/* Section headers - stamped metal look */
+.section-header {
+    border-left: 4px solid #D97706;
+    padding-left: 12px;
+    margin-bottom: 16px;
+    font-family: 'Orbitron', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: #D6D3D1;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Pre-flight check card - warning panel style */
+.preflight-card {
+    border: 2px dashed #D97706;
+    background: rgba(217, 119, 6, 0.05);
+    border-radius: 0 !important;
+}
+
+/* Session cards - industrial panel hover */
+.session-card {
+    transition: all 0.15s ease;
+    border-left: 4px solid transparent;
+    border-radius: 0 !important;
+}
+
+.session-card:hover {
+    transform: none;
+    box-shadow:
+        inset 0 0 20px rgba(217, 119, 6, 0.1),
+        0 0 15px rgba(217, 119, 6, 0.2);
+    border-color: #D97706;
+}
+
+.session-card.running {
+    border-left-color: #65A30D;
+}
+
+.session-card.complete {
+    border-left-color: #D97706;
+}
+
+.session-card.orphaned {
+    border-left-color: #FBBF24;
+}
+
+/* Industrial button - heavy, mechanical */
+.gradient-btn {
+    background: linear-gradient(180deg, #D97706 0%, #B45309 100%);
+    background-size: 100% 100%;
+    transition: all 0.15s ease;
+    border-radius: 0 !important;
+    border: 2px solid #9A3412;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        0 3px 0 #7C2D12,
+        0 4px 8px rgba(0, 0, 0, 0.4);
+    font-family: 'Orbitron', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+}
+
+.gradient-btn:hover {
+    background: linear-gradient(180deg, #EA580C 0%, #D97706 100%);
+    transform: translateY(1px);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        0 2px 0 #7C2D12,
+        0 3px 6px rgba(0, 0, 0, 0.4);
+}
+
+.gradient-btn:active {
+    transform: translateY(3px);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        0 0px 0 #7C2D12,
+        0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* Stats grid - gauge/meter style */
+.stat-card {
+    background: linear-gradient(180deg, #292524 0%, #1C1917 100%);
+    border-radius: 0 !important;
+    padding: 16px;
+    text-align: center;
+    border: 2px solid #57534E;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+}
+
+.stat-value {
+    font-size: 2.5rem;
+    font-weight: 900;
+    font-family: 'Orbitron', sans-serif;
+    background: linear-gradient(180deg, #FBBF24 0%, #D97706 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+}
+
+/* Tool call expansion - terminal/console style */
+.tool-expansion {
+    background: #1C1917;
+    border: 1px solid #44403C;
+    border-radius: 0 !important;
+    margin: 8px 0;
+    border-left: 3px solid #D97706;
+}
+
+/* Notifications badge - warning light */
+.notification-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    background: #DC2626;
+    color: white;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 0;
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    box-shadow: 0 0 8px #DC2626;
+}
+
+/* Override Quasar rounded buttons */
+.q-btn {
+    border-radius: 0 !important;
+}
+
+.q-card {
+    border-radius: 0 !important;
+}
+
+.q-expansion-item {
+    border-radius: 0 !important;
+}
+
+/* Input fields - industrial terminal style */
+.q-field__control {
+    border-radius: 0 !important;
+    background: #1C1917 !important;
+    border: 1px solid #57534E !important;
+}
+
+.q-field--focused .q-field__control {
+    border-color: #D97706 !important;
+    box-shadow: 0 0 8px rgba(217, 119, 6, 0.3) !important;
+}
+
+/* Code blocks - green terminal text */
+code,
+pre {
+    font-family: 'JetBrains Mono', monospace !important;
+    background: #0C0A09 !important;
+    border: 1px solid #44403C !important;
+    border-radius: 0 !important;
+}
+
+/* Scrollbar - industrial heavy */
+::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+
+::-webkit-scrollbar-track {
+    background: #1C1917;
+    border-left: 1px solid #44403C;
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #57534E 0%, #44403C 100%);
+    border: 2px solid #1C1917;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #78716C 0%, #57534E 100%);
+}
+
+/* Header bar - control panel top */
+.q-header {
+    background: linear-gradient(180deg, #292524 0%, #1C1917 100%) !important;
+    border-bottom: 3px solid #57534E !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Separator lines */
+.q-separator {
+    background: #57534E !important;
+}

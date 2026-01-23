@@ -7,10 +7,15 @@ Requirements:
 import pytest
 from factorio_rcon import RCONClient
 
-from FactoryVerse.factory.types import MapPosition, Direction
-from FactoryVerse.agent.infra.rcon_handler import RconHandler
-from FactoryVerse.agent.actions.place_entity import PlacementAction
-from FactoryVerse.agent.actions.placement_hints import PlacementHints
+from unittest.mock import MagicMock
+
+from FactoryVerse.environment.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+from FactoryVerse.game.factory.types import MapPosition, Direction
+from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
+from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
+from FactoryVerse.game.agent.embodied_actions.entity_operations import EntityOperationsAction
+from FactoryVerse.game.agent.placement_hints import PlacementHints
 
 
 # =============================================================================
@@ -21,7 +26,9 @@ from FactoryVerse.agent.actions.placement_hints import PlacementHints
 @pytest.fixture(scope="function")
 def rcon_client():
     """RCON client for test-ground scenario."""
-    client = RCONClient("localhost", 27100, "factorio")
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
     yield client
 
 
@@ -51,9 +58,21 @@ def rcon_handler(rcon_client, agent_name):
 
 
 @pytest.fixture(scope="function")
-def placement(rcon_handler):
+def entity_ops(rcon_handler):
+    """EntityOperationsAction instance."""
+    return EntityOperationsAction(rcon_handler)
+
+
+@pytest.fixture(scope="function")
+def walking_action():
+    """Mock MovementAction for tests that don't need actual walking."""
+    return MagicMock()
+
+
+@pytest.fixture(scope="function")
+def placement(rcon_handler, entity_ops, walking_action):
     """PlacementAction instance."""
-    return PlacementAction(rcon_handler)
+    return PlacementAction(rcon_handler, entity_ops, walking_action)
 
 
 @pytest.fixture(scope="function")
@@ -106,7 +125,7 @@ class TestGhostBuilderUnit:
 
     def test_ghost_info_dataclass(self):
         """Test GhostInfo dataclass."""
-        from FactoryVerse.agent.actions.ghost_builder import GhostInfo
+        from FactoryVerse.game.agent.ghost_builder import GhostInfo
 
         info = GhostInfo(
             name="transport-belt", position=MapPosition(x=10.0, y=20.0), direction=4
@@ -118,7 +137,7 @@ class TestGhostBuilderUnit:
 
     def test_ghost_builder_imports(self):
         """Test GhostBuilder can be imported."""
-        from FactoryVerse.agent.actions.ghost_builder import GhostBuilderAction
+        from FactoryVerse.game.agent.ghost_builder import GhostBuilderAction
 
         assert GhostBuilderAction is not None
 

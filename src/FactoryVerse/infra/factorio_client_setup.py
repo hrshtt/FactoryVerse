@@ -7,10 +7,11 @@ import shutil
 import json
 import subprocess
 import sys
+import hashlib
 from pathlib import Path
 from typing import Optional
 
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 
 
 def _get_client_rcon_config():
@@ -157,6 +158,174 @@ def _save_mod_list(mod_path: Path, mod_list: dict) -> None:
     (mod_path / "mod-list.json").write_text(json.dumps(mod_list, indent=2))
 
 
+def _calculate_directory_hash(directory: Path) -> str:
+    """Calculate SHA256 hash of all files in a directory.
+    
+    Args:
+        directory: Path to directory to hash
+        
+    Returns:
+        Hexadecimal hash string
+    """
+    hasher = hashlib.sha256()
+    
+    # Get all files sorted by path for deterministic hashing
+    all_files = sorted(directory.rglob("*"))
+    
+    for file_path in all_files:
+        if file_path.is_file():
+            # Include relative path in hash
+            rel_path = file_path.relative_to(directory)
+            hasher.update(str(rel_path).encode())
+            
+            # Include file contents
+            try:
+                with open(file_path, "rb") as f:
+                    hasher.update(f.read())
+            except (IOError, OSError):
+                # Skip files we can't read
+                pass
+    
+    return hasher.hexdigest()
+
+
+def _get_mod_hash_file(mod_path: Path, mod_name: str) -> Path:
+    """Get path to hash file for a mod.
+    
+    Args:
+        mod_path: Factorio mods directory
+        mod_name: Mod name (e.g., 'fv_embodied_agent')
+        
+    Returns:
+        Path to hash file
+    """
+    return mod_path / f".{mod_name}.hash"
+
+
+def _get_mod_hash(mod_path: Path, mod_name: str) -> Optional[str]:
+    """Get stored hash for a mod.
+    
+    Args:
+        mod_path: Factorio mods directory
+        mod_name: Mod name
+        
+    Returns:
+        Hash string if exists, None otherwise
+    """
+    hash_file = _get_mod_hash_file(mod_path, mod_name)
+    if hash_file.exists():
+        return hash_file.read_text().strip()
+    return None
+
+
+def _save_mod_hash(mod_path: Path, mod_name: str, hash_value: str) -> None:
+    """Save hash for a mod.
+    
+    Args:
+        mod_path: Factorio mods directory
+        mod_name: Mod name
+        hash_value: Hash to save
+    """
+    hash_file = _get_mod_hash_file(mod_path, mod_name)
+    hash_file.write_text(hash_value)
+
+
+def _mod_needs_update(source_dir: Path, mod_path: Path, mod_name: str) -> bool:
+    """Check if mod needs to be updated based on hash comparison.
+
+    Args:
+        source_dir: Source mod directory
+        mod_path: Factorio mods directory
+        mod_name: Mod name
+
+    Returns:
+        True if mod needs update, False if hash matches
+    """
+    if not source_dir.exists():
+        return True
+
+    current_hash = _calculate_directory_hash(source_dir)
+    stored_hash = _get_mod_hash(mod_path, mod_name)
+
+    if stored_hash != current_hash:
+        # Update stored hash
+        _save_mod_hash(mod_path, mod_name, current_hash)
+        return True
+
+    return False
+
+
+# =============================================================================
+# Scenario Hash Functions (same pattern as mods)
+# =============================================================================
+
+
+def _get_scenario_hash_file(scenario_path: Path, scenario_name: str) -> Path:
+    """Get path to hash file for a scenario.
+
+    Args:
+        scenario_path: Factorio scenarios directory
+        scenario_name: Scenario name
+
+    Returns:
+        Path to hash file
+    """
+    return scenario_path / f".{scenario_name}.hash"
+
+
+def _get_scenario_hash(scenario_path: Path, scenario_name: str) -> Optional[str]:
+    """Get stored hash for a scenario.
+
+    Args:
+        scenario_path: Factorio scenarios directory
+        scenario_name: Scenario name
+
+    Returns:
+        Hash string if exists, None otherwise
+    """
+    hash_file = _get_scenario_hash_file(scenario_path, scenario_name)
+    if hash_file.exists():
+        return hash_file.read_text().strip()
+    return None
+
+
+def _save_scenario_hash(scenario_path: Path, scenario_name: str, hash_value: str) -> None:
+    """Save hash for a scenario.
+
+    Args:
+        scenario_path: Factorio scenarios directory
+        scenario_name: Scenario name
+        hash_value: Hash to save
+    """
+    hash_file = _get_scenario_hash_file(scenario_path, scenario_name)
+    hash_file.write_text(hash_value)
+
+
+def _scenario_needs_update(source_dir: Path, scenario_path: Path, scenario_name: str) -> bool:
+    """Check if scenario needs to be updated based on hash comparison.
+
+    Args:
+        source_dir: Source scenario directory
+        scenario_path: Factorio scenarios directory
+        scenario_name: Scenario name
+
+    Returns:
+        True if scenario needs update, False if hash matches
+    """
+    if not source_dir.exists():
+        return True
+
+    current_hash = _calculate_directory_hash(source_dir)
+    stored_hash = _get_scenario_hash(scenario_path, scenario_name)
+
+    if stored_hash != current_hash:
+        # Update stored hash
+        _save_scenario_hash(scenario_path, scenario_name, current_hash)
+        return True
+
+    return False
+
+
 def _update_mod_list(mod_path: Path, mod_name: str, enabled: bool) -> None:
     """Add or update a mod in mod-list.json.
 
@@ -196,7 +365,7 @@ def _update_mod_list(mod_path: Path, mod_name: str, enabled: bool) -> None:
 
 def setup_client(
     work_dir_or_mod_dir: Path,
-    scenario: str = "test-ground",
+    scenario: Optional[str] = None,
     force: bool = False,
     project_scenarios_dir: Optional[Path] = None,
 ) -> None:
@@ -211,7 +380,7 @@ def setup_client(
 
     Args:
         work_dir_or_mod_dir: Path to work directory (preferred) or mod directory (for backward compatibility)
-        scenario: Scenario name to setup
+        scenario: Scenario name to setup (None = mods only, no scenario)
         force: Force copy scenario even if it exists
         project_scenarios_dir: Path to project scenarios directory (for copying scenarios)
     """
@@ -230,6 +399,7 @@ def setup_client(
 
     embodied_agent_mod_dir = work_dir / "src" / "fv_embodied_agent"
     snapshot_mod_dir = work_dir / "src" / "fv_snapshot"
+    placement_hints_mod_dir = work_dir / "src" / "fv_placement_hints"
 
     # Ensure directories exist
     mod_path.mkdir(parents=True, exist_ok=True)
@@ -238,7 +408,8 @@ def setup_client(
     # Ensure mod-list.json exists
     _ensure_mod_list_exists(mod_path)
 
-    print(f"📱 Setting up Factorio client (scenario: {scenario})")
+    scenario_info = f"scenario: {scenario}" if scenario else "mods only"
+    print(f"📱 Setting up Factorio client ({scenario_info})")
 
     # Check that both mod directories exist
     if not embodied_agent_mod_dir.exists():
@@ -253,6 +424,7 @@ def setup_client(
     for old_mod_pattern in [
         "fv_embodied_agent*",
         "fv_snapshot*",
+        "fv_placement_hints*",
         "factorio_verse*",
     ]:
         for old_mod in mod_path.glob(old_mod_pattern):
@@ -268,7 +440,7 @@ def setup_client(
             shutil.rmtree(client_scenario_dir)
 
     # Prepare fv_embodied_agent mod
-    print("📦 Preparing fv_embodied_agent mod...")
+    print("📦 Checking fv_embodied_agent mod...")
     info_json_path = embodied_agent_mod_dir / "info.json"
     if info_json_path.exists():
         info = json.loads(info_json_path.read_text())
@@ -279,14 +451,28 @@ def setup_client(
         mod_version = "1.0.0"
 
     client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
-    if client_mod_dir.exists():
-        shutil.rmtree(client_mod_dir)
-    shutil.copytree(embodied_agent_mod_dir, client_mod_dir)
-    _update_mod_list(mod_path, mod_name, True)
-    print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+    
+    # Check if mod needs update based on hash
+    if force or _mod_needs_update(embodied_agent_mod_dir, mod_path, mod_name):
+        if client_mod_dir.exists():
+            shutil.rmtree(client_mod_dir)
+        print(f"   Updating {mod_name} mod (hash changed or --force)...")
+        shutil.copytree(embodied_agent_mod_dir, client_mod_dir)
+        _update_mod_list(mod_path, mod_name, True)
+        print(f"✓ {mod_name} mod updated as {client_mod_dir.name}")
+    else:
+        # Ensure mod directory exists even if hash matches
+        if not client_mod_dir.exists():
+            print(f"   Mod directory missing, copying {mod_name}...")
+            shutil.copytree(embodied_agent_mod_dir, client_mod_dir)
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+        else:
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod up to date (hash unchanged)")
 
     # Prepare fv_snapshot mod
-    print("📦 Preparing fv_snapshot mod...")
+    print("📦 Checking fv_snapshot mod...")
     info_json_path = snapshot_mod_dir / "info.json"
     if info_json_path.exists():
         info = json.loads(info_json_path.read_text())
@@ -297,29 +483,87 @@ def setup_client(
         mod_version = "1.0.0"
 
     client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
-    if client_mod_dir.exists():
-        shutil.rmtree(client_mod_dir)
-    shutil.copytree(snapshot_mod_dir, client_mod_dir)
-    _update_mod_list(mod_path, mod_name, True)
-    print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+    
+    # Check if mod needs update based on hash
+    if force or _mod_needs_update(snapshot_mod_dir, mod_path, mod_name):
+        if client_mod_dir.exists():
+            shutil.rmtree(client_mod_dir)
+        print(f"   Updating {mod_name} mod (hash changed or --force)...")
+        shutil.copytree(snapshot_mod_dir, client_mod_dir)
+        _update_mod_list(mod_path, mod_name, True)
+        print(f"✓ {mod_name} mod updated as {client_mod_dir.name}")
+    else:
+        # Ensure mod directory exists even if hash matches
+        if not client_mod_dir.exists():
+            print(f"   Mod directory missing, copying {mod_name}...")
+            shutil.copytree(snapshot_mod_dir, client_mod_dir)
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+        else:
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod up to date (hash unchanged)")
 
-    # Handle scenario if project_scenarios_dir is provided
-    if project_scenarios_dir:
+    # Prepare fv_placement_hints mod
+    print("📦 Checking fv_placement_hints mod...")
+    if placement_hints_mod_dir.exists():
+        info_json_path = placement_hints_mod_dir / "info.json"
+        if info_json_path.exists():
+            info = json.loads(info_json_path.read_text())
+            mod_name = info.get("name", "fv_placement_hints")
+            mod_version = info.get("version", "1.0.0")
+        else:
+            mod_name = "fv_placement_hints"
+            mod_version = "1.0.0"
+
+        client_mod_dir = mod_path / f"{mod_name}_{mod_version}"
+
+        # Check if mod needs update based on hash
+        if force or _mod_needs_update(placement_hints_mod_dir, mod_path, mod_name):
+            if client_mod_dir.exists():
+                shutil.rmtree(client_mod_dir)
+            print(f"   Updating {mod_name} mod (hash changed or --force)...")
+            shutil.copytree(placement_hints_mod_dir, client_mod_dir)
+            _update_mod_list(mod_path, mod_name, True)
+            print(f"✓ {mod_name} mod updated as {client_mod_dir.name}")
+        else:
+            # Ensure mod directory exists even if hash matches
+            if not client_mod_dir.exists():
+                print(f"   Mod directory missing, copying {mod_name}...")
+                shutil.copytree(placement_hints_mod_dir, client_mod_dir)
+                _update_mod_list(mod_path, mod_name, True)
+                print(f"✓ {mod_name} mod copied as {client_mod_dir.name}")
+            else:
+                _update_mod_list(mod_path, mod_name, True)
+                print(f"✓ {mod_name} mod up to date (hash unchanged)")
+    else:
+        print("⚠️  fv_placement_hints mod not found, skipping...")
+
+    # Handle scenario if project_scenarios_dir is provided and scenario is specified
+    if project_scenarios_dir and scenario:
+        print(f"📋 Checking scenario '{scenario}'...")
         client_scenario_dir = scenario_path / scenario
         project_scenario_dir = project_scenarios_dir / scenario
 
-        should_copy = force or not client_scenario_dir.exists()
-        if should_copy:
-            if project_scenario_dir.exists():
+        if not project_scenario_dir.exists():
+            print(f"⚠️  Scenario '{scenario}' not found in project at {project_scenario_dir}")
+        else:
+            # Use hash-based detection (same pattern as mods)
+            if force or _scenario_needs_update(project_scenario_dir, scenario_path, scenario):
                 if client_scenario_dir.exists():
                     shutil.rmtree(client_scenario_dir)
-                print(f"📋 Copying scenario '{scenario}'...")
+                print(f"   Updating scenario '{scenario}' (hash changed or --force)...")
                 shutil.copytree(project_scenario_dir, client_scenario_dir)
-                print(f"✓ Scenario '{scenario}' copied")
+                print(f"✓ Scenario '{scenario}' updated")
             else:
-                print(f"⚠️  Scenario '{scenario}' not found in project")
-        else:
-            print(f"ℹ️  Scenario '{scenario}' already exists (use --force to overwrite)")
+                # Ensure scenario directory exists even if hash matches
+                if not client_scenario_dir.exists():
+                    print(f"   Scenario directory missing, copying '{scenario}'...")
+                    shutil.copytree(project_scenario_dir, client_scenario_dir)
+                    print(f"✓ Scenario '{scenario}' copied")
+                else:
+                    print(f"✓ Scenario '{scenario}' up to date (hash unchanged)")
+    elif not scenario:
+        print("ℹ️  No scenario specified, skipping scenario setup")
 
     # Ensure DLC mods are disabled
     dlc_mods = ["space-age", "quality", "elevated-rails"]
@@ -331,6 +575,34 @@ def setup_client(
     print(
         "ℹ️  Note: Restart Factorio if it's already running for changes to take effect."
     )
+
+
+def _find_steam_executable() -> Optional[Path]:
+    """Find Steam executable on macOS for launching games via -applaunch."""
+    if platform.system() != "Darwin":
+        return None
+    
+    # Check standard location
+    steam_path = Path("/Applications/Steam.app/Contents/MacOS/steam_osx")
+    if steam_path.exists():
+        return steam_path
+    
+    # Check alternative location
+    alt_path = (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "Steam"
+        / "Steam.AppBundle"
+        / "Steam"
+        / "Contents"
+        / "MacOS"
+        / "steam_osx"
+    )
+    if alt_path.exists():
+        return alt_path
+    
+    return None
 
 
 def _find_factorio_executable() -> Path:
@@ -383,12 +655,28 @@ def launch_factorio_client() -> None:
         # Clear snapshot directory before launch
         clear_client_snapshot_dir()
 
-        factorio_exe = _find_factorio_executable()
         config = get_config()
+        
+        # On macOS, use Steam -applaunch to bypass the popup dialog
+        # Factorio App ID: 427520
+        use_steam_launch = platform.system() == "Darwin"
+        steam_exe = None
+        if use_steam_launch:
+            steam_exe = _find_steam_executable()
+            if not steam_exe:
+                print("⚠️  Steam executable not found, falling back to direct launch")
+                use_steam_launch = False
 
-        print(f"🎮 Launching Factorio client: {factorio_exe}")
+        if use_steam_launch:
+            # Use Steam -applaunch on macOS
+            command = [str(steam_exe), "-applaunch", "427520"]
+            print(f"🎮 Launching Factorio via Steam: {steam_exe}")
+        else:
+            # Direct executable launch (Windows, Linux, or macOS fallback)
+            factorio_exe = _find_factorio_executable()
+            command = [str(factorio_exe)]
+            print(f"🎮 Launching Factorio client: {factorio_exe}")
 
-        command = [str(factorio_exe)]
         # Always enable UDP for agent and snapshot communication
         print("📡 Launching Factorio client with UDP enabled (--enable-lua-udp)")
         command.extend(["--enable-lua-udp", str(config.enable_udp_port)])

@@ -8,13 +8,13 @@ Tests cover:
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch
-from FactoryVerse.agent.actions.placement_hints import (
+from FactoryVerse.game.agent.placement_hints import (
     PlacementValidator,
     PlacementHints,
     GhostPlan,
     ConnectionType,
 )
-from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.game.factory.types import MapPosition, Direction
 
 
 class TestPlacementValidator:

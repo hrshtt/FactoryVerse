@@ -1,9 +1,13 @@
 """Runtime tests for connection placement and ghost builder.
 
 Tests:
-- Mining drill output positions
-- Pipe connections for generators/boilers
+- Prototype data structure validation
 - GhostBuilder build_ghosts and build_plan
+- Placement hints via fv_placement_hints Lua mod
+
+Note: Position calculations (drop_position, pickup_position, pipe connections)
+are now handled by the fv_placement_hints Lua mod using engine values.
+Tests for those calculations have been moved to Lua-side testing.
 
 Requirements:
 - Factorio server running with test-ground scenario on port 27100
@@ -12,10 +16,12 @@ Requirements:
 import pytest
 from factorio_rcon import RCONClient
 
-from FactoryVerse.factory.prototypes import get_entity_prototypes, apply_cardinal_vector
-from FactoryVerse.factory.types import MapPosition, Direction
-from FactoryVerse.agent.infra.rcon_handler import RconHandler
-from FactoryVerse.agent.actions.placement_hints import (
+from FactoryVerse.environment.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+from FactoryVerse.game.factory.prototypes import get_entity_prototypes
+from FactoryVerse.game.factory.types import MapPosition, Direction
+from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
+from FactoryVerse.game.agent.placement_hints import (
     PlacementValidator,
     PlacementHints,
     ConnectionType,
@@ -30,7 +36,9 @@ from FactoryVerse.agent.actions.placement_hints import (
 @pytest.fixture(scope="module")
 def rcon_client():
     """RCON client for test-ground scenario."""
-    client = RCONClient("localhost", 27100, "factorio")
+    config = get_config()
+    instance = FactorioInstanceManager.from_env(config)
+    client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
     yield client
 
 
@@ -104,55 +112,10 @@ class TestMiningDrillOutput:
         assert vec[0] == pytest.approx(-0.5, rel=0.1)
         assert vec[1] == pytest.approx(-1.3, rel=0.1)
 
-    def test_drill_output_position_north(self, prototypes):
-        """Test drill output position when facing NORTH."""
-        from FactoryVerse.factory.prototypes import (
-            apply_cardinal_vector,
-            snap_to_tile_center,
-        )
-
-        drill_pos = MapPosition(x=10.0, y=10.0)
-        vec = tuple(
-            prototypes.get_prototype("electric-mining-drill")["vector_to_place_result"]
-        )
-
-        output = apply_cardinal_vector(drill_pos, vec, Direction.NORTH)
-        snapped = snap_to_tile_center(output)
-
-        # NORTH: output above (lower y)
-        assert snapped.y < drill_pos.y
-        assert snapped.x == pytest.approx(drill_pos.x, abs=0.5)
-
-    def test_drill_output_position_all_directions(self, prototypes):
-        """Test drill output position rotates correctly for all directions."""
-        from FactoryVerse.factory.prototypes import (
-            apply_cardinal_vector,
-            snap_to_tile_center,
-        )
-
-        drill_pos = MapPosition(x=20.0, y=20.0)
-        vec = tuple(
-            prototypes.get_prototype("electric-mining-drill")["vector_to_place_result"]
-        )
-
-        outputs = {}
-        for direction in [
-            Direction.NORTH,
-            Direction.EAST,
-            Direction.SOUTH,
-            Direction.WEST,
-        ]:
-            output = apply_cardinal_vector(drill_pos, vec, direction)
-            outputs[direction] = snap_to_tile_center(output)
-
-        # NORTH output should be above center
-        assert outputs[Direction.NORTH].y < drill_pos.y
-        # SOUTH output should be below center
-        assert outputs[Direction.SOUTH].y > drill_pos.y
-        # EAST output should be to the right
-        assert outputs[Direction.EAST].x > drill_pos.x
-        # WEST output should be to the left
-        assert outputs[Direction.WEST].x < drill_pos.x
+    # Note: Position calculation tests (test_drill_output_position_north,
+    # test_drill_output_position_all_directions) have been removed.
+    # Position calculations are now handled by fv_placement_hints Lua mod
+    # using engine-provided entity.drop_position values.
 
 
 # =============================================================================
@@ -196,48 +159,10 @@ class TestGeneratorPipeConnections:
         assert len(output_conns) == 1
         assert output_conns[0]["flow_direction"] == "output"
 
-    def test_pipe_connection_position_calculation(self, prototypes):
-        """Test pipe connection position calculation with direction rotation."""
-        # Steam engine at (50, 50) facing NORTH
-        engine_pos = MapPosition(x=50.0, y=50.0)
-        engine_dir = Direction.NORTH
-
-        engine_proto = prototypes.get_prototype("steam-engine")
-        connections = engine_proto["fluid_box"]["pipe_connections"]
-
-        pipe_positions = []
-        for conn in connections:
-            pos_data = conn["position"]
-            vec = tuple(pos_data)
-            pipe_pos = apply_cardinal_vector(engine_pos, vec, engine_dir)
-            pipe_positions.append(pipe_pos)
-
-        # Engine facing NORTH:
-        # - Top connection at (50, 50) + (0, -2) = (50, 48)
-        # - Bottom connection at (50, 50) + (0, 2) = (50, 52)
-        assert any(p.y == pytest.approx(48) for p in pipe_positions)
-        assert any(p.y == pytest.approx(52) for p in pipe_positions)
-
-    def test_pipe_connection_rotation_east(self, prototypes):
-        """Test pipe connections when engine faces EAST."""
-        engine_pos = MapPosition(x=50.0, y=50.0)
-        engine_dir = Direction.EAST
-
-        engine_proto = prototypes.get_prototype("steam-engine")
-        connections = engine_proto["fluid_box"]["pipe_connections"]
-
-        pipe_positions = []
-        for conn in connections:
-            pos_data = conn["position"]
-            vec = tuple(pos_data)
-            pipe_pos = apply_cardinal_vector(engine_pos, vec, engine_dir)
-            pipe_positions.append(pipe_pos)
-
-        # Engine facing EAST: top becomes left, bottom becomes right
-        # Original (0, -2) rotated EAST -> (2, 0) -- to the right
-        # Original (0, 2) rotated EAST -> (-2, 0) -- to the left
-        assert any(p.x == pytest.approx(52) for p in pipe_positions)
-        assert any(p.x == pytest.approx(48) for p in pipe_positions)
+    # Note: Position calculation tests (test_pipe_connection_position_calculation,
+    # test_pipe_connection_rotation_east) have been removed.
+    # Pipe connection positions are now provided by fv_placement_hints Lua mod
+    # using engine-provided entity.fluidbox.get_pipe_connections() values.
 
 
 # =============================================================================
@@ -291,7 +216,7 @@ class TestGhostBuilderBasics:
 
     def test_ghost_builder_imports(self):
         """Verify ghost builder can be imported."""
-        from FactoryVerse.agent.actions.ghost_builder import (
+        from FactoryVerse.game.agent.ghost_builder import (
             GhostBuilderAction,
             GhostInfo,
         )
@@ -301,7 +226,7 @@ class TestGhostBuilderBasics:
 
     def test_ghost_info_dataclass(self):
         """Test GhostInfo dataclass creation."""
-        from FactoryVerse.agent.actions.ghost_builder import GhostInfo
+        from FactoryVerse.game.agent.ghost_builder import GhostInfo
 
         info = GhostInfo(
             name="transport-belt", position=MapPosition(x=10.0, y=20.0), direction=4
@@ -313,7 +238,7 @@ class TestGhostBuilderBasics:
 
     def test_extract_ghost_info(self):
         """Test ghost info extraction from entity-like object."""
-        from FactoryVerse.agent.actions.ghost_builder import GhostBuilderAction
+        from FactoryVerse.game.agent.ghost_builder import GhostBuilderAction
 
         # Create mock objects
         class MockMovement:
@@ -513,7 +438,7 @@ class TestEdgeCases:
         rcon_client.send_command(place_real_cmd)
 
         # Try to validate ghost placement - should fail
-        from FactoryVerse.agent.actions.placement_hints import PlacementValidator
+        from FactoryVerse.game.agent.placement_hints import PlacementValidator
 
         validator = PlacementValidator(RconHandler(rcon_client, "test"))
         result = validator.validate_placement(
@@ -522,30 +447,10 @@ class TestEdgeCases:
 
         assert result is False, "Should not be able to place ghost on occupied tile"
 
-    def test_drill_output_to_chest_calculation(self, prototypes):
-        """Test calculating where to place a chest for drill output."""
-        from FactoryVerse.factory.prototypes import (
-            apply_cardinal_vector,
-            snap_to_tile_center,
-        )
-
-        # Drill at (100, 100) facing NORTH
-        drill_pos = MapPosition(x=100.0, y=100.0)
-        drill_dir = Direction.NORTH
-
-        vec = tuple(
-            prototypes.get_prototype("electric-mining-drill")["vector_to_place_result"]
-        )
-        output_pos = snap_to_tile_center(
-            apply_cardinal_vector(drill_pos, vec, drill_dir)
-        )
-
-        # Output when facing NORTH is above (lower y)
-        # vector is [0, -1.85], so output is at approx (100, 98.15) -> snapped to (100.5, 97.5)
-        assert output_pos.y < drill_pos.y
-
-        # A 1x1 chest placed at output_pos would receive items
-        # The drill drops items at the output position, which falls inside/on the chest's tile
+    # Note: test_drill_output_to_chest_calculation has been removed.
+    # Output position calculations are now handled by fv_placement_hints Lua mod.
+    # Use PlacementHints.get_connection_positions() with ConnectionType.ITEM_DROP
+    # to find valid chest positions for drill output.
 
 
 # =============================================================================
@@ -558,7 +463,7 @@ class TestEntityValidation:
 
     def test_item_drop_rejects_non_drill(self, hints, prototypes):
         """Test that ITEM_DROP fails for non-drill entities."""
-        from FactoryVerse.agent.actions.placement_hints import (
+        from FactoryVerse.game.agent.placement_hints import (
             EntityValidationError,
             ConnectionType,
         )
@@ -576,7 +481,7 @@ class TestEntityValidation:
 
     def test_fluid_pipe_rejects_non_fluid_entity(self, hints, prototypes):
         """Test that FLUID_PIPE fails for non-fluid entities."""
-        from FactoryVerse.agent.actions.placement_hints import (
+        from FactoryVerse.game.agent.placement_hints import (
             EntityValidationError,
             ConnectionType,
         )
@@ -594,7 +499,7 @@ class TestEntityValidation:
 
     def test_item_drop_accepts_mining_drill(self, hints, prototypes):
         """Test that ITEM_DROP works for electric-mining-drill."""
-        from FactoryVerse.agent.actions.placement_hints import (
+        from FactoryVerse.game.agent.placement_hints import (
             ITEM_DROP_ENTITIES,
             ConnectionType,
         )
@@ -616,7 +521,7 @@ class TestEntityValidation:
 
     def test_fluid_pipe_accepts_boiler(self, hints, prototypes):
         """Test that FLUID_PIPE works for boiler."""
-        from FactoryVerse.agent.actions.placement_hints import (
+        from FactoryVerse.game.agent.placement_hints import (
             FLUID_PIPE_ENTITIES,
             ConnectionType,
         )
@@ -638,7 +543,7 @@ class TestEntityValidation:
 
     def test_entity_sets_are_frozen(self):
         """Test that entity sets are immutable."""
-        from FactoryVerse.agent.actions.placement_hints import (
+        from FactoryVerse.game.agent.placement_hints import (
             ITEM_DROP_ENTITIES,
             FLUID_PIPE_ENTITIES,
             RESOURCE_PLACEMENT_ENTITIES,

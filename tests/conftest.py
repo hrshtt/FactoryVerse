@@ -1,391 +1,383 @@
 """
-Pytest configuration for FactoryVerse tests.
-
-Auto-manages Factorio server lifecycle:
-- Starts Docker container if not running (session scope)
-- Creates fresh agent per test (function scope)
-- Cleans up on session end
-
-Server Fixture Hierarchy:
-    factorio_server (session) -> rcon (function) -> agent (function)
+Pytest configuration for FactoryVerse tests using the Environment module.
 """
 
 import pytest
-import sys
+import os
+import shutil
+import asyncio
 from pathlib import Path
-from typing import Generator, Any, Optional
+from typing import AsyncGenerator, Generator, Dict, Any
 
-# Add tests directory to path for helper imports
-tests_dir = Path(__file__).parent
-if str(tests_dir) not in sys.path:
-    sys.path.insert(0, str(tests_dir))
-
-from helpers.server import FactorioServer, RconConnection, ServerConfig
-from helpers.test_ground import TestGround
-
+from FactoryVerse.environment.environment import Environment, Tier
+from FactoryVerse.environment.config import (
+    EnvironmentConfig,
+    RuntimeVariant,
+    InfraMode,
+    SettingsConfig,
+    RuntimeConfig,
+    InfraConfig,
+)
+from FactoryVerse.environment.config import get_config
 
 # ============================================================================
-# SERVER FIXTURES (Session Scope)
+# CONFIGURATION HELPERS
+# ============================================================================
+
+
+def _create_test_config(**overrides) -> EnvironmentConfig:
+    """Create test configuration with overrides.
+
+    Supports deep merging of tier configs:
+    - _create_test_config(tier2={"scenario": "freeplay"})
+    - _create_test_config(tier4={"variant": RuntimeVariant.FULL})
+
+    Args:
+        **overrides: Configuration overrides (tier2, tier4, etc.)
+
+    Returns:
+        EnvironmentConfig with overrides applied
+    """
+    base_config = EnvironmentConfig.for_testing()
+
+    # Deep merge overrides
+    for tier_key, tier_overrides in overrides.items():
+        if tier_key.startswith("tier") and hasattr(base_config, tier_key):
+            tier_attr = getattr(base_config, tier_key)
+            if isinstance(tier_overrides, dict):
+                # Merge dict into tier config
+                tier_dict = tier_attr.dict()
+                tier_dict.update(tier_overrides)
+                # Reconstruct tier config
+                tier_class = type(tier_attr)
+                setattr(base_config, tier_key, tier_class(**tier_dict))
+            else:
+                setattr(base_config, tier_key, tier_overrides)
+        else:
+            # Direct config attribute
+            setattr(base_config, tier_key, tier_overrides)
+
+    return base_config
+
+
+def _discover_scenarios() -> list[str]:
+    """Discover available scenarios at test collection time.
+
+    Returns:
+        List of scenario names that have control.lua files
+    """
+    config = get_config()
+    return config.list_scenarios(include_local=False)  # Only repo scenarios for tests
+
+
+# Discover scenarios once at module load time (for parametrization)
+_AVAILABLE_SCENARIOS = _discover_scenarios()
+
+# ============================================================================
+# ENVIRONMENT FIXTURES
 # ============================================================================
 
 
 @pytest.fixture(scope="session")
-def server_config() -> ServerConfig:
-    """Server configuration. Override in conftest.py or via environment."""
-    return ServerConfig()
-
-
-@pytest.fixture(scope="session")
-def factorio_server(
-    server_config: ServerConfig,
-) -> Generator[Optional[FactorioServer], None, None]:
-    """
-    Session-scoped Factorio server.
-
-    Starts Docker container if not running.
-    Stops on session end if we started it.
-    
-    Returns None if FV_INSTANCE=client (uses local client instead).
-    """
-    import os
-    
-    # Skip Docker if using client
-    if os.getenv("FV_INSTANCE") == "client":
-        # Return None - rcon fixture will handle client connection
-        yield None
-        return
-    
-    server = FactorioServer(server_config)
-    server.ensure_running()
-
-    yield server
-
-    server.stop()
-
-
-# ============================================================================
-# RCON FIXTURES (Function Scope)
-# ============================================================================
+def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
+    """Create an instance of the default event loop for the session."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest.fixture(scope="function")
-def rcon(factorio_server) -> RconConnection:
+async def environment() -> AsyncGenerator[Environment, None]:
     """
-    Function-scoped RCON connection.
+    Function-scoped Environment fixture for testing.
 
-    Uses FV_INSTANCE env var to determine connection:
-    - If FV_INSTANCE=client: Connects to local Factorio client (no Docker)
-    - Otherwise: Uses Docker server (factorio_server fixture)
+    Initializes a fresh environment for each test with:
+    - Independent session directory
+    - Minimal runtime (no DuckDB unless requested)
+    - Test scenario
     """
-    import os
-    from FactoryVerse.config import get_config
-    from FactoryVerse.infra.instance_manager import FactorioInstanceManager
-    from factorio_rcon import RCONClient
-    
-    instance_name = os.getenv("FV_INSTANCE")
-    
-    # If client is explicitly requested, connect to client (skip Docker)
-    if instance_name == "client":
-        config = get_config()
-        instance = FactorioInstanceManager.get_client(config)
-        client = RCONClient(
-            instance.rcon_host,
-            instance.rcon_port,
-            instance.rcon_password,
-        )
-        client.connect()
-        return RconConnection(client)
-    
-    # Otherwise use Docker server
-    if factorio_server is None:
-        raise RuntimeError("factorio_server fixture returned None but FV_INSTANCE is not 'client'")
-    return factorio_server.rcon
-
-
-# ============================================================================
-# TEST GROUND FIXTURES
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def test_ground(rcon: RconConnection) -> TestGround:
-    """
-    TestGround helper for test setup.
-
-    Provides:
-    - Resource placement (place_iron_patch, etc.)
-    - Entity placement (place_entity, etc.)
-    - Area management (clear_area, reset_test_area)
-    - Snapshot control (force_resnapshot)
-    """
-    return TestGround(rcon)
-
-
-@pytest.fixture(scope="function")
-def clean_area(test_ground: TestGround) -> Generator[TestGround, None, None]:
-    """
-    TestGround with clean test area.
-
-    Resets the 512x512 test area before test runs.
-    Use when you need a completely empty map.
-    """
-    test_ground.reset_test_area()
-    yield test_ground
-
-
-# ============================================================================
-# AGENT FIXTURES
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def agent_id(rcon: RconConnection) -> Generator[str, None, None]:
-    """
-    Create a fresh agent for testing.
-
-    Agent is destroyed after test completes.
-    Returns the agent interface name (e.g., "agent_1").
-    """
-    # Create agent
-    result = rcon.call("agent", "create_agent", 34202, True, False, "player", {})
-    interface_name = result["interface_name"]
-
-    yield interface_name
-
-    # Cleanup: destroy all agents
-    rcon.call("agent", "destroy_agents", 0)
-
-
-@pytest.fixture(scope="function")
-def agent(rcon: RconConnection, agent_id: str) -> "AgentInterface":
-    """
-    Agent interface for testing.
-
-    Provides methods to interact with the agent:
-    - walk_to, mine_resource, craft_enqueue (async)
-    - place_entity, pickup_entity, teleport (sync)
-    - inspect, get_inventory, get_position (queries)
-    """
-    return AgentInterface(rcon, agent_id)
-
-
-class AgentInterface:
-    """
-    Wrapper around agent remote interface.
-
-    Provides typed access to agent methods with proper error handling.
-    """
-
-    def __init__(self, rcon: RconConnection, interface_name: str):
-        self.rcon = rcon
-        self.interface_name = interface_name
-
-    def call(self, method: str, *args) -> Any:
-        """Call an agent method."""
-        return self.rcon.call(self.interface_name, method, *args)
-
-    # Queries
-    def inspect(self, attach_state: bool = False) -> dict:
-        """Get agent position and optionally activity state."""
-        return self.call("inspect", attach_state)
-
-    def get_position(self) -> dict:
-        """Get agent position."""
-        return self.call("get_position")
-
-    def get_inventory(self) -> dict:
-        """Get agent inventory contents."""
-        return self.call("get_inventory_items")
-
-    def get_reachable(self, attach_ghosts: bool = True) -> dict:
-        """Get reachable entities, resources, and ghosts."""
-        return self.call("get_reachable", attach_ghosts)
-
-    # Sync actions
-    def teleport(self, x: float, y: float) -> dict:
-        """Teleport agent to position."""
-        return self.call("teleport", {"x": x, "y": y})
-
-    def place_entity(
-        self,
-        entity_name: str,
-        x: float,
-        y: float,
-        direction: int = None,
-        ghost: bool = False,
-    ) -> dict:
-        """Place entity from inventory."""
-        return self.call(
-            "place_entity", entity_name, {"x": x, "y": y}, direction, ghost
-        )
-
-    def pickup_entity(self, entity_name: str, x: float = None, y: float = None) -> dict:
-        """Pick up entity into inventory."""
-        pos = {"x": x, "y": y} if x is not None else None
-        return self.call("pickup_entity", entity_name, pos)
-
-    def set_entity_recipe(
-        self, entity_name: str, x: float, y: float, recipe_name: str
-    ) -> dict:
-        """Set recipe on a machine."""
-        return self.call(
-            "set_entity_recipe", entity_name, {"x": x, "y": y}, recipe_name
-        )
-
-    def take_inventory_item(
-        self,
-        entity_name: str,
-        x: float,
-        y: float,
-        inventory_type: str,
-        item_name: str,
-        count: int = None,
-    ) -> dict:
-        """Take items from entity inventory."""
-        return self.call(
-            "take_inventory_item",
-            entity_name,
-            {"x": x, "y": y},
-            inventory_type,
-            item_name,
-            count,
-        )
-
-    def put_inventory_item(
-        self,
-        entity_name: str,
-        x: float,
-        y: float,
-        inventory_type: str,
-        item_name: str,
-        count: int,
-    ) -> dict:
-        """Put items into entity inventory."""
-        return self.call(
-            "put_inventory_item",
-            entity_name,
-            {"x": x, "y": y},
-            inventory_type,
-            item_name,
-            count,
-        )
-
-    def reset(self, reset_force: bool = False) -> dict:
-        """Reset agent (double-call pattern - call twice to confirm)."""
-        return self.call("reset", reset_force)
-
-    # Async actions (these need UDP handling for completion - just queue for now)
-    def walk_to(self, x: float, y: float, strict: bool = False) -> dict:
-        """Start walking to position. Returns immediately, action completes async."""
-        return self.call("walk_to", {"x": x, "y": y}, strict, {})
-
-    def stop_walking(self) -> dict:
-        """Stop current walking action."""
-        return self.call("stop_walking")
-
-    def mine_resource(self, resource_name: str, max_count: int = None) -> dict:
-        """Start mining resource. Returns immediately, action completes async."""
-        return self.call("mine_resource", resource_name, max_count)
-
-    def stop_mining(self) -> dict:
-        """Stop current mining action."""
-        return self.call("stop_mining")
-
-    def craft_enqueue(self, recipe_name: str, count: int = 1) -> dict:
-        """Queue crafting. Returns immediately, action completes async."""
-        return self.call("craft_enqueue", recipe_name, count)
-
-    def craft_dequeue(self, recipe_name: str, count: int = None) -> dict:
-        """Cancel queued crafting."""
-        return self.call("craft_dequeue", recipe_name, count)
-
-
-# ============================================================================
-# ADMIN FIXTURES
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def admin(rcon: RconConnection) -> "AdminInterface":
-    """
-    Admin interface for test setup.
-
-    Provides:
-    - add_items: Add items to agent inventory
-    - clear_inventory: Clear agent inventory
-    - unlock_technology: Unlock a technology
-    """
-    return AdminInterface(rcon)
-
-
-class AdminInterface:
-    """Wrapper around admin remote interface."""
-
-    def __init__(self, rcon: RconConnection):
-        self.rcon = rcon
-
-    def add_items(self, agent_id: int, items: dict) -> None:
-        """Add items to agent inventory."""
-        self.rcon.call("admin", "add_items", agent_id, items)
-
-    def clear_inventory(self, agent_id: int) -> None:
-        """Clear agent inventory."""
-        self.rcon.call("admin", "clear_inventory", agent_id)
-
-    def unlock_technology(self, tech_name: str) -> None:
-        """Unlock a technology."""
-        self.rcon.call("admin", "unlock_technology", tech_name)
-
-    def unlock_all_technologies(self) -> None:
-        """Unlock all technologies."""
-        self.rcon.execute(
-            "for _, tech in pairs(game.forces.player.technologies) do tech.researched = true end"
-        )
-
-    def enable_all_recipes(self) -> None:
-        """Enable all recipes."""
-        self.rcon.execute(
-            "for _, recipe in pairs(game.forces.player.recipes) do recipe.enabled = true end"
-        )
-
-
-# ============================================================================
-# CONVENIENCE FIXTURES
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def game_world(agent: AgentInterface, test_ground: TestGround, admin: AdminInterface):
-    """
-    Complete game world fixture.
-
-    Provides:
-    - agent: Agent interface for actions
-    - test_ground: Test setup helpers
-    - admin: Admin commands
-    """
-    return GameWorld(agent, test_ground, admin)
-
-
-class GameWorld:
-    """Aggregate fixture providing complete game access."""
-
-    def __init__(
-        self, agent: AgentInterface, test_ground: TestGround, admin: AdminInterface
-    ):
-        self.agent = agent
-        self.test_ground = test_ground
-        self.admin = admin
-
-
-# ============================================================================
-# PYTEST CONFIGURATION
-# ============================================================================
-
-
-def pytest_configure(config):
-    """Register pytest markers."""
-    config.addinivalue_line("markers", "slow: marks tests as slow")
-    config.addinivalue_line(
-        "markers", "requires_restart: marks tests that require server restart"
+    # Create environment for testing
+    # We use MINIMAL variant by default for speed, unless test requests FULL
+    env = Environment.for_testing(
+        scenario="test-ground",
+        variant="minimal",
     )
+
+    try:
+        # Initialize up to Runtime (Tier 4)
+        await env.initialize(up_to=Tier.RUNTIME)
+        yield env
+    finally:
+        # Ensure clean shutdown
+        await env.shutdown()
+
+        # Cleanup session directory if it exists
+        if env.tier4 and env.tier4.session_dir and env.tier4.session_dir.exists():
+            try:
+                shutil.rmtree(env.tier4.session_dir)
+            except Exception:
+                pass
+
+
+@pytest.fixture(scope="function")
+async def full_environment() -> AsyncGenerator[Environment, None]:
+    """
+    Environment with FULL runtime (DuckDB, RemoteView).
+
+    Note: This is now independent of `environment` fixture to avoid
+    unnecessary shutdown/reinit cycles.
+    """
+    config = _create_test_config(tier4={"variant": RuntimeVariant.FULL})
+    env = Environment(config=config)
+
+    try:
+        await env.initialize(up_to=Tier.RUNTIME)
+        yield env
+    finally:
+        await env.shutdown()
+
+        # Cleanup session directory
+        if env.tier4 and env.tier4.session_dir and env.tier4.session_dir.exists():
+            try:
+                shutil.rmtree(env.tier4.session_dir)
+            except Exception:
+                pass
+
+
+# ============================================================================
+# FACTORY FIXTURES
+# ============================================================================
+
+
+@pytest.fixture
+def environment_factory():
+    """Factory for creating environments with custom configurations.
+
+    Usage:
+        async def test_custom(environment_factory):
+            env = await environment_factory(
+                tier2={"scenario": "freeplay"},
+                tier4={"variant": RuntimeVariant.FULL},
+            )
+            try:
+                # ... test ...
+            finally:
+                await env.shutdown()
+    """
+
+    async def _factory(**overrides) -> Environment:
+        config = _create_test_config(**overrides)
+        env = Environment(config=config)
+        await env.initialize(up_to=Tier.RUNTIME)
+        return env
+
+    return _factory
+
+
+# ============================================================================
+# PARAMETRIZED FIXTURES
+# ============================================================================
+
+
+@pytest.fixture(
+    scope="function",
+    params=[
+        RuntimeVariant.MINIMAL,
+        RuntimeVariant.FULL,
+    ],
+    ids=["minimal", "full"],
+)
+async def environment_variant(request) -> AsyncGenerator[Environment, None]:
+    """Environment with parametrized runtime variant.
+
+    Tests using this fixture will run twice (once per variant).
+    This ensures features work in both MINIMAL and FULL variants.
+
+    Usage:
+        async def test_feature(environment_variant):
+            # Test runs with both MINIMAL and FULL variants
+            assert environment_variant.tier4 is not None
+    """
+    variant = request.param
+    config = _create_test_config(tier4={"variant": variant})
+    env = Environment(config=config)
+
+    try:
+        await env.initialize(up_to=Tier.RUNTIME)
+        yield env
+    finally:
+        await env.shutdown()
+
+        # Cleanup session directory
+        if env.tier4 and env.tier4.session_dir and env.tier4.session_dir.exists():
+            try:
+                shutil.rmtree(env.tier4.session_dir)
+            except Exception:
+                pass
+
+
+@pytest.fixture(
+    scope="function",
+    params=_AVAILABLE_SCENARIOS if _AVAILABLE_SCENARIOS else ["test-ground"],
+    ids=lambda x: f"scenario-{x}",
+)
+async def environment_scenario(request) -> AsyncGenerator[Environment, None]:
+    """Environment with parametrized scenario (discovered at runtime).
+
+    Tests using this fixture will run once per available scenario.
+    Scenarios are discovered from the filesystem at test collection time.
+
+    Usage:
+        async def test_scenario_behavior(environment_scenario):
+            # Test runs for each available scenario
+            scenario = environment_scenario.tier2.current_scenario
+            assert scenario is not None
+    """
+    scenario = request.param
+    config = _create_test_config(tier2={"scenario": scenario})
+    env = Environment(config=config)
+
+    try:
+        await env.initialize(up_to=Tier.RUNTIME)
+        yield env
+    finally:
+        await env.shutdown()
+
+        # Cleanup session directory
+        if env.tier4 and env.tier4.session_dir and env.tier4.session_dir.exists():
+            try:
+                shutil.rmtree(env.tier4.session_dir)
+            except Exception:
+                pass
+
+
+# ============================================================================
+# NAMED SCENARIO FIXTURES (for common scenarios)
+# ============================================================================
+
+
+@pytest.fixture(scope="function")
+async def freeplay_environment() -> AsyncGenerator[Environment, None]:
+    """Environment with freeplay scenario."""
+    config = _create_test_config(tier2={"scenario": "freeplay"})
+    env = Environment(config=config)
+
+    try:
+        await env.initialize(up_to=Tier.RUNTIME)
+        yield env
+    finally:
+        await env.shutdown()
+
+        if env.tier4 and env.tier4.session_dir and env.tier4.session_dir.exists():
+            try:
+                shutil.rmtree(env.tier4.session_dir)
+            except Exception:
+                pass
+
+
+@pytest.fixture(scope="function")
+async def lab_environment() -> AsyncGenerator[Environment, None]:
+    """Environment with lab scenario."""
+    config = _create_test_config(tier2={"scenario": "default_lab_scenario"})
+    env = Environment(config=config)
+
+    try:
+        await env.initialize(up_to=Tier.RUNTIME)
+        yield env
+    finally:
+        await env.shutdown()
+
+        if env.tier4 and env.tier4.session_dir and env.tier4.session_dir.exists():
+            try:
+                shutil.rmtree(env.tier4.session_dir)
+            except Exception:
+                pass
+
+
+# ============================================================================
+# DISCOVERY FIXTURES
+# ============================================================================
+
+
+@pytest.fixture(scope="session")
+def available_scenarios() -> list[str]:
+    """List of available scenarios discovered at test collection time.
+
+    This fixture provides the list of scenarios that were discovered
+    from the filesystem. Use this for custom parametrization or to
+    skip tests when scenarios are missing.
+
+    Usage:
+        def test_with_custom_param(available_scenarios):
+            if "freeplay" not in available_scenarios:
+                pytest.skip("freeplay scenario not available")
+    """
+    return _AVAILABLE_SCENARIOS
+
+
+# ============================================================================
+# COMPONENT FIXTURES
+# ============================================================================
+
+
+@pytest.fixture(scope="function")
+def tier4(environment: Environment):
+    """Access to Tier 4 (Runtime)."""
+    return environment.tier4
+
+
+@pytest.fixture(scope="function")
+def agent(tier4):
+    """Access to Agent actions (wrapper around embodied actions)."""
+    # In the future, we might want a unified agent object
+    # For now, return the embodied actions dict for direct access
+    return tier4.embodied_actions
+
+
+@pytest.fixture(scope="function")
+def rcon(environment: Environment):
+    """Access to RCON client."""
+    return environment.tier3.rcon_helper
+
+
+@pytest.fixture(scope="function")
+def reachable_view(tier4):
+    """Access to ReachableView."""
+    return tier4.reachable_view
+
+
+@pytest.fixture(scope="function")
+def remote_view(full_environment: Environment):
+    """Access to RemoteView (requires full environment)."""
+    return full_environment.tier4.remote_view
+
+
+# ============================================================================
+# LEGACY COMPATIBILITY (Temporary)
+# ============================================================================
+
+
+@pytest.fixture(scope="function")
+def legacy_agent_interface(agent, rcon, tier4):
+    """
+    Adapter to mimic old AgentInterface for easier migration.
+    """
+
+    class LegacyAdapter:
+        def __init__(self):
+            self.rcon = rcon
+            self.actions = agent
+            self.agent_id = tier4.agent_id
+
+        def inspect(self, *args, **kwargs):
+            return self.rcon.call(self.agent_id, "inspect", *args)
+
+        def get_position(self):
+            return self.rcon.call(self.agent_id, "get_position")
+
+        def get_inventory(self):
+            return self.rcon.call(self.agent_id, "get_inventory_items")
+
+        # Add more adapters as needed during migration
+
+    return LegacyAdapter()

@@ -25,7 +25,7 @@ class TestEntityInspectionStructure:
 
     def test_entity_inspection_base_fields(self, rcon, test_ground, agent):
         """EntityInspection should have required base fields."""
-        from FactoryVerse.factory.entity.inspection import EntityInspection
+        from FactoryVerse.game.factory.entity.inspection import EntityInspection
 
         # Create minimal inspection
         inspection = EntityInspection(
@@ -42,7 +42,7 @@ class TestEntityInspectionStructure:
 
     def test_entity_inspection_capability_slots(self, rcon, test_ground):
         """EntityInspection should have all capability slots."""
-        from FactoryVerse.factory.entity.inspection import EntityInspection
+        from FactoryVerse.game.factory.entity.inspection import EntityInspection
 
         inspection = EntityInspection(
             name="test-entity",
@@ -71,7 +71,7 @@ class TestBurnerStateFormat:
 
     def test_burner_state_has_required_fields(self, rcon, test_ground):
         """BurnerState should have all required fields."""
-        from FactoryVerse.factory.entity.capabilities import BurnerState
+        from FactoryVerse.game.factory.entity.capabilities import BurnerState
 
         # Create a default BurnerState
         state = BurnerState()
@@ -84,7 +84,7 @@ class TestBurnerStateFormat:
 
     def test_burner_state_field_types(self, rcon, test_ground):
         """BurnerState fields should have correct types."""
-        from FactoryVerse.factory.entity.capabilities import BurnerState
+        from FactoryVerse.game.factory.entity.capabilities import BurnerState
 
         state = BurnerState(
             heat=100.5,
@@ -106,7 +106,7 @@ class TestMinerStateFormat:
 
     def test_miner_state_has_required_fields(self, rcon, test_ground):
         """MinerState should have all required fields."""
-        from FactoryVerse.factory.entity.capabilities import MinerState
+        from FactoryVerse.game.factory.entity.capabilities import MinerState
 
         state = MinerState()
 
@@ -117,7 +117,7 @@ class TestMinerStateFormat:
 
     def test_mining_target_structure(self, rcon, test_ground):
         """MiningTarget should have correct structure."""
-        from FactoryVerse.factory.entity.capabilities import MiningTarget
+        from FactoryVerse.game.factory.entity.capabilities import MiningTarget
 
         target = MiningTarget(
             name="iron-ore",
@@ -136,7 +136,7 @@ class TestCrafterStateFormat:
 
     def test_crafter_state_has_required_fields(self, rcon, test_ground):
         """CrafterState should have all required fields."""
-        from FactoryVerse.factory.entity.capabilities import CrafterState
+        from FactoryVerse.game.factory.entity.capabilities import CrafterState
 
         state = CrafterState()
 
@@ -152,7 +152,7 @@ class TestInserterStateFormat:
 
     def test_inserter_state_has_required_fields(self, rcon, test_ground):
         """InserterState should have all required fields."""
-        from FactoryVerse.factory.entity.capabilities import InserterState
+        from FactoryVerse.game.factory.entity.capabilities import InserterState
 
         state = InserterState()
 
@@ -162,7 +162,7 @@ class TestInserterStateFormat:
 
     def test_held_item_structure(self, rcon, test_ground):
         """HeldItem should have correct structure."""
-        from FactoryVerse.factory.entity.capabilities import HeldItem
+        from FactoryVerse.game.factory.entity.capabilities import HeldItem
 
         item = HeldItem(name="iron-plate", count=5)
 
@@ -175,7 +175,7 @@ class TestContainerStateFormat:
 
     def test_container_state_has_required_fields(self, rcon, test_ground):
         """ContainerState should have all required fields."""
-        from FactoryVerse.factory.entity.implementations.container import ContainerState
+        from FactoryVerse.game.factory.entity.implementations.container import ContainerState
 
         state = ContainerState()
 
@@ -285,8 +285,8 @@ class TestGhostInspection:
 
     def test_ghost_inspection_returns_minimal_data(self, rcon, test_ground):
         """Ghost entities should return minimal inspection with is_ghost=True."""
-        from FactoryVerse.factory.entity.implementations import StoneFurnace
-        from FactoryVerse.factory.types import MapPosition
+        from FactoryVerse.game.factory.entity.implementations import StoneFurnace
+        from FactoryVerse.game.factory.types import MapPosition
 
         # Create a ghost furnace manually
         furnace = StoneFurnace(
@@ -307,8 +307,8 @@ class TestGhostInspection:
 
     def test_ghost_inspection_no_capability_states(self, rcon, test_ground):
         """Ghost inspection should have empty capability slots."""
-        from FactoryVerse.factory.entity.implementations import BurnerMiningDrill
-        from FactoryVerse.factory.types import MapPosition, Direction
+        from FactoryVerse.game.factory.entity.implementations import BurnerMiningDrill
+        from FactoryVerse.game.factory.types import MapPosition, Direction
 
         drill = BurnerMiningDrill(
             name="burner-mining-drill",
@@ -335,8 +335,8 @@ class TestInspectionSerialization:
 
     def test_inspection_to_json_excludes_none(self, rcon, test_ground):
         """model_dump_json(exclude_none=True) should produce concise output."""
-        from FactoryVerse.factory.entity.inspection import EntityInspection
-        from FactoryVerse.factory.entity.capabilities import BurnerState
+        from FactoryVerse.game.factory.entity.inspection import EntityInspection
+        from FactoryVerse.game.factory.entity.capabilities import BurnerState
         import json
 
         inspection = EntityInspection(
@@ -359,7 +359,7 @@ class TestInspectionSerialization:
 
     def test_inspection_forbids_extra_fields(self, rcon, test_ground):
         """EntityInspection should reject unknown fields (extra=forbid)."""
-        from FactoryVerse.factory.entity.inspection import EntityInspection
+        from FactoryVerse.game.factory.entity.inspection import EntityInspection
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):

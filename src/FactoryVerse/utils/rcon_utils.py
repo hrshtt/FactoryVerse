@@ -58,7 +58,7 @@ def create_rcon_client(
         >>> rcon = create_rcon_client()  # Uses config defaults
         >>> # Client is ready to use immediately
     """
-    from FactoryVerse.config import get_config
+    from FactoryVerse.environment.config import get_config
     
     cfg = get_config()
     host = host or cfg.rcon_host
@@ -99,7 +99,7 @@ def validate_rcon_connection(
         >>> if not success:
         ...     print(f"Connection failed: {error}")
     """
-    from FactoryVerse.config import get_config
+    from FactoryVerse.environment.config import get_config
     
     cfg = get_config()
     host = host or cfg.rcon_host

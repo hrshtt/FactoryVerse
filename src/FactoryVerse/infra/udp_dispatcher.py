@@ -5,7 +5,7 @@ messages to registered subscribers based on event type. This solves the
 OS limitation where only one socket can bind to a UDP port at a time.
 
 Usage:
-    from FactoryVerse.config import get_config
+    from FactoryVerse.environment.config import get_config
     config = get_config()
     dispatcher = UDPDispatcher(host="127.0.0.1", port=config.client_snapshot_port)
     await dispatcher.start()
@@ -41,7 +41,7 @@ class UDPDispatcher:
             port: Port to bind UDP socket to (defaults to client_snapshot_port from config)
         """
         if port is None:
-            from FactoryVerse.config import get_config
+            from FactoryVerse.environment.config import get_config
             port = get_config().client_snapshot_port
         self.host = host
         self.port = port
@@ -205,7 +205,7 @@ def get_udp_dispatcher(host: str = "127.0.0.1", port: Optional[int] = None) -> U
     if _global_dispatcher is None:
         # Default port: use client_snapshot_port from config
         if port is None:
-            from FactoryVerse.config import get_config
+            from FactoryVerse.environment.config import get_config
             port = get_config().client_snapshot_port
         _global_dispatcher = UDPDispatcher(host, port)
     return _global_dispatcher
@@ -214,4 +214,15 @@ def get_udp_dispatcher(host: str = "127.0.0.1", port: Optional[int] = None) -> U
 def reset_global_dispatcher():
     """Reset the global dispatcher (useful for testing)."""
     global _global_dispatcher
+    _global_dispatcher = None
+
+
+async def stop_global_dispatcher():
+    """Stop and cleanup the global dispatcher.
+
+    Call this when shutting down to properly release the UDP port.
+    """
+    global _global_dispatcher
+    if _global_dispatcher is not None and _global_dispatcher.is_running():
+        await _global_dispatcher.stop()
     _global_dispatcher = None

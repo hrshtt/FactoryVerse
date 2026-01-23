@@ -323,6 +323,7 @@ end
 
 --- Validate recipe name exists for agent's force
 --- Note: Recipes are per-force (LuaForce.recipes), so we validate against the agent's force
+--- Uses remote.call to access fv_embodied_agent's data (isolated storage)
 --- @param recipe_name string|nil Recipe name to validate
 --- @param agent_id number|nil Optional agent_id to get the agent's force
 --- @return boolean True if recipe exists in agent's force, false otherwise
@@ -332,24 +333,19 @@ function M.validate_recipe(recipe_name, agent_id)
 
     -- If agent_id is provided, validate against the agent's force
     if agent_id ~= nil and type(agent_id) == "number" then
-        -- Get agent's force from storage
-        if storage and storage.agent_forces then
-            local force_name = storage.agent_forces[agent_id]
-            if force_name and game and game.forces then
-                local force = game.forces[force_name]
-                if force and force.recipes then
-                    local recipe = force.recipes[recipe_name]
-                    return recipe ~= nil
+        -- Get agent's force via remote.call (fv_embodied_agent has isolated storage)
+        if remote and remote.interfaces and remote.interfaces.agent then
+            local agents = remote.call("agent", "list_agents")
+            if agents then
+                for _, agent_info in ipairs(agents) do
+                    if agent_info.id == agent_id and agent_info.force then
+                        local force = game and game.forces and game.forces[agent_info.force]
+                        if force and force.recipes then
+                            local recipe = force.recipes[recipe_name]
+                            return recipe ~= nil
+                        end
+                    end
                 end
-            end
-        end
-
-        -- Fallback: try to get agent entity and use its force
-        if storage and storage.agents then
-            local agent = storage.agents[agent_id]
-            if agent and agent.valid and agent.force then
-                local recipe = agent.force.recipes[recipe_name]
-                return recipe ~= nil
             end
         end
     end
@@ -361,6 +357,7 @@ end
 
 --- Validate technology name exists for agent's force
 --- Note: Technologies are per-force (LuaForce.technologies), so we validate against the agent's force
+--- Uses remote.call to access fv_embodied_agent's data (isolated storage)
 --- @param technology_name string|nil Technology name to validate
 --- @param agent_id number|nil Optional agent_id to get the agent's force
 --- @return boolean True if technology exists in agent's force, false otherwise
@@ -370,24 +367,19 @@ function M.validate_technology(technology_name, agent_id)
 
     -- If agent_id is provided, validate against the agent's force
     if agent_id ~= nil and type(agent_id) == "number" then
-        -- Get agent's force from storage
-        if storage and storage.agent_forces then
-            local force_name = storage.agent_forces[agent_id]
-            if force_name and game and game.forces then
-                local force = game.forces[force_name]
-                if force and force.technologies then
-                    local technology = force.technologies[technology_name]
-                    return technology ~= nil
+        -- Get agent's force via remote.call (fv_embodied_agent has isolated storage)
+        if remote and remote.interfaces and remote.interfaces.agent then
+            local agents = remote.call("agent", "list_agents")
+            if agents then
+                for _, agent_info in ipairs(agents) do
+                    if agent_info.id == agent_id and agent_info.force then
+                        local force = game and game.forces and game.forces[agent_info.force]
+                        if force and force.technologies then
+                            local technology = force.technologies[technology_name]
+                            return technology ~= nil
+                        end
+                    end
                 end
-            end
-        end
-
-        -- Fallback: try to get agent entity and use its force
-        if storage and storage.agents then
-            local agent = storage.agents[agent_id]
-            if agent and agent.valid and agent.force then
-                local technology = agent.force.technologies[technology_name]
-                return technology ~= nil
             end
         end
     end
