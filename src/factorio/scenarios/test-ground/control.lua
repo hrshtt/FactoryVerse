@@ -546,12 +546,17 @@ script.on_init(function()
     
     -- Reveal test area for player force
     local radius = TEST_AREA_HALF + 100  -- Reveal slightly more than test area
-    game.forces["player"].chart(game.surfaces[1], {
+    local player_force = game.forces["player"]
+    player_force.chart(game.surfaces[1], {
         {-radius, -radius},
         {radius, radius}
     })
-    
-    game.print("✅ Test area revealed and set to permanent daylight")
+
+    -- Enable all technologies and recipes for the player force
+    player_force.enable_all_technologies()
+    player_force.enable_all_recipes()
+
+    game.print("✅ Test area revealed, all recipes/technologies unlocked, permanent daylight")
 end)
 
 -- Ensure new chunks are also cleared (map generation happens asynchronously)

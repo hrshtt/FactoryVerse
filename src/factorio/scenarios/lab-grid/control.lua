@@ -58,10 +58,9 @@ local function create_cell_force(cell_index)
             end
         end
 
-        -- Research all technologies for this force
-        for _, tech in pairs(force.technologies) do
-            tech.researched = true
-        end
+        -- Enable all technologies and recipes for this force
+        force.enable_all_technologies()
+        force.enable_all_recipes()
 
         storage.lab_grid.cell_forces[cell_index] = force_name
     end
@@ -668,3 +667,16 @@ script.on_event(defines.events.on_chunk_generated, on_chunk_generated)
 script.on_event(defines.events.on_built_entity, on_built_entity)
 script.on_event(defines.events.script_raised_built, on_built_entity)
 script.on_event(defines.events.on_robot_built_entity, on_built_entity)
+
+-- Put players in god mode (no character) - agents have their own characters
+script.on_event(defines.events.on_player_joined_game, function(event)
+    local player = game.get_player(event.player_index)
+    if player then
+        local character = player.character
+        player.set_controller({type = defines.controllers.god})
+        if character then
+            character.destroy()
+        end
+        game.print("Lab Grid: Player " .. player.name .. " set to god mode (spectator)")
+    end
+end)
