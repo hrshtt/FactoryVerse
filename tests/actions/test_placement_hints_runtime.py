@@ -714,6 +714,152 @@ class TestEdgeCases:
 
 
 # =============================================================================
+# CONNECTION SOLVING TESTS
+# =============================================================================
+
+
+class TestConnectionSolving:
+    """Tests for connection solving (drill→chest, etc.)."""
+
+    @pytest.fixture
+    def drill_setup(self, rcon_client):
+        """Create a mining drill on ore for testing connections."""
+        import random
+
+        base_x = 150 + random.randint(0, 30)
+        base_y = 150 + random.randint(0, 30)
+
+        # First ensure terrain is grass (not void/water)
+        terrain_cmd = f"""
+        /sc local surface = game.surfaces[1]
+        local tiles = {{}}
+        for x = {base_x - 10}, {base_x + 10} do
+            for y = {base_y - 10}, {base_y + 10} do
+                table.insert(tiles, {{name = "grass-1", position = {{x, y}}}})
+            end
+        end
+        surface.set_tiles(tiles)
+        """
+        rcon_client.send_command(terrain_cmd)
+
+        # Clear area of entities
+        clear_cmd = f"""
+        /sc local surface = game.surfaces[1]
+        local area = {{left_top = {{x = {base_x - 10}, y = {base_y - 10}}}, right_bottom = {{x = {base_x + 10}, y = {base_y + 10}}}}}
+        for _, entity in pairs(surface.find_entities_filtered{{area = area}}) do
+            if entity.name ~= "character" then entity.destroy() end
+        end
+        """
+        rcon_client.send_command(clear_cmd)
+
+        # Create ore patch (smaller, just under the drill)
+        ore_cmd = f"""
+        /sc local s = game.surfaces[1]
+        for x = {base_x - 1}, {base_x + 1} do
+            for y = {base_y - 1}, {base_y + 1} do
+                s.create_entity{{name="iron-ore", position={{x, y}}, amount=1000}}
+            end
+        end
+        """
+        rcon_client.send_command(ore_cmd)
+
+        # Place drill facing south
+        drill_cmd = f"""
+        /sc game.surfaces[1].create_entity{{
+            name="burner-mining-drill",
+            position={{{base_x}, {base_y}}},
+            direction=defines.direction.south,
+            force="player"
+        }}
+        """
+        rcon_client.send_command(drill_cmd)
+
+        yield {
+            "drill_pos": MapPosition(x=float(base_x), y=float(base_y)),
+            "drill_name": "burner-mining-drill",
+        }
+
+        # Cleanup
+        rcon_client.send_command(clear_cmd)
+
+    def test_item_drop_positions_sorted_by_distance(self, hints, drill_setup, rcon_client):
+        """Test that item drop positions are sorted by distance to drop_position.
+
+        Invariant: For positions with the same perpendicular_offset, they should be
+        sorted by distance to the actual drop_position (closest first).
+        """
+        drill_pos = drill_setup["drill_pos"]
+        drill_name = drill_setup["drill_name"]
+
+        # Get connection positions
+        raw_result = hints._client.get_item_drop_connections(
+            drill_name,
+            drill_pos,
+            "iron-chest",
+            max_results=20,
+        )
+
+        positions = raw_result.get("positions", [])
+        drop_pos = raw_result.get("drop_position", {})
+
+        assert len(positions) > 0, "Should find at least some valid positions"
+        assert drop_pos, "Should return drop_position"
+
+        # Group positions by perpendicular_offset
+        from collections import defaultdict
+        by_perp_offset = defaultdict(list)
+        for p in positions:
+            perp = round(p["perpendicular_offset"], 2)
+            by_perp_offset[perp].append(p)
+
+        # For each group with same perp_offset, verify sorted by distance
+        for perp_offset, group in by_perp_offset.items():
+            if len(group) > 1:
+                distances = [p.get("distance_to_drop", 0) for p in group]
+                assert distances == sorted(distances), (
+                    f"Positions with perpendicular_offset={perp_offset} should be "
+                    f"sorted by distance_to_drop. Got distances: {distances}"
+                )
+
+    def test_first_position_is_closest_to_drop(self, hints, drill_setup, rcon_client):
+        """Test that the first returned position is closest to the drop_position.
+
+        This is the key invariant: the "best" position for a chest should be
+        the one closest to where items actually drop.
+        """
+        drill_pos = drill_setup["drill_pos"]
+        drill_name = drill_setup["drill_name"]
+
+        raw_result = hints._client.get_item_drop_connections(
+            drill_name,
+            drill_pos,
+            "iron-chest",
+            max_results=20,
+        )
+
+        positions = raw_result.get("positions", [])
+        drop_pos = raw_result.get("drop_position", {})
+
+        assert len(positions) > 0
+
+        # First position should have minimal distance
+        first_dist = positions[0].get("distance_to_drop", float("inf"))
+        first_perp = positions[0].get("perpendicular_offset", float("inf"))
+
+        # Among positions with the same or better perpendicular_offset,
+        # the first should have the smallest distance
+        for p in positions[1:]:
+            p_perp = p.get("perpendicular_offset", float("inf"))
+            p_dist = p.get("distance_to_drop", float("inf"))
+
+            if p_perp <= first_perp:
+                assert p_dist >= first_dist, (
+                    f"First position (perp={first_perp}, dist={first_dist}) should be "
+                    f"closer than position (perp={p_perp}, dist={p_dist})"
+                )
+
+
+# =============================================================================
 # PERFORMANCE TESTS
 # =============================================================================
 

@@ -21,7 +21,7 @@ from FactoryVerse.agent.placement_hints import (
     ConnectionPosition,
     EntityValidationError,
 )
-from FactoryVerse.infra.boilerplate.test_ground import TestGroundHelper
+from FactoryVerse.testing import TestGroundHelper
 
 
 @pytest.fixture(scope="function")

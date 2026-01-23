@@ -11,7 +11,7 @@ from typing import Dict, Generator
 
 from FactoryVerse.factory.entity.inspection import EntityInspection
 from FactoryVerse.factory.entity.transform import transform_inspection_data
-from FactoryVerse.infra.boilerplate.test_ground import TestGroundHelper
+from FactoryVerse.testing import TestGroundHelper
 
 
 @pytest.fixture(scope="function")

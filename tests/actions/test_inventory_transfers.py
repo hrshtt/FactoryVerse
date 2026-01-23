@@ -194,7 +194,7 @@ class TestPlacementValidation:
         chest_item = runtime.inventory.get_item("iron-chest")
         assert chest_item is not None, "Should have iron-chest in inventory"
 
-        result = await chest_item.place(target_pos)
+        result = chest_item.place(target_pos)
         assert result is not None, "Placement should succeed away from agent"
 
     async def test_placement_validation_handles_occupied_tiles(
@@ -216,7 +216,7 @@ class TestPlacementValidation:
             # Should either fail with clear error or succeed (if it replaces)
             # But should not fail silently
             try:
-                result = await chest_item.place(MapPosition(10, 10))
+                result = chest_item.place(MapPosition(10, 10))
                 # If succeeds, that's fine (replacement)
             except Exception as e:
                 # If fails, should have clear error message
