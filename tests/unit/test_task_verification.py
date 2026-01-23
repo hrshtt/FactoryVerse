@@ -7,15 +7,15 @@ without requiring a running Factorio instance.
 import pytest
 from typing import Dict
 
-from FactoryVerse.tasks.base import (
+from FactoryVerse.game.tasks.base import (
     TaskType,
     TaskConfig,
     VerificationCriteria,
     VerificationResult,
 )
-from FactoryVerse.tasks.registry import TaskRegistry
-from FactoryVerse.tasks.sources import ProductionStats, ManualStats
-from FactoryVerse.tasks.verification import (
+from FactoryVerse.game.tasks.registry import TaskRegistry
+from FactoryVerse.game.tasks.sources import ProductionStats, ManualStats
+from FactoryVerse.game.tasks.verification import (
     calculate_automation_score,
     verify_task,
     verify_multiple_items,

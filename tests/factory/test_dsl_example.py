@@ -4,7 +4,7 @@ This test validates the new factory-based architecture.
 """
 
 import pytest
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 
 class TestAgentRuntimeFixture:
@@ -147,7 +147,7 @@ class TestPrototypes:
 
     def test_prototypes_loaded(self, with_prototypes):
         """Prototype data should be available."""
-        from FactoryVerse.factory.prototypes import (
+        from FactoryVerse.game.factory.prototypes import (
             get_entity_prototypes,
             get_item_prototypes,
         )

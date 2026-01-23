@@ -8,7 +8,7 @@ This test suite validates the action issues reported:
 """
 
 import pytest
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 
 class TestCreateItemStacks:

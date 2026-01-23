@@ -9,7 +9,7 @@ Uses root conftest fixtures: test_ground, clean_area, agent, admin
 """
 
 import pytest
-from FactoryVerse.factory.types import Direction
+from FactoryVerse.game.factory.types import Direction
 
 
 class TestEntityPlacement:

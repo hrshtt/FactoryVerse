@@ -19,16 +19,16 @@ Requirements:
 import pytest
 from factorio_rcon import RCONClient
 
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 from FactoryVerse.infra.instance_manager import FactorioInstanceManager
-from FactoryVerse.agent.placement_hints import (
+from FactoryVerse.game.agent.placement_hints import (
     PlacementValidator,
     PlacementHints,
     GhostPlan,
     ConnectionType,
 )
-from FactoryVerse.agent.infra.rcon_handler import RconHandler
-from FactoryVerse.factory.types import MapPosition, Direction
+from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
+from FactoryVerse.game.factory.types import MapPosition, Direction
 
 
 # =============================================================================

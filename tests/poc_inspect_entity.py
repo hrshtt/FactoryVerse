@@ -13,7 +13,7 @@ This script demonstrates:
 import json
 from factorio_rcon import RCONClient
 
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 
 

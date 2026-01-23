@@ -17,7 +17,7 @@ class TestDocumentationRegistry:
 
     def test_registry_singleton(self):
         """Test that get_registry returns the same instance."""
-        from FactoryVerse.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
 
         # Reset to ensure clean state
         reset_registry()
@@ -28,7 +28,7 @@ class TestDocumentationRegistry:
 
     def test_register_class(self):
         """Test registering a class."""
-        from FactoryVerse.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
 
         reset_registry()
         registry = get_registry()
@@ -55,8 +55,8 @@ class TestDocumentationRegistry:
 
     def test_register_method(self):
         """Test registering a method."""
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.models import Example
 
         reset_registry()
         registry = get_registry()
@@ -89,8 +89,8 @@ class TestCoverageValidator:
 
     def test_coverage_report(self):
         """Test that coverage report is generated."""
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.validators import CoverageValidator
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.validators import CoverageValidator
 
         reset_registry()
         registry = get_registry()
@@ -115,9 +115,9 @@ class TestCoverageValidator:
 
     def test_coverage_with_documentation(self):
         """Test coverage when methods are documented."""
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.validators import CoverageValidator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.validators import CoverageValidator
+        from FactoryVerse.utils.docs.models import Example
 
         reset_registry()
         registry = get_registry()
@@ -152,8 +152,8 @@ class TestExampleValidator:
 
     def test_valid_syntax(self):
         """Test validation of valid Python syntax."""
-        from FactoryVerse.docs.validators import ExampleValidator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.validators import ExampleValidator
+        from FactoryVerse.utils.docs.models import Example
 
         validator = ExampleValidator()
 
@@ -175,8 +175,8 @@ class TestStaticAttributeValidator:
 
     def test_valid_resource_attribute(self):
         """Test that valid ResourceOrePatch attributes pass."""
-        from FactoryVerse.docs.validators import StaticAttributeValidator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.validators import StaticAttributeValidator
+        from FactoryVerse.utils.docs.models import Example
 
         validator = StaticAttributeValidator()
 
@@ -195,8 +195,8 @@ for patch in ores:
 
     def test_invalid_resource_attribute(self):
         """Test that invalid attributes are caught - this is the bug that prompted this validator."""
-        from FactoryVerse.docs.validators import StaticAttributeValidator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.validators import StaticAttributeValidator
+        from FactoryVerse.utils.docs.models import Example
 
         validator = StaticAttributeValidator()
 
@@ -218,8 +218,8 @@ for patch in ores:
 
     def test_valid_entity_attribute(self):
         """Test that valid BaseEntity attributes pass."""
-        from FactoryVerse.docs.validators import StaticAttributeValidator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.validators import StaticAttributeValidator
+        from FactoryVerse.utils.docs.models import Example
 
         validator = StaticAttributeValidator()
 
@@ -237,8 +237,8 @@ print(entity.position)
 
     def test_invalid_syntax(self):
         """Test detection of invalid Python syntax."""
-        from FactoryVerse.docs.validators import ExampleValidator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.validators import ExampleValidator
+        from FactoryVerse.utils.docs.models import Example
 
         validator = ExampleValidator()
 
@@ -254,8 +254,8 @@ print(entity.position)
 
     def test_async_syntax(self):
         """Test validation of async code."""
-        from FactoryVerse.docs.validators import ExampleValidator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.validators import ExampleValidator
+        from FactoryVerse.utils.docs.models import Example
 
         validator = ExampleValidator()
 
@@ -277,8 +277,8 @@ class TestMarkdownGenerator:
 
     def test_generate_empty_registry(self):
         """Test generation with empty registry."""
-        from FactoryVerse.docs.registry import reset_registry
-        from FactoryVerse.docs.generator import MarkdownGenerator
+        from FactoryVerse.utils.docs.registry import reset_registry
+        from FactoryVerse.utils.docs.generator import MarkdownGenerator
 
         reset_registry()
         generator = MarkdownGenerator()
@@ -289,9 +289,9 @@ class TestMarkdownGenerator:
 
     def test_generate_with_class(self):
         """Test generation with registered class."""
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.generator import MarkdownGenerator
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.generator import MarkdownGenerator
+        from FactoryVerse.utils.docs.models import Example
 
         reset_registry()
         registry = get_registry()
@@ -334,8 +334,8 @@ class TestDocumentationIntegration:
 
     def test_reference_modules_load(self):
         """Test that reference modules can be loaded without error."""
-        from FactoryVerse.docs.reference import register_all_documentation
-        from FactoryVerse.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.reference import register_all_documentation
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
 
         reset_registry()
         register_all_documentation()
@@ -352,9 +352,9 @@ class TestDocumentationIntegration:
 
     def test_all_examples_valid_syntax(self):
         """Test that all registered examples have valid syntax."""
-        from FactoryVerse.docs.reference import register_all_documentation
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.validators import ExampleValidator
+        from FactoryVerse.utils.docs.reference import register_all_documentation
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.validators import ExampleValidator
 
         reset_registry()
         register_all_documentation()
@@ -378,9 +378,9 @@ class TestDocumentationIntegration:
         This catches doc/code drift where example code uses attributes that
         don't exist on the actual classes (e.g., patch.total_amount vs patch.total).
         """
-        from FactoryVerse.docs.reference import register_all_documentation
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.validators import StaticAttributeValidator
+        from FactoryVerse.utils.docs.reference import register_all_documentation
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.validators import StaticAttributeValidator
 
         reset_registry()
         register_all_documentation()
@@ -400,8 +400,8 @@ class TestDocumentationIntegration:
 
     def test_generate_full_documentation(self):
         """Test generating full documentation."""
-        from FactoryVerse.docs.generator import generate_api_reference
-        from FactoryVerse.docs.registry import reset_registry
+        from FactoryVerse.utils.docs.generator import generate_api_reference
+        from FactoryVerse.utils.docs.registry import reset_registry
 
         reset_registry()
         markdown = generate_api_reference()
@@ -419,9 +419,9 @@ class TestDocumentationIntegration:
 
     def test_coverage_report(self):
         """Test that coverage report can be generated."""
-        from FactoryVerse.docs.reference import register_all_documentation
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.validators import CoverageValidator
+        from FactoryVerse.utils.docs.reference import register_all_documentation
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.validators import CoverageValidator
 
         reset_registry()
         register_all_documentation()
@@ -440,8 +440,8 @@ class TestDecorators:
 
     def test_documented_method_decorator(self):
         """Test that @documented_method stores metadata."""
-        from FactoryVerse.docs.decorators import documented_method, get_method_doc_metadata
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.decorators import documented_method, get_method_doc_metadata
+        from FactoryVerse.utils.docs.models import Example
 
         @documented_method(
             examples=[
@@ -463,7 +463,7 @@ class TestDecorators:
 
     def test_documented_class_decorator(self):
         """Test that @documented_class stores metadata."""
-        from FactoryVerse.docs.decorators import documented_class, get_class_doc_metadata
+        from FactoryVerse.utils.docs.decorators import documented_class, get_class_doc_metadata
 
         @documented_class(
             accessor_name="my_class",
@@ -479,13 +479,13 @@ class TestDecorators:
 
     def test_register_decorated_class(self):
         """Test auto-registration of decorated class."""
-        from FactoryVerse.docs.decorators import (
+        from FactoryVerse.utils.docs.decorators import (
             documented_class,
             documented_method,
             register_decorated_class,
         )
-        from FactoryVerse.docs.registry import get_registry, reset_registry
-        from FactoryVerse.docs.models import Example
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+        from FactoryVerse.utils.docs.models import Example
 
         reset_registry()
 

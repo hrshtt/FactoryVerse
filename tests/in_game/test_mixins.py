@@ -5,7 +5,7 @@ These tests verify that various entity types can be placed and
 have expected properties. Uses root conftest fixtures.
 """
 
-from FactoryVerse.factory.types import Direction
+from FactoryVerse.game.factory.types import Direction
 
 
 class TestFuelableEntities:

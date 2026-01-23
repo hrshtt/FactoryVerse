@@ -9,9 +9,9 @@ import pytest
 import asyncio
 from typing import Dict, Generator
 
-from FactoryVerse.factory.entity.inspection import EntityInspection
-from FactoryVerse.factory.entity.transform import transform_inspection_data
-from FactoryVerse.testing import TestGroundHelper
+from FactoryVerse.game.factory.entity.inspection import EntityInspection
+from FactoryVerse.game.factory.entity.transform import transform_inspection_data
+from FactoryVerse.game.scenarios import TestGroundHelper
 
 
 @pytest.fixture(scope="function")

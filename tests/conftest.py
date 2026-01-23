@@ -18,7 +18,7 @@ from FactoryVerse.environment.config import (
     RuntimeConfig,
     InfraConfig,
 )
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 
 # ============================================================================
 # CONFIGURATION HELPERS

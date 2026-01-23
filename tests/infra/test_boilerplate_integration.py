@@ -14,7 +14,7 @@ This is the final validation that the system is ready for running agent trajecto
 import pytest
 import time
 from pathlib import Path
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 
 # =============================================================================
@@ -128,7 +128,7 @@ class TestBasicActions:
         # Test walking
         code = """
 import asyncio
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 # Get initial position
 initial_pos = walking.current_position
@@ -241,7 +241,7 @@ class TestEntityOperations:
         admin.add_items(agent_idx, {"stone-furnace": 2, "iron-chest": 1})
 
         code = """
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 # Place a furnace
 furnace_pos = MapPosition(40, 40)
@@ -336,7 +336,7 @@ print("   Ghost builder available")
         admin.add_items(agent_idx, {"transport-belt": 50})
 
         code = """
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 # Place a ghost entity
 ghost_pos = MapPosition(70, 70)
@@ -599,7 +599,7 @@ except Exception as e:
         admin.add_items(agent_idx, {"transport-belt": 10})
         
         code = """
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 # Place a ghost
 ghost_pos = MapPosition(90, 90)
@@ -1038,7 +1038,7 @@ except Exception as e:
         """Action timeouts should be handled gracefully."""
         code = """
 # Test timeout handling (walking to unreachable position)
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 try:
     # Try walking to a very far position (may timeout)
@@ -1077,7 +1077,7 @@ class TestIntegrationWorkflows:
         test_ground.place_iron_patch(100, 100, size=4, amount=1000)
 
         code = """
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 print("🏭 Starting factory setup workflow...")
 

@@ -2,10 +2,9 @@
 
 import pytest
 import asyncio
-from FactoryVerse.factory.item.base import ItemStack
+from FactoryVerse.game.factory.item.base import ItemStack
 
-# Import dsl_context fixture from factory conftest
-pytest_plugins = ["tests.factory.conftest"]
+# Note: This test requires environment fixtures from tests/conftest.py
 
 # Fixture to ensure recipes are unlocked and available for crafting
 @pytest.fixture(scope="function")

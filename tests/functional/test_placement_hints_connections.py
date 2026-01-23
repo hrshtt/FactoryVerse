@@ -14,14 +14,14 @@ import pytest
 import asyncio
 from typing import Dict, Generator
 
-from FactoryVerse.factory.types import MapPosition, Direction
-from FactoryVerse.agent.placement_hints import (
+from FactoryVerse.game.factory.types import MapPosition, Direction
+from FactoryVerse.game.agent.placement_hints import (
     PlacementHints,
     ConnectionType,
     ConnectionPosition,
     EntityValidationError,
 )
-from FactoryVerse.testing import TestGroundHelper
+from FactoryVerse.game.scenarios import TestGroundHelper
 
 
 @pytest.fixture(scope="function")
@@ -66,7 +66,7 @@ class TestItemDropConnection:
         self, rcon, agent_id: str, reachable_view, entity_name: str, pos: Dict[str, float]
     ) -> "BaseEntity":
         """Get an entity as BaseEntity by teleporting agent and fetching from reachable view."""
-        from FactoryVerse.factory.types import MapPosition
+        from FactoryVerse.game.factory.types import MapPosition
 
         # Teleport agent to entity
         await self._teleport_agent(rcon, agent_id, pos["x"], pos["y"])
@@ -242,7 +242,7 @@ class TestFluidPipeConnection:
         self, rcon, agent_id: str, reachable_view, entity_name: str, pos: Dict[str, float]
     ) -> "BaseEntity":
         """Get an entity as BaseEntity by teleporting agent and fetching from reachable view."""
-        from FactoryVerse.factory.types import MapPosition
+        from FactoryVerse.game.factory.types import MapPosition
 
         # Teleport agent to entity
         await self._teleport_agent(rcon, agent_id, pos["x"], pos["y"])

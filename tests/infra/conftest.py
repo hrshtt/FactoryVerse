@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Generator, List, Tuple
 
-from FactoryVerse.agent_runtime import FactoryVerseRuntime
+from FactoryVerse.environment.agent_runtime import FactoryVerseRuntime
 
 
 def cleanup_orphaned_kernels() -> List[Tuple[str, str]]:

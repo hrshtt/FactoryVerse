@@ -11,7 +11,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from factorio_rcon import RCONClient
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 
 

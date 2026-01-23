@@ -9,8 +9,8 @@ Based on: docs/implementation_summaries/entity_walking_integration.md
 
 import pytest
 import asyncio
-from FactoryVerse.factory.types import MapPosition
-from FactoryVerse.agent.embodied_actions.walking import (
+from FactoryVerse.game.factory.types import MapPosition
+from FactoryVerse.game.agent.embodied_actions.walking import (
     WalkingUnreachableError,
     WalkingEntityNotFoundError,
     WalkingNoStandableTilesError,

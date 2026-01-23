@@ -11,12 +11,12 @@ import time
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-from FactoryVerse.mcp_server.server import FactoryVerseMCPServer
+from FactoryVerse.infra.mcp.server import FactoryVerseMCPServer
 from FactoryVerse.infra.instance_manager import (
     FactorioInstanceManager,
     FactorioInstance,
 )
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 
 
 class TestInstanceManagerDirect:

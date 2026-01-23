@@ -9,7 +9,7 @@ fixture which is only available in the infra test domain.
 
 import pytest
 import time
-from FactoryVerse.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition
 
 
 # =============================================================================
@@ -445,8 +445,8 @@ class TestAllRecipes:
         time.sleep(0.5)  # Wait for recipes to be enabled
         
         code = """
-from FactoryVerse.prototype_data import get_prototype_manager
-from FactoryVerse.factory.prototypes import RecipePrototypes
+from FactoryVerse.game.factory.prototype_data import get_prototype_manager
+from FactoryVerse.game.factory.prototypes import RecipePrototypes
 import time
 
 # Get all recipes
@@ -639,8 +639,8 @@ else:
         agent_idx = int(agent_id.split("_")[1])
         
         code = """
-from FactoryVerse.prototype_data import get_prototype_manager
-from FactoryVerse.factory.prototypes import RecipePrototypes
+from FactoryVerse.game.factory.prototype_data import get_prototype_manager
+from FactoryVerse.game.factory.prototypes import RecipePrototypes
 
 # Get all recipes
 recipe_prototypes = RecipePrototypes()

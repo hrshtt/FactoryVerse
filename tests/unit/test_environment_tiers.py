@@ -135,7 +135,7 @@ async def test_tier4_agent_reconciliation():
     mock_env.tier3 = mock_tier3
 
     from FactoryVerse.environment.tiers.tier4_runtime import Tier4Runtime
-    from FactoryVerse.agent.core.profile import AgentProfile, AgentStatus
+    from FactoryVerse.game.agent.core.profile import AgentProfile, AgentStatus
 
     # Case 1: New Agent (No agent in Lua, registry returns None)
     mock_registry.get_by_name.return_value = None
