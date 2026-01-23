@@ -1253,7 +1253,6 @@ Returns connection info, game state, and current tick if available.""",
                 ]
 
             server_mgr.clear_all_server_snapshot_dirs(num_servers)
-            server_mgr.consolidate_scenarios()
             server_mgr.prepare_mods(scenario)
 
             compose_mgr = DockerComposeManager(work_dir)

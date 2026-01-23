@@ -574,5 +574,4 @@ for row in result:
             print("✅ Notebook cleanup completed successfully\n")
         else:
             print("⚠️  Notebook cleanup completed with warnings/errors")
-            print("   You may need to manually cleanup jupyter kernels")
-            print("   Run: uv run python scripts/cleanup_jupyter_kernels.py\n")
+            print("   You may need to manually cleanup jupyter kernels\n")

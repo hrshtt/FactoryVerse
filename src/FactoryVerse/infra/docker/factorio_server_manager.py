@@ -105,45 +105,6 @@ class FactorioServerManager:
         """
         return self.config.validate_scenario(scenario)
 
-    def consolidate_scenarios(self) -> int:
-        """Consolidate local scenarios to repo scenarios directory.
-
-        Copies scenarios from local Factorio directory to repo's scenarios
-        directory for server access. Repo scenarios take precedence (won't
-        be overwritten by local copies).
-
-        Returns:
-            Number of scenarios copied
-        """
-        local_dir = self.config.local_scenarios_dir
-        repo_dir = self.config.scenarios_dir
-
-        if not local_dir.exists():
-            return 0
-
-        copied = 0
-        for scenario_dir in local_dir.iterdir():
-            if not scenario_dir.is_dir():
-                continue
-            if not (scenario_dir / "control.lua").exists():
-                continue
-
-            target_dir = repo_dir / scenario_dir.name
-
-            # Skip if already exists in repo (repo takes precedence)
-            if target_dir.exists():
-                continue
-
-            # Copy scenario
-            print(f"📦 Copying local scenario '{scenario_dir.name}' to repo...")
-            shutil.copytree(scenario_dir, target_dir)
-            copied += 1
-
-        if copied > 0:
-            print(f"✓ Copied {copied} local scenario(s) to repo")
-
-        return copied
-
     # =========================================================================
     # Directory Management
     # =========================================================================

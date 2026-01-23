@@ -327,12 +327,20 @@ def cmd_list_scenarios(args):
         print("No scenarios found.")
         return
 
+    # Categorize scenarios by source
     repo_scenarios = set(config._list_scenarios_in_dir(config.scenarios_dir))
+    inbuilt_scenarios = set()
+    if config.inbuilt_scenarios_dir:
+        inbuilt_scenarios = set(config._list_scenarios_in_dir(config.inbuilt_scenarios_dir))
 
     print(f"Available scenarios ({len(scenarios)}):\n")
     for scenario in sorted(scenarios):
-        is_repo = scenario in repo_scenarios
-        source = "repo" if is_repo else "local"
+        if scenario in repo_scenarios:
+            source = "repo"
+        elif scenario in inbuilt_scenarios:
+            source = "inbuilt"
+        else:
+            source = "local"
         print(f"  {scenario:<25} [{source}]")
 
 

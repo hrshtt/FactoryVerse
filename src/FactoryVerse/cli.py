@@ -330,9 +330,6 @@ def cmd_start(args):
     print("🧹 Clearing server snapshot directories...")
     server_mgr.clear_all_server_snapshot_dirs(args.num)
 
-    # Consolidate local scenarios to repo (for Docker access)
-    server_mgr.consolidate_scenarios()
-
     # Prepare server mods (always)
     print(f"🚀 Starting FactoryVerse ({args.num} server(s), scenario: {scenario})")
     server_mgr.prepare_mods(scenario)
