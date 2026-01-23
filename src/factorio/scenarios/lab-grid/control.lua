@@ -199,9 +199,19 @@ local function create_agent_in_cell(args)
     assign_agent_to_cell(agent_id, cell_index)
 
     -- Chart just this cell for the force (on-demand, not bulk)
-    -- This triggers fv_snapshot to process only the relevant chunks
+    -- In SELECTIVE mode, charting does NOT trigger auto-snapshotting
     local cell_bounds = grid.get_play_area_bounds(cell_index)
     force.chart(game.surfaces[1], cell_bounds)
+
+    -- Explicitly trigger snapshot for this cell after all setup is complete
+    -- This ensures the snapshot captures the fully configured cell state
+    if remote.interfaces.map and remote.interfaces.map.snapshot_area then
+        local snapshot_result = remote.call("map", "snapshot_area", cell_bounds)
+        if snapshot_result and snapshot_result.success then
+            game.print(string.format("Lab Grid: Triggered snapshot for cell %d (%d chunks)",
+                cell_index, snapshot_result.chunks_queued or 0))
+        end
+    end
 
     return {
         success = true,
@@ -471,6 +481,20 @@ local function initialize_map()
     -- Charting 1600 chunks at once causes the system to hang.
     -- Instead, cells are charted on-demand when agents are created.
 
+    -- Step 6: Set snapshot orchestration mode to SELECTIVE
+    -- This prevents auto-snapshotting on chunk charted events.
+    -- We explicitly trigger snapshots per-cell via snapshot_area() after setup.
+    if remote.interfaces.map and remote.interfaces.map.set_orchestration_mode then
+        local result = remote.call("map", "set_orchestration_mode", "SELECTIVE")
+        if result and result.success then
+            game.print("Lab Grid: Snapshot orchestration mode set to SELECTIVE")
+        else
+            game.print("Lab Grid: Warning - Failed to set orchestration mode: " .. (result and result.error or "unknown"))
+        end
+    else
+        game.print("Lab Grid: Warning - fv_snapshot map interface not available for orchestration mode")
+    end
+
     storage.lab_grid.initialized = true
     game.print("Lab Grid initialized: " .. grid.GRID_SIZE .. "x" .. grid.GRID_SIZE ..
                " grid (" .. grid.TOTAL_CELLS .. " cells), " ..
@@ -512,6 +536,26 @@ remote.add_interface("lab_grid", {
     reset_cell = function(cell_index, preserve_agent)
         local surface = game.surfaces[1]
         cell.reset_cell(surface, cell_index, preserve_agent)
+
+        -- Clear cell-agent assignment if not preserving agent
+        if not preserve_agent then
+            local agent_id = storage.lab_grid.cell_agents[cell_index]
+            if agent_id then
+                storage.lab_grid.agent_cells[agent_id] = nil
+                storage.lab_grid.cell_agents[cell_index] = nil
+            end
+        end
+
+        -- Trigger re-snapshot for this cell after reset
+        -- This clears old snapshot data and captures the fresh cell state
+        local cell_bounds = grid.get_play_area_bounds(cell_index)
+        if remote.interfaces.map and remote.interfaces.map.re_snapshot_area then
+            local snapshot_result = remote.call("map", "re_snapshot_area", cell_bounds)
+            if snapshot_result and snapshot_result.success then
+                game.print(string.format("Lab Grid: Re-snapshotting cell %d (%d chunks)",
+                    cell_index, snapshot_result.chunks_queued or 0))
+            end
+        end
 
         -- Reset force production statistics
         local force_name = storage.lab_grid.cell_forces[cell_index]
@@ -575,14 +619,15 @@ remote.add_interface("lab_grid", {
             return {success = false, error = "Agent not assigned to a cell"}
         end
 
-        -- Get agent character via fv_embodied_agent
-        if remote.interfaces.agent and remote.interfaces.agent.teleport then
+        -- Get agent character via fv_embodied_agent (per-agent interface is agent_N)
+        local agent_interface = "agent_" .. agent_id
+        if remote.interfaces[agent_interface] and remote.interfaces[agent_interface].teleport then
             local spawn_pos = grid.get_spawn_position(cell_index)
-            remote.call("agent", "teleport", agent_id, spawn_pos)
+            remote.call(agent_interface, "teleport", {position = spawn_pos})
             return {success = true, position = spawn_pos}
         end
 
-        return {success = false, error = "Cannot teleport - agent interface not available"}
+        return {success = false, error = "Cannot teleport - agent interface " .. agent_interface .. " not available"}
     end,
 
     -- Debugging
