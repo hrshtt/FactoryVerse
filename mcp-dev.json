@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "factoryverse": {
+      "command": "uv",
+      "args": ["run", "factoryverse-mcp"],
+      "cwd": "/Users/harshitsharma/Code/exp/FactoryVerse"
+    }
+  }
+}
