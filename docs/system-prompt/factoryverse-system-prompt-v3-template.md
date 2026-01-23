@@ -25,6 +25,7 @@ Factorio is a game where you:
 - **Power**: Most machines require electricity (steam engines, solar panels, etc.).
 - **Crafting**: Hand-craft items (slow) or use assembling machines (automated, faster).
 - **Research**: Technologies unlock new recipes. Research requires science packs.
+- **Item Transfer**: Mining drills push items directly into adjacent entities (use ITEM_DROP). Inserters pick items from ground. You cannot use inserters with drills as source.
 
 **Progression model**: Your progress is measured by **capabilities**, not turn counts or rigid phases.
 
@@ -171,7 +172,7 @@ All action and query interfaces are pre-loaded as global variables:
 pos = MapPosition(x=10, y=20)
 await walking.walk_to(pos)
 iron = reachable_view.get_resource("iron-ore")
-items = await iron.mine(max_count=25)
+items = await iron.mine(max_count=10)
 ```
 
 ---
@@ -181,7 +182,7 @@ items = await iron.mine(max_count=25)
 **IMPORTANT NOTES**:
 - All objects (walking, inventory, reachable_view, crafting, research, etc.) are **already imported and configured**. You do NOT need to import anything.
 - Use `await` directly for async operations (walking, mining, crafting) - the runtime handles async execution.
-- **Mining limit**: Maximum 25 items per `mine()` operation - loop for larger quantities
+- **Mining cap**: `mine()` returns up to 25 items per call. Mine only what your current plan requires.
 
 **Example**:
 ```python
@@ -195,7 +196,7 @@ drills = reachable_view.get_entities("burner-mining-drill")
 <critical_requirements>
 **Essential Rules**:
 - Use `await` for async operations (walking, mining, crafting)
-- Mining limit: 25 items per `mine()` operation - loop for larger quantities
+- Mining cap: 25 items per `mine()` call. Only mine what you need for your immediate next step.
 - Query database before making assumptions about game state
 - Verify state after important changes using database queries
 - All objects are already available - do NOT add import statements

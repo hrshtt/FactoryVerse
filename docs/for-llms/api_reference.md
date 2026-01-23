@@ -1,6 +1,6 @@
 # FactoryVerse LLM Reference
 
-> Auto-generated via introspection on 2026-01-15 15:54
+> Auto-generated via introspection on 2026-01-23 02:19
 
 You are an embodied agent in Factorio. You have a physical presence, inventory, and can walk, craft, mine, and interact with entities.
 
@@ -30,7 +30,7 @@ Crafting actions.
 await crafting.craft(recipe: str, count: int = 1, timeout: Optional[int] = None) -> List[ItemStack]
 crafting.dequeue(recipe: str, count: Optional[int] = None) -> Dict[str, Any]
 crafting.enqueue(recipe: str, count: int = 1) -> Dict[str, Any]
-crafting.status() -> Dict[str, Any]
+crafting.status() -> CraftingQueueStatus
 ```
 
 ### `research`
@@ -77,10 +77,14 @@ remote_view.count_ghosts(ghost_name: Optional[str] = None) -> int
 remote_view.debug_info() -> Dict[str, Any]
 remote_view.flush() -> int
 remote_view.get_entities(sql: str) -> List['BaseEntity']
+remote_view.get_entities_at_anchor_tile(tile_x: int, tile_y: int) -> List['BaseEntity']
+remote_view.get_entities_in_tile_area(min_tile_x: int, min_tile_y: int, max_tile_x: int, max_tile_y: int, entity_name: Optional[str] = None) -> List['BaseEntity']
 remote_view.get_entity(sql: str) -> Optional['BaseEntity']
+remote_view.get_entity_at_tile(tile_x: int, tile_y: int) -> Optional['BaseEntity']
 remote_view.get_ghosts(sql: str) -> List['BaseEntity']
 remote_view.get_resources(sql: str) -> List['BaseResource']
 remote_view.is_loaded -> bool
+remote_view.is_tile_occupied(tile_x: int, tile_y: int) -> bool
 await remote_view.load(wait_for_bootstrap: bool = True, bootstrap_timeout: float = 120.0) -> FactoryVerse.agent.infra.snapshot.types.LoadResult
 remote_view.query(sql: str) -> List[Dict[str, Any]]
 remote_view.rebuild() -> FactoryVerse.agent.infra.snapshot.types.LoadResult
@@ -104,6 +108,7 @@ await ghost_builder.build_plan(plan: GhostPlan, strict: bool = False) -> Dict[st
 Spatial reasoning for entity placement.
 
 ```python
+placement_hints.evaluate_pole_placement(position: MapPosition, pole_name: str, source_pole: Optional[BaseEntity] = None, reachable_view: Optional[Any] = None) -> PolePlacementResult
 placement_hints.get_connection_positions(source_entity: BaseEntity, target_entity_name: str, connection_type: <enum 'ConnectionType) -> List[ConnectionPosition]
 placement_hints.get_inserter_placement_positions(source_entity: BaseEntity, target_entity: BaseEntity, inserter_name: str = 'inserter') -> List[Tuple[MapPosition, Direction]]
 placement_hints.get_placement_line(entity_name: str, start: MapPosition, end: MapPosition, width: int = 1, validate: bool = True) -> GhostPlan
@@ -119,7 +124,7 @@ placement_hints.validator -> PlacementValidator
 
 ### MapPosition
 
-Coordinates of a tile on the map.
+Float coordinates for entity centers and precise positions.
 
 ```python
 MapPosition(x: float, y: float)
@@ -128,6 +133,25 @@ MapPosition(x: float, y: float)
 **Methods:**
 - `.distance(other: MapPosition) -> float` - Calculate Euclidean distance to another MapPosition.
 - `.manhattan_distance(other: MapPosition) -> float` - Calculate Manhattan distance to another MapPosition.
+
+### TilePosition
+
+Integer grid coordinates for tile-based spatial reasoning.
+
+Factorio is fundamentally grid-based. Tiles are discrete units for placement and collision.
+
+```python
+TilePosition(x: int, y: int)
+```
+
+**Methods:**
+- `.chebyshev_distance(other: 'TilePosition') -> int` - Calculate Chebyshev distance (chessboard distance) to another tile.
+- `.from_map_position(x: float, y: float) -> TilePosition` - Convert map position to containing tile (floors coordinates).
+- `.manhattan_distance(other: 'TilePosition') -> int` - Calculate Manhattan distance to another tile.
+- `.neighbors(diagonal: bool = False) -> List[TilePosition]` - Get adjacent tiles.
+- `.offset(direction: 'Direction', tiles: int = 1) -> TilePosition` - Offset by N tiles in a cardinal direction.
+- `.to_map_position(center: bool = True) -> Tuple[float, float]` - Convert to map position coordinates.
+- `.to_tuple() -> Tuple[int, int]` - Convert to tuple (x, y).
 
 ### Direction
 
@@ -221,6 +245,31 @@ rows = remote_view.query("SELECT entity_name, COUNT(*) FROM map_entity GROUP BY 
 |------|--------|---------|----------|
 | REACHABLE | `reachable_view.*` | All actions available (no `walk_to` - already in range) | Interact with nearby entities |
 | REMOTE | `remote_view.*` | Read-only (inspect, `walk_to`) | Query map-wide, then walk to interact |
+
+---
+
+
+## Entity Spatial Properties
+
+All entities have tile-based spatial properties for grid reasoning.
+
+### Tile Properties
+
+```python
+entity.anchor_tile  # -> TilePosition  # The tile containing this entity's center.
+entity.footprint  # -> tuple  # Get (width, height) tuple for spatial calculations.
+entity.footprint_tiles  # -> List[TilePosition]  # Tiles occupied by this entity's footprint.
+entity.footprint_tiles_set  # -> Set[TilePosition]  # Tiles occupied by this entity as a set (for fast membership/intersection).
+entity.tile_height  # -> int  # Calculate tile height from prototype collision_box.
+entity.tile_width  # -> int  # Calculate tile width from prototype collision_box.
+```
+
+### Spatial Methods
+
+```python
+entity.collides_with(other: BaseEntity) -> bool  # Check if this entity's footprint overlaps with another entity.
+entity.occupies_tile(tile: TilePosition) -> bool  # Check if this entity occupies a specific tile.
+```
 
 ---
 
@@ -417,9 +466,9 @@ Each `ConnectionType` only works with specific source entities. Using incompatib
 |----------------|----------------------|
 | `ITEM_DROP` | `burner-mining-drill`, `electric-mining-drill` |
 | `FLUID_PIPE` | `boiler`, `chemical-plant`, `offshore-pump`, `oil-refinery`, `pipe`, `pipe-to-ground`, `pump`, `pumpjack`, `steam-engine`, `steam-turbine`, `storage-tank` |
+| `ELECTRIC_WIRE` | `big-electric-pole`, `medium-electric-pole`, `small-electric-pole`, `substation` |
 | `INSERTER_REACH` | Use `get_inserter_placement_positions()` instead |
 | `BELT_FLOW` | Use `get_placement_line()` |
-| `ELECTRIC_WIRE` | Use `get_pole_line()` or `get_pole_coverage_*()` |
 
 ### Placement Constraints
 
@@ -432,11 +481,39 @@ Some entities have special placement requirements:
 | `pumpjack` | Must be placed on resource tiles |
 | `offshore-pump` | Must be placed on water tiles |
 
-### Connection Example
+### Connection Examples
+
+#### ITEM_DROP: Direct Drill-to-Furnace (No Inserter Needed!)
+
+```python
+# ITEM_DROP: Place furnace directly at drill's drop position
+# No inserter needed - drill outputs directly into furnace!
+# Note: placement_hints and ConnectionType are pre-loaded as global variables, no import needed
+
+drill = reachable_view.get_entity("burner-mining-drill")
+positions = placement_hints.get_connection_positions(
+    source_entity=drill,
+    target_entity_name="stone-furnace",
+    connection_type=ConnectionType.ITEM_DROP
+)  # -> List[ConnectionPosition]
+
+if positions:
+    # Positions sorted by perpendicular_offset (lower = better aligned)
+    best = positions[0]
+    print(f"Furnace position: {best.position}")
+
+    # Place furnace at drill's drop position - it receives ore directly
+    item = inventory.get_item("stone-furnace")
+    item.place(best.position, best.direction)
+    # Furnace will automatically receive ore from drill - no inserter needed!
+```
+
+This is the most efficient early-game setup. The drill drops items directly into the furnace's footprint.
+
+#### FLUID_PIPE: Boiler-to-Pipe Connection
 
 ```python
 # Find where a pipe can connect to a boiler
-# Note: placement_hints and ConnectionType are pre-loaded as global variables, no import needed
 
 boiler = reachable_view.get_entity("boiler")
 pipe_positions = placement_hints.get_connection_positions(
@@ -453,12 +530,19 @@ for conn_pos in pipe_positions:
 ```
 
 **Return Value:**
-- Returns `List[ConnectionPosition]` - structured objects with `.position`, `.direction`, and `.perpendicular_offset`
+- Returns `List[ConnectionPosition]` (or `List[WireConnectionPosition]` for `ELECTRIC_WIRE`)
+- Structured objects with `.position`, `.direction`, and `.perpendicular_offset`
 - Positions are sorted by alignment (lower `perpendicular_offset` = better aligned with source entity)
 - `perpendicular_offset`: Distance from source entity perpendicular to flow direction (0.0 = perfectly aligned)
 - `direction`: May be `None` if the target entity doesn't require explicit direction
-- Entities like pipes, chests can be placed without direction (Factorio auto-determines it)
+- Entities like pipes, chests, poles can be placed without direction (Factorio auto-determines it)
 - Always pass `conn_pos.direction` directly to `place()` - it handles `None` gracefully
+
+**For ELECTRIC_WIRE connections:**
+- Returns `List[WireConnectionPosition]` (inherits from `ConnectionPosition`)
+- Additional fields: `.wire_distance` (actual distance in tiles) and `.wire_distance_utilization` (ratio 0.0-1.0)
+- `wire_distance_utilization`: How much of the maximum wire distance is used (e.g., 0.8 = 80% of max)
+- Example: `pos.wire_distance = 7.2` tiles, `pos.wire_distance_utilization = 0.8` (80% of 9.0 tile max)
 
 ### Validation API
 
@@ -489,6 +573,42 @@ positions = placement_hints.get_inserter_placement_positions(
     target_entity=furnace,
     inserter_name="inserter"
 )  # -> List[Tuple[MapPosition, Direction]]
+```
+
+### Pole Connections & Placement
+
+```python
+# Find positions where a pole can connect to an existing pole
+source_pole = reachable_view.get_entity("medium-electric-pole")
+wire_positions = placement_hints.get_connection_positions(
+    source_entity=source_pole,
+    target_entity_name="medium-electric-pole",
+    connection_type=ConnectionType.ELECTRIC_WIRE
+)  # -> List[WireConnectionPosition]
+
+# WireConnectionPosition has additional fields
+for pos in wire_positions:
+    print(f"Distance: {pos.wire_distance:.2f} tiles")
+    print(f"Utilization: {pos.wire_distance_utilization:.1%}")  # e.g., "80.1%"
+```
+
+### Pole Placement Evaluation (Dry Run)
+
+```python
+# Evaluate a pole placement without placing anything
+result = placement_hints.evaluate_pole_placement(
+    position=MapPosition(100, 100),
+    pole_name="medium-electric-pole",
+    source_pole=source_pole,  # Optional: check connectivity
+    reachable_view=reachable_view
+)  # -> PolePlacementResult
+
+# Rich feedback about the placement
+print(f"Would power {result.entities_powered_count} entities")
+print(f"Connects to {result.connected_poles_count} poles")
+print(f"Can receive power: {result.can_receive_power}")
+if result.connects_to_source:
+    print(f"Distance to source: {result.distance_to_source:.2f} tiles")
 ```
 
 ### Pole Lines & Coverage
@@ -620,7 +740,7 @@ print(f"Built {result['built_count']}, Failed {result['failed_count']}")
 
 **Capabilities:**
 - Burner → `add_fuel, take_fuel`
-- Fluid → `get_fluid, get_pipe_connections`
+- Fluid → `get_fluid`
 - Rotatable → `rotate`
 
 **Entities:** `boiler`
@@ -629,7 +749,7 @@ print(f"Built {result['built_count']}, Failed {result['failed_count']}")
 
 **Capabilities:**
 - Burner → `add_fuel, take_fuel`
-- Inserter → `get_drop_position, get_pickup_position, set_filter`
+- Inserter → `set_filter`
 - Rotatable → `rotate`
 
 **Entities:** `burner-inserter`
@@ -638,7 +758,7 @@ print(f"Built {result['built_count']}, Failed {result['failed_count']}")
 
 **Capabilities:**
 - Burner → `add_fuel, take_fuel`
-- Miner → `get_output_position, get_resource_search_area`
+- Miner → `get_resource_search_area`
 - Rotatable → `rotate`
 
 **Entities:** `burner-mining-drill`
@@ -657,7 +777,7 @@ print(f"Built {result['built_count']}, Failed {result['failed_count']}")
 - Electric
 - Crafter → `add_ingredients, take_products`
 - SetRecipe → `set_recipe`
-- Fluid → `get_fluid, get_pipe_connections`
+- Fluid → `get_fluid`
 
 **Entities:** `chemical-plant`, `oil-refinery`
 
@@ -675,14 +795,14 @@ print(f"Built {result['built_count']}, Failed {result['failed_count']}")
 **Capabilities:**
 - Electric
 
-**Entities:** `lab`
+**Entities:** `lab`, `solar-panel`
 
 ### Electric, Fluid, Miner, Rotatable
 
 **Capabilities:**
 - Electric
-- Miner → `get_output_position, get_resource_search_area`
-- Fluid → `get_fluid, get_pipe_connections`
+- Miner → `get_resource_search_area`
+- Fluid → `get_fluid`
 - Rotatable → `rotate`
 
 **Entities:** `pumpjack`
@@ -691,16 +811,16 @@ print(f"Built {result['built_count']}, Failed {result['failed_count']}")
 
 **Capabilities:**
 - Electric
-- Fluid → `get_fluid, get_pipe_connections`
+- Fluid → `get_fluid`
 - Rotatable → `rotate`
 
-**Entities:** `steam-engine`, `steam-turbine`
+**Entities:** `pump`, `steam-engine`, `steam-turbine`
 
 ### Electric, Inserter, Rotatable
 
 **Capabilities:**
 - Electric
-- Inserter → `get_drop_position, get_pickup_position, set_filter`
+- Inserter → `set_filter`
 - Rotatable → `rotate`
 
 **Entities:** `bulk-inserter`, `fast-inserter`, `filter-inserter`, `inserter`, `long-handed-inserter`, `stack-filter-inserter`, `stack-inserter`
@@ -709,10 +829,25 @@ print(f"Built {result['built_count']}, Failed {result['failed_count']}")
 
 **Capabilities:**
 - Electric
-- Miner → `get_output_position, get_resource_search_area`
+- Miner → `get_resource_search_area`
 - Rotatable → `rotate`
 
 **Entities:** `electric-mining-drill`
+
+### Fluid
+
+**Capabilities:**
+- Fluid → `get_fluid`
+
+**Entities:** `pipe`
+
+### Fluid, Rotatable
+
+**Capabilities:**
+- Fluid → `get_fluid`
+- Rotatable → `rotate`
+
+**Entities:** `offshore-pump`, `pipe-to-ground`, `storage-tank`
 
 
 ## Inspection
@@ -770,12 +905,47 @@ ghostplan.valid  # bool
 
 ### ConnectionPosition
 
-A valid position for placing a target entity to connect to a source entity. Returned by `get_connection_positions()` with alignment information.
+Base class for connection positions. Returned by `get_connection_positions()` for most connection types.
 
 ```python
 connectionposition.position  # MapPosition
 connectionposition.direction  # Optional[Direction]
 connectionposition.perpendicular_offset  # float
+```
+
+### WireConnectionPosition
+
+Connection position for ELECTRIC_WIRE connections (pole to pole). Extends `ConnectionPosition` with wire-specific distance and utilization metrics. Returned by `get_connection_positions()` when `connection_type=ConnectionType.ELECTRIC_WIRE`.
+
+```python
+wireconnectionposition.position  # MapPosition
+wireconnectionposition.direction  # Optional[Direction]
+wireconnectionposition.perpendicular_offset  # float
+wireconnectionposition.wire_distance  # float
+wireconnectionposition.wire_distance_utilization  # float
+```
+
+### PolePlacementResult
+
+Result of dry-run pole placement evaluation. Returned by `evaluate_pole_placement()`. Provides rich feedback about connectivity, power supply area, and power network access without placing anything.
+
+```python
+poleplacementresult.position  # MapPosition
+poleplacementresult.pole_name  # str
+poleplacementresult.supply_area_distance  # float
+poleplacementresult.entities_powered  # List[BaseEntity]
+poleplacementresult.entities_powered_count  # int
+poleplacementresult.source_pole  # Optional[BaseEntity]
+poleplacementresult.connects_to_source  # bool
+poleplacementresult.distance_to_source  # Optional[float]
+poleplacementresult.connected_poles  # List[BaseEntity]
+poleplacementresult.connected_poles_count  # int
+poleplacementresult.can_receive_power  # bool
+poleplacementresult.power_path  # Optional[List[BaseEntity]]
+poleplacementresult.power_source  # Optional[BaseEntity]
+poleplacementresult.is_valid_placement  # bool
+poleplacementresult.placement_error  # Optional[str]
+poleplacementresult.maximum_wire_distance  # float
 ```
 
 ### ResearchStatus
@@ -829,7 +999,7 @@ These exceptions are raised by action methods when operations fail.
 
 ### Walking Exceptions
 
-Raised by `walking.walk_to()`, `walking.walk_to_entity()`, and entity/resource `walk_to()` methods.
+Raised by `walking.walk_to()`, and entity/resource `walk_to()` methods.
 
 #### WalkingUnreachableError
 
