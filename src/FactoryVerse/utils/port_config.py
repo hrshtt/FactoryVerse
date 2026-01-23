@@ -7,8 +7,8 @@ import time
 from typing import Optional
 from factorio_rcon import RCONClient
 
-from FactoryVerse.config import FactoryVerseConfig, get_config
-from FactoryVerse.infra.remote_adapters import MapSnapshotInterface
+from FactoryVerse.environment.config import FactoryVerseConfig, get_config
+from FactoryVerse.game.snapshot import MapSnapshotInterface
 from FactoryVerse.utils.rcon_utils import create_rcon_client
 
 

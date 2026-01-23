@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from factorio_rcon import RCONClient
 
-from FactoryVerse.config import FactoryVerseConfig, get_config
+from FactoryVerse.environment.config import FactoryVerseConfig, get_config
 
 
 def _load_mod_list(mod_path: Path) -> dict:

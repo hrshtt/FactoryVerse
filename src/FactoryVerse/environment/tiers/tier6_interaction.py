@@ -12,7 +12,7 @@ from .base import TierBase, Tier, TierInitializationError
 
 if TYPE_CHECKING:
     from ..environment import Environment
-    from FactoryVerse.tasks.base import TaskConfig, VerificationResult
+    from FactoryVerse.game.tasks.base import TaskConfig, VerificationResult
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class Tier6Interaction(TierBase):
 
     async def _init_llm_client(self) -> None:
         """Initialize LLM client from config."""
-        from FactoryVerse.llm.client.factory import create_client_from_env
+        from FactoryVerse.infra.llm.client.factory import create_client_from_env
 
         self._llm_client = create_client_from_env(
             provider=self.config.llm_provider,
@@ -140,7 +140,7 @@ class Tier6Interaction(TierBase):
 
     async def _init_orchestrator(self) -> None:
         """Initialize AgentOrchestrator."""
-        from FactoryVerse.llm.orchestrator import AgentOrchestrator
+        from FactoryVerse.infra.llm.orchestrator import AgentOrchestrator
         import tempfile
 
         tier5 = self._env.tier5

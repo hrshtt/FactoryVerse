@@ -206,7 +206,7 @@ class RconHelper:
         use Tier 3's create_game_agent() method instead.
         """
         try:
-            from FactoryVerse.infra.remote_adapters import AgentInterface
+            from FactoryVerse.game.agent.adapter import AgentInterface
 
             agent_api = AgentInterface(self.rcon_client)
             result = agent_api.create_agent(udp_port=udp_port)

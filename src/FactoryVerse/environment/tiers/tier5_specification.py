@@ -12,7 +12,7 @@ from .base import TierBase, Tier, TierInitializationError
 
 if TYPE_CHECKING:
     from ..environment import Environment
-    from FactoryVerse.tasks.base import TaskConfig
+    from FactoryVerse.game.tasks.base import TaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class Tier5Specification(TierBase):
 
     async def _generate_api_reference(self) -> None:
         """Generate API reference documentation from the registry."""
-        from FactoryVerse.llm.prompts.api_reference import generate_api_reference
+        from FactoryVerse.infra.llm.prompts.api_reference import generate_api_reference
 
         self._api_reference = generate_api_reference()
         logger.info(
@@ -121,7 +121,7 @@ class Tier5Specification(TierBase):
 
     async def _generate_schema_reference(self) -> None:
         """Generate database schema reference."""
-        from FactoryVerse.llm.prompts.schema_reference import generate_schema_reference
+        from FactoryVerse.infra.llm.prompts.schema_reference import generate_schema_reference
 
         # generate_schema_reference() introspects schema definitions, no DB needed
         self._schema_reference = generate_schema_reference()
@@ -135,7 +135,7 @@ class Tier5Specification(TierBase):
         Args:
             task_name: Task key to load (e.g., "iron_plate_throughput")
         """
-        from FactoryVerse.tasks.registry import TaskRegistry
+        from FactoryVerse.game.tasks.registry import TaskRegistry
 
         registry = TaskRegistry.get()
 
@@ -177,7 +177,7 @@ class Tier5Specification(TierBase):
 
     async def _compose_system_prompt(self) -> None:
         """Compose full system prompt from components."""
-        from FactoryVerse.llm.prompts.system_prompt import generate_system_prompt
+        from FactoryVerse.infra.llm.prompts.system_prompt import generate_system_prompt
 
         # Generate with pre-computed components
         self._system_prompt = generate_system_prompt(
@@ -260,7 +260,7 @@ class Tier5Specification(TierBase):
         - Nearby resources and entities
         - Available technologies and recipes
         """
-        from FactoryVerse.llm.context.initial_state import InitialStateGenerator
+        from FactoryVerse.infra.llm.context.initial_state import InitialStateGenerator
 
         tier4 = self._env.tier4
         if tier4 is None or tier4.session_dir is None:

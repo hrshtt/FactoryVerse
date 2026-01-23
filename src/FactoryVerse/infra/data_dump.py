@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Any, Tuple
 
-from FactoryVerse.config import get_config, FactoryVerseConfig
+from FactoryVerse.environment.config import get_config, FactoryVerseConfig
 
 logger = logging.getLogger(__name__)
 

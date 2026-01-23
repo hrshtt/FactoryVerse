@@ -29,8 +29,8 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable, Awaitable
 if TYPE_CHECKING:
     from .environment import Environment
     from .tiers.base import Tier
-    from FactoryVerse.tasks.base import TaskConfig, VerificationResult
-    from FactoryVerse.tasks.verification import ThroughputVerifier
+    from FactoryVerse.game.tasks.base import TaskConfig, VerificationResult
+    from FactoryVerse.game.tasks.verification import ThroughputVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +446,7 @@ class Orchestrator:
             TaskResult with verification, stats, and any errors
         """
         from .tiers.base import Tier
-        from FactoryVerse.tasks.registry import TaskRegistry
+        from FactoryVerse.game.tasks.registry import TaskRegistry
 
         result = TaskResult(
             task_key=task,
@@ -572,7 +572,7 @@ class Orchestrator:
             await self._ensure_ready(up_to=Tier.INTERACTION)
 
             # Use default freeplay inventory (can be customized)
-            from FactoryVerse.tasks.definitions.common import LAB_STARTING_INVENTORY
+            from FactoryVerse.game.tasks.definitions.common import LAB_STARTING_INVENTORY
 
             allocated_cell = await self._allocate_cell(
                 cell,
@@ -833,8 +833,8 @@ class Orchestrator:
         Returns:
             Async callback that performs verification
         """
-        from FactoryVerse.tasks.base import TaskType
-        from FactoryVerse.tasks.verification import ThroughputVerifier
+        from FactoryVerse.game.tasks.base import TaskType
+        from FactoryVerse.game.tasks.verification import ThroughputVerifier
 
         # Create verifier for throughput tasks (maintains state across checks)
         verifier = None
@@ -870,9 +870,9 @@ class Orchestrator:
         Returns:
             VerificationResult or None if task type doesn't require verification
         """
-        from FactoryVerse.tasks.base import TaskType
-        from FactoryVerse.tasks.verification import verify_task, ThroughputVerifier
-        from FactoryVerse.tasks.sources import AgentSnapshotSource
+        from FactoryVerse.game.tasks.base import TaskType
+        from FactoryVerse.game.tasks.verification import verify_task, ThroughputVerifier
+        from FactoryVerse.game.tasks.sources import AgentSnapshotSource
 
         if task_config.task_type == TaskType.FREEPLAY:
             return None

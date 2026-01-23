@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 from FactoryVerse.infra.session import FactoryVerseSession
 from FactoryVerse.infra.session.file_manager import (
     FileManager,
@@ -20,11 +20,11 @@ from FactoryVerse.infra.session.file_manager import (
 from FactoryVerse.infra.session.trajectory import TrajectoryWriter
 from FactoryVerse.infra.session.lifecycle import SessionLifecycle, SessionStatus
 from FactoryVerse.infra.execution import JupyterExecutor
-from FactoryVerse.llm.client.factory import create_client_from_env
-from FactoryVerse.llm.orchestrator import AgentOrchestrator, RuntimeProtocol
-from FactoryVerse.llm.context import InitialStateGenerator
+from FactoryVerse.infra.llm.client.factory import create_client_from_env
+from FactoryVerse.infra.llm.orchestrator import AgentOrchestrator, RuntimeProtocol
+from FactoryVerse.infra.llm.context import InitialStateGenerator
 from FactoryVerse.infra.output import ConsoleOutput
-from FactoryVerse.llm.prompts import generate_system_prompt
+from FactoryVerse.infra.llm.prompts import generate_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -584,7 +584,7 @@ class AgentService:
         Returns:
             List of agent profiles as dictionaries.
         """
-        from FactoryVerse.agent.core.registry import AgentRegistry
+        from FactoryVerse.game.agent.core.registry import AgentRegistry
 
         # Initialize registry using config paths
         registry_dir = self.config.fv_output_dir / "agents"

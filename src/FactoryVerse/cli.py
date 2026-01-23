@@ -1,1328 +1,1142 @@
 #!/usr/bin/env python3
-"""
-FactoryVerse CLI - Manage Factorio instances and experiment tracking.
+"""FactoryVerse CLI (v2) - Environment-based orchestration.
 
-Manages Jupyter notebook server, multiple Factorio servers, and data pipelines.
-FactoryVerse mods (fv_embodied_agent + fv_snapshot) are ALWAYS loaded.
+This is the new CLI implementation that uses the Environment module
+for all orchestration. The Environment module handles all tier
+initialization and verification.
 """
 
 import argparse
+import asyncio
 import sys
-import json
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Any
 
-from .config import get_config
-from .infra.docker import (
-    DockerComposeManager,
-    FactorioServerManager,
-    JupyterManager,
-    HotreloadWatcher,
+from FactoryVerse.environment.config import get_config
+from FactoryVerse.environment import (
+    Environment,
+    Tier,
+    EnvironmentConfig,
+    InfraConfig,
+    SettingsConfig,
+    PythonConfig,
+    RuntimeConfig,
+    SpecificationConfig,
+    InteractionConfig,
+    InfraMode,
+    RuntimeVariant,
+    InteractionMode,
 )
-from .infra.factorio_client_setup import (
-    setup_client,
-    launch_factorio_client,
-    sync_hotreload_to_client,
-    read_factorio_log,
-    dump_data_raw,
-)
-from .infra.factorio_client_manager import FactorioClientManager
-from .infra.data_dump import (
-    refresh_data_dump,
-    prune_data_raw,
-    get_data_raw_path,
-)
-from .infra.instance_manager import (
-    FactorioInstanceManager,
-    NoInstanceError,
-    MultipleInstancesError,
-)
+from FactoryVerse.environment.tiers.base import TierError
 
 
-class SimpleExperimentTracker:
-    """File-based experiment tracking."""
+# =============================================================================
+# Environment Status Command
+# =============================================================================
 
-    def __init__(self, work_dir: Path):
-        self.work_dir = work_dir
-        self.experiments_file = work_dir / ".fv-output" / "experiments.json"
-        self.experiments_file.parent.mkdir(parents=True, exist_ok=True)
-        self.experiments: Dict[str, Any] = {}
-        self._load()
 
-    def _load(self):
-        """Load experiments from file."""
-        if self.experiments_file.exists():
-            with open(self.experiments_file) as f:
-                self.experiments = json.load(f)
+def cmd_status(args):
+    """Show environment status across all tiers."""
 
-    def _save(self):
-        """Save experiments to file."""
-        with open(self.experiments_file, "w") as f:
-            json.dump(self.experiments, f, indent=2, default=str)
+    async def _status():
+        # Create environment but don't initialize
+        env = Environment()
 
-    def list_experiments(self) -> List[Dict]:
-        """List all experiments."""
-        return list(self.experiments.values())
+        print("🔍 FactoryVerse Environment Status\n")
+        print("=" * 60)
 
-    def add_experiment(
-        self, experiment_id: str, name: str, num_servers: int, scenario: str
-    ):
-        """Add a new experiment."""
-        self.experiments[experiment_id] = {
-            "id": experiment_id,
-            "name": name,
-            "scenario": scenario,
-            "num_servers": num_servers,
-            "created_at": datetime.now().isoformat(),
-            "status": "running",
-        }
-        self._save()
+        # Check Tier 1 prerequisites
+        tier1 = env._tier1
+        if tier1 is None:
+            from FactoryVerse.environment.tiers.tier1_factorio import Tier1Factorio
 
-    def update_status(self, experiment_id: str, status: str):
-        """Update experiment status."""
-        if experiment_id in self.experiments:
-            self.experiments[experiment_id]["status"] = status
-            self._save()
+            tier1 = Tier1Factorio(env)
 
-    def get_experiment(self, experiment_id: str) -> Dict:
-        """Get experiment by ID."""
-        return self.experiments.get(experiment_id)
+        if tier1 is None:
+            raise RuntimeError("Tier 1 not initialized")
+        await tier1.verify_prerequisites()
+
+        print("\n📦 Tier 1: Factorio Infrastructure")
+        if tier1._is_factorio_installed():
+            print("   ✅ Factorio client: Installed")
+        else:
+            print("   ⬚ Factorio client: Not found")
+
+        if tier1._is_docker_available():
+            print("   ✅ Docker: Available")
+        else:
+            print("   ⬚ Docker: Not available")
+
+        if tier1._check_mods_installed():
+            print("   ✅ Mods: Available (fv_embodied_agent, fv_snapshot)")
+        else:
+            print("   ⬚ Mods: Not found")
+
+        # Check for running instances
+        print("\n🎮 Running Instances")
+        from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+
+        instances = FactorioInstanceManager.list_available()
+
+        active_count = 0
+        active_instances = []
+        for inst in instances:
+            if inst.test_connection():
+                active_count += 1
+                active_instances.append(inst)
+                print(f"   ✅ {inst.name}: RCON {inst.rcon_port} - Active")
+
+        if active_count == 0:
+            print("   ⬚ No active Factorio instances")
+
+        # Query game state from first active instance (Tier 3 methods)
+        if active_instances:
+            print("\n🤖 Game State (from first active instance)")
+            try:
+                from FactoryVerse.environment.tiers.tier2_settings import Tier2Settings
+                from FactoryVerse.environment.tiers.tier3_python import Tier3Python
+                from FactoryVerse.environment.status import TierState
+
+                # Setup minimal tier 2/3 to query game state
+                env._tier2 = Tier2Settings(env)
+                env._tier2._set_state(TierState.READY)
+
+                # Configure tier 3 for the first active instance
+                env.config.tier3.instance = active_instances[0].name
+                env._tier3 = Tier3Python(env)
+                await env._tier3.initialize()
+
+                # Query game tick
+                game_tick = env._tier3.get_game_tick()
+                print(f"   Game tick: {game_tick}")
+
+                # Query agents (Lua SSOT)
+                agents = env._tier3.list_game_agents()
+                if agents:
+                    print(f"   Agents ({len(agents)}):")
+                    for agent in agents:
+                        name = agent.get("interface_name", "unknown")
+                        port = agent.get("udp_port", "?")
+                        valid = "✅" if agent.get("entity_valid", False) else "❌"
+                        pos = agent.get("position", {})
+                        pos_str = f"({pos.get('x', 0):.0f}, {pos.get('y', 0):.0f})" if pos else ""
+                        print(f"      {valid} {name}: UDP {port} {pos_str}")
+                else:
+                    print("   Agents: None")
+
+                # Query snapshot status
+                try:
+                    snapshot = env._tier3.get_snapshot_status()
+                    if snapshot:
+                        phase = snapshot.get("phase", "unknown")
+                        print(f"   Snapshot: {phase}")
+                except Exception:
+                    pass  # Snapshot query might not be available
+
+                await env._tier3.shutdown()
+
+            except Exception as e:
+                print(f"   ⚠️  Could not query game state: {e}")
+
+        print("\n" + "=" * 60)
+
+    asyncio.run(_status())
+
+
+# =============================================================================
+# Client Commands (Tier 1 + 2)
+# =============================================================================
 
 
 def cmd_client_start(args):
     """Start Factorio client with scenario or save file."""
-    config = get_config()
-    work_dir = config.project_root
-    client_mgr = FactorioClientManager(work_dir)
 
-    # Validate --watch only works with repo scenarios
-    if args.watch and args.scenario and not config.is_repo_scenario(args.scenario):
-        print(
-            f"❌ Error: Cannot hot-reload scenario '{args.scenario}' - it's a local scenario.",
-            file=sys.stderr,
+    async def _start():
+        # scenario is None if not provided (launches to main menu)
+        scenario = args.scenario
+
+        # Build configuration
+        config = EnvironmentConfig(
+            tier1=InfraConfig(mode=InfraMode.CLIENT),
+            tier2=SettingsConfig(
+                scenario=scenario,
+                save_path=Path(args.save_file) if args.save_file else None,
+                peaceful=not args.no_peaceful,
+            ),
         )
-        print(
-            "   Only repo scenarios (in src/factorio/scenarios/) can be hot-reloaded.",
-            file=sys.stderr,
-        )
-        print(
-            f"   Copy it to {config.scenarios_dir}/ first, or use without --watch.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
-    # Handle ghost reset
-    if args.reset_ghosts:
-        print("🧹 Clearing ghost state...")
-        fv_output = config.fv_output_dir
-        if fv_output.exists():
-            for ghost_file in fv_output.glob("*/ghosts.json"):
-                try:
-                    ghost_file.unlink()
-                    print(f"   Deleted {ghost_file}")
-                except Exception as e:
-                    print(f"   Failed to delete {ghost_file}: {e}")
-            print("✓ Ghost state cleared")
+        env = Environment(config=config)
 
-    # Resolve paths to absolute
-    save_file = None
-    if args.save_file:
-        save_file = Path(args.save_file)
-        if not save_file.is_absolute():
-            save_file = work_dir / save_file
-        save_file = save_file.resolve()
-
-    map_gen_settings = None
-    if args.map_gen_settings:
-        map_gen_settings = Path(args.map_gen_settings)
-        if not map_gen_settings.is_absolute():
-            map_gen_settings = work_dir / map_gen_settings
-        map_gen_settings = map_gen_settings.resolve()
-
-    # Get project scenarios directory
-    server_mgr = FactorioServerManager(work_dir, config)
-    project_scenarios_dir = server_mgr.scenarios_dir
-
-    # Start client
-    try:
-        client_mgr.start(
-            scenario=args.scenario,
-            save_file=save_file,
-            map_gen_settings=map_gen_settings,
-            new_map=args.new_map,
-            map_name=args.map_name,
-            force_setup=args.force,
-            project_scenarios_dir=project_scenarios_dir,
-        )
-    except Exception as e:
-        print(f"❌ Error starting client: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Start hotreload watcher if requested (only for repo scenarios)
-    if args.watch and args.scenario:
-        print("\n🔥 Starting hot-reload watcher for scenario files...")
-        scenario_dir = config.scenarios_dir / args.scenario
-        watcher = HotreloadWatcher(scenario_dir, debounce_ms=2000)
-
-        def sync_and_reload():
-            sync_hotreload_to_client(scenario_dir)
-
-        watcher.start(sync_and_reload)
+        print("🚀 Starting Factorio client...")
+        if scenario:
+            print(f"   Scenario: {scenario}")
+        else:
+            print("   Mode: Main menu (no scenario)")
+        if config.tier2.save_path:
+            print(f"   Save: {config.tier2.save_path}")
 
         try:
-            print("Press Ctrl+C to stop watching...")
-            while True:
-                import time
+            # Initialize up to Tier 2
+            await env.initialize(up_to=Tier.SETTINGS)
 
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nStopping watcher...")
-            watcher.stop()
+            if env.tier1 is None or env.tier2 is None:
+                raise RuntimeError("Environment not fully initialized")
+
+            # Start the client
+            tier2 = env.tier2
+            tier1 = env.tier1
+            if tier2 is None or tier1 is None:
+                raise RuntimeError("Tiers not initialized")
+
+            launch_args = tier2.get_launch_args()
+            await tier1.start_client(**launch_args)
+
+            print("✅ Client started successfully")
+
+        except TierError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    asyncio.run(_start())
 
 
 def cmd_client_stop(args):
     """Stop running Factorio client."""
-    config = get_config()
-    work_dir = config.project_root
-    client_mgr = FactorioClientManager(work_dir)
-    client_mgr.stop(force=args.force)
 
-
-def cmd_client_restart(args):
-    """Restart Factorio client."""
-    config = get_config()
-    work_dir = config.project_root
-    client_mgr = FactorioClientManager(work_dir)
-
-    # Resolve paths to absolute
-    save_file = None
-    if args.save_file:
-        save_file = Path(args.save_file)
-        if not save_file.is_absolute():
-            save_file = work_dir / save_file
-        save_file = save_file.resolve()
-
-    map_gen_settings = None
-    if args.map_gen_settings:
-        map_gen_settings = Path(args.map_gen_settings)
-        if not map_gen_settings.is_absolute():
-            map_gen_settings = work_dir / map_gen_settings
-        map_gen_settings = map_gen_settings.resolve()
-
-    # Get project scenarios directory
-    server_mgr = FactorioServerManager(work_dir, config)
-    project_scenarios_dir = server_mgr.scenarios_dir
-
-    try:
-        client_mgr.restart(
-            scenario=args.scenario,
-            save_file=save_file,
-            map_gen_settings=map_gen_settings,
-            new_map=args.new_map,
-            map_name=args.map_name,
-            force_setup=args.force,
-            project_scenarios_dir=project_scenarios_dir,
+    async def _stop():
+        env = Environment(
+            config=EnvironmentConfig(tier1=InfraConfig(mode=InfraMode.CLIENT))
         )
-    except Exception as e:
-        print(f"❌ Error restarting client: {e}", file=sys.stderr)
-        sys.exit(1)
+
+        # Just initialize tier 1 to get client manager
+        await env.initialize(up_to=Tier.FACTORIO_INFRA)
+
+        tier1 = env.tier1
+        if tier1 is None:
+            raise RuntimeError("Tier 1 not initialized")
+
+        await tier1.stop_client(force=args.force)
+        print("✅ Client stopped")
+
+    asyncio.run(_stop())
 
 
 def cmd_client_status(args):
     """Show Factorio client status."""
-    config = get_config()
-    work_dir = config.project_root
-    client_mgr = FactorioClientManager(work_dir)
-    status = client_mgr.status()
 
-    if status["running"]:
-        print(f"✅ Client is running (PID: {status['pid']})")
-        if status.get("state"):
-            state = status["state"]
-            if state.get("scenario"):
-                print(f"   Scenario: {state['scenario']}")
-            if state.get("save_file"):
-                print(f"   Save file: {state['save_file']}")
-    else:
-        print("⬚ Client is not running")
-
-
-def cmd_client_log(args):
-    """Display Factorio client log file."""
-    read_factorio_log(follow=args.follow)
-
-
-def cmd_client_dump_data(args):
-    """Dump Factorio data.raw to JSON."""
-    config = get_config()
-    work_dir = config.project_root
-    server_mgr = FactorioServerManager(work_dir, config)
-
-    dump_data_raw(
-        work_dir,
-        scenario=args.scenario,
-        force=args.force,
-        project_scenarios_dir=server_mgr.scenarios_dir,
-    )
-
-
-def cmd_start(args):
-    """Start Factorio servers with Jupyter AND setup client."""
-    config = get_config()
-    work_dir = config.project_root
-
-    scenario = args.scenario
-
-    # Validate --watch only works with repo scenarios
-    if args.watch and not config.is_repo_scenario(scenario):
-        print(
-            f"❌ Error: Cannot hot-reload scenario '{scenario}' - it's a local scenario.",
-            file=sys.stderr,
+    async def _status():
+        env = Environment(
+            config=EnvironmentConfig(tier1=InfraConfig(mode=InfraMode.CLIENT))
         )
-        print(
-            "   Only repo scenarios (in src/factorio/scenarios/) can be hot-reloaded.",
-            file=sys.stderr,
+
+        await env.initialize(up_to=Tier.FACTORIO_INFRA)
+
+        tier1 = env.tier1
+        if tier1 is None:
+            raise RuntimeError("Tier 1 not initialized")
+
+        status = await tier1.verify_ready()
+
+        if status.details.get("client_running"):
+            print("✅ Client is running")
+        else:
+            print("⬚ Client is not running")
+
+        print(f"   Mods installed: {status.details.get('mods_installed')}")
+
+    asyncio.run(_status())
+
+
+# =============================================================================
+# Server Commands (Tier 1 + 2 with Docker)
+# =============================================================================
+
+
+def cmd_server_start(args):
+    """Start Factorio server(s) with Docker."""
+
+    async def _start():
+        config = EnvironmentConfig(
+            tier1=InfraConfig(
+                mode=InfraMode.SERVER,
+                server_count=args.num,
+            ),
+            tier2=SettingsConfig(
+                scenario=args.scenario,
+                peaceful=True,
+            ),
         )
-        print(
-            f"   Copy it to {config.scenarios_dir}/ first, or use without --watch.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
-    # Handle ghost reset
-    if args.reset_ghosts:
-        print("🧹 Clearing ghost state...")
-        fv_output = config.fv_output_dir
-        if fv_output.exists():
-            for ghost_file in fv_output.glob("*/ghosts.json"):
-                try:
-                    ghost_file.unlink()
-                    print(f"   Deleted {ghost_file}")
-                except Exception as e:
-                    print(f"   Failed to delete {ghost_file}: {e}")
-            print("✓ Ghost state cleared")
+        env = Environment(config=config)
 
-    server_mgr = FactorioServerManager(work_dir, config)
-
-    # Validate scenario exists
-    if not server_mgr.validate_scenario(scenario):
-        print(f"❌ Error: Scenario '{scenario}' not found.", file=sys.stderr)
-        available = server_mgr.list_scenarios()
-        if available:
-            print(f"   Available scenarios: {', '.join(available)}", file=sys.stderr)
-            print(
-                "   Use 'uv run fv server list-scenarios' to see all available scenarios.",
-                file=sys.stderr,
-            )
-        sys.exit(1)
-
-    # Setup client (always with mods)
-    print(f"📱 Setting up Factorio client (scenario: {scenario})")
-    setup_client(
-        work_dir,
-        scenario=scenario,
-        force=args.force,
-        project_scenarios_dir=server_mgr.scenarios_dir,
-    )
-
-    # Clear server snapshot directories before starting
-    print("🧹 Clearing server snapshot directories...")
-    server_mgr.clear_all_server_snapshot_dirs(args.num)
-
-    # Prepare server mods (always)
-    print(f"🚀 Starting FactoryVerse ({args.num} server(s), scenario: {scenario})")
-    server_mgr.prepare_mods(scenario)
-
-    # Build compose file with services from both managers
-    compose_mgr = DockerComposeManager(work_dir)
-    jupyter_mgr = JupyterManager(work_dir)
-
-    if not args.no_jupyter:
-        compose_mgr.add_services("jupyter", jupyter_mgr.get_services())
-    compose_mgr.add_services(
-        "factorio",
-        server_mgr.get_services(args.num, scenario, max_agents=args.max_agents),
-    )
-    compose_mgr.write_compose()
-    compose_mgr.up()
-
-    # Configure snapshot ports for each server (after they start)
-    from FactoryVerse.utils.port_config import configure_all_server_snapshot_ports
-
-    configure_all_server_snapshot_ports(args.num, config)
-
-    # Calculate effective max_agents for display
-    effective_max_agents = (
-        args.max_agents if args.max_agents is not None else config.max_agents
-    )
-
-    # Print server info
-    print("\n🌐 Server Information:")
-    for i in range(args.num):
-        rcon_port = config.get_rcon_port(f"server_{i}")
-        game_port = config.get_game_port(i)
-        snapshot_port = config.get_snapshot_port(f"server_{i}")
-        agent_range = config.get_agent_port_range(server_index=i)
-
-        print(f"  Server {i}:")
-        print(f"    Game Port: localhost:{game_port}")
-        print(f"    RCON Port: localhost:{rcon_port}")
-        print(f"    Snapshot Port: {snapshot_port}")
-        print(f"    Agent Ports: {agent_range[0]}-{agent_range[-1]}")
-
-    print("\n📊 Client Ports:")
-    print(f"  Snapshot Port: {config.client_snapshot_port}")
-    agent_range_client = config.get_agent_port_range(server_index=None)
-    print(f"  Agent Ports: {agent_range_client[0]}-{agent_range_client[-1]}")
-    print("\n📓 Jupyter: http://localhost:8888")
-
-    # Track experiment
-    if args.name:
-        tracker = SimpleExperimentTracker(work_dir)
-        experiment_id = f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        tracker.add_experiment(experiment_id, args.name, args.num, scenario)
-        print(f"📝 Experiment '{args.name}' tracked (ID: {experiment_id})")
-
-    # Start hotreload watcher if requested (only for repo scenarios)
-    if args.watch:
-        print("\n🔥 Starting hot-reload watcher for scenario files...")
-        scenario_dir = config.scenarios_dir / scenario
-        watcher = HotreloadWatcher(scenario_dir, debounce_ms=2000)
-
-        def sync_and_reload():
-            # Sync to all running servers
-            for i in range(args.num):
-                server_mgr.sync_hotreload_to_server(compose_mgr, server_id=i)
-
-        watcher.start(sync_and_reload)
+        print(f"🚀 Starting {args.num} Factorio server(s)...")
+        print(f"   Scenario: {args.scenario}")
 
         try:
-            print("Press Ctrl+C to stop watching...")
-            while True:
-                import time
+            await env.initialize(up_to=Tier.SETTINGS)
 
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nStopping watcher...")
-            watcher.stop()
+            tier1 = env.tier1
+            if tier1 is None:
+                raise RuntimeError("Tier 1 not initialized")
+
+            # Start servers
+            await tier1.start_server(
+                scenario=args.scenario,
+                num_instances=args.num,
+            )
+
+            # Print connection info
+            infra_config = get_config()
+            print("\n🌐 Server Information:")
+            for i in range(args.num):
+                rcon_port = infra_config.get_rcon_port(f"server_{i}")
+                game_port = infra_config.get_game_port(i)
+                print(f"   Server {i}: RCON {rcon_port}, Game {game_port}")
+
+            print("\n✅ Servers started successfully")
+
+        except TierError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    asyncio.run(_start())
 
 
-def cmd_stop(args):
-    """Stop all services."""
-    config = get_config()
-    compose_mgr = DockerComposeManager(config.project_root)
-    compose_mgr.down()
-    print("✅ Services stopped")
+def cmd_server_stop(args):
+    """Stop all Factorio servers."""
 
-
-def cmd_restart(args):
-    """Restart all services."""
-    config = get_config()
-    compose_mgr = DockerComposeManager(config.project_root)
-    compose_mgr.restart()
-    print("✅ Services restarted")
-
-
-def cmd_list(args):
-    """List experiments."""
-    config = get_config()
-    tracker = SimpleExperimentTracker(config.project_root)
-
-    experiments = tracker.list_experiments()
-    if not experiments:
-        print("No experiments found.")
-        return
-
-    print(f"Experiments ({len(experiments)}):")
-    print(
-        f"{'ID':<20} {'Name':<20} {'Servers':<8} {'Scenario':<15} {'Status':<10} {'Created'}"
-    )
-    print("-" * 100)
-    for exp in experiments:
-        created = datetime.fromisoformat(exp["created_at"]).strftime("%Y-%m-%d %H:%M")
-        print(
-            f"{exp['id']:<20} {exp['name']:<20} {exp['num_servers']:<8} {exp['scenario']:<15} {exp['status']:<10} {created}"
+    async def _stop():
+        env = Environment(
+            config=EnvironmentConfig(tier1=InfraConfig(mode=InfraMode.SERVER))
         )
 
+        await env.initialize(up_to=Tier.FACTORIO_INFRA)
+        await env.initialize(up_to=Tier.FACTORIO_INFRA)
+        if env.tier1:
+            await env.tier1.stop_server()
+        print("✅ Servers stopped")
 
-def cmd_logs(args):
-    """Show logs for a service."""
-    config = get_config()
-    compose_mgr = DockerComposeManager(config.project_root)
-    compose_mgr.logs(args.service, follow=args.follow)
-
-
-def cmd_server(args):
-    """Control individual servers."""
-    config = get_config()
-    compose_mgr = DockerComposeManager(config.project_root)
-    service_name = f"factorio_{args.server_id}"
-
-    if args.action == "start":
-        compose_mgr.start_service(service_name)
-    elif args.action == "stop":
-        compose_mgr.stop_service(service_name)
-    elif args.action == "restart":
-        compose_mgr.restart_service(service_name)
+    asyncio.run(_stop())
 
 
 def cmd_list_scenarios(args):
-    """List available scenarios from both repo and local directories."""
+    """List available scenarios."""
     config = get_config()
     scenarios = config.list_scenarios(include_local=True)
 
     if not scenarios:
         print("No scenarios found.")
-        print(f"Repo directory: {config.scenarios_dir}")
-        print(f"Local directory: {config.local_scenarios_dir}")
         return
 
-    # Get repo-only scenarios for comparison
+    # Categorize scenarios by source
     repo_scenarios = set(config._list_scenarios_in_dir(config.scenarios_dir))
+    inbuilt_scenarios = set()
+    if config.inbuilt_scenarios_dir:
+        inbuilt_scenarios = set(config._list_scenarios_in_dir(config.inbuilt_scenarios_dir))
 
-    print(f"Available scenarios ({len(scenarios)}):")
-    print(f"{'Scenario':<25} {'Source':<10} {'Hot-reload':<10}")
-    print("-" * 50)
+    print(f"Available scenarios ({len(scenarios)}):\n")
     for scenario in sorted(scenarios):
-        is_repo = scenario in repo_scenarios
-        source = "repo" if is_repo else "local"
-        hotreload = "✓" if is_repo else "✗"
-        print(f"  {scenario:<23} {source:<10} {hotreload}")
-    print("\nUsage: uv run fv server start --scenario <scenario_name>")
-    print("Note: Only repo scenarios can be hot-reloaded with --watch.")
+        if scenario in repo_scenarios:
+            source = "repo"
+        elif scenario in inbuilt_scenarios:
+            source = "inbuilt"
+        else:
+            source = "local"
+        print(f"  {scenario:<25} [{source}]")
 
 
 # =============================================================================
-# Data Commands
+# Runtime Commands (Tier 3 + 4)
 # =============================================================================
 
 
-def cmd_data_prune(args):
-    """Prune data-raw-dump.json to factorio-data-dump.json."""
-    config = get_config()
-    instance = args.instance or "client"
+def cmd_connect(args):
+    """Connect to a running Factorio instance."""
 
-    input_path = get_data_raw_path(instance)
-    output_path = config.data_dump_path
+    async def _connect():
+        env = Environment()
 
-    if not input_path.exists():
-        print(
-            f"❌ Error: data-raw-dump.json not found at {input_path}", file=sys.stderr
-        )
-        print("\n💡 Run Factorio with --dump-data to generate it:", file=sys.stderr)
-        print("   uv run fv client dump-data", file=sys.stderr)
-        sys.exit(1)
+        print("🔗 Connecting to Factorio...")
+        print(f"   Instance: {args.instance or 'auto-detect'}")
 
-    print(f"📦 Pruning {input_path}")
-    print(f"   Output: {output_path}")
+        try:
+            # Use orchestrator's cross-tier connect pattern
+            result = await env.orchestrator.connect_and_verify(instance=args.instance)
 
-    output, original_size, pruned_size = prune_data_raw(input_path, output_path)
+            if not result.get("success"):
+                print(f"❌ Connection failed: {result.get('error')}")
+                sys.exit(1)
 
-    reduction = (1 - pruned_size / original_size) * 100
-    print(
-        f"\n✅ Pruned: {original_size / 1024 / 1024:.1f}MB → {pruned_size / 1024 / 1024:.1f}MB ({reduction:.1f}% reduction)"
+            print(f"✅ Connected to {result['instance']}")
+            print(f"   Game tick: {result['game_tick']}")
+
+            agents = result.get("agents", [])
+            if agents:
+                print(f"\n🤖 Agents in Factorio ({len(agents)}):")
+                for agent in agents:
+                    name = agent.get("interface_name", "unknown")
+                    port = agent.get("udp_port", "?")
+                    valid = "✅" if agent.get("entity_valid", False) else "❌"
+                    force = agent.get("force", "?")
+                    pos = agent.get("position", {})
+                    pos_str = f"at ({pos.get('x', 0):.0f}, {pos.get('y', 0):.0f})" if pos else ""
+                    print(f"   {valid} {name}: UDP {port}, force={force} {pos_str}")
+            else:
+                print("\n🤖 Agents: None (use 'fv agent' to create one)")
+
+        except Exception as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            await env.shutdown()
+
+    asyncio.run(_connect())
+
+
+# =============================================================================
+# Agent Commands (Full Stack Tier 1-6)
+# =============================================================================
+
+
+def _detect_instance(args) -> str:
+    """Detect or validate Factorio instance."""
+    from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+
+    if args.instance:
+        all_instances = FactorioInstanceManager.list_available()
+        valid_names = [i.name for i in all_instances]
+        if args.instance not in valid_names:
+            print(f"❌ Invalid instance: {args.instance}")
+            print(f"   Available: {', '.join(valid_names)}")
+            sys.exit(1)
+        return args.instance
+
+    detected = FactorioInstanceManager.detect_active()
+    if detected:
+        print(f"🔍 Auto-detected instance: {detected.name}")
+        return detected.name
+
+    print("❌ No running Factorio instance detected")
+    print("   Start a server with: fv server start")
+    print("   Or start client with: fv client start")
+    sys.exit(1)
+
+
+def _build_environment_config(
+    instance_name: str,
+    scenario: str,
+    provider: str,
+    model: str,
+    mode: str,
+    agent_id: str,
+    max_turns: int = None,
+    task_name: str = None,
+    is_eval: bool = False,
+) -> EnvironmentConfig:
+    """Build environment configuration for agent runs.
+
+    Args:
+        instance_name: Factorio instance (client/server_N)
+        scenario: Scenario to load
+        provider: LLM provider
+        model: Model name
+        mode: Interaction mode (assisted/autonomous)
+        agent_id: Agent identifier
+        max_turns: Maximum turns
+        task_name: Task name for eval runs
+        is_eval: If True, uses SessionMode.EVAL for .fv-output/evals/ directory
+    """
+    from FactoryVerse.environment.config import SessionMode
+
+    if instance_name == "client":
+        infra_mode = InfraMode.EXTERNAL
+    else:
+        infra_mode = InfraMode.SERVER
+
+    # Determine session mode based on run type
+    session_mode = SessionMode.EVAL if is_eval else SessionMode.LLM
+
+    return EnvironmentConfig(
+        tier1=InfraConfig(mode=infra_mode),
+        tier2=SettingsConfig(scenario=scenario),
+        tier3=PythonConfig(instance=instance_name, agent_id=agent_id),
+        tier4=RuntimeConfig(
+            variant=RuntimeVariant.FULL,
+            agent_id=agent_id,
+            provider=provider,
+            model=model,
+            mode=mode,
+            session_mode=session_mode,
+            task_name=task_name if is_eval else None,
+        ),
+        tier5=SpecificationConfig(
+            include_api_reference=True,
+            include_schema_reference=True,
+            include_initial_state=True,
+            task_name=task_name,
+        ),
+        tier6=InteractionConfig(
+            mode=InteractionMode(mode),
+            llm_provider=provider,
+            model=model,
+            max_turns=max_turns,
+        ),
     )
-    print(f"   Saved to: {output}")
 
 
-def cmd_data_refresh(args):
-    """Full pipeline: find data-raw-dump.json and prune it."""
-    instance = args.instance or "client"
+def cmd_eval(args):
+    """Run task evaluation using the Orchestrator.
 
-    print(f"🔄 Refreshing data dump from {instance}...")
+    This is the new simplified command for running task evaluations.
+    The Orchestrator handles initialization, task injection, verification, and cleanup.
+    """
+
+    async def _run():
+        instance_name = _detect_instance(args)
+
+        print("\n" + "=" * 60)
+        print("📊 FactoryVerse Task Evaluation")
+        print("=" * 60)
+        print(f"   Task: {args.task}")
+        print(f"   Model: {args.model}")
+        print(f"   Provider: {args.provider}")
+        print(f"   Instance: {instance_name}")
+        print(f"   Agent ID: {args.agent_id}")
+        print(f"   Scenario: {args.scenario or 'lab-grid'}")
+        print(f"   Max turns: {args.max_turns or 'default'}")
+
+        config = _build_environment_config(
+            instance_name=instance_name,
+            scenario=args.scenario or "lab-grid",
+            provider=args.provider,
+            model=args.model,
+            mode="autonomous",
+            agent_id=args.agent_id,
+            max_turns=args.max_turns,
+            task_name=args.task,
+            is_eval=True,  # Use SessionMode.EVAL for .fv-output/evals/
+        )
+
+        env = Environment(config=config)
+
+        try:
+            # Initialize environment first to get session paths
+            print("\n📦 Initializing environment...")
+            await env.initialize(up_to=Tier.INTERACTION)
+
+            # Display paths BEFORE the run starts (so user knows where to find outputs)
+            tier4 = env.tier4
+            if tier4 and tier4.session_dir:
+                print("\n📁 Output Paths:")
+                print(f"   Session Dir: {tier4.session_dir}")
+                if tier4.trajectory_path:
+                    print(f"   Trajectory:  {tier4.trajectory_path}")
+                if tier4.notebook_path:
+                    print(f"   Notebook:    {tier4.notebook_path}")
+                if tier4.debug_log_path:
+                    print(f"   Debug Log:   {tier4.debug_log_path}")
+                # Config.json is written in _setup_eval_session_dir
+                config_path = tier4.session_dir / "config.json"
+                if config_path.exists():
+                    print(f"   Config:      {config_path}")
+
+            # Use Orchestrator for the task run
+            print("\n🚀 Starting evaluation...")
+            result = await env.orchestrator.run_task(
+                task=args.task,
+                model=args.model,
+                provider=args.provider,
+                max_turns=args.max_turns,
+                cell=args.cell,
+            )
+
+            # Display results
+            print("\n" + "=" * 60)
+            print("📊 Evaluation Results")
+            print("=" * 60)
+
+            if result.task_success:
+                print("✅ Task PASSED")
+            else:
+                print("❌ Task FAILED")
+                if result.error:
+                    print(f"   Error: {result.error}")
+
+            print(f"\n   Total turns: {result.total_turns}")
+            print(f"   Duration: {result.duration_seconds:.1f}s")
+
+            if result.verification:
+                v = result.verification
+                print(f"\n   Verification:")
+                print(f"      Target: {v.task_key}")
+                print(f"      Automation produced: {v.automation_produced}")
+                print(f"      Manual produced: {v.manual_produced}")
+                print(f"      Automation ratio: {v.automation_ratio:.1%}")
+                if v.failure_reason:
+                    print(f"      Failure reason: {v.failure_reason}")
+
+            # Final summary of output location (reference back to paths shown earlier)
+            tier4 = env.tier4
+            if tier4 and tier4.session_dir:
+                print(f"\n📁 Artifacts saved to: {tier4.session_dir}")
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Interrupted")
+        except Exception as e:
+            print(f"\n❌ Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+        finally:
+            await env.shutdown()
+
+    asyncio.run(_run())
+
+
+def cmd_freeplay(args):
+    """Run open-ended freeplay using the Orchestrator.
+
+    No specific task or verification - just let the agent explore and build.
+    """
+
+    async def _run():
+        instance_name = _detect_instance(args)
+
+        print("\n" + "=" * 60)
+        print("🎮 FactoryVerse Freeplay")
+        print("=" * 60)
+        print(f"   Model: {args.model}")
+        print(f"   Provider: {args.provider}")
+        print(f"   Instance: {instance_name}")
+        print(f"   Max turns: {args.max_turns}")
+
+        config = _build_environment_config(
+            instance_name=instance_name,
+            scenario=args.scenario or "freeplay",
+            provider=args.provider,
+            model=args.model,
+            mode="autonomous",
+            agent_id=args.agent_id,
+            max_turns=args.max_turns,
+        )
+
+        env = Environment(config=config)
+
+        try:
+            print("\n🚀 Starting freeplay...")
+            result = await env.orchestrator.run_freeplay(
+                model=args.model,
+                max_turns=args.max_turns,
+                cell=args.cell,
+                provider=args.provider,
+            )
+
+            print("\n" + "=" * 60)
+            print("📊 Freeplay Results")
+            print("=" * 60)
+
+            if result.success:
+                print("✅ Freeplay completed")
+            else:
+                print(f"❌ Error: {result.error}")
+
+            print(f"\n   Total turns: {result.total_turns}")
+            print(f"   Duration: {result.duration_seconds:.1f}s")
+
+            if result.trajectory_path:
+                print(f"\n📁 Trajectory: {result.trajectory_path}")
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Interrupted")
+        finally:
+            await env.shutdown()
+
+    asyncio.run(_run())
+
+
+def cmd_agent(args):
+    """Run LLM agent in assisted (interactive) mode.
+
+    For autonomous task evaluation, use: fv eval --task <task>
+    For autonomous freeplay, use: fv freeplay
+    """
+    import logging
+
+    interrupt_count = 0
+
+    async def _run():
+        nonlocal interrupt_count
+
+        instance_name = _detect_instance(args)
+
+        print("\n" + "=" * 60)
+        print("🤖 FactoryVerse Agent - Assisted Mode")
+        print("=" * 60)
+        print(f"   Model: {args.model}")
+        print(f"   Provider: {args.provider}")
+        print(f"   Instance: {instance_name}")
+
+        config = _build_environment_config(
+            instance_name=instance_name,
+            scenario=args.scenario or "freeplay",
+            provider=args.provider,
+            model=args.model,
+            mode="assisted",
+            agent_id=args.agent_id,
+            max_turns=args.max_turns,
+        )
+
+        env = Environment(config=config)
+
+        try:
+            print("\n📦 Initializing environment...")
+            await env.initialize(up_to=Tier.INTERACTION)
+            print("✅ Ready")
+
+            tier4 = env.tier4
+            tier6 = env.tier6
+
+            if tier4 and tier4.session_dir:
+                print(f"\n📁 Session: {tier4.session_dir}")
+
+                # Setup debug logging
+                if tier4.debug_log_path:
+                    file_handler = logging.FileHandler(tier4.debug_log_path)
+                    file_handler.setLevel(logging.INFO)
+                    file_handler.setFormatter(
+                        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+                    )
+                    logging.getLogger().addHandler(file_handler)
+                    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+            # Interactive loop
+            print("\n" + "-" * 60)
+            print("Commands: /stats, /status, /reload, exit")
+            print("-" * 60)
+
+            orchestrator = tier6._orchestrator if tier6 else None
+
+            while True:
+                try:
+                    user_input = input("\nUser > ").strip()
+
+                    if not user_input:
+                        continue
+
+                    if user_input.lower() in ["exit", "quit"]:
+                        break
+
+                    if user_input.lower() == "/stats":
+                        if orchestrator:
+                            stats = orchestrator.get_statistics()
+                            print(f"📊 Actions: {stats.get('total_actions', 0)}, "
+                                  f"Success: {stats.get('success_count', 0)}, "
+                                  f"Failed: {stats.get('failure_count', 0)}")
+                        continue
+
+                    if user_input.lower() == "/status":
+                        if tier4:
+                            print(f"📊 Modules: {', '.join(tier4._modules_loaded)}")
+                        if orchestrator:
+                            print(f"   Turn: {orchestrator.turn_number}")
+                        continue
+
+                    if user_input.lower().startswith("/reload"):
+                        if tier4:
+                            await tier4.reload_modules()
+                            print("✅ Reloaded")
+                        continue
+
+                    # Run agent turn
+                    if tier6:
+                        response = await tier6.run_turn(user_input)
+                        turn = orchestrator.turn_number if orchestrator else "?"
+                        print(f"\n✅ Turn {turn}")
+                        if response:
+                            display = response[:300] + "..." if len(response) > 300 else response
+                            print(f"Agent: {display}")
+
+                except KeyboardInterrupt:
+                    interrupt_count += 1
+                    if interrupt_count >= 2:
+                        break
+                    print("\n⚠️  Press Ctrl+C again to exit")
+                except EOFError:
+                    break
+
+        except TierError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            print("\n🧹 Cleaning up...")
+            await env.shutdown()
+            if env.tier4 and env.tier4.session_dir:
+                print(f"📁 Session saved: {env.tier4.session_dir}")
+
+    asyncio.run(_run())
+
+
+# =============================================================================
+# Models Commands
+# =============================================================================
+
+
+def cmd_models_list(args):
+    """List available LLM models from the configured provider."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    from FactoryVerse.infra.llm.client.factory import create_client_from_env
+
+    provider = args.provider or "prime_intellect"
+    print(f"📋 Fetching models from {provider}...")
 
     try:
-        output = refresh_data_dump(instance)
-        print(f"\n✅ Data dump refreshed: {output}")
-    except FileNotFoundError as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
+        client = create_client_from_env(provider=provider, model="placeholder")
+        from typing import cast, Any
+
+        models = cast(Any, client).list_models()
+
+        if models:
+            print(f"\nAvailable models ({len(models)}):\n")
+            for i, model in enumerate(models, 1):
+                print(f"  {i:2d}. {model}")
+        else:
+            print("⚠️  No models found or failed to fetch")
+    except Exception as e:
+        print(f"❌ Error fetching models: {e}")
         sys.exit(1)
 
 
-def cmd_instance_list(args):
-    """List all Factorio instances and their status."""
-    print("🔍 Checking Factorio instances...\n")
+def cmd_models_select(args):
+    """Interactively select an LLM model."""
+    from dotenv import load_dotenv
 
-    instances = FactorioInstanceManager.list_available()
+    load_dotenv()
 
-    print(
-        f"{'Instance':<12} {'Type':<8} {'RCON Port':<12} {'Status':<10} {'Script Output'}"
-    )
-    print("-" * 80)
+    from FactoryVerse.infra.llm.client.factory import create_client_from_env
 
-    for inst in instances:
-        status = "✅ Active" if inst.test_connection() else "⬚ Inactive"
-        print(
-            f"{inst.name:<12} {inst.type:<8} {inst.rcon_port:<12} {status:<10} {inst.script_output_dir}"
-        )
+    provider = args.provider or "prime_intellect"
+    print(f"📋 Fetching models from {provider}...")
 
-
-def cmd_instance_active(args):
-    """Show the currently active Factorio instance."""
     try:
-        instance = FactorioInstanceManager.get_active(require_single=False)
-        print(f"✅ Active instance: {instance.name}")
-        print(f"   Type: {instance.type}")
-        print(f"   RCON: {instance.rcon_host}:{instance.rcon_port}")
-        print(f"   Script output: {instance.script_output_dir}")
-    except NoInstanceError as e:
-        print(f"❌ {e}", file=sys.stderr)
+        client = create_client_from_env(provider=provider, model="placeholder")
+        from typing import cast, Any
+
+        models = cast(Any, client).list_models()
+
+        if not models:
+            print("⚠️  No models available")
+            return
+
+        print(f"\nAvailable models ({len(models)}):\n")
+        for i, model in enumerate(models, 1):
+            print(f"  {i:2d}. {model}")
+
+        print()
+        try:
+            choice = input("Enter number to select model (or q to quit): ").strip()
+            if choice.lower() == "q":
+                return
+
+            idx = int(choice) - 1
+            if 0 <= idx < len(models):
+                selected = models[idx]
+                print(f"\n✅ Selected: {selected}")
+                print(f"\nRun with: fv agent --model {selected}")
+            else:
+                print("❌ Invalid selection")
+        except (ValueError, EOFError):
+            print("❌ Invalid input")
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
         sys.exit(1)
-    except MultipleInstancesError as e:
-        print(f"⚠️  {e}", file=sys.stderr)
-        sys.exit(1)
+
+
+# =============================================================================
+# MCP Server Command
+# =============================================================================
 
 
 def cmd_mcp_server(args):
-    """Start MCP server for IDE integration."""
-    import asyncio
-    from .mcp_server import run_mcp_server
+    """Start MCP server using Environment."""
 
-    print("Starting FactoryVerse MCP server...")
-    print("Connect your IDE (Cursor, Claude Desktop, etc.) to use FactoryVerse tools.")
-    print("Press Ctrl+C to stop.")
-    try:
-        asyncio.run(run_mcp_server())
-    except KeyboardInterrupt:
-        print("\nMCP server stopped.")
-        sys.exit(0)
+    async def _run_mcp():
+        config = EnvironmentConfig.for_mcp(instance=args.instance)
+        env = Environment(config=config)
+
+        print("🔌 Starting FactoryVerse MCP Server...")
+        print("   Connect your IDE (Cursor, Claude Desktop, etc.)")
+
+        try:
+            await env.initialize(up_to=Tier.RUNTIME)
+            print("✅ Environment ready for MCP")
+
+            # TODO: Integrate with actual MCP server
+            from FactoryVerse.infra.mcp import run_mcp_server
+
+            await run_mcp_server()
+
+        except KeyboardInterrupt:
+            print("\n⏹️  MCP server stopped")
+        finally:
+            await env.shutdown()
+
+    asyncio.run(_run_mcp())
+
+
+# =============================================================================
+# UI Commands
+# =============================================================================
 
 
 def cmd_ui(args):
-    """Launch web-based Control Center (unified UI)."""
-    from .ui.app import run_app
+    """Launch web-based Control Center."""
+    from FactoryVerse.infra.ui.app import run_app
 
     print("🚀 Starting FactoryVerse Control Center...")
-    print(f"   Host: {args.host}")
-    print(f"   Port: {args.port}")
-    print(f"   Native mode: {args.native}")
-    print(f"\n   Open http://{args.host}:{args.port} in your browser\n")
+    print(f"   URL: http://{args.host}:{args.port}")
 
     run_app(host=args.host, port=args.port, native=args.native)
 
 
-def cmd_ui_agents(args):
-    """Launch agent orchestrator UI."""
-    from .ui.agent_orchestrator import run_agent_orchestrator
-
-    print("🤖 Starting Agent Orchestrator UI...")
-    print(f"   Host: {args.host}")
-    print(f"   Port: {args.port}")
-    print(f"   Native mode: {args.native}")
-    print(f"\n   Open http://{args.host}:{args.port} in your browser\n")
-
-    run_agent_orchestrator(host=args.host, port=args.port, native=args.native)
-
-
 # =============================================================================
-# Prompts Commands
+# Docs Commands
 # =============================================================================
 
 
-def cmd_prompts_generate(args):
-    """Generate complete system prompt."""
-    from .llm.prompts import generate_system_prompt
-
-    config = get_config()
-
-    # Determine output path
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        suffix = "with-examples" if args.with_examples else "core"
-        output_path = (
-            config.project_root
-            / "docs"
-            / "system-prompt"
-            / f"factoryverse-system-prompt-v3-{suffix}.md"
-        )
-
-    # Generate prompt
-    print("🔧 Generating system prompt...")
-    prompt = generate_system_prompt(
-        include_api_reference=not args.no_api,
-        include_schema=not args.no_schema,
-        include_examples=args.with_examples,
-    )
-
-    # Write output
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(prompt)
-
-    print(f"✅ System prompt generated: {output_path}")
-    print(f"   Examples included: {args.with_examples}")
-    print(f"   API reference: {not args.no_api}")
-    print(f"   Schema reference: {not args.no_schema}")
-    print(f"   Total size: {len(prompt):,} characters")
-    print(f"   Total lines: {len(prompt.splitlines()):,} lines")
-
-
-def cmd_prompts_api(args):
+def cmd_docs_generate(args):
     """Generate API reference documentation."""
-    from .llm.prompts.api_reference import write_api_reference
+    from FactoryVerse.utils.docs.generator import write_api_reference
+    from FactoryVerse.utils.docs.registry import reset_registry
 
-    config = get_config()
-    output_path = config.project_root / args.output
+    # Reset registry to ensure clean state
+    reset_registry()
 
-    print("🔧 Generating API reference...")
-    write_api_reference(output_path)
+    output_path = Path(args.output) if args.output else None
 
-
-def cmd_prompts_schema(args):
-    """Generate schema reference documentation."""
-    from .llm.prompts.schema_reference import write_schema_reference
-
-    config = get_config()
-    output_path = config.project_root / args.output
-
-    print("🔧 Generating schema reference...")
-    write_schema_reference(output_path)
-
-
-# =============================================================================
-# Agent Command
-# =============================================================================
-
-
-def cmd_agent(args):
-    """Run LLM agent orchestrator."""
-    import os
-    import asyncio
-    from datetime import datetime
-    from dotenv import load_dotenv
-
-    # Load environment variables from .env file
-    load_dotenv()
-
-    # Determine provider - default to prime_intellect
-    provider = args.provider or os.getenv("LLM_PROVIDER", "prime_intellect")
-
-    # If no model specified and provider is prime_intellect, show model selection
-    model_name = args.model
-    if not model_name and provider == "prime_intellect":
-        from openai import OpenAI
-
-        api_key = os.getenv("PRIME_API_KEY") or os.getenv("PRIME_INTELLECT_API_KEY")
-        if not api_key:
-            print("❌ PRIME_API_KEY not set in environment")
-            sys.exit(1)
-
-        print("🔍 Fetching available models from Prime Intellect...")
-        try:
-            client = OpenAI(
-                api_key=api_key, base_url="https://api.pinference.ai/api/v1"
-            )
-            models = client.models.list()
-            available_models = [model.id for model in models.data]
-
-            print(f"\n✅ Available models ({len(available_models)}):")
-            for i, model in enumerate(available_models, 1):
-                print(f"  {i}. {model}")
-
-            while True:
-                try:
-                    choice = input("\nSelect model (number): ").strip()
-                    idx = int(choice) - 1
-                    if 0 <= idx < len(available_models):
-                        model_name = available_models[idx]
-                        break
-                    else:
-                        print("Invalid choice, try again")
-                except ValueError:
-                    print("Please enter a number")
-        except Exception as e:
-            print(f"❌ Error fetching models: {e}")
-            sys.exit(1)
-    elif not model_name:
-        # For other providers, use a sensible default
-        model_name = os.getenv("LLM_MODEL", "gpt-4o")
-
-    print("🤖 Starting FactoryVerse Agent...")
-    print(f"   Provider: {provider}")
-    print(f"   Model: {model_name}")
-    print(f"   Mode: {args.mode}")
-    print(f"   Instance: {args.instance or 'auto-detect'}")
-    print(f"   Agent ID: {args.agent_id}")
-
-    # Create session configuration
-    config = get_config()
-
-    # Determine output directory
-    # Note: model_name from Prime Intellect already includes provider prefix (e.g., "anthropic/claude-sonnet-4.5")
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_dir = config.fv_output_dir / "runs" / model_name / run_id
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"   Output: {output_dir}")
-
-    # Create notebook path
-    notebook_path = output_dir / "notebook.ipynb"
-
-    # Run the agent
-    async def run_agent():
-        from .infra.session import FactoryVerseSession
-        from .infra.execution import JupyterExecutor
-
-        # Create executor
-        executor = JupyterExecutor(notebook_path)
-
-        # Create session
-        session = FactoryVerseSession(
-            session_id=f"agent_{args.agent_id}",
-            executor=executor,
-            instance=args.instance,
-            agent_id=args.agent_id,
-            session_dir=output_dir,
-        )
-
-        try:
-            # Start session
-            await session.start()
-            print("\n✅ Session started. Runtime available.")
-
-            if args.mode == "assisted":
-                print("\n💬 Entering assisted mode. Type commands to execute.")
-                print("   Type 'exit' or 'quit' to stop.")
-                print("   Type 'reload' to hot-reload Python modules.")
-                print()
-
-                while True:
-                    try:
-                        user_input = input("fv> ").strip()
-
-                        if not user_input:
-                            continue
-
-                        if user_input.lower() in ("exit", "quit"):
-                            print("Exiting...")
-                            break
-
-                        if user_input.lower() == "reload":
-                            await session.reload()
-                            print("✅ Reloaded")
-                            continue
-
-                        # Execute the input as code
-                        result = session.execute_dsl(user_input)
-                        if result.output:
-                            print(result.output)
-                        if result.is_error:
-                            print(f"Error: {result.error}")
-
-                    except EOFError:
-                        print("\nExiting...")
-                        break
-
-            else:
-                # Autonomous mode - use AgentService
-                print("\n🚀 Entering autonomous mode...")
-
-                from .infra.services import AgentService
-
-                # Create agent service
-                service = AgentService(output_dir=output_dir.parent.parent)
-
-                # Create session via service
-                print("🎯 Creating agent session...")
-                agent_session = await service.create_session(
-                    model=model_name,
-                    mode="autonomous",
-                    instance=args.instance,
-                    agent_id=args.agent_id,
-                    provider=provider,
-                    max_turns=args.max_turns,
-                )
-
-                agent = agent_session.orchestrator
-                print(f"✅ Session created: {agent_session.session_id}")
-                if args.max_turns:
-                    print(f"   Max turns: {args.max_turns}")
-                else:
-                    print("   Max turns: unlimited")
-
-                print("\n🤖 Agent ready! Starting autonomous execution...")
-                print("   Press Ctrl+C to stop.\n")
-
-                # Run autonomous loop
-                turn = 0
-                try:
-                    while agent.has_turns_remaining():
-                        turn += 1
-
-                        if turn == 1:
-                            user_msg = "You are now in control. Analyze the initial state and begin working towards automation goals. Start by exploring your surroundings and gathering resources."
-                        else:
-                            user_msg = "Continue with your current objective. You can change goals if you've completed your current task or if circumstances require adaptation."
-
-                        try:
-                            response = await service.run_turn(
-                                agent_session.session_id, user_msg
-                            )
-                            print(f"\n--- Turn {turn} complete ---\n")
-                        except Exception as e:
-                            print(f"\n❌ Error in turn {turn}: {e}")
-                            break
-
-                except KeyboardInterrupt:
-                    print("\n\n⚠️ Autonomous mode interrupted by user")
-
-                print(f"\n📊 Final Statistics:")
-                stats = agent.get_statistics()
-                print(f"   Total turns: {turn}")
-                print(f"   Total actions: {stats['total_actions']}")
-                print(f"   Successful: {stats['success_count']}")
-                print(f"   Failed: {stats['failure_count']}")
-
-        finally:
-            await service.stop_session(agent_session.session_id)
-            print("\n✅ Session stopped.")
+    print("📝 Generating API reference documentation...")
 
     try:
-        asyncio.run(run_agent())
-    except KeyboardInterrupt:
-        print("\n\nInterrupted. Cleaning up...")
-        sys.exit(130)
+        path = write_api_reference(output_path)
+        print(f"\n✅ Documentation generated: {path}")
+    except Exception as e:
+        print(f"❌ Error generating documentation: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_docs_validate(args):
+    """Validate documentation coverage and examples."""
+    from FactoryVerse.utils.docs.reference import register_all_documentation
+    from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+    from FactoryVerse.utils.docs.validators import CoverageValidator, ExampleValidator
+
+    reset_registry()
+    register_all_documentation()
+
+    registry = get_registry()
+
+    print("🔍 Validating documentation...\n")
+
+    # Coverage validation
+    print("📊 Coverage Report:")
+    coverage_validator = CoverageValidator(registry)
+    coverage_report = coverage_validator.validate()
+    print(coverage_report.summary())
+
+    # Example syntax validation
+    print("\n📝 Example Validation:")
+    example_validator = ExampleValidator(registry)
+    example_report = example_validator.validate_all_syntax()
+    print(example_report.summary())
+
+    # Exit with error if validation failed
+    if not coverage_report.complete and args.strict:
+        print("\n❌ Coverage validation failed (--strict mode)")
+        sys.exit(1)
+
+    if not example_report.all_valid:
+        print("\n❌ Example validation failed")
+        sys.exit(1)
+
+    print("\n✅ All validations passed")
+
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
 
 
 def main():
+    # Load environment variables from .env file
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
-        description="FactoryVerse: Run multiple Factorio servers with Jupyter",
+        description="FactoryVerse CLI (v2) - Environment-based orchestration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command")
 
-    # ========== CLIENT COMMAND ==========
+    # ========== STATUS COMMAND ==========
+    status_parser = subparsers.add_parser("status", help="Show environment status")
+    status_parser.set_defaults(func=cmd_status)
+
+    # ========== CLIENT COMMANDS ==========
     client_parser = subparsers.add_parser("client", help="Factorio client operations")
-    client_subparsers = client_parser.add_subparsers(
-        dest="client_action", help="Client action"
-    )
+    client_sub = client_parser.add_subparsers(dest="client_action")
 
-    # Client start subcommand
-    client_start_parser = client_subparsers.add_parser(
-        "start", help="Start Factorio client with scenario or save file"
+    # client start
+    client_start = client_sub.add_parser("start", help="Start Factorio client")
+    client_start.add_argument("-s", "--scenario", help="Scenario to load (omit for main menu)")
+    client_start.add_argument("--save-file", help="Save file to load")
+    client_start.add_argument(
+        "--no-peaceful", action="store_true", help="Disable peaceful mode"
     )
-    client_start_parser.add_argument(
-        "-s",
-        "--scenario",
-        help="Scenario to load (e.g., 'base/freeplay' or 'test-ground'). Use absolute path or scenario name.",
-    )
-    client_start_parser.add_argument(
-        "--save-file",
-        help="Absolute path to save file to load",
-    )
-    client_start_parser.add_argument(
-        "--map-gen-settings",
-        help="Absolute path to map generation settings JSON file",
-    )
-    client_start_parser.add_argument(
-        "--new-map",
-        action="store_true",
-        help="Create a new map (requires --scenario or --map-gen-settings)",
-    )
-    client_start_parser.add_argument(
-        "--map-name",
-        help="Name for new map save file (default: auto-generated from scenario and timestamp)",
-    )
-    client_start_parser.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="Force re-setup of client mods/scenarios",
-    )
-    client_start_parser.add_argument(
-        "-w",
-        "--watch",
-        action="store_true",
-        help="Enable hot-reload watcher (repo scenarios only)",
-    )
-    client_start_parser.add_argument(
-        "--reset-ghosts", action="store_true", help="Reset all ghost entities state"
-    )
-    client_start_parser.set_defaults(func=cmd_client_start)
+    client_start.set_defaults(func=cmd_client_start)
 
-    # Client stop subcommand
-    client_stop_parser = client_subparsers.add_parser(
-        "stop", help="Stop running Factorio client"
-    )
-    client_stop_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force kill client (SIGKILL instead of SIGTERM)",
-    )
-    client_stop_parser.set_defaults(func=cmd_client_stop)
+    # client stop
+    client_stop = client_sub.add_parser("stop", help="Stop Factorio client")
+    client_stop.add_argument("--force", action="store_true", help="Force kill")
+    client_stop.set_defaults(func=cmd_client_stop)
 
-    # Client restart subcommand
-    client_restart_parser = client_subparsers.add_parser(
-        "restart", help="Restart Factorio client (uses last config if no args provided)"
-    )
-    client_restart_parser.add_argument(
-        "-s",
-        "--scenario",
-        help="Scenario to load (overrides saved state)",
-    )
-    client_restart_parser.add_argument(
-        "--save-file",
-        help="Absolute path to save file to load (overrides saved state)",
-    )
-    client_restart_parser.add_argument(
-        "--map-gen-settings",
-        help="Absolute path to map generation settings JSON file (overrides saved state)",
-    )
-    client_restart_parser.add_argument(
-        "--new-map",
-        action="store_true",
-        help="Create a new map (overrides saved state)",
-    )
-    client_restart_parser.add_argument(
-        "--map-name",
-        help="Name for new map save file",
-    )
-    client_restart_parser.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="Force re-setup of client mods/scenarios",
-    )
-    client_restart_parser.set_defaults(func=cmd_client_restart)
+    # client status
+    client_status = client_sub.add_parser("status", help="Show client status")
+    client_status.set_defaults(func=cmd_client_status)
 
-    # Client status subcommand
-    client_status_parser = client_subparsers.add_parser(
-        "status", help="Show Factorio client status"
-    )
-    client_status_parser.set_defaults(func=cmd_client_status)
-
-    # Client log subcommand
-    client_log_parser = client_subparsers.add_parser(
-        "log", help="Display Factorio client log file"
-    )
-    client_log_parser.add_argument(
-        "-f", "--follow", action="store_true", help="Follow log file (like tail -f)"
-    )
-    client_log_parser.set_defaults(func=cmd_client_log)
-
-    # Client dump-data subcommand
-    client_dump_parser = client_subparsers.add_parser(
-        "dump-data", help="Dump Factorio data.raw to JSON"
-    )
-    client_dump_parser.add_argument(
-        "-s",
-        "--scenario",
-        default="test-ground",
-        help="Scenario to use (default: test-ground)",
-    )
-    client_dump_parser.add_argument(
-        "-f", "--force", action="store_true", help="Force re-setup of client"
-    )
-    client_dump_parser.set_defaults(func=cmd_client_dump_data)
-
-    # ========== SERVER COMMAND ==========
+    # ========== SERVER COMMANDS ==========
     server_parser = subparsers.add_parser("server", help="Factorio server operations")
-    server_subparsers = server_parser.add_subparsers(
-        dest="server_action", help="Server action"
-    )
+    server_sub = server_parser.add_subparsers(dest="server_action")
 
-    # Server start subcommand
-    server_start_parser = server_subparsers.add_parser(
-        "start", help="Setup client and start servers"
+    # server start
+    server_start = server_sub.add_parser("start", help="Start Factorio servers")
+    server_start.add_argument(
+        "-n", "--num", type=int, default=1, help="Number of servers"
     )
-    server_start_parser.add_argument(
-        "-n", "--num", type=int, default=1, help="Number of servers (default: 1)"
+    server_start.add_argument(
+        "-s", "--scenario", default="test-ground", help="Scenario"
     )
-    server_start_parser.add_argument(
-        "-s",
-        "--scenario",
-        default="test-ground",
-        help="Scenario to load (default: test-ground). Use 'uv run fv server list-scenarios' to see available.",
-    )
-    server_start_parser.add_argument(
-        "--max-agents",
-        type=int,
-        default=None,
-        help="Max agents per server (default: from config, typically 10)",
-    )
-    server_start_parser.add_argument("--name", help="Experiment name (optional)")
-    server_start_parser.add_argument(
-        "-f", "--force", action="store_true", help="Force re-setup of client"
-    )
-    server_start_parser.add_argument(
-        "-w",
-        "--watch",
-        action="store_true",
-        help="Enable hot-reload watcher (repo scenarios only)",
-    )
-    server_start_parser.add_argument(
-        "--reset-ghosts", action="store_true", help="Reset all ghost entities state"
-    )
-    server_start_parser.add_argument(
-        "--no-jupyter",
-        action="store_true",
-        help="Skip starting Jupyter notebook server",
-    )
-    server_start_parser.set_defaults(func=cmd_start)
+    server_start.set_defaults(func=cmd_server_start)
 
-    # Server stop subcommand
-    server_stop_parser = server_subparsers.add_parser("stop", help="Stop all services")
-    server_stop_parser.set_defaults(func=cmd_stop)
+    # server stop
+    server_stop = server_sub.add_parser("stop", help="Stop Factorio servers")
+    server_stop.set_defaults(func=cmd_server_stop)
 
-    # Server restart subcommand
-    server_restart_parser = server_subparsers.add_parser(
-        "restart", help="Restart all services"
-    )
-    server_restart_parser.set_defaults(func=cmd_restart)
+    # server list-scenarios
+    server_scenarios = server_sub.add_parser("list-scenarios", help="List scenarios")
+    server_scenarios.set_defaults(func=cmd_list_scenarios)
 
-    # Server list subcommand (experiments)
-    server_list_parser = server_subparsers.add_parser("list", help="List experiments")
-    server_list_parser.set_defaults(func=cmd_list)
+    # ========== CONNECT COMMAND ==========
+    connect_parser = subparsers.add_parser(
+        "connect", help="Connect to running Factorio"
+    )
+    connect_parser.add_argument("-i", "--instance", help="Instance (client/server_N)")
+    connect_parser.add_argument("--no-udp", action="store_true", help="Disable UDP")
+    connect_parser.set_defaults(func=cmd_connect)
 
-    # Server list-scenarios subcommand
-    server_scenarios_parser = server_subparsers.add_parser(
-        "list-scenarios", help="List available scenarios"
+    # ========== EVAL COMMAND (Task Evaluation) ==========
+    eval_parser = subparsers.add_parser(
+        "eval", help="Run task evaluation with verification"
     )
-    server_scenarios_parser.set_defaults(func=cmd_list_scenarios)
+    eval_parser.add_argument(
+        "-t", "--task", required=True, help="Task key (e.g., iron_plate_throughput)"
+    )
+    eval_parser.add_argument("-p", "--provider", default="anthropic")
+    eval_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    eval_parser.add_argument("-s", "--scenario", default="lab-grid", help="Scenario")
+    eval_parser.add_argument("-i", "--instance", help="Factorio instance")
+    eval_parser.add_argument("--agent-id", default="agent_1")
+    eval_parser.add_argument("--max-turns", type=int, help="Max turns (default: task's max)")
+    eval_parser.add_argument("--cell", type=int, help="Lab-grid cell index")
+    eval_parser.set_defaults(func=cmd_eval)
 
-    # Server logs subcommand
-    server_logs_parser = server_subparsers.add_parser("logs", help="View logs")
-    server_logs_parser.add_argument(
-        "service", help="Service name (e.g., factorio_0, jupyter)"
+    # ========== FREEPLAY COMMAND ==========
+    freeplay_parser = subparsers.add_parser(
+        "freeplay", help="Run open-ended freeplay (no task/verification)"
     )
-    server_logs_parser.add_argument(
-        "-f", "--follow", action="store_true", help="Follow logs"
-    )
-    server_logs_parser.set_defaults(func=cmd_logs)
+    freeplay_parser.add_argument("-p", "--provider", default="anthropic")
+    freeplay_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    freeplay_parser.add_argument("-s", "--scenario", default="freeplay", help="Scenario")
+    freeplay_parser.add_argument("-i", "--instance", help="Factorio instance")
+    freeplay_parser.add_argument("--agent-id", default="agent_1")
+    freeplay_parser.add_argument("--max-turns", type=int, default=200, help="Max turns")
+    freeplay_parser.add_argument("--cell", type=int, help="Lab-grid cell index")
+    freeplay_parser.set_defaults(func=cmd_freeplay)
 
-    # Server instance control subcommand
-    server_instance_parser = server_subparsers.add_parser(
-        "instance", help="Control individual server instances"
+    # ========== AGENT COMMAND (Assisted/Interactive) ==========
+    agent_parser = subparsers.add_parser(
+        "agent", help="Run LLM agent in assisted (interactive) mode"
     )
-    server_instance_parser.add_argument(
-        "action", choices=["start", "stop", "restart"], help="Action"
-    )
-    server_instance_parser.add_argument("server_id", type=int, help="Server ID")
-    server_instance_parser.set_defaults(func=cmd_server)
-
-    # ========== DATA COMMAND ==========
-    data_parser = subparsers.add_parser("data", help="Data dump management")
-    data_subparsers = data_parser.add_subparsers(dest="data_action", help="Data action")
-
-    # Data prune subcommand
-    data_prune_parser = data_subparsers.add_parser(
-        "prune", help="Prune data-raw-dump.json to factorio-data-dump.json"
-    )
-    data_prune_parser.add_argument(
-        "-i",
-        "--instance",
-        default="client",
-        help="Instance to read data-raw-dump.json from (default: client)",
-    )
-    data_prune_parser.set_defaults(func=cmd_data_prune)
-
-    # Data refresh subcommand
-    data_refresh_parser = data_subparsers.add_parser(
-        "refresh", help="Find and prune data-raw-dump.json"
-    )
-    data_refresh_parser.add_argument(
-        "-i",
-        "--instance",
-        default="client",
-        help="Instance to read data-raw-dump.json from (default: client)",
-    )
-    data_refresh_parser.set_defaults(func=cmd_data_refresh)
-
-    # ========== INSTANCE COMMAND ==========
-    instance_parser = subparsers.add_parser("instance", help="Instance management")
-    instance_subparsers = instance_parser.add_subparsers(
-        dest="instance_action", help="Instance action"
-    )
-
-    # Instance list subcommand
-    instance_list_parser = instance_subparsers.add_parser(
-        "list", help="List all instances and their status"
-    )
-    instance_list_parser.set_defaults(func=cmd_instance_list)
-
-    # Instance active subcommand
-    instance_active_parser = instance_subparsers.add_parser(
-        "active", help="Show active instance"
-    )
-    instance_active_parser.set_defaults(func=cmd_instance_active)
-
-    # ========== PROMPTS COMMAND ==========
-    prompts_parser = subparsers.add_parser(
-        "prompts", help="LLM prompt and documentation generation"
-    )
-    prompts_subparsers = prompts_parser.add_subparsers(
-        dest="prompts_action", help="Prompts action"
-    )
-
-    # prompts generate - generate full system prompt
-    prompts_generate_parser = prompts_subparsers.add_parser(
-        "generate", help="Generate complete system prompt"
-    )
-    prompts_generate_parser.add_argument(
-        "-o",
-        "--output",
-        type=str,
-        help="Output path (default: docs/system-prompt/factoryverse-system-prompt-v3-core.md)",
-    )
-    prompts_generate_parser.add_argument(
-        "--with-examples",
-        action="store_true",
-        help="Include code examples from examples/ directory",
-    )
-    prompts_generate_parser.add_argument(
-        "--no-api",
-        action="store_true",
-        help="Exclude API reference documentation",
-    )
-    prompts_generate_parser.add_argument(
-        "--no-schema",
-        action="store_true",
-        help="Exclude schema reference documentation",
-    )
-    prompts_generate_parser.set_defaults(func=cmd_prompts_generate)
-
-    # prompts api - generate API reference only
-    prompts_api_parser = prompts_subparsers.add_parser(
-        "api", help="Generate API reference documentation"
-    )
-    prompts_api_parser.add_argument(
-        "-o",
-        "--output",
-        type=str,
-        default="docs/for-llms/api_reference.md",
-        help="Output path (default: docs/for-llms/api_reference.md)",
-    )
-    prompts_api_parser.set_defaults(func=cmd_prompts_api)
-
-    # prompts schema - generate schema reference only
-    prompts_schema_parser = prompts_subparsers.add_parser(
-        "schema", help="Generate schema reference documentation"
-    )
-    prompts_schema_parser.add_argument(
-        "-o",
-        "--output",
-        type=str,
-        default="docs/for-llms/schema_reference.md",
-        help="Output path (default: docs/for-llms/schema_reference.md)",
-    )
-    prompts_schema_parser.set_defaults(func=cmd_prompts_schema)
-
-    # ========== AGENT COMMAND ==========
-    agent_parser = subparsers.add_parser("agent", help="Run LLM agent")
-    agent_parser.add_argument(
-        "--model",
-        type=str,
-        help="LLM model name (default: from LLM_MODEL env or provider default)",
-    )
-    agent_parser.add_argument(
-        "--provider",
-        type=str,
-        choices=["openai", "prime_intellect", "azure", "local"],
-        help="LLM provider (default: from LLM_PROVIDER env or 'openai')",
-    )
-    agent_parser.add_argument(
-        "--mode",
-        choices=["assisted", "autonomous"],
-        default="assisted",
-        help="Agent mode (default: assisted)",
-    )
-    agent_parser.add_argument(
-        "--max-turns",
-        type=int,
-        help="Maximum turns for autonomous mode (default: unlimited)",
-    )
-    agent_parser.add_argument(
-        "--instance",
-        type=str,
-        help="Factorio instance to connect to (default: auto-detect)",
-    )
-    agent_parser.add_argument(
-        "--agent-id",
-        type=str,
-        default="agent_1",
-        help="Agent identifier (default: agent_1)",
-    )
-    agent_parser.add_argument(
-        "-o",
-        "--output-dir",
-        type=str,
-        help="Output directory for run artifacts (default: .fv-output/runs/)",
-    )
+    agent_parser.add_argument("-p", "--provider", default="anthropic")
+    agent_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    agent_parser.add_argument("-s", "--scenario", help="Scenario")
+    agent_parser.add_argument("-i", "--instance", help="Factorio instance")
+    agent_parser.add_argument("--agent-id", default="agent_1")
+    agent_parser.add_argument("--max-turns", type=int, help="Max turns")
     agent_parser.set_defaults(func=cmd_agent)
 
-    mcp_parser = subparsers.add_parser(
-        "mcp", help="Start MCP server for IDE integration"
-    )
+    # ========== MODELS COMMAND ==========
+    models_parser = subparsers.add_parser("models", help="LLM model management")
+    models_sub = models_parser.add_subparsers(dest="models_action")
+
+    # models list
+    models_list = models_sub.add_parser("list", help="List available models")
+    models_list.add_argument("-p", "--provider", help="LLM provider")
+    models_list.set_defaults(func=cmd_models_list)
+
+    # models select
+    models_select = models_sub.add_parser("select", help="Interactively select a model")
+    models_select.add_argument("-p", "--provider", help="LLM provider")
+    models_select.set_defaults(func=cmd_models_select)
+
+    # ========== MCP COMMAND ==========
+    mcp_parser = subparsers.add_parser("mcp", help="Start MCP server")
+    mcp_parser.add_argument("-i", "--instance", help="Instance")
     mcp_parser.set_defaults(func=cmd_mcp_server)
 
     # ========== UI COMMAND ==========
-    ui_parser = subparsers.add_parser(
-        "ui", help="Launch FactoryVerse Control Center (unified web UI)"
-    )
-    ui_parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="Host to bind to (default: 127.0.0.1)",
-    )
-    ui_parser.add_argument(
-        "--port",
-        type=int,
-        default=8080,
-        help="Port to run on (default: 8080)",
-    )
-    ui_parser.add_argument(
-        "--native",
-        action="store_true",
-        help="Open in native window (requires pywebview)",
-    )
+    ui_parser = subparsers.add_parser("ui", help="Launch Control Center")
+    ui_parser.add_argument("--host", default="0.0.0.0")
+    ui_parser.add_argument("--port", type=int, default=8080)
+    ui_parser.add_argument("--native", action="store_true")
     ui_parser.set_defaults(func=cmd_ui)
 
-    # ========== UI AGENTS COMMAND (LEGACY) ==========
-    ui_agents_parser = subparsers.add_parser(
-        "ui-agents", help="(Deprecated) Launch agent orchestrator UI - use 'ui' instead"
-    )
-    ui_agents_parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="Host to bind to (default: 127.0.0.1)",
-    )
-    ui_agents_parser.add_argument(
-        "--port",
-        type=int,
-        default=8082,
-        help="Port to run on (default: 8082)",
-    )
-    ui_agents_parser.add_argument(
-        "--native",
-        action="store_true",
-        help="Open in native window (requires pywebview)",
-    )
-    ui_agents_parser.set_defaults(func=cmd_ui_agents)
+    # ========== DOCS COMMANDS ==========
+    docs_parser = subparsers.add_parser("docs", help="Documentation operations")
+    docs_sub = docs_parser.add_subparsers(dest="docs_action")
 
+    # docs generate
+    docs_generate = docs_sub.add_parser("generate", help="Generate API reference")
+    docs_generate.add_argument(
+        "-o", "--output",
+        help="Output path (default: docs/for-llms/api_reference.md)",
+    )
+    docs_generate.set_defaults(func=cmd_docs_generate)
+
+    # docs validate
+    docs_validate = docs_sub.add_parser("validate", help="Validate documentation")
+    docs_validate.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail if coverage is incomplete",
+    )
+    docs_validate.set_defaults(func=cmd_docs_validate)
+
+    # ========== PARSE AND EXECUTE ==========
     args = parser.parse_args()
 
-    if not hasattr(args, "func"):
+    if args.command is None:
         parser.print_help()
-        sys.exit(1)
+        sys.exit(0)
 
-    try:
+    # Handle subcommands that don't have their own function
+    if hasattr(args, "func"):
         args.func(args)
-    except KeyboardInterrupt:
-        print("\nInterrupted.")
-        sys.exit(130)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        import traceback
-
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

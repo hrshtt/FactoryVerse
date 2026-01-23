@@ -9,7 +9,8 @@ from typing import Optional, Any, TYPE_CHECKING
 from ..config import PythonConfig
 from ..status import Tier3Status, TierState, PrerequisiteResult
 from .base import TierBase, Tier, TierInitializationError
-from FactoryVerse.infra.remote_adapters import AgentInterface, MapSnapshotInterface
+from FactoryVerse.game.agent.adapter import AgentInterface
+from FactoryVerse.game.snapshot import MapSnapshotInterface
 
 if TYPE_CHECKING:
     from ..environment import Environment
@@ -263,7 +264,7 @@ class Tier3Python(TierBase):
     async def _init_rcon_helper(self) -> None:
         """Initialize RconHelper with async action support."""
         from FactoryVerse.infra.rcon_helper import RconHelper
-        from FactoryVerse.agent.infra.async_listener import AsyncActionListener
+        from FactoryVerse.game.agent.infra.async_listener import AsyncActionListener
 
         # Create action listener if UDP is enabled
         # Using the one from agent.infra.async_listener which has await_action()
@@ -286,7 +287,7 @@ class Tier3Python(TierBase):
 
     async def _init_agent_registry(self) -> None:
         """Initialize Agent Registry service."""
-        from FactoryVerse.agent.core.registry import AgentRegistry
+        from FactoryVerse.game.agent.core.registry import AgentRegistry
 
         infra_config = self._env.config.infra_config
 

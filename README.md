@@ -14,7 +14,7 @@ A Factorio mod that implements multi-agent gameplay infrastructure. Each agent i
 ### 2. **FV Snapshot Mod** (`src/fv_snapshot/`)
 A Factorio mod that materializes game state to disk as append-only JSONL files. Every entity placement, resource extraction, and chunk charting event is captured deterministically and written to disk—providing a complete audit trail of game state.
 
-### 3. **Factory Objects** (`src/FactoryVerse/factory/`)
+### 3. **Factory Objects** (`src/FactoryVerse/game/factory/`)
 Type-safe, stateful Python abstractions that wrap the mod's remote interface into an **OOMDP**. Instead of calling 30+ stateless RCON functions, agents interact with objects like `Furnace`, `MiningDrill`, and `AssemblingMachine` that have domain-specific methods (`add_fuel()`, `set_recipe()`, `output_position()`). These objects mirror the GUI interactions human players use.
 
 ### 4. **Top-Level Accessors & DuckDB Integration**
@@ -23,7 +23,7 @@ Python accessors that provide two complementary query interfaces:
 - **`Remote View`**: Query entities anywhere on the map via SQL (read-only, then walk to interact)
 - **`Ghost Entity`**: In-built dry run placement for entities, useful for planning large-scale construction
 
-The snapshot mod's JSONL files are loaded into a **DuckDB spatial database** (`src/FactoryVerse/agent/infra/snapshot/`) that stays synchronized with game state in real-time via UDP. This enables agents to query the entire map with SQL instead of processing screenshots.
+The snapshot mod's JSONL files are loaded into a **DuckDB spatial database** (`src/FactoryVerse/game/infra/duckdb/`) that stays synchronized with game state in real-time via UDP. This enables agents to query the entire map with SQL instead of processing screenshots.
 
 **Utility Mods:** In addition to the core infrastructure, FactoryVerse provides supporting mods such as **FV Placement Hints** (`src/fv_placement_hints/`). This module is designed to replicate, in structured form, the same visual feedback Factorio provides when you use the cursor to hover, pick up, or move entities—highlighting valid placement tiles and indicating where entities can connect or interact. By consolidating placement validation, connection solving, and area scanning logic into Lua functions, FV Placement Hints exposes to agents and external tools the same kind of real-time spatial reasoning that players rely on visually, enabling automated systems to gauge and select valid placements just as a human would with the game's interface. *(See Appendix A.7 for details.)*
 
@@ -79,78 +79,82 @@ uv pip install git+https://github.com/hrshtt/FactoryVerse.git
 
 ---
 
-## Working with This Repository
+## Interfaces
 
-FactoryVerse provides two CLI entry points: `factoryverse` (full name) and `fv` (alias).
-FactoryVerse mods (`fv_embodied_agent` + `fv_snapshot`) are **always loaded**.
+FactoryVerse provides multiple entry points for different use cases. All interfaces load the FactoryVerse mods (`fv_embodied_agent` + `fv_snapshot`) automatically.
 
-### CLI Entry Point
+### CLI (`fv` / `factoryverse`)
 
-The CLI manages Factorio instances, servers, and data:
+Primary interface for managing Factorio instances and development:
 
 ```bash
-# Instance management
-uv run fv instance list        # List all instances and their status
-uv run fv instance active      # Show currently active instance
-
-# Launch Factorio client with FactoryVerse mods
+# Launch client with mods
 uv run fv client launch --scenario test-ground
 
-# Start Factorio server(s) with Jupyter notebook
-uv run fv server start --num 1 --scenario test-ground
+# Start Docker server(s) with hot-reload
+uv run fv server start --num 1 --scenario test-ground --watch
 
-# Hot-reload scenario files during development (repo scenarios only)
-uv run fv server start --scenario test-ground --watch
+# Interactive LLM agent mode
+uv run fv agent
 
-# View server logs
-uv run fv server logs factorio_0 --follow
-
-# Stop all services
-uv run fv server stop
-
-# Data management
-uv run fv data prune           # Prune data-raw-dump.json → factorio-data-dump.json
-uv run fv data refresh         # Find and prune in one step
-
-# List available scenarios
-uv run fv server list-scenarios
+# Instance and data management
+uv run fv instance list
+uv run fv data refresh
 ```
 
-**Key Features:**
-- Docker-based server orchestration with Jupyter integration
-- Hot-reload support for repo scenarios (`--watch` flag)
-- Multi-server support for parallel experiments
-- Client setup automation (mod installation, scenario configuration)
-- Live instance detection with collision handling
+### MCP Server (`factoryverse-mcp`)
 
-### Agent Runtime Entry Point
-
-The agent runtime (`scripts/run_agent.py`) provides an LLM-powered agent that plays Factorio:
+Model Context Protocol server for LLM tool integration (Claude Desktop, etc.):
 
 ```bash
-# Interactive mode with model selection
-uv run scripts/run_agent.py
-
-# Specify model directly
-uv run scripts/run_agent.py --model intellect-3
-
-# List available models
-uv run scripts/run_agent.py --list-models
-
-# List existing sessions
-uv run scripts/run_agent.py --list-sessions
+uv run factoryverse-mcp
 ```
 
-**Key Features:**
-- **Session Management**: Automatic session tracking with chat logs, notebooks, and initial state snapshots
-- **LLM Integration**: Currently supports Prime Intellect credits inference API
-- **Real-Time Console Output**: Displays agent reasoning, function calls, and results as they happen
-- **Jupyter Notebook Logging**: All factory object operations and SQL queries logged to persistent notebook (`.ipynb`) for review and replay
-- **Initial State Generation**: Comprehensive map summary provided to agent at startup (resource patches, technologies, inventory)
-- **Interactive Mode**: Chat with the agent, provide guidance, view statistics
+### Web Dashboard (`fv-ui`)
 
-**Configuration:**
-Set `PRIME_API_KEY` in your `.env` file to use the Prime Intellect API.
+Browser-based monitoring for agents, services, and trajectories:
+
+```bash
+uv run fv-ui
+```
+
+---
+
+## Module Structure
+
+```
+src/FactoryVerse/
+├── game/           # Factorio domain knowledge
+│   ├── agent/      # Embodied actions, views, event streams
+│   ├── factory/    # Entity types, prototypes, recipes
+│   ├── scenarios/  # Scenario adapters (lab-grid, test-ground)
+│   ├── tasks/      # Task definitions and verification
+│   └── infra/      # DuckDB spatial database implementation
+├── environment/    # Tiered orchestrator (Tier 1-6)
+├── infra/          # Platform infrastructure
+│   ├── docker/     # Server container management
+│   ├── mcp/        # MCP server implementation
+│   ├── llm/        # LLM client and prompts
+│   └── ui/         # Web dashboard
+└── utils/          # Documentation generators, helpers
+```
+
+**Philosophy**: `game/` contains Factorio-specific knowledge (what the game is), `environment/` orchestrates initialization (how components connect), `infra/` provides platform services (how to run).
+
+---
+
+## Evaluation
+
+FactoryVerse includes a task verification system for evaluating agent performance:
+
+**Task Types** (`game/tasks/`):
+- **Throughput**: Sustain N items/minute via automation (rate-based verification)
+- **Unbounded**: Maximize production (no quota)
+- **Freeplay**: No verification criteria
+
+**Verification** measures automation vs manual production, tracking items produced by machines versus hand-crafting. Multiple sources supported: RCON (live), JSONL (replay), DuckDB (queries).
+
+**Parallel Evaluation**: The `lab-grid` scenario provides 64 isolated cells (8×8 grid) for running multiple agents simultaneously with independent inventories, forces, and snapshots.
 
 ---
 
@@ -226,7 +230,7 @@ The **FV Snapshot** mod (`src/fv_snapshot/`) materializes game state to disk for
 
 **Integration with Python:**
 
-The `RemoteView` class (`src/FactoryVerse/agent/remote_view.py`) provides the Python interface:
+The `RemoteView` class (`src/FactoryVerse/game/agent/remote_view.py`) provides the Python interface:
 
 ```python
 view = RemoteView(snapshot_dir, udp_dispatcher=dispatcher)
@@ -244,7 +248,7 @@ pending = view.get_ghosts("SELECT * FROM ghost WHERE ghost_name = 'assembling-ma
 
 ### Python Factory Objects
 
-The Python **Factory Objects** (`src/FactoryVerse/factory/`) provide a type-safe, object-oriented interface to Factorio—wrapping the RCON interface exposed by `fv_embodied_agent` with stateful, composable abstractions.
+The Python **Factory Objects** (`src/FactoryVerse/game/factory/`) provide a type-safe, object-oriented interface to Factorio—wrapping the RCON interface exposed by `fv_embodied_agent` with stateful, composable abstractions.
 
 **Core Concepts:**
 - **Accessor Modules**: `walking`, `mining`, `crafting`, `research`, `inventory`, `reachable_view`, `remote_view`
@@ -388,7 +392,7 @@ This dramatically improves LLM code generation quality and reduces trial-and-err
 
 ### DuckDB Schemas (Broad Strokes)
 
-The DuckDB schema (`src/FactoryVerse/agent/infra/snapshot/schema_definitions.py`) provides a spatial database for map queries:
+The DuckDB schema (`src/FactoryVerse/game/infra/duckdb/schema_definitions.py`) provides a spatial database for map queries:
 
 **Core Tables:**
 - `resource_tile`: Individual ore tiles with position and amount
@@ -519,33 +523,9 @@ WHERE coast_length > 20
 ORDER BY coast_length DESC;
 ```
 
-### Vision Beyond Screenshots
+### Why Database as Vision?
 
-**FactoryVerse provides vision capabilities that complement and exceed traditional screenshot-based approaches:** (WIP)
-
-**Static Vision (Database Queries)**:
-- **Exact Spatial Data**: Query precise entity positions, bounding boxes, connection topology—no OCR or ambiguous pixel interpretation
-- **State Inspection**: Access furnace fuel levels, assembler recipes, inventory contents directly from database
-- **Coverage Analysis**: Identify power network gaps, logistics bottlenecks, resource distribution patterns
-- **Multi-Scale Queries**: Zoom from individual entity components to factory-wide logistics in a single SQL query
-
-**Dynamic Visualization (Plots & Charts)**:
-- **Generate Custom Visualizations**: Use matplotlib/plotly to create plots from SQL results
-- **Production Metrics**: Graph resource throughput rates, science-per-minute trends, crafting queue lengths
-- **Spatial Heatmaps**: Visualize resource density, entity distribution, power coverage areas
-- **Temporal Analysis**: Plot factory growth over time, technology unlock progression, inventory changes
-
-**Combined Approach (Screenshots + Database)**:
-- LLMs can request both screenshots (visual overview) and database queries (precise state)
-- Screenshots provide intuitive spatial context; database provides exact measurements
-- Example: Screenshot shows belt layout, database query confirms exact item flow rates
-
-### Architecture Benefits
-
-1. **Analytical Reasoning**: Enables system-level optimization rather than purely reactive object manipulation
-2. **Scalable Observation**: Query exactly what's needed rather than loading entire game state
-3. **Flexible Abstraction**: Create novel views and analyses—from raw tables to derived metrics
-4. **Powerful Vision**: Static database vision + dynamic plot generation + optional screenshots = comprehensive multi-modal perception
+Instead of screenshot parsing, agents query precise spatial data via SQL—exact positions, connection topology, entity state. This enables multi-scale reasoning (single entity → factory-wide logistics) and complements visual approaches when needed.
 
 ---
 
@@ -569,79 +549,13 @@ FactoryVerse uses incremental port allocation to support multiple concurrent Fac
 - **Parallel Experiments**: Run multiple agents on different servers simultaneously without configuration conflicts
 - **Dynamic Allocation**: Agent notification ports use `find_free_udp_port()` for flexible allocation
 
-#### A.2 RCON Execution Model
+#### A.2 RCON and Async Actions
 
-Understanding Factorio's execution model is crucial to understanding the async contract design:
+RCON commands execute synchronously within a single game tick. For multi-tick actions (walking, mining, crafting, research), agents use UDP notifications instead of polling—Lua state machines send completion events when actions finish.
 
-**RCON Execution Characteristics**:
-- **Tick-synchronous**: RCON commands execute on the current game tick
-- **Blocking**: The simulation pauses, runs your Lua code, returns the result—all within one tick
-- **Atomic**: If RCON returns, you have 100% guarantee that all operations completed on that exact tick
-- **Fast operations are fine**: `inspect_entity`, `place_entity`, `teleport` complete within microseconds
+#### A.3 Sync Services
 
-**The Async Action Challenge**:
-Some actions cannot complete within a single tick because they complete on future ticks, relying on Factorio's internal simulation systems:
-
-| Action | Internal System | Why It's Async |
-|--------|----------------|----------------|
-| **Walking** | A* pathfinding + character movement | Path computation happens over multiple ticks; character moves incrementally using waypoints |
-| **Crafting** | Character crafting queue | Recipes process over time based on crafting speed (e.g., 0.5 seconds = 30 ticks) |
-| **Mining** | Resource extraction system | Extracts resources progressively based on mining speed and tool efficiency |
-| **Research** | Force technology system | Technologies unlock over many ticks based on research speed and lab count |
-
-**The Problem**: RCON returning ≠ action finishing. RCON only confirms the action *started*, not that it completed.
-
-**The UDP Solution**:
-Instead of polling (wasteful RCON every tick, blocks multi-agent orchestration), each agent maintains state machines in Lua and sends UDP notifications when actions complete:
-
-```lua
--- In Agent.lua state machine (executed every tick)
-function Agent:on_tick()
-    if self.state.walking then
-        if character.position == target then
-            -- Walking complete! Send UDP notification
-            self:send_udp({
-                type = "walking_complete",
-                request_id = self.state.walking.request_id,
-                success = true,
-                position = {x = character.position.x, y = character.position.y}
-            })
-            self.state.walking = nil
-        end
-    end
-end
-```
-
-This design enables:
-- **No polling**: Python waits on UDP socket instead of spamming RCON
-- **Concurrent actions**: Multiple async operations can execute simultaneously
-- **Event-driven**: State changes trigger notifications naturally
-
-#### A.3 Sync Services Implementation
-
-FactoryVerse maintains real-time synchronization between Factorio (Lua) and Python through a layered approach:
-
-1. **Snapshot Generation** (Lua → Disk):
-   - `fv_snapshot` mod writes game state to JSONL files on disk
-   - Initial snapshots: `entities.jsonl`, `ghosts.jsonl`, `resources.jsonl`, etc.
-   - Update logs: `entities-updates.jsonl`, `ghosts-updates.jsonl` for incremental changes
-
-2. **Snapshot Loading** (Disk → DuckDB):
-   - `SnapshotLoader` reads JSONL files and populates DuckDB tables
-   - Base tables: `map_entity`, `resource_tile`, `resource_entity`, `water_patch`
-   - Component tables: `inserter`, `transport_belt`, `mining_drill`, `assemblers`
-   - Derived tables: `resource_patch`, `belt_line` (clustered/aggregated views)
-
-3. **Real-Time Sync** (UDP → DuckDB):
-   - `SyncService` subscribes to UDP notifications from `fv_snapshot`
-   - Applies incremental updates (insert/update/delete) to DuckDB tables
-   - Detects sequence gaps and triggers full reload when needed
-
-4. **Async Action Completion** (UDP → Python Futures):
-   - `AsyncActionListener` binds to agent-specific UDP port
-   - Long-running actions (walking, mining, crafting) return request IDs immediately
-   - UDP notifications resolve Python futures when actions complete
-   - Enables non-blocking, concurrent agent operations
+Real-time synchronization flows: Lua → JSONL files (source of truth) → DuckDB tables, with UDP providing incremental updates. Sequence gap detection triggers disk replay if packets drop.
 
 #### A.4 Factorio Remote Interfaces
 
@@ -680,71 +594,17 @@ remote.call("agent_1", "mine_resource", {resource_name="iron-ore", max_count=25}
 remote.call("agent_1", "craft_enqueue", {recipe_name="iron-plate", count=10})
 ```
 
-#### A.5 Snapshot File Structure and Implementation
+#### A.5 Snapshot System
 
-**File Structure:**
-```
-script-output/factoryverse/snapshots/
-├── 0/                          # chunk_x = 0
-│   ├── 0/                      # chunk_y = 0
-│   │   ├── entities-init.jsonl       # Initial entities
-│   │   ├── entities-updates.jsonl    # Incremental changes
-│   │   ├── resources-init.jsonl      # Ore tiles
-│   │   ├── water-init.jsonl          # Water tiles
-│   │   └── ghosts-init.jsonl         # Construction ghosts
-│   └── 1/                      # chunk_y = 1
-│       └── ...
-└── 1/                          # chunk_x = 1
-    └── ...
-```
+**Two-Phase Operation:**
+1. **Bootstrap**: Initial map scan writes chunk-wise JSONL files (`{chunk_x}/{chunk_y}/entities-init.jsonl`)
+2. **Maintenance**: Event handlers append to update logs; UDP notifications trigger DuckDB sync
 
-**Output Format:**
-- **JSONL files** (not CSV) with one JSON object per line for efficient streaming
-- Compression support for large datasets
-- Incremental updates: separate files for initial state and operation logs (`entities-updates.jsonl`, `ghosts-updates.jsonl`)
-- Upsert-friendly: Each record has an entity key for database merge operations
-
-**Two-Phase Snapshotting - Detailed Implementation:**
-
-**Phase 1: Bootstrap Mode** (Initial Snapshotting)
-- **Trigger**: Map generation completes, all starting chunks charted
-- **Lua Process** (`Map.lua` state machine):
-  - Runs `find_entities_filtered()` on ALL initially charted chunks
-  - Serializes entities/resources to JSONL with batching (100 entities/tick, 3 writes/tick)
-  - Writes chunk-wise files: `{chunk_x}/{chunk_y}/entities-init.jsonl`, `resources-init.jsonl`, `water-init.jsonl`
-  - Spreads work across ticks to prevent game freezes (can take 30-60 seconds for large starting areas)
-- **Python Process** (`SnapshotLoader`):
-  - Discovers chunk directories in `script-output/factoryverse/snapshots/{chunk_x}/{chunk_y}/`
-  - Parses JSONL files and populates DuckDB tables (`map_entity`, `resource_tile`, `water_tile`, `ghost`)
-  - Builds derived tables (`resource_patch`, `belt_line`) via spatial clustering
-  - Returns last sequence number for sync tracking
-- **Output**: Complete spatial database snapshot of initial game state
-
-**Phase 2: Maintenance Mode** (Real-Time Sync)
-- **Trigger**: Bootstrap complete, agents start playing
-- **Lua Process** (Event Handlers):
-  - `on_built_entity`, `on_mined_entity`: Capture entity lifecycle changes
-  - `on_chunk_charted`: Snapshot new chunks as map expands
-  - **Write to disk**: Append operations to `{chunk_x}/{chunk_y}/entities-updates.jsonl` (source of truth)
-  - **UDP notification**: Emit JSON payload with `op: "upsert|remove"`, `sequence: N`, `entity: {...}` (performance optimization)
-- **Python Process** (`SyncService`):
-  - Subscribes to UDP port (34400+N per server instance)
-  - Receives incremental updates and applies SQL operations (`INSERT OR REPLACE`, `DELETE`)
-  - **Sequence gap detection**: If UDP drops packets → replay from `-updates.jsonl` files on disk
-  - Maintains last sequence number to know replay start point
-- **Output**: DuckDB stays in sync with game state within milliseconds
-- **Guarantee**: Disk files are the proof—UDP can miss packets, but determinism + append-only log ensures exact reconstruction
-
-**Event Dispatcher (`control.lua`):**
-- Aggregates event handlers from all game state modules
-- Registers nth-tick handlers for periodic status tracking
-- Manages system phases to avoid performance overhead during initialization
-
-**Architecture Components:**
-- **SnapshotDatabase**: Manages DuckDB connection and schema (`src/FactoryVerse/agent/infra/snapshot/database.py`)
-- **SnapshotLoader**: Reads JSONL files and populates base/component/derived tables (`src/FactoryVerse/agent/infra/snapshot/loader.py`)
-- **SyncService**: Subscribes to UDP updates and applies incremental changes to keep database current (`src/FactoryVerse/agent/infra/snapshot/sync.py`)
-- **QueryExecutor**: Validates SQL queries and constructs typed entity objects from results (`src/FactoryVerse/agent/infra/snapshot/query.py`)
+**Architecture** (`src/FactoryVerse/game/infra/duckdb/`):
+- `database.py`: DuckDB connection and schema management
+- `loader.py`: JSONL parsing and table population
+- `sync.py`: UDP subscription and incremental updates
+- `query.py`: SQL validation and typed entity construction
 
 #### A.6 Configuration Management
 

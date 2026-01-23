@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 from .factorio_client_setup import (
     _find_factorio_executable,
     _find_steam_executable,

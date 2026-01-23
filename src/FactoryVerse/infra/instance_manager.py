@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from factorio_rcon import RCONClient
 
-from FactoryVerse.config import FactoryVerseConfig, get_config
+from FactoryVerse.environment.config import FactoryVerseConfig, get_config
 
 
 logger = logging.getLogger(__name__)

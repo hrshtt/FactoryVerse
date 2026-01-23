@@ -181,7 +181,7 @@ class FactoryVerseSession:
 import asyncio
 
 # Core infrastructure
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 from factorio_rcon import RCONClient
 
@@ -205,13 +205,13 @@ rcon_client.connect()
 agent_id = "{agent_id}"
 
 # Database
-from FactoryVerse.agent.infra.snapshot import SnapshotLoader, FactorioDatabase
+from FactoryVerse.game.infra.duckdb import SnapshotLoader, FactorioDatabase
 snapshot_loader = SnapshotLoader(instance.snapshot_dir)
 database = FactorioDatabase()
 database.load_from_snapshot(snapshot_loader.get_latest())
 
 # Embodied actions
-from FactoryVerse.agent.embodied_actions import (
+from FactoryVerse.game.agent.embodied_actions import (
     Walking,
     Crafting,
     Research,
@@ -220,8 +220,8 @@ from FactoryVerse.agent.embodied_actions import (
     EntityOperations,
     Resources,
 )
-from FactoryVerse.agent.infra.rcon_handler import RCONHandler
-from FactoryVerse.agent.infra.async_listener import AsyncNotificationListener
+from FactoryVerse.game.agent.infra.rcon_handler import RCONHandler
+from FactoryVerse.game.agent.infra.async_listener import AsyncNotificationListener
 
 rcon_handler = RCONHandler(rcon_client, agent_id)
 
@@ -249,23 +249,23 @@ entity_ops = EntityOperations(rcon_handler, database)
 resources = Resources(rcon_handler, database)
 
 # Views
-from FactoryVerse.agent.reachable_view import ReachableView
-from FactoryVerse.agent.remote_view import RemoteView
+from FactoryVerse.game.agent.reachable_view import ReachableView
+from FactoryVerse.game.agent.remote_view import RemoteView
 
 reachable_view = ReachableView(rcon_handler, database)
 remote_view = RemoteView(database)
 
 # PlacementHints and GhostBuilder
-from FactoryVerse.agent.placement_hints import PlacementHints
-from FactoryVerse.agent.ghost_builder import GhostBuilder
+from FactoryVerse.game.agent.placement_hints import PlacementHints
+from FactoryVerse.game.agent.ghost_builder import GhostBuilder
 
 placement_hints = PlacementHints(rcon_handler, database)
 ghost_builder = GhostBuilder(rcon_handler, database)
 
 # Common types (pre-imported for convenience)
-from FactoryVerse.factory.types import MapPosition, Direction, BoundingBox  # noqa: F401
-from FactoryVerse.agent.placement_hints import ConnectionType, GhostPlan  # noqa: F401
-from FactoryVerse.factory.item.base import Item, PlaceableItem, ItemStack  # noqa: F401
+from FactoryVerse.game.factory.types import MapPosition, Direction, BoundingBox  # noqa: F401
+from FactoryVerse.game.agent.placement_hints import ConnectionType, GhostPlan  # noqa: F401
+from FactoryVerse.game.factory.item.base import Item, PlaceableItem, ItemStack  # noqa: F401
 
 print(f"✅ FactoryVerse runtime ready for agent {{agent_id}}")
 print(f"   Instance: {{instance_name}}")

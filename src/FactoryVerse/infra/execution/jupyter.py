@@ -21,7 +21,7 @@ from FactoryVerse.infra.execution.base import (
     ExecutionResult,
     ExecutionStatus,
 )
-from FactoryVerse.llm.context.compressor import OutputCompressor
+from FactoryVerse.infra.llm.context.compressor import OutputCompressor
 from FactoryVerse.infra.output.error_parser import (
     FactorioErrorParser,
     ErrorVerbosity,

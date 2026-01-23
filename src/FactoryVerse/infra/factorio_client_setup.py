@@ -11,7 +11,7 @@ import hashlib
 from pathlib import Path
 from typing import Optional
 
-from FactoryVerse.config import get_config
+from FactoryVerse.environment.config import get_config
 
 
 def _get_client_rcon_config():

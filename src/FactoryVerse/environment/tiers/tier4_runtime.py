@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..environment import Environment
     from FactoryVerse.infra.execution.base import ExecutionEnvironment
     from FactoryVerse.infra.session.file_manager import SessionConfig
-    from FactoryVerse.scenarios.base import ScenarioAdapter
+    from FactoryVerse.game.scenarios.base import ScenarioAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -528,7 +528,7 @@ class Tier4Runtime(TierBase):
         """
         from datetime import datetime
         from uuid import uuid4
-        from FactoryVerse.agent.core.profile import AgentProfile, AgentStatus
+        from FactoryVerse.game.agent.core.profile import AgentProfile, AgentStatus
 
         tier3 = self._env.tier3
         if tier3 is None:
@@ -644,7 +644,7 @@ class Tier4Runtime(TierBase):
             raise RuntimeError("Tier 3 must be initialized with RCON")
 
         # Use RconHandler for agent-specific actions (legacy compatibility)
-        from FactoryVerse.agent.infra.rcon_handler import RconHandler
+        from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
 
         rcon_handler = RconHandler(tier3.rcon_helper.rcon_client, self.agent_id)
 
@@ -653,15 +653,15 @@ class Tier4Runtime(TierBase):
         async_listener = tier3._action_listener  # From tier3 UDP setup
 
         # Import action classes
-        from FactoryVerse.agent.embodied_actions.walking import MovementAction
-        from FactoryVerse.agent.embodied_actions.place_entity import PlacementAction
-        from FactoryVerse.agent.embodied_actions.entity_operations import (
+        from FactoryVerse.game.agent.embodied_actions.walking import MovementAction
+        from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
+        from FactoryVerse.game.agent.embodied_actions.entity_operations import (
             EntityOperationsAction,
         )
-        from FactoryVerse.agent.embodied_actions.inventory import AgentInventory
-        from FactoryVerse.agent.embodied_actions.crafting import CraftingAction
-        from FactoryVerse.agent.embodied_actions.research import ResearchAction
-        from FactoryVerse.agent.embodied_actions.mining import MiningAction
+        from FactoryVerse.game.agent.embodied_actions.inventory import AgentInventory
+        from FactoryVerse.game.agent.embodied_actions.crafting import CraftingAction
+        from FactoryVerse.game.agent.embodied_actions.research import ResearchAction
+        from FactoryVerse.game.agent.embodied_actions.mining import MiningAction
 
         # Create action instances in dependency order
         self._entity_ops = EntityOperationsAction(rcon_handler)
@@ -690,7 +690,7 @@ class Tier4Runtime(TierBase):
 
     async def _load_ghost_builder(self) -> None:
         """Load GhostBuilder module for building ghost entities."""
-        from FactoryVerse.agent.ghost_builder import GhostBuilderAction
+        from FactoryVerse.game.agent.ghost_builder import GhostBuilderAction
 
         self._ghost_builder = GhostBuilderAction(
             movement=self._movement,
@@ -704,8 +704,8 @@ class Tier4Runtime(TierBase):
 
     async def _load_reachable_view(self) -> None:
         """Load ReachableView module (Lua-based entity querying)."""
-        from FactoryVerse.agent.reachable_view import ReachableView
-        from FactoryVerse.agent.infra.rcon_handler import RconHandler
+        from FactoryVerse.game.agent.reachable_view import ReachableView
+        from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
 
         tier3 = self._env.tier3
         if tier3 is None or tier3.rcon_helper is None:
@@ -728,14 +728,14 @@ class Tier4Runtime(TierBase):
 
     async def _load_placement_hints(self) -> None:
         """Load PlacementHints module (spatial reasoning for entity placement)."""
-        from FactoryVerse.agent.placement_hints import PlacementHints
+        from FactoryVerse.game.agent.placement_hints import PlacementHints
 
         tier3 = self._env.tier3
         if tier3 is None or tier3.rcon_helper is None:
             raise RuntimeError("Tier 3 must be initialized with RCON")
 
         # Use RconHandler for placement hints
-        from FactoryVerse.agent.infra.rcon_handler import RconHandler
+        from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
 
         rcon_handler = RconHandler(tier3.rcon_helper.rcon_client, self.agent_id)
         self._placement_hints = PlacementHints(rcon_handler)
@@ -755,7 +755,7 @@ class Tier4Runtime(TierBase):
         - Crafting completions (for fire-and-forget NQ/DQ pattern)
         - Other game state changes
         """
-        from FactoryVerse.agent.event_stream import EventStream
+        from FactoryVerse.game.agent.event_stream import EventStream
 
         tier3 = self._env.tier3
         if tier3 is None or tier3._action_listener is None:
@@ -784,8 +784,8 @@ class Tier4Runtime(TierBase):
 
         The loaded adapter is accessible via `self.scenario`.
         """
-        from FactoryVerse.scenarios import detect_scenario
-        from FactoryVerse.scenarios.lab_grid import LabGridAdapter
+        from FactoryVerse.game.scenarios import detect_scenario
+        from FactoryVerse.game.scenarios.lab_grid import LabGridAdapter
 
         tier3 = self._env.tier3
         if tier3 is None or tier3.rcon_helper is None:
@@ -809,7 +809,7 @@ class Tier4Runtime(TierBase):
             logger.info("Tier 4: Loaded LabGridAdapter with orchestration support")
         elif scenario_name is not None:
             # Other scenarios use default adapter loading
-            from FactoryVerse.scenarios import get_scenario_adapter
+            from FactoryVerse.game.scenarios import get_scenario_adapter
             adapter = get_scenario_adapter(scenario_name, rcon_client)
             if adapter:
                 self._scenario_adapter = adapter
@@ -820,7 +820,7 @@ class Tier4Runtime(TierBase):
 
     async def _load_database(self) -> None:
         """Load DuckDB database for persistent game state."""
-        from FactoryVerse.agent.infra.snapshot.database import SnapshotDatabase
+        from FactoryVerse.game.infra.duckdb.database import SnapshotDatabase
 
         # Use in-memory database (session_dir is optional for testing)
         # For persistent storage, pass db_path to SnapshotDatabase
@@ -920,7 +920,7 @@ class Tier4Runtime(TierBase):
         snapshot_dir = infra_config.get_snapshot_dir(tier3.instance)
 
         # Use snapshot loader to sync database
-        from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
+        from FactoryVerse.game.infra.duckdb.loader import SnapshotLoader
 
         if self._database is None:
             raise RuntimeError("Database not initialized")
@@ -951,7 +951,7 @@ class Tier4Runtime(TierBase):
         - Agent action port (34202+): Walking/mining/crafting completion notifications
         - Snapshot port (34500 for client, 34400+N for servers): Entity state updates
         """
-        from FactoryVerse.agent.remote_view import RemoteView
+        from FactoryVerse.game.agent.remote_view import RemoteView
         from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
 
         tier3 = self._env.tier3
@@ -1115,7 +1115,7 @@ class Tier4Runtime(TierBase):
         # =================================================================
 
         # Core spatial types
-        from FactoryVerse.factory.types import (
+        from FactoryVerse.game.factory.types import (
             MapPosition,
             Direction,
             BoundingBox,
@@ -1125,7 +1125,7 @@ class Tier4Runtime(TierBase):
         )
 
         # Placement planning types
-        from FactoryVerse.agent.placement_hints import (
+        from FactoryVerse.game.agent.placement_hints import (
             ConnectionType,
             ConnectionPosition,
             WireConnectionPosition,
@@ -1135,14 +1135,14 @@ class Tier4Runtime(TierBase):
         )
 
         # Item types
-        from FactoryVerse.factory.item.base import (
+        from FactoryVerse.game.factory.item.base import (
             Item,
             PlaceableItem,
             ItemStack,
         )
 
         # Walking exception types
-        from FactoryVerse.agent.embodied_actions.walking import (
+        from FactoryVerse.game.agent.embodied_actions.walking import (
             WalkingError,
             WalkingUnreachableError,
             WalkingEntityNotFoundError,
@@ -1150,7 +1150,7 @@ class Tier4Runtime(TierBase):
         )
 
         # Research types
-        from FactoryVerse.agent.embodied_actions.research import (
+        from FactoryVerse.game.agent.embodied_actions.research import (
             ResearchStatus,
             QueuedTechnology,
         )
@@ -1294,7 +1294,7 @@ class Tier4Runtime(TierBase):
 
         # Compress if requested
         if compress_output and output and not error_text:
-            from FactoryVerse.llm.context.compressor import OutputCompressor
+            from FactoryVerse.infra.llm.context.compressor import OutputCompressor
             compressor = OutputCompressor()
             compressed = compressor.compress_action_result(output, action_type="execute_code")
             output = compressed.text
@@ -1413,7 +1413,7 @@ class Tier4Runtime(TierBase):
             logger.warning("Tier 4: Cannot reload - tier3 not initialized")
             return
 
-        from FactoryVerse.agent.infra.snapshot.loader import SnapshotLoader
+        from FactoryVerse.game.infra.duckdb.loader import SnapshotLoader
 
         infra_config = self._env.config.infra_config
         snapshot_dir = infra_config.get_snapshot_dir(tier3.instance)
