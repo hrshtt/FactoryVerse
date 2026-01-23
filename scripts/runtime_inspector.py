@@ -17,8 +17,13 @@ import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-# Connect to RCON
-rcon_client = RCONClient("localhost", 27100, "factorio")
+from FactoryVerse.config import get_config
+from FactoryVerse.infra.instance_manager import FactorioInstanceManager
+
+# Connect to RCON using config
+config = get_config()
+instance = FactorioInstanceManager.from_env(config)
+rcon_client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
 
 
 def send_lua(script: str, verbose: bool = True) -> Optional[Any]:
