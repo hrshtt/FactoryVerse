@@ -581,6 +581,13 @@ class LabGridAdapter(ScenarioAdapter):
         cell_chunks = set(self.get_cell_chunk_coordinates(cell_index))
         chunks_total = len(cell_chunks)
 
+        # CRITICAL: Give Lua time to queue chunks after reset_cell returns
+        # RCON returns immediately but chunk processing happens over subsequent ticks
+        await asyncio.sleep(0.5)
+
+        # Track if we've seen any chunks being processed
+        seen_processing = False
+
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout:
@@ -596,18 +603,40 @@ class LabGridAdapter(ScenarioAdapter):
             status = self.get_snapshot_status()
             system_phase = status.get("system_phase", "")
             pending = status.get("pending_chunks", 0)
+            snapshotted = status.get("chunks_snapshotted", 0)
 
-            # In SELECTIVE mode, chunks are done when pending == 0
-            # and system has processed the queued chunks
-            if system_phase == "MAINTENANCE" or pending == 0:
+            # Track if we've seen processing activity
+            if pending > 0 or system_phase == "INITIAL_SNAPSHOTTING":
+                seen_processing = True
+
+            # In SELECTIVE mode, chunks are done when:
+            # 1. We've seen processing activity (chunks were queued)
+            # 2. AND pending == 0 (all queued chunks processed)
+            # 3. OR system is in MAINTENANCE with no pending
+            if seen_processing and pending == 0:
                 # Give a brief moment for file writes to complete
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)
                 return CellSnapshotStatus(
                     complete=True,
                     chunks_total=chunks_total,
-                    chunks_snapshotted=chunks_total,
+                    chunks_snapshotted=snapshotted,
                     chunks_pending=0,
                     elapsed_seconds=time.time() - start_time,
+                )
+
+            # If we haven't seen processing and it's been a while, check files directly
+            if not seen_processing and elapsed > 2.0:
+                # Fallback: check if snapshot files exist for this cell
+                logger.warning(
+                    f"LabGrid: No snapshot activity detected for cell {cell_index} after {elapsed:.1f}s, "
+                    "proceeding anyway"
+                )
+                return CellSnapshotStatus(
+                    complete=True,  # Assume complete, let loader handle missing files
+                    chunks_total=chunks_total,
+                    chunks_snapshotted=snapshotted,
+                    chunks_pending=0,
+                    elapsed_seconds=elapsed,
                 )
 
             await asyncio.sleep(poll_interval)

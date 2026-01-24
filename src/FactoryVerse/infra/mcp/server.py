@@ -168,6 +168,12 @@ Use this to create isolated environments for testing specific layers.""",
                                 "description": "Scope level: 0=RCON, 1=SNAPSHOT, 2=AGENT, 3=RUNTIME",
                                 "default": 3,
                             },
+                            "variant": {
+                                "type": "string",
+                                "enum": ["minimal", "full"],
+                                "description": "Runtime variant: 'minimal' (no database) or 'full' (with DuckDB). Default: minimal",
+                                "default": "minimal",
+                            },
                             "instance": {
                                 "type": "string",
                                 "description": "Factorio instance ('client' or 'server_N'). Auto-detect if not specified.",
@@ -794,6 +800,7 @@ Returns connection info, game state, and current tick if available.""",
 
         session_id = args["session_id"]
         scope_int = args.get("scope", 3)
+        variant_str = args.get("variant", "minimal")
         instance = args.get("instance")
         agent_id = args.get("agent_id", "agent_1")
         initial_inventory = args.get("initial_inventory")
@@ -807,6 +814,9 @@ Returns connection info, game state, and current tick if available.""",
         }
         up_to = scope_to_tier.get(scope_int, Tier.RUNTIME)
 
+        # Map variant string to enum
+        variant = RuntimeVariant.FULL if variant_str == "full" else RuntimeVariant.MINIMAL
+
         try:
             env = await create_session(
                 session_id=session_id,
@@ -814,7 +824,7 @@ Returns connection info, game state, and current tick if available.""",
                 scenario="test-ground",
                 instance=instance,
                 agent_id=agent_id,
-                variant=RuntimeVariant.MINIMAL,
+                variant=variant,
                 initial_inventory=initial_inventory,
             )
 
@@ -822,6 +832,7 @@ Returns connection info, game state, and current tick if available.""",
                 "success": True,
                 "session_id": session_id,
                 "initialized_up_to": up_to.name,
+                "variant": variant_str,
                 "instance": env.tier3.instance if env.tier3 else None,
                 "agent_id": agent_id,
                 "components": self._get_available_components(env),
