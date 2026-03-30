@@ -431,7 +431,11 @@ class AgentOrchestrator:
                     self._log_to_chat(f"**Result:**\n```\n{exec_result}\n```\n\n")
 
                     # Display result on console (console can truncate for readability)
-                    is_error = exec_result.startswith("❌")
+                    is_error = (
+                        exec_result.startswith("❌")
+                        or exec_result.startswith("Error:")
+                        or status == ActionStatus.FAILURE
+                    )
                     self.console.tool_result(exec_result, is_error=is_error)
                     if self.trajectory:
                         self.trajectory.tool_result(
@@ -641,6 +645,19 @@ class AgentOrchestrator:
                 return None
 
             self._last_verification_result = result
+
+            # Log verification check to trajectory
+            if self.trajectory:
+                self.trajectory.verification_check(
+                    turn=self.turn_number,
+                    game_tick=result.measured_at_tick or 0,
+                    current_rate=result.current_rate or 0.0,
+                    target_rate=self._task_config.verification.quota if self._task_config.verification else 0,
+                    passed=result.current_rate is not None and self._task_config.verification is not None and result.current_rate >= self._task_config.verification.quota,
+                    consecutive_passes=result.consecutive_passes or 0,
+                    checks_required=self._task_config.verification.checks_required if self._task_config.verification else 6,
+                    automation_produced=result.automation_produced or 0,
+                )
 
             # Format progress message
             progress_msg = self._format_verification_progress(result)

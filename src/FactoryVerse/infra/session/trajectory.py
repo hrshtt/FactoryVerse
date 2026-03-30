@@ -34,6 +34,8 @@ class EventType(str, Enum):
     THINKING = "thinking"
     ERROR = "error"
     COMPLETION_STATS = "completion_stats"
+    RUN_END = "run_end"
+    VERIFICATION_CHECK = "verification_check"
 
 
 @dataclass
@@ -174,6 +176,48 @@ class TrajectoryWriter:
     def completion_stats(self, turn: int, usage: Dict[str, int]) -> None:
         """Write completion statistics event."""
         self._write(EventType.COMPLETION_STATS, turn=turn, usage=usage)
+
+    def verification_check(
+        self,
+        turn: int,
+        game_tick: int,
+        current_rate: float,
+        target_rate: float,
+        passed: bool,
+        consecutive_passes: int,
+        checks_required: int,
+        automation_produced: int,
+    ) -> None:
+        """Write verification check event."""
+        self._write(
+            EventType.VERIFICATION_CHECK,
+            turn=turn,
+            game_tick=game_tick,
+            current_rate=current_rate,
+            target_rate=target_rate,
+            passed=passed,
+            consecutive_passes=consecutive_passes,
+            checks_required=checks_required,
+            automation_produced=automation_produced,
+        )
+
+    def run_end(
+        self,
+        success: bool,
+        total_turns: int,
+        total_tool_calls: int,
+        error: Optional[str] = None,
+        verification: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write run end event with outcome and verification result."""
+        self._write(
+            EventType.RUN_END,
+            success=success,
+            total_turns=total_turns,
+            total_tool_calls=total_tool_calls,
+            error=error,
+            verification=verification,
+        )
 
 
 class TrajectoryReader:

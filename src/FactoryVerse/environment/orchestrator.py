@@ -531,6 +531,18 @@ class Orchestrator:
 
         finally:
             result.ended_at = datetime.now()
+
+            # Write run_end event to trajectory
+            tier4 = self._env.tier4
+            if tier4 and hasattr(tier4, 'trajectory_writer') and tier4.trajectory_writer:
+                tier4.trajectory_writer.run_end(
+                    success=result.task_success,
+                    total_turns=result.total_turns,
+                    total_tool_calls=result.total_actions,
+                    error=result.error,
+                    verification=result.verification.to_dict() if result.verification else None,
+                )
+
             if allocated_cell is not None:
                 await self._release_cell(allocated_cell, reset=True)
 
