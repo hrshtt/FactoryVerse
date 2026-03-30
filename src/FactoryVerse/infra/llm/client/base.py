@@ -58,6 +58,9 @@ class ChatMessage:
 
         if self.content is not None:
             result["content"] = self.content
+        elif self.tool_calls:
+            # APIs require content field on assistant messages with tool_calls
+            result["content"] = ""
 
         if self.tool_calls:
             result["tool_calls"] = [

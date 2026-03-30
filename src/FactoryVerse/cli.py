@@ -397,8 +397,14 @@ def cmd_connect(args):
 # =============================================================================
 
 
-def _detect_instance(args) -> str:
-    """Detect or validate Factorio instance."""
+async def _detect_instance(args, scenario: str = None, auto_launch: bool = True) -> str:
+    """Detect, validate, or auto-launch Factorio instance.
+
+    Args:
+        args: CLI args (must have .instance attribute)
+        scenario: Scenario to launch with if auto-launching client
+        auto_launch: If True, launch Factorio client when no instance found
+    """
     from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 
     if args.instance:
@@ -415,10 +421,53 @@ def _detect_instance(args) -> str:
         print(f"🔍 Auto-detected instance: {detected.name}")
         return detected.name
 
-    print("❌ No running Factorio instance detected")
-    print("   Start a server with: fv server start")
-    print("   Or start client with: fv client start")
+    if not auto_launch:
+        print("❌ No running Factorio instance detected")
+        print("   Start a server with: fv server start")
+        print("   Or start client with: fv client start")
+        sys.exit(1)
+
+    # Auto-launch Factorio client
+    print("🔍 No running Factorio instance detected — launching client...")
+    await _auto_launch_client(scenario=scenario)
+
+    # Wait for instance to become available
+    for attempt in range(30):
+        await asyncio.sleep(2)
+        detected = FactorioInstanceManager.detect_active()
+        if detected:
+            print(f"✅ Client ready: {detected.name}")
+            return detected.name
+        if attempt % 5 == 4:
+            print(f"   Waiting for client to start... ({(attempt + 1) * 2}s)")
+
+    print("❌ Timed out waiting for Factorio client to start (60s)")
+    print("   Try launching manually: fv client start --scenario lab-grid")
     sys.exit(1)
+
+
+async def _auto_launch_client(scenario: str = None) -> None:
+    """Launch Factorio client."""
+    launch_scenario = scenario or "lab-grid"
+    print(f"🚀 Starting Factorio client with scenario: {launch_scenario}")
+
+    config = EnvironmentConfig(
+        tier1=InfraConfig(mode=InfraMode.CLIENT),
+        tier2=SettingsConfig(scenario=launch_scenario),
+    )
+    env = Environment(config=config)
+
+    try:
+        await env.initialize(up_to=Tier.SETTINGS)
+        tier1 = env.tier1
+        tier2 = env.tier2
+        if tier1 is None or tier2 is None:
+            raise RuntimeError("Failed to initialize tiers for client launch")
+        launch_args = tier2.get_launch_args()
+        await tier1.start_client(**launch_args)
+    finally:
+        # Don't shutdown — we want the client to keep running
+        pass
 
 
 def _build_environment_config(
@@ -491,7 +540,7 @@ def cmd_eval(args):
     """
 
     async def _run():
-        instance_name = _detect_instance(args)
+        instance_name = await _detect_instance(args, scenario=args.scenario or "lab-grid")
 
         print("\n" + "=" * 60)
         print("📊 FactoryVerse Task Evaluation")
@@ -599,7 +648,7 @@ def cmd_freeplay(args):
     """
 
     async def _run():
-        instance_name = _detect_instance(args)
+        instance_name = await _detect_instance(args, scenario=args.scenario or "freeplay")
 
         print("\n" + "=" * 60)
         print("🎮 FactoryVerse Freeplay")
@@ -666,7 +715,7 @@ def cmd_agent(args):
     async def _run():
         nonlocal interrupt_count
 
-        instance_name = _detect_instance(args)
+        instance_name = await _detect_instance(args, scenario=getattr(args, 'scenario', None))
 
         print("\n" + "=" * 60)
         print("🤖 FactoryVerse Agent - Assisted Mode")
@@ -1044,8 +1093,8 @@ def main():
     eval_parser.add_argument(
         "-t", "--task", required=True, help="Task key (e.g., iron_plate_throughput)"
     )
-    eval_parser.add_argument("-p", "--provider", default="anthropic")
-    eval_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    eval_parser.add_argument("-p", "--provider", default="prime_intellect")
+    eval_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
     eval_parser.add_argument("-s", "--scenario", default="lab-grid", help="Scenario")
     eval_parser.add_argument("-i", "--instance", help="Factorio instance")
     eval_parser.add_argument("--agent-id", default="agent_1")
@@ -1057,8 +1106,8 @@ def main():
     freeplay_parser = subparsers.add_parser(
         "freeplay", help="Run open-ended freeplay (no task/verification)"
     )
-    freeplay_parser.add_argument("-p", "--provider", default="anthropic")
-    freeplay_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    freeplay_parser.add_argument("-p", "--provider", default="prime_intellect")
+    freeplay_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
     freeplay_parser.add_argument("-s", "--scenario", default="freeplay", help="Scenario")
     freeplay_parser.add_argument("-i", "--instance", help="Factorio instance")
     freeplay_parser.add_argument("--agent-id", default="agent_1")
@@ -1070,8 +1119,8 @@ def main():
     agent_parser = subparsers.add_parser(
         "agent", help="Run LLM agent in assisted (interactive) mode"
     )
-    agent_parser.add_argument("-p", "--provider", default="anthropic")
-    agent_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    agent_parser.add_argument("-p", "--provider", default="prime_intellect")
+    agent_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
     agent_parser.add_argument("-s", "--scenario", help="Scenario")
     agent_parser.add_argument("-i", "--instance", help="Factorio instance")
     agent_parser.add_argument("--agent-id", default="agent_1")
