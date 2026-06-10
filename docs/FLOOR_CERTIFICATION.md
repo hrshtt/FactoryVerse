@@ -37,7 +37,7 @@ The substrate everything else assumes. If two fresh launches differ, no downstre
 
 | ID | Claim | How to check | Pass criterion | Req | Status |
 |----|-------|--------------|----------------|-----|--------|
-| L0.1 | Both mods load cleanly | Launch client; grep `factorio-current.log` for `Error`/`fv_` | Zero mod errors; both remote interfaces registered (probe via RCON `remote.interfaces`) | live | ⬜ |
+| L0.1 | All three mods load cleanly (embodied_agent, snapshot, placement_hints) | Launch client; grep `factorio-current.log` for `Error`/`fv_`; probe `remote.interfaces` over RCON | Zero mod errors; agent/snapshot/scenario interfaces registered | live | ✅ PASS 2026-06-10 — client/lab-grid tick 4726, commit cd19317; 0 log errors; 10 interfaces live; mods base 2.0.76 + fv_embodied_agent 0.1.3 + fv_snapshot 0.1.0 + fv_placement_hints 0.1.0 (`.fv-output/certification/2026-06-10/L0.1/`) |
 | L0.2 | Fresh scenario is reproducible | Launch lab-grid twice from scratch; dump full entity census (name+position set) each time; diff | Identical census | live | 🔧 needs census dumper (see L1.1) |
 | L0.3 | State survives save/load | Census → save → reload → census; diff | Identical census; all relational reads (L2) still resolve (no unit_number leakage) | live | 🔧 |
 
@@ -108,6 +108,16 @@ The DB was chosen *because* end-game factories are too big for any other read mo
 
 ---
 
+## How checks get run (context-economical orchestration)
+
+Checks are executed by **sub-agents**, not by the orchestrator (Claude main loop / Harshit). The orchestrator's context holds verdicts and decisions, never raw runtime output.
+
+- **Every check-runner reads `docs/RUNTIME_PLAYBOOK.md` first** and starts with its §0 smoke ritual. Runner prompts reference checks by ledger ID; the ledger row is the spec.
+- **Evidence to disk, verdicts to context**: full dumps/diffs/scripts land in `.fv-output/certification/<date>/<check-id>/`; the runner's final message is the fixed verdict block from playbook §6 (≤ ~15 lines). The orchestrator opens artifacts only on FAIL or suspicion.
+- **Concurrency**: offline checks fan out freely. Live mutating checks are serialized per instance, or parallelized across lab-grid cells (force-isolated). Read-only probes run anytime.
+- **Escalation ladder**: runner runs the check → orchestrator reads verdict, updates this ledger → orchestrator gets directly involved only when a verdict is FAIL with unclear attribution, two runners disagree, or a harness fails its audit. Fixes then go through the normal layer-tracing work, and the check re-runs to flip the row.
+- **Audit gate applies to runners too**: the first execution of any new harness must include the four audit-question answers in its verdict (AUDIT field).
+
 ## Execution order
 
 1. **Offline now**: L3.1 (already runnable).
@@ -134,6 +144,7 @@ These statements exist in docs/memory and are *contradictory or unverified* — 
 | 2026-06-10 | `tests/unit/test_documentation_coverage.py` | **AUDITED — was unsound, now hardened** | 3 vacuous tests: attribute validation ran on 0 examples (import-side-effect registration + cached imports = silent no-op after `reset_registry()`; fixed in `reference/__init__.py` by calling `_register_*()` explicitly); tautological `or len(classes) > 0`; conditional Quick-Reference assertion; always-true `>= 0` assertions. All fixed; non-emptiness guards added. Residual: L3.1b silent-skip question still open. |
 | 2026-06-10 | `tests/unit/test_environment_tiers.py` | **PARTIAL** — mock-only; certifies tier-wiring logic, nothing about the game. One stale mock fixed (`initial_inventory` param drift). Acceptable for logic-level claims only. | |
 | 2026-06-10 | `tests/unit/test_task_verification.py` | **PARTIAL** — exercises verifier math on synthetic stats; does NOT certify the JSONL pipeline feeding it (that's a live check). | |
+| 2026-06-10 | L0.1 runner procedure (RCON interface probe + log grep, two corroborating channels) | **AUDITED — sound** | Vacuous-grep risk guarded by 47 positive fv_ matches in same file; live engine, no mocks; log-on-disk vs runtime interfaces are independent channels. Scope limit: certifies loading, not method behavior. |
 | — | `tests/sync/`, `tests/functional/`, `tests/actions/` (all 🔍 rows above) | UNAUDITED | |
 
 ## Run log
@@ -142,3 +153,4 @@ These statements exist in docs/memory and are *contradictory or unverified* — 
 |------|--------|-----------|--------|
 | 2026-06-10 | 9bc13d0 | L3.1 + offline unit battery, **pre-audit** | "58/58" — superseded: 3 of those passes were vacuous (see Audit log). Recorded as a cautionary entry. |
 | 2026-06-10 | (this commit) | L3.1 + full offline unit battery, post-audit, hardened assertions | ✅ 58/58, non-vacuous; drift validator confirmed running on >0 real examples |
+| 2026-06-10 | cd19317 | L0.1 via check-runner sub-agent (first use of RUNTIME_PLAYBOOK + verdict protocol) | ✅ PASS; runner also returned playbook errata (3 mods not 2 — fv_placement_hints exists; 7 undocumented remote interfaces; `script.active_mods` works from scenario runtime) — errata folded into playbook same day |
