@@ -65,8 +65,9 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Severity:** high. `_get_fluid_pipe_positions` except->return [] made a solver bug indistinguishable from "no candidates" for 3 calls. Same family as vacuous tests: silence reads as data. Remove blanket except; propagate cause.
 - **Fix:** all 4 connection-solver wrappers (`item_drop`/`fluid_pipe`/`electric_wire`/`inserter_placement`) now raise `ConnectionQueryError` (carries query, source, target, cause; message explicitly tells the agent "query failure ≠ no valid positions"). Unimplemented connection types raise `NotImplementedError` pointing at the right method instead of returning []. Successful-but-empty stays `[]`. Offline-verified; live exercise rides with the L2.2 battery.
 
-#### [PROMPT-3] Cell bounds undocumented
+#### [PROMPT-3] Cell bounds undocumented — FIXED 2026-06-11 (live render check pending)
 - **Severity:** medium. Agent probed x=-5, y=-100, (200,70); WalkingUnreachableError gave no boundary context (couples with ERR-2).
+- **Fix:** initial_state.md now has a "Your Working Area (IMPORTANT: hard bounds)" section: derives the agent's cell from position + `scenario.config`, prints the buildable bounds, and states explicitly that outside tiles are out-of-map/unwalkable/unbuildable — "do not spend actions probing beyond them". No-op for non-cell scenarios. ERR-2's enriched WalkingUnreachableError covers the in-run half. Verified with a fake-runtime exec; live render rides the next session.
 
 #### [AFFORD-1] No terrain affordance -> placement-as-sonar — FIXED 2026-06-11 (Python side; live exercise pending)
 - **Severity:** medium. Agent used place/pickup of poles as a tile scanner (hundreds of RCON calls, ~70 pole debris via position-snap lookup misses). Provide find_water()/is_buildable(area).
