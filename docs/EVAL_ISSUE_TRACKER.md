@@ -46,19 +46,33 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Pending live acceptance
 
-#### [LIVE-1] Consolidated live-acceptance backlog for the next deploy battery
-- **Severity:** high (gates several archived fixes' final certification)
-- **Context:** several fixes are verified offline and deploy at the next server restart; each has exact probes defined. Run them in ONE battery, then archive the corresponding lines for good.
-- **Probes:**
-  1. **ERR-4** (crafting/inventory structured errors): the 6 probes in `.fv-output/certification/2026-06-11/ERR-1-craft-inv/` — unknown recipe / locked recipe ("NOT unlocked", not ingredients) / missing ingredients have-need / full-chest fail-before-mutate / invalid inventory-type lists six names / partial insert success with `count<requested_count`.
-  2. **SNAP-4 residual** (spill-on-full): pickup with full agent inventory → structured error BEFORE mutation, entity still in world+DB, nothing on ground.
-  3. **SNAP-5 / L2.2 DB layer** (loader tick-ordering): re-snapshot a chunk after entity changes → DB reflects init, stale older-tick upserts not replayed.
-  4. **L2.2/L2.3 re-cert** (sensor fixes): re-run the 4-layer rig diff — boiler/generator fluidboxes populated with capacity+connections, poles report copper neighbours + supply area, machines report electric_network_id; verify `real_connections` vs `.connections` shape on wire connectors live.
-  5. **OBS-2** (prompt caching): next eval run shows `cache_read_input_tokens > 0`.
-  6. **PROMPT-3** (cell bounds): initial_state.md renders the Working Area section in a real session.
-  7. **AFFORD-1**: `find_water()` + `is_buildable()` exercised live.
-  8. **L0.3**: save → `fv server start --save` → census diff (affordances built, check unrun).
-  9. **Drafted harnesses**: execute `check_L2_4.py`, `check_L2_5.py`, `check_L4_5.py` (open-questions in their headers).
+#### [LIVE-1] Consolidated live-acceptance backlog — items 1–4, 7 DONE (LIVE-1A battery, 2026-06-11, all green)
+- **Severity:** medium (remaining items)
+- **Remaining:**
+  - **OBS-2** (prompt caching): next eval run shows `cache_read_input_tokens > 0`.
+  - **PROMPT-3** (cell bounds): initial_state.md renders the Working Area section in a real session.
+  - **L0.3**: save → `fv server start --save` → census diff (affordances built, check unrun) — Battery B.
+  - **Drafted harnesses**: execute `check_L2_4.py`, `check_L2_5.py`, `check_L4_5.py` — Battery B.
+  - **Minor new residuals from LIVE-1A:** inserter typed ElectricState=None (inspect_inserter emits no energy block); `electric_network_id` DB column unlifted (raw_data only).
+
+### Walking / Pathfinding
+
+#### [PATH-1] lab-grid pathfinder dead: chunk_generated_status never set — ALL walk_to fail without workaround
+- **Severity:** critical for evals (very plausibly the real driver of the field run's WalkingUnreachableError x8 cascade)
+- **Found:** 2026-06-11 by check_L4_5 first execution: every walk_to failed in ~1 tick map-wide; `surface.is_chunk_generated` false everywhere because `initialize_map` never calls `set_chunk_generated_status` (the control.lua:305 comment block PROMISES it as "Key technique" but the call does not exist). Proven causal: flagging the cell's chunks → identical walk completes.
+- **Fix direction:** call `set_chunk_generated_status(defines.chunk_generated_status.entities)` for in-grid chunks during initialize_map (and in the on_chunk_generated restore path); re-run check_L4_5 walk cases without the harness workaround.
+
+#### [ARG-1] Per-agent action interfaces still corrupt sparse named-table calls
+- **Severity:** high. The SNAP-2 ParamSpec fix covered `Agents.lua register_remote_interface` (admin methods, live-certified) — but L2.5's runner hit the arg-shift on `agent_N.place_entity` (omitting `direction` shifted `ghost=true` into the direction slot, "Invalid direction true"). The per-agent ACTION method registration path normalizes args separately and wasn't fixed.
+- **Fix direction:** find the per-agent interface registration (RemoteInterface.lua) and apply the same table.pack/explicit-index/bounded-unpack treatment; live probe = named-table place_entity without direction.
+
+#### [ARG-2] walk_to options.entity_ref dead via remote interface
+- **Severity:** medium. RemoteInterface.lua:371 dispatches 3 args; walking.lua reads entity_ref as 4th positional — entity-aware walking is unreachable from RCON/agents. Found by check_L4_5.
+- **Fix direction:** align the dispatch arity; add an L4.5 case for entity-aware walk.
+
+#### [OBS-3] status='failed' UDP datagrams drop result/failure_type
+- **Severity:** medium. `create_action_payload` (udp.lua:99-119) omits `result` for status='failed' — failure_type/goal/message are lost on the wire; Python only sees "failed". The status itself is honest (exactly-once certified), but the agent loses the WHY at the async boundary (ERR-2-adjacent).
+- **Fix direction:** include the failure payload in failed datagrams; extend check_L4_5's void-walk case to assert failure_type arrives.
 
 ---
 
