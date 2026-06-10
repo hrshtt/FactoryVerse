@@ -200,55 +200,207 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
 
     local positions = {}
     local count = 0
+    local seen = {}
 
-    -- For each connection point, find valid pipe/pump positions
-    for _, conn in ipairs(conn_info.connections) do
-        if count >= max_results then
-            break
-        end
+    -- ------------------------------------------------------------------
+    -- Geometry-aware path (fixes PLACE-1, certified L4.4): a candidate
+    -- center must be offset so one of the TARGET's OWN fluid connection
+    -- cells lands on the source connection's partner cell, facing back.
+    -- The old code tried the target's CENTER at the connection point ±1
+    -- tile, which structurally yields zero candidates for any multi-tile
+    -- target (steam-engine, boiler, ...). Target offsets are probed from
+    -- the engine itself (temporary create per direction), so this never
+    -- guesses prototype rotation semantics.
+    -- ------------------------------------------------------------------
 
-        local conn_pos = conn.position
-
-        -- Try placing target at the connection point first
-        local params = {
-            name = target_name,
-            position = conn_pos,
-            force = "player",
-            build_check_type = build_check,
-        }
-
-        if surface.can_place_entity(params) then
-            count = count + 1
-            table.insert(positions, {
-                position = conn_pos,
-                connection_index = conn.connection_index,
-                fluidbox_index = conn.fluidbox_index,
-                flow_direction = conn.flow_direction,
-                valid = true,
-            })
-        else
-            -- Try adjacent positions (connection point might be inside collision box)
-            for _, dir_vec in pairs(geometry.DIRECTION_VECTORS) do
-                if count >= max_results then
-                    break
+    -- Live world-space source connections (own cell + partner cell + flow).
+    local source_conns = {}
+    local source_entity = entity_lookup.find_entity(source_name, source_position)
+    if source_entity and source_entity.valid and source_entity.fluidbox then
+        for fb_index = 1, #source_entity.fluidbox do
+            local ok, pipe_conns = pcall(function()
+                return source_entity.fluidbox.get_pipe_connections(fb_index)
+            end)
+            if ok and pipe_conns then
+                for conn_index, pc in ipairs(pipe_conns) do
+                    if pc.position and pc.target_position then
+                        table.insert(source_conns, {
+                            own = pc.position,
+                            partner = pc.target_position,
+                            flow_direction = pc.flow_direction or "input-output",
+                            fluidbox_index = fb_index,
+                            connection_index = conn_index,
+                        })
+                    end
                 end
+            end
+        end
+    end
 
-                local adjacent_pos = {
-                    x = conn_pos.x + dir_vec.x,
-                    y = conn_pos.y + dir_vec.y,
+    -- Probe the target's own connection offsets per placeable direction.
+    local function probe_target_offsets()
+        local tproto = prototypes.entity[target_name]
+        if not tproto or not tproto.fluidbox_prototypes or #tproto.fluidbox_prototypes == 0 then
+            return nil
+        end
+        local staging = surface.find_non_colliding_position(target_name, source_position, 64, 1)
+        if not staging then
+            return nil
+        end
+        local by_direction = {}
+        local any = false
+        for _, dir in ipairs({
+            defines.direction.north,
+            defines.direction.east,
+            defines.direction.south,
+            defines.direction.west,
+        }) do
+            local ok, temp = pcall(function()
+                return surface.create_entity{
+                    name = target_name,
+                    position = staging,
+                    direction = dir,
+                    force = "player",
+                    create_build_effect_smoke = false,
                 }
+            end)
+            if ok and temp and temp.valid then
+                local actual_dir = temp.direction
+                if not by_direction[actual_dir] then
+                    local center = temp.position
+                    local conns = {}
+                    if temp.fluidbox then
+                        for i = 1, #temp.fluidbox do
+                            local ok2, pcs = pcall(function()
+                                return temp.fluidbox.get_pipe_connections(i)
+                            end)
+                            if ok2 and pcs then
+                                for _, pc in ipairs(pcs) do
+                                    if pc.position and pc.target_position then
+                                        table.insert(conns, {
+                                            own = {x = pc.position.x - center.x, y = pc.position.y - center.y},
+                                            partner = {x = pc.target_position.x - center.x, y = pc.target_position.y - center.y},
+                                            flow_direction = pc.flow_direction or "input-output",
+                                        })
+                                        any = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    by_direction[actual_dir] = conns
+                end
+                temp.destroy()
+            end
+        end
+        if any then return by_direction end
+        return nil
+    end
 
-                params.position = adjacent_pos
-                if surface.can_place_entity(params) then
-                    count = count + 1
-                    table.insert(positions, {
-                        position = adjacent_pos,
-                        connection_index = conn.connection_index,
-                        fluidbox_index = conn.fluidbox_index,
-                        flow_direction = conn.flow_direction,
-                        offset_from_connection = dir_vec,
-                        valid = true,
-                    })
+    local function flows_compatible(a, b)
+        -- A strict output cannot feed a strict output, nor input an input.
+        if a == "output" and b == "output" then return false end
+        if a == "input" and b == "input" then return false end
+        return true
+    end
+
+    local target_offsets = (#source_conns > 0) and probe_target_offsets() or nil
+
+    if target_offsets then
+        for _, sc in ipairs(source_conns) do
+            if count >= max_results then break end
+            for dir, tconns in pairs(target_offsets) do
+                if count >= max_results then break end
+                for _, tc in ipairs(tconns) do
+                    if count >= max_results then break end
+                    if flows_compatible(sc.flow_direction, tc.flow_direction) then
+                        -- Target center such that its connection cell lands
+                        -- on the source connection's partner cell...
+                        local cx = sc.partner.x - tc.own.x
+                        local cy = sc.partner.y - tc.own.y
+                        -- ...and points back at the source's own cell.
+                        if math.abs(cx + tc.partner.x - sc.own.x) < 0.01
+                            and math.abs(cy + tc.partner.y - sc.own.y) < 0.01 then
+                            local key = cx .. "," .. cy .. "," .. dir
+                            if not seen[key] then
+                                seen[key] = true
+                                if surface.can_place_entity{
+                                    name = target_name,
+                                    position = {x = cx, y = cy},
+                                    direction = dir,
+                                    force = "player",
+                                    build_check_type = build_check,
+                                } then
+                                    count = count + 1
+                                    table.insert(positions, {
+                                        position = {x = cx, y = cy},
+                                        direction = dir,
+                                        connection_index = sc.connection_index,
+                                        fluidbox_index = sc.fluidbox_index,
+                                        flow_direction = sc.flow_direction,
+                                        valid = true,
+                                    })
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Legacy center/adjacent fallback: keeps pre-existing behavior for
+    -- sources/targets the probe path cannot handle (no live source entity,
+    -- unprobeable target like offshore-pump on land, missing API fields).
+    if count == 0 then
+        for _, conn in ipairs(conn_info.connections) do
+            if count >= max_results then
+                break
+            end
+
+            local conn_pos = conn.position
+
+            -- Try placing target at the connection point first
+            local params = {
+                name = target_name,
+                position = conn_pos,
+                force = "player",
+                build_check_type = build_check,
+            }
+
+            if surface.can_place_entity(params) then
+                count = count + 1
+                table.insert(positions, {
+                    position = conn_pos,
+                    connection_index = conn.connection_index,
+                    fluidbox_index = conn.fluidbox_index,
+                    flow_direction = conn.flow_direction,
+                    valid = true,
+                })
+            else
+                -- Try adjacent positions (connection point might be inside collision box)
+                for _, dir_vec in pairs(geometry.DIRECTION_VECTORS) do
+                    if count >= max_results then
+                        break
+                    end
+
+                    local adjacent_pos = {
+                        x = conn_pos.x + dir_vec.x,
+                        y = conn_pos.y + dir_vec.y,
+                    }
+
+                    params.position = adjacent_pos
+                    if surface.can_place_entity(params) then
+                        count = count + 1
+                        table.insert(positions, {
+                            position = adjacent_pos,
+                            connection_index = conn.connection_index,
+                            fluidbox_index = conn.fluidbox_index,
+                            flow_direction = conn.flow_direction,
+                            offset_from_connection = dir_vec,
+                            valid = true,
+                        })
+                    end
                 end
             end
         end
