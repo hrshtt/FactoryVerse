@@ -44,6 +44,31 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ## Active Issues
 
+### Snapshot / Observability (NEW category, from 2026-06-10 retro — docs/retros/2026-06-10-engine-unit-retro.md)
+
+#### [SNAP-1] Session DB incoherent in lab-grid runs: water_tile always empty, map_entity always empty, snapshot tick frozen
+- **Severity:** critical — THE run-killer of 2026-06-10_23-35-34
+- **Evidence:** agent queried water_tile >=8 times -> 0 rows (216 water tiles existed); map_entity [] despite placed entities; snapshot tick frozen at 660 for ~15 turns; resource_tile flapped full->empty->full. Agent rationally concluded "no water = steam impossible" and pivoted to solar.
+- **Impact:** installed a false world-model; every downstream decision poisoned. Worse than a missing affordance.
+- **Fix direction:** certify the full lab-grid session snapshot pipeline (tiles included) — L0/L1 checks have only covered test-ground + entity ops. Make staleness LOUD: frozen snapshot tick should banner-warn in tool results, never silent [].
+
+#### [SNAP-2] initial_state.md generated before snapshot ready (race)
+- **Severity:** high. Evidence: showed empty inventory + empty resource queries at session start; real inventory only visible via in-run query at T1.
+
+#### [ERR-3] Silent exception swallowing in placement_hints Python wrapper
+- **Severity:** high. `_get_fluid_pipe_positions` except->return [] made a solver bug indistinguishable from "no candidates" for 3 calls. Same family as vacuous tests: silence reads as data. Remove blanket except; propagate cause.
+
+#### [PROMPT-3] Cell bounds undocumented
+- **Severity:** medium. Agent probed x=-5, y=-100, (200,70); WalkingUnreachableError gave no boundary context (couples with ERR-2).
+
+#### [AFFORD-1] No terrain affordance -> placement-as-sonar
+- **Severity:** medium. Agent used place/pickup of poles as a tile scanner (hundreds of RCON calls, ~70 pole debris via position-snap lookup misses). Provide find_water()/is_buildable(area).
+
+#### [OBS-2] Token waste: Task Progress block repeated verbatim x163; 30k static prefix per call
+- **Severity:** medium (cost). ~10.08M prompt tokens in 17 turns. Dedupe progress block (emit on change), prompt-cache the static prefix.
+
+---
+
 ### API Gaps
 
 #### [API-1] No entity pickup/removal method — RECLASSIFIED: documentation gap (fixed 2026-06-10)
