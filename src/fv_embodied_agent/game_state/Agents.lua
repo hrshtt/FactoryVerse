@@ -967,7 +967,9 @@ function M.register_remote_interface()
         local spec = M.AdminApiSpecs[api_name]
         interface[api_name] = function(...)
             local normalized_args = ParamSpec:normalize_varargs(spec, ...)
-            return api_func(table.unpack(normalized_args))
+            -- Explicit length: normalized_args may contain nil holes for
+            -- optional params; plain unpack would truncate at the first one
+            return api_func(table.unpack(normalized_args, 1, normalized_args.n or #normalized_args))
         end
     end
     

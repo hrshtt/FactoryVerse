@@ -194,6 +194,75 @@ function M.spawn_resources(surface, cell_index)
     place_oil_wells(surface, oil_positions, M.RESOURCE_CONFIG.oil.amount)
 end
 
+--- Restore scenario content for an arbitrary area (chunk-scoped)
+--- Used by on_chunk_generated when the engine generates a chunk after the
+--- scenario already initialized it: engine generation must be replaced with
+--- the deterministic cell layout (water + resources included), not bare dirt.
+--- Bare-dirt wiping is what left cell_0 barren (SNAP-1a, 2026-06-10 field run).
+--- Only touches tiles/entities inside `area`, so it cannot duplicate content
+--- elsewhere in the cell.
+--- @param surface LuaSurface
+--- @param area table {left_top = {x, y}, right_bottom = {x, y}}
+function M.restore_chunk_content(surface, area)
+    local cfg = M.RESOURCE_CONFIG
+    local water = cfg.water
+    local water_w = water.width or water.size
+    local water_h = water.height or water.size
+    local tiles = {}
+
+    for y = area.left_top.y, area.right_bottom.y - 1 do
+        for x = area.left_top.x, area.right_bottom.x - 1 do
+            if x < 0 or x >= grid.MAP_SIZE or y < 0 or y >= grid.MAP_SIZE then
+                tiles[#tiles + 1] = {name = "out-of-map", position = {x, y}}
+            else
+                local local_x = x % grid.CELL_SIZE
+                local local_y = y % grid.CELL_SIZE
+                if local_x < grid.PLAY_AREA_SIZE and local_y < grid.PLAY_AREA_SIZE then
+                    local in_water = local_x >= water.offset.x and local_x < water.offset.x + water_w
+                        and local_y >= water.offset.y and local_y < water.offset.y + water_h
+                    tiles[#tiles + 1] = {name = in_water and "water" or "dirt-1", position = {x, y}}
+                else
+                    tiles[#tiles + 1] = {name = "out-of-map", position = {x, y}}
+                end
+            end
+        end
+    end
+
+    if #tiles > 0 then
+        surface.set_tiles(tiles, false)
+    end
+
+    -- Recreate resource entities whose tiles fall inside the area
+    for y = area.left_top.y, area.right_bottom.y - 1 do
+        for x = area.left_top.x, area.right_bottom.x - 1 do
+            if x >= 0 and x < grid.MAP_SIZE and y >= 0 and y < grid.MAP_SIZE then
+                local local_x = x % grid.CELL_SIZE
+                local local_y = y % grid.CELL_SIZE
+                for _, patch in ipairs(cfg.patches) do
+                    local half = math.floor(patch.size / 2)
+                    if local_x >= patch.offset.x - half and local_x < patch.offset.x + half
+                        and local_y >= patch.offset.y - half and local_y < patch.offset.y + half then
+                        surface.create_entity{
+                            name = patch.name,
+                            amount = patch.amount,
+                            position = {x + 0.5, y + 0.5}
+                        }
+                    end
+                end
+                for _, offset in ipairs(cfg.oil.offsets) do
+                    if local_x == offset.x and local_y == offset.y then
+                        surface.create_entity{
+                            name = "crude-oil",
+                            position = {x + 0.5, y + 0.5},
+                            amount = cfg.oil.amount
+                        }
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- ============================================================================
 -- CELL INITIALIZATION
 -- ============================================================================

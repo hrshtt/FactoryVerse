@@ -298,10 +298,14 @@ end
 --- @param ... any Variable arguments from remote call
 --- @return table Positional arguments ready to pass to function
 function ParamSpec:normalize_varargs(spec, ...)
-    local args = {...}
-    
+    -- table.pack, NOT {...}: callers legitimately pass nil for optional
+    -- leading params (e.g. create_agent(nil, false, force, inventory)) and
+    -- {...} + later # / unpack truncates at the first nil hole, silently
+    -- shifting or dropping every argument after it.
+    local args = table.pack(...)
+
     -- Handle JSON string decoding
-    if #args == 1 and type(args[1]) == "string" then
+    if args.n == 1 and type(args[1]) == "string" then
         if helpers and helpers.json_to_table then
             local decoded = helpers.json_to_table(args[1])
             if decoded and type(decoded) == "table" then
@@ -309,9 +313,9 @@ function ParamSpec:normalize_varargs(spec, ...)
             end
         end
     end
-    
+
     -- Convert object table to positional args using spec
-    if spec and spec._param_order and #args == 1 and type(args[1]) == "table" and not args[1][1] then
+    if spec and spec._param_order and args.n == 1 and type(args[1]) == "table" and not args[1][1] then
         local opts = args[1]
         local positional = {}
         
@@ -339,12 +343,16 @@ function ParamSpec:normalize_varargs(spec, ...)
                 end
             end
             
-            table.insert(positional, value)
+            -- Explicit index, NOT table.insert: insert skips nil values,
+            -- shifting later named params into earlier positional slots
+            -- (the create_agent {initial_inventory=...} -> udp_port bug).
+            positional[i] = value
         end
+        positional.n = #spec._param_order
         return positional
     end
-    
-    -- Already positional or no conversion needed
+
+    -- Already positional or no conversion needed (args carries .n)
     return args
 end
 

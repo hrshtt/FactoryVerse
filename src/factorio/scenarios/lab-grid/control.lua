@@ -202,12 +202,15 @@ local function create_agent_in_cell(args)
     local cell_bounds = grid.get_play_area_bounds(cell_index)
     force.chart(game.surfaces[1], cell_bounds)
 
-    -- Explicitly trigger snapshot for this cell after all setup is complete
-    -- This ensures the snapshot captures the fully configured cell state
-    if remote.interfaces.map and remote.interfaces.map.snapshot_area then
-        local snapshot_result = remote.call("map", "snapshot_area", cell_bounds)
+    -- Explicitly trigger a FRESH snapshot for this cell after all setup is
+    -- complete. re_snapshot_area, not snapshot_area: chunks already
+    -- snapshotted earlier in the session would otherwise be silently skipped
+    -- and the session DB would never see this cell's configured state
+    -- (SNAP-1b, frozen snapshot tick in the 2026-06-10 field run).
+    if remote.interfaces.map and remote.interfaces.map.re_snapshot_area then
+        local snapshot_result = remote.call("map", "re_snapshot_area", cell_bounds)
         if snapshot_result and snapshot_result.success then
-            game.print(string.format("Lab Grid: Triggered snapshot for cell %d (%d chunks)",
+            game.print(string.format("Lab Grid: Triggered fresh snapshot for cell %d (%d chunks)",
                 cell_index, snapshot_result.chunks_queued or 0))
         end
     end
@@ -411,6 +414,15 @@ local function on_chunk_generated(event)
         if entity.valid and entity.type ~= "character" then
             entity.destroy()
         end
+    end
+
+    -- After initialize_map, in-grid chunks already have their full cell layout
+    -- (tiles + water + resources). Late engine generation of such a chunk must
+    -- be replaced with that layout — the bare dirt-1 rewrite below left the
+    -- spawn-origin cell barren (SNAP-1a, 2026-06-10 field run).
+    if storage.lab_grid.initialized then
+        cell.restore_chunk_content(surface, area)
+        return
     end
 
     -- Generate correct tiles for this chunk

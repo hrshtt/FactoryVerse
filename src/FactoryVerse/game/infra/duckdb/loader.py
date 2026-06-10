@@ -495,15 +495,44 @@ class SnapshotLoader:
 
 
     def _iter_jsonl(self, path: Path) -> Iterator[Dict[str, Any]]:
-        """Iterate over JSONL file, yielding parsed dicts."""
+        """Iterate over JSONL file, yielding parsed dicts.
+
+        First line of mod-written init files is a kind=chunk_meta record
+        (snapshot tick); it is recorded into chunk_snapshot_meta and not
+        yielded. Detection is exact-match because resource lines also carry
+        a 'kind' field (the ore name).
+        """
         with open(path, "r") as f:
             for line in f:
                 line = line.strip()
                 if line:
                     try:
-                        yield json.loads(line)
+                        data = json.loads(line)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Invalid JSON in {path}: {e}")
+                        continue
+                    if (
+                        isinstance(data, dict)
+                        and data.get("kind") == "chunk_meta"
+                        and "tick" in data
+                    ):
+                        self._record_chunk_meta(data)
+                        continue
+                    yield data
+
+    def _record_chunk_meta(self, data: Dict[str, Any]) -> None:
+        """Record per-chunk snapshot tick from an init file's meta line."""
+        try:
+            self._db.execute(
+                """
+                INSERT OR REPLACE INTO chunk_snapshot_meta
+                (chunk_x, chunk_y, tick)
+                VALUES (?, ?, ?)
+                """,
+                [int(data["chunk_x"]), int(data["chunk_y"]), int(data["tick"])],
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record chunk_snapshot_meta: {e}")
 
 
 __all__ = ["SnapshotLoader"]

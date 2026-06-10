@@ -46,14 +46,20 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Snapshot / Observability (NEW category, from 2026-06-10 retro — docs/retros/2026-06-10-engine-unit-retro.md)
 
-#### [SNAP-1] Session DB incoherent in lab-grid runs: water_tile always empty, map_entity always empty, snapshot tick frozen
+#### [SNAP-1] Session DB incoherent in lab-grid runs — FIXED 2026-06-11 (certified L1.10)
 - **Severity:** critical — THE run-killer of 2026-06-10_23-35-34
 - **Evidence:** agent queried water_tile >=8 times -> 0 rows (216 water tiles existed); map_entity [] despite placed entities; snapshot tick frozen at 660 for ~15 turns; resource_tile flapped full->empty->full. Agent rationally concluded "no water = steam impossible" and pivoted to solar.
 - **Impact:** installed a false world-model; every downstream decision poisoned. Worse than a missing affordance.
-- **Fix direction:** certify the full lab-grid session snapshot pipeline (tiles included) — L0/L1 checks have only covered test-ground + entity ops. Make staleness LOUD: frozen snapshot tick should banner-warn in tool results, never silent [].
+- **Root cause (2026-06-11, NOT the loader):** (a) lab-grid `on_chunk_generated` wiped late-engine-generated chunks to bare dirt — cell_0 (handed to the first session by `find_empty_cell`) was genuinely barren; the DB truthfully reported a broken world. (b) `snapshot_area` silently skipped already-snapshotted chunks → init files + tick frozen after first pass. **Important retro errata: the "ground truth: 216 water tiles" in the retro was measured on a different boot/cell — during the field run the water genuinely did not exist.**
+- **Fixes (certified L1.10 post-fix, cell_0):** SNAP-1a chunk-scoped deterministic restore in `on_chunk_generated`; SNAP-1b `re_snapshot_area` on agent creation + honest `chunks_skipped`/warning from `snapshot_area`; SNAP-1c per-file `chunk_meta` tick line → `chunk_snapshot_meta` DB table (staleness now disk-falsifiable and queryable — the "staleness LOUD in tool results" banner can now be built on it, still TODO under OBS).
+- **Residual → SNAP-3.**
 
-#### [SNAP-2] initial_state.md generated before snapshot ready (race)
+#### [SNAP-3] Stale init files survive raise-less script destroys (orphaned entities-init)
+- **Severity:** medium. Found by L1.10 post-fix probe: the serializer skips empty categories (Map.lua write-queue guards), so re-snapshotting a chunk whose entities were all removed WITHOUT raised events (script `destroy()` — e.g. cleanup/reset paths) leaves the old entities-init.jsonl on disk → phantom entities in a fresh load. Event-raised removals reconcile correctly. SNAP-1c makes it detectable (orphan's chunk_meta tick lags its siblings). Fix direction: ChunkTracker remembers which categories were previously written per chunk; re-snapshot writes meta-only files for now-empty previously-written categories.
+
+#### [SNAP-2] initial_state.md generated before snapshot ready (race) — DECOMPOSED 2026-06-11: not a race
 - **Severity:** high. Evidence: showed empty inventory + empty resource queries at session start; real inventory only visible via in-run query at T1.
+- **Finding (2026-06-11):** there is no race. Tier4's `_wait_for_snapshot_bootstrap` raises `TimeoutError` loudly rather than proceeding (tier4_runtime.py:868). The two symptoms have separate causes: (a) empty resource queries = SNAP-1 (barren cell_0 + frozen snapshot pipeline); (b) **empty inventory = ParamSpec nil-collapse**: `create_agent_in_cell` calls `create_agent(nil, false, force, starting_inventory)` positionally, and `normalize_varargs` used `{...}`+`table.insert`+plain `unpack`, all of which drop/shift args at nil holes — the inventory never reached the mod. Fixed via `table.pack`/explicit-index/`unpack(t,1,n)` in ParamSpec.lua + Agents.lua (offline-verified both calling conventions; live cert pending next mod deploy).
 
 #### [ERR-3] Silent exception swallowing in placement_hints Python wrapper — FIXED 2026-06-11
 - **Severity:** high. `_get_fluid_pipe_positions` except->return [] made a solver bug indistinguishable from "no candidates" for 3 calls. Same family as vacuous tests: silence reads as data. Remove blanket except; propagate cause.

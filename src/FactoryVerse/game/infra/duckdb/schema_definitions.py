@@ -380,6 +380,38 @@ WATER_TILE = TableDefinition(
     example_query="SELECT * FROM water_tile WHERE chunk_x = 0 AND chunk_y = 0",
 )
 
+CHUNK_SNAPSHOT_META = TableDefinition(
+    name="chunk_snapshot_meta",
+    purpose="Per-chunk snapshot freshness: the game tick at which each chunk's init files were last written",
+    primary_key=["chunk_x", "chunk_y"],
+    columns=[
+        ColumnDefinition(
+            name="chunk_x",
+            type="INTEGER",
+            nullable=False,
+            description="Chunk X coordinate",
+        ),
+        ColumnDefinition(
+            name="chunk_y",
+            type="INTEGER",
+            nullable=False,
+            description="Chunk Y coordinate",
+        ),
+        ColumnDefinition(
+            name="tick",
+            type="BIGINT",
+            nullable=False,
+            description="Game tick when the chunk's init files were written",
+        ),
+    ],
+    example_query="SELECT MIN(tick) AS oldest, MAX(tick) AS newest FROM chunk_snapshot_meta",
+    notes=(
+        "Written by fv_snapshot as a kind=chunk_meta first line in every init JSONL. "
+        "A max(tick) far behind the current game tick means the map snapshot is stale — "
+        "treat query results as old data, not as the absence of things."
+    ),
+)
+
 FOOTPRINT_TILES = TableDefinition(
     name="footprint_tiles",
     purpose="Maps tiles to entities that occupy them. Enables O(1) 'what entity is at tile X?' queries.",
@@ -753,6 +785,7 @@ CORE_TABLES: List[TableDefinition] = [
     RESOURCE_TILE,
     RESOURCE_ENTITY,
     WATER_TILE,
+    CHUNK_SNAPSHOT_META,
     FOOTPRINT_TILES,
 ]
 
