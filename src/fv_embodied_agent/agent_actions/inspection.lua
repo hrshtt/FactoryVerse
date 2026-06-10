@@ -557,6 +557,12 @@ local function inspect_transport_belt(entity)
         if success and belt_to_ground_type ~= nil then
             data.belt_to_ground_type = belt_to_ground_type
         end
+        -- For underground-belt, entity.neighbours is the paired underground
+        -- belt (single entity or nil), not a table. Same key as serialize.lua.
+        local success2, pair = pcall(function() return entity.neighbours end)
+        if success2 and pair and pair.valid then
+            data.underground_neighbour = make_entity_ref(pair)
+        end
     end
     
     -- Splitter-specific

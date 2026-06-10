@@ -26,7 +26,8 @@ class BeltState(BaseModel):
     belt_inputs: List[BeltNeighbour] = Field(default_factory=list)
     belt_outputs: List[BeltNeighbour] = Field(default_factory=list)
     belt_to_ground_type: Optional[str] = None  # "input" or "output" for underground
-    linked_belt_neighbour: Optional[BeltNeighbour] = None  # underground pair
+    underground_neighbour: Optional[BeltNeighbour] = None  # other end of an underground pair
+    linked_belt_neighbour: Optional[BeltNeighbour] = None  # linked-belt entities only (NOT undergrounds)
     linked_belt_type: Optional[str] = None  # "input" or "output"
     # Splitter-specific
     splitter_filter: Optional[str] = None

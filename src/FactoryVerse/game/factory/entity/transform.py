@@ -337,6 +337,7 @@ def _transform_belt(raw_data: Dict[str, Any], entity_type: str) -> Optional[Belt
         belt_inputs=_refs(raw_data.get("belt_inputs")),
         belt_outputs=_refs(raw_data.get("belt_outputs")),
         belt_to_ground_type=raw_data.get("belt_to_ground_type"),
+        underground_neighbour=_ref(raw_data.get("underground_neighbour")),
         linked_belt_neighbour=_ref(raw_data.get("linked_belt_neighbour")),
         linked_belt_type=raw_data.get("linked_belt_type"),
         splitter_filter=raw_data.get("splitter_filter"),
