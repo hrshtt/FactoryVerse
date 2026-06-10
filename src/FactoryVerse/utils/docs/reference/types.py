@@ -204,15 +204,15 @@ if plan.valid:
     print(f"Entity: {plan.entity_name}")
     print(f"Positions: {len(plan.positions)}")
 
-    # Commit to create ghosts
-    result = await ghost_builder.commit(plan)
+    # Build the plan to create ghosts
+    result = await ghost_builder.build_plan(plan)
 else:
     print("Plan has invalid positions")
 
 # Re-validate after game state changes
 plan.validate(placement_hints.validator)""",
                     decision_context="Working with placement plans",
-                    expected_outcome="GhostPlan ready for ghost_builder.commit()",
+                    expected_outcome="GhostPlan ready for ghost_builder.build_plan()",
                     validation_level=ValidationLevel.SYNTAX,
                 ),
             ],

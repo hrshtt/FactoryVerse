@@ -1117,6 +1117,7 @@ class Tier4Runtime(TierBase):
         # Core spatial types
         from FactoryVerse.game.factory.types import (
             MapPosition,
+            TilePosition,
             Direction,
             BoundingBox,
             # Status types
@@ -1176,6 +1177,7 @@ class Tier4Runtime(TierBase):
             # Core spatial types (MapPosition, Direction, BoundingBox)
             # =================================================================
             "MapPosition": MapPosition,
+            "TilePosition": TilePosition,
             "Direction": Direction,
             "BoundingBox": BoundingBox,
             # =================================================================
