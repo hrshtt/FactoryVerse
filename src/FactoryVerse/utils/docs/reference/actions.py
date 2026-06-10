@@ -207,8 +207,23 @@ furnace_stack = items[0]
         error_cases=[
             ErrorCase(
                 exception="RuntimeError",
-                when="Missing ingredients or recipe unavailable",
-                resolution="Check inventory for required ingredients, verify recipe is unlocked",
+                when="Unknown recipe — the name does not exist",
+                resolution="Check spelling; recipe names usually match the product item (e.g. 'iron-gear-wheel')",
+            ),
+            ErrorCase(
+                exception="RuntimeError",
+                when="Recipe locked — exists but not unlocked for your force (message names the unlocking technology when known)",
+                resolution="Research the named technology first. Do NOT retry crafting: no amount of ingredients makes a locked recipe craftable",
+            ),
+            ErrorCase(
+                exception="RuntimeError",
+                when="Missing ingredients — message enumerates each as name (have N, need M)",
+                resolution="Acquire or craft the listed missing ingredients, then retry",
+            ),
+            ErrorCase(
+                exception="RuntimeError",
+                when="Invalid count, crafting queue full, or recipe not hand-craftable (needs a machine)",
+                resolution="Use a positive integer count; let the queue drain or craft_dequeue(); use set_entity_recipe() on a machine for non-hand recipes",
             ),
         ],
         decision_points=[
@@ -827,9 +842,26 @@ print(f"Inserted {result.count} coal")""",
                 validation_level=ValidationLevel.SYNTAX,
             ),
         ],
+        error_cases=[
+            ErrorCase(
+                exception="RuntimeError",
+                when="Invalid inventory_type name (valid: 'auto', 'fuel', 'input', 'chest', 'output', 'modules')",
+                resolution="Use one of the listed names; 'auto' lets the engine route fuel/ingredients automatically",
+            ),
+            ErrorCase(
+                exception="RuntimeError",
+                when="Target inventory cannot accept ANY of the item (full, or item not allowed there) — fails before anything moves",
+                resolution="Free space with take_inventory_item() or pick a different inventory_type",
+            ),
+            ErrorCase(
+                exception="RuntimeError",
+                when="Insufficient items in agent inventory (message states have/need) or entity not found / out of reach",
+                resolution="Acquire more items, fix entity_name/position, or walk closer",
+            ),
+        ],
         decision_points=[
             "Pass a list of ItemStacks to perform multiple transfers in sequence",
-            "Check result.is_partial - destination inventory may be full",
+            "Check result.is_partial - partial inserts SUCCEED with count < requested_count; result.message says the rest returned to your inventory",
         ],
     )
 

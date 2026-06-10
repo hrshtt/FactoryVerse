@@ -140,6 +140,10 @@ class InventoryItemPut(ActionResponse):
 
     Note: count is the actual number transferred, which may be less than
     requested_count if the destination inventory couldn't accept all items.
+    A partial insert is reported as SUCCESS (the mutation happened): check
+    is_partial / count vs requested_count; the inherited `message` field
+    explains how many fit and that the remainder returned to the agent
+    inventory. Zero-capacity targets fail before any mutation (RuntimeError).
     """
 
     entity_name: str = ""
@@ -341,15 +345,27 @@ class EntityOperationsAction:
 
         Args:
             entity_name: Entity prototype name
-            inventory_type: Inventory type to put into
+            inventory_type: Inventory type to put into. Valid names:
+                "auto" (default routing: fuel goes to the fuel slot,
+                ingredients to input), "fuel", "input", "chest", "output",
+                "modules". A raw defines.inventory number is also accepted.
             items: ItemStack or List[ItemStack] to transfer
             position: Entity position (None = nearest within reach)
 
         Returns:
-            InventoryItemPut response (or list of responses for List[ItemStack])
+            InventoryItemPut response (or list of responses for List[ItemStack]).
+            Partial inserts return SUCCESS with count < requested_count and a
+            `message` explaining that the remainder went back to the agent
+            inventory — check result.is_partial.
 
         Raises:
-            RuntimeError: If RCON command fails
+            RuntimeError: With a structured, actionable message (ERR-1
+                contract) for: invalid inventory_type (lists the valid names),
+                unknown item, entity not found / out of reach (walk closer),
+                insufficient items in agent inventory (have/need), entity
+                lacking that inventory (lists the ones it has), and
+                zero-capacity targets (fails BEFORE any items move).
+                Never swallowed or defaulted (ERR-3 standard).
         """
         # Handle single ItemStack
         if isinstance(items, ItemStack):

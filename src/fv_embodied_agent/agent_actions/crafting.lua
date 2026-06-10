@@ -90,40 +90,140 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
-    
+
+    -- Agent-reachable failures return {success=false, error=<cause>} so the
+    -- agent sees a clean actionable message, never a traceback (ERR-1
+    -- treatment; same contract as placement.lua, certified L4.2). Only the
+    -- error STRING reaches the Python agent, so guidance lives in the text.
+
     -- Block crafting if mining stochastic entity (huge-rock)
     -- This ensures inventory diff is accurate for tracking mined products
     if self:is_mining_blocking_crafting() then
-        error("Agent: Cannot craft while mining huge-rock (stochastic products)")
+        return {
+            success = false,
+            error = "Cannot craft while mining huge-rock (stochastic products) — wait for the mining action to complete, then retry.",
+        }
     end
-    
+
     if not recipe_name or type(recipe_name) ~= "string" then
-        error("Agent: recipe_name (string) is required")
+        return {
+            success = false,
+            error = "recipe_name (string) is required — e.g. craft('iron-gear-wheel', 2)",
+        }
     end
-    
-    count = math.max(1, math.floor(count or 1))
-    
-    -- Validate recipe is available to agent's force
+
+    -- (d) invalid count: report instead of silently coercing
+    if count ~= nil and (type(count) ~= "number" or count ~= count or count < 1) then
+        return {
+            success = false,
+            error = string.format(
+                "Invalid count %s for recipe '%s': must be a positive integer (omit it to craft once)",
+                tostring(count), recipe_name),
+            recipe = recipe_name,
+        }
+    end
+    count = math.floor(count or 1)
+
     local force = self.character.force
     if not force then
         error("Agent: Agent force is invalid")
     end
-    
-    local recipe = force.recipes[recipe_name]
-    if not recipe or not recipe.enabled then
-        error("Agent: Recipe '" .. recipe_name .. "' is not available to agent's force")
-    end
-    
-    -- Get recipe prototype
+
+    -- (a) recipe does not exist at all
     local recipe_proto = prototypes and prototypes.recipe and prototypes.recipe[recipe_name]
     if not recipe_proto then
-        error("Agent: Recipe prototype not found: " .. recipe_name)
+        return {
+            success = false,
+            error = string.format(
+                "Unknown recipe '%s': no such recipe exists. Check spelling (recipe names usually match the product item, e.g. 'iron-gear-wheel'); use get_recipes() to list recipes available to you.",
+                recipe_name),
+            recipe = recipe_name,
+        }
     end
-    
-    -- Validate craftable
+
+    -- (b) recipe exists but is not unlocked for the agent's force.
+    -- Distinguishing this from missing ingredients matters: retrying a locked
+    -- recipe is wasted turns (field failure mode #7, 2026-06-10 retro).
+    local recipe = force.recipes[recipe_name]
+    if not recipe or not recipe.enabled then
+        -- Name the unlocking technology when cheaply findable. This scan only
+        -- runs on this failure path (never on the happy path), so the one-off
+        -- iteration over force.technologies is acceptable.
+        local unlocking_techs = {}
+        for tech_name, tech in pairs(force.technologies) do
+            local effects = tech.prototype and tech.prototype.effects
+            if effects then
+                for _, effect in pairs(effects) do
+                    if effect.type == "unlock-recipe" and effect.recipe == recipe_name then
+                        table.insert(unlocking_techs, tech_name)
+                        break
+                    end
+                end
+            end
+        end
+        local how
+        if #unlocking_techs > 0 then
+            how = string.format(
+                "unlocked by technology '%s' — research it first",
+                table.concat(unlocking_techs, "' or '"))
+        else
+            how = "locked — research required (no unlocking technology found by scan; it may unlock via a trigger, e.g. crafting/mining a prerequisite item)"
+        end
+        return {
+            success = false,
+            error = string.format(
+                "Recipe '%s' exists but is NOT unlocked for your force: %s. This is not an ingredient problem — crafting it now is impossible regardless of inventory.",
+                recipe_name, how),
+            recipe = recipe_name,
+            locked = true,
+            unlocked_by = unlocking_techs,
+        }
+    end
+
+    -- Recipe category must be hand-craftable by the character
+    local char_categories = self.character.prototype and self.character.prototype.crafting_categories
+    if char_categories and recipe_proto.category and not char_categories[recipe_proto.category] then
+        return {
+            success = false,
+            error = string.format(
+                "Recipe '%s' (category '%s') cannot be hand-crafted — it needs a machine. Use set_entity_recipe() on an appropriate machine instead.",
+                recipe_name, recipe_proto.category),
+            recipe = recipe_name,
+        }
+    end
+
+    -- (c) missing ingredients — enumerate name + have + need
     local craftable_count = self.character.get_craftable_count(recipe_proto)
     if craftable_count <= 0 then
-        error("Agent: Cannot craft recipe: insufficient ingredients or recipe not available")
+        local missing = {}
+        local fluid_blocked = false
+        for _, ing in pairs(recipe_proto.ingredients or {}) do
+            if ing.type == "fluid" then
+                fluid_blocked = true
+            else
+                local have = self.character.get_item_count(ing.name)
+                if have < (ing.amount or 0) then
+                    table.insert(missing, string.format(
+                        "%s (have %d, need %d)", ing.name, have, ing.amount or 0))
+                end
+            end
+        end
+        local detail
+        if fluid_blocked then
+            detail = "it requires fluid ingredients, which cannot be supplied by hand — use a machine"
+        elseif #missing > 0 then
+            detail = "missing ingredients (per craft): " .. table.concat(missing, ", ")
+        else
+            detail = "ingredients appear present but the engine reports 0 craftable — an intermediate sub-recipe may be locked or items reserved"
+        end
+        return {
+            success = false,
+            error = string.format(
+                "Cannot craft '%s': %s. Acquire or craft what is missing, then retry.",
+                recipe_name, detail),
+            recipe = recipe_name,
+            craftable_count = 0,
+        }
     end
     
     -- Generate action ID
@@ -157,7 +257,22 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
     }
     
     if count_started == 0 then
-        error("Agent: Failed to start crafting")
+        -- (d) queue rejected the craft despite craftable ingredients
+        return {
+            success = false,
+            error = string.format(
+                "Failed to queue crafting for '%s': the engine accepted 0 of %d (crafting queue may be full — current queue size %d). Wait for the queue to drain or cancel entries with craft_dequeue(), then retry.",
+                recipe_name, count_to_queue, self.character.crafting_queue_size or 0),
+            recipe = recipe_name,
+        }
+    end
+
+    -- Honesty on partial queue: fewer queued than requested (ingredient-limited)
+    local partial_message = nil
+    if count_started < count then
+        partial_message = string.format(
+            "Queued %d of %d requested crafts of '%s' — limited by available ingredients (craftable now: %d). Craft/acquire more ingredients for the rest.",
+            count_started, count, recipe_name, craftable_count)
     end
     
     -- Calculate estimated crafting time
@@ -193,16 +308,19 @@ function CraftingActions.craft_enqueue(self, recipe_name, count)
         count_requested = count,
         count_queued = count_started,
         estimated_ticks = estimated_ticks,
+        message = partial_message,
     }, "crafting")
-    
+
     return {
         success = true,
         queued = true,
         action_id = action_id,
         tick = rcon_tick,
         recipe = recipe_name,
+        count_requested = count,
         count_queued = count_started,
         estimated_ticks = estimated_ticks,
+        message = partial_message,
     }
 end
 
