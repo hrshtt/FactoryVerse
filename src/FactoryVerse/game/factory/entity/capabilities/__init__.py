@@ -16,7 +16,7 @@ from .crafter import CrafterState
 from .miner import MinerState, MiningTarget
 from .inserter import InserterState, HeldItem
 from .fluid import FluidState, FluidBox
-from .belt import BeltState
+from .belt import BeltState, BeltNeighbour
 
 # Mixins
 from .burner import BurnerMixin
@@ -40,6 +40,7 @@ __all__ = [
     "FluidState",
     "FluidBox",
     "BeltState",
+    "BeltNeighbour",
     # Mixins
     "BurnerMixin",
     "ElectricMixin",

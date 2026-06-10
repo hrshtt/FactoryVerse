@@ -18,6 +18,7 @@ from FactoryVerse.game.factory.entity.capabilities import (
     FluidState,
     FluidBox,
     BeltState,
+    BeltNeighbour,
 )
 from FactoryVerse.game.factory.entity.implementations.container import ContainerState
 from FactoryVerse.game.factory.entity.implementations.lab import LabState
@@ -263,11 +264,27 @@ def _transform_inserter(
             count=held_data.get("count", 0),
         )
 
+    # Relational reads: what this inserter picks from / drops into.
+    # Lua sends entity refs ({name, position, ...}); the drop/pickup positions
+    # above pin down which tile, so the name is enough to identify the target.
+    def _target_name(ref: Any) -> Optional[str]:
+        if isinstance(ref, dict):
+            return ref.get("name")
+        return None
+
+    # Filters come from Lua as {index: item_name}; flatten to a list.
+    filters_raw = raw_data.get("filters") or {}
+    filters = [v for v in filters_raw.values() if isinstance(v, str)] if isinstance(
+        filters_raw, dict
+    ) else []
+
     return InserterState(
         pickup_position=raw_data.get("pickup_position"),
         drop_position=raw_data.get("drop_position"),
+        pickup_target=_target_name(raw_data.get("pickup_target")),
+        drop_target=_target_name(raw_data.get("drop_target")),
         held_item=held_item,
-        filter_mode=raw_data.get("inserter_filter_mode"),
+        filters=filters,
     )
 
 
@@ -305,9 +322,27 @@ def _transform_belt(raw_data: Dict[str, Any], entity_type: str) -> Optional[Belt
     if entity_type not in belt_types:
         return None
 
-    # For now, return minimal belt state
-    # Full implementation would parse belt contents
-    return BeltState()
+    def _ref(d: Any) -> Optional[BeltNeighbour]:
+        if not isinstance(d, dict):
+            return None
+        return BeltNeighbour(name=d.get("name", ""), position=d.get("position"))
+
+    def _refs(items: Any) -> list:
+        if not isinstance(items, list):
+            return []
+        return [r for r in (_ref(i) for i in items) if r is not None]
+
+    return BeltState(
+        belt_shape=raw_data.get("belt_shape"),
+        belt_inputs=_refs(raw_data.get("belt_inputs")),
+        belt_outputs=_refs(raw_data.get("belt_outputs")),
+        belt_to_ground_type=raw_data.get("belt_to_ground_type"),
+        linked_belt_neighbour=_ref(raw_data.get("linked_belt_neighbour")),
+        linked_belt_type=raw_data.get("linked_belt_type"),
+        splitter_filter=raw_data.get("splitter_filter"),
+        splitter_input_priority=raw_data.get("splitter_input_priority"),
+        splitter_output_priority=raw_data.get("splitter_output_priority"),
+    )
 
 
 def _transform_container(

@@ -519,18 +519,26 @@ local function inspect_transport_belt(entity)
         end
     end
     
-    -- Belt neighbours (safely access - may not exist on all belt types)
+    -- Belt neighbours: directional flow. entity.belt_neighbours is
+    -- {inputs = LuaEntity[], outputs = LuaEntity[]}: inputs feed THIS belt,
+    -- THIS belt feeds outputs. Preserve the split so the agent can read "A feeds B".
     local success, belt_neighbours = pcall(function() return entity.belt_neighbours end)
-    if success and belt_neighbours ~= nil then
-        local neighbours = {}
-        for _, neighbour in pairs(belt_neighbours) do
-            if neighbour and neighbour.valid then
-                table.insert(neighbours, make_entity_ref(neighbour))
+    if success and type(belt_neighbours) == "table" then
+        local function refs(list)
+            local out = {}
+            if type(list) == "table" then
+                for _, neighbour in pairs(list) do
+                    if neighbour and neighbour.valid then
+                        table.insert(out, make_entity_ref(neighbour))
+                    end
+                end
             end
+            return out
         end
-        if next(neighbours) ~= nil then
-            data.belt_neighbours = neighbours
-        end
+        local inputs = refs(belt_neighbours.inputs)
+        local outputs = refs(belt_neighbours.outputs)
+        if next(inputs) ~= nil then data.belt_inputs = inputs end
+        if next(outputs) ~= nil then data.belt_outputs = outputs end
     end
     
     -- Linked belt (safely access - may not exist on all belt types)
