@@ -13,6 +13,7 @@ import tiktoken
 from FactoryVerse.infra.llm.client.base import LLMClient, ChatMessage
 from FactoryVerse.infra.llm.trajectory import TrajectoryManager, ActionStatus
 from FactoryVerse.infra.llm.context.validator import ToolValidator
+from FactoryVerse.infra.llm.context.progress_dedupe import ProgressDeduper
 from FactoryVerse.infra.output.console import ConsoleOutput
 from FactoryVerse.infra.session.trajectory import TrajectoryWriter
 
@@ -113,6 +114,11 @@ class AgentOrchestrator:
         self._task_config: Optional["TaskConfig"] = task_config
         self._verification_callback: Optional[VerificationCallback] = verification_callback
         self._last_verification_result: Optional["VerificationResult"] = None
+        # OBS-2: collapse verbatim-repeated Task Progress blocks before they
+        # enter (and compound in) the LLM message history. Full block is emitted
+        # on every content change and refreshed periodically; only byte-identical
+        # repeats become one-line pointers.
+        self._progress_deduper = ProgressDeduper(refresh_every=10)
 
         # Load system prompt
         try:
@@ -489,12 +495,19 @@ class AgentOrchestrator:
             # This runs the verification callback and injects progress into conversation
             verification_msg = await self._check_task_verification()
             if verification_msg:
+                # OBS-2: dedupe verbatim repeats — the agent sees the full block
+                # whenever content changes (or on periodic refresh), otherwise a
+                # one-line pointer to the turn carrying the last full block.
+                rendered_progress = self._progress_deduper.render(
+                    verification_msg, turn=self.turn_number
+                )
                 # Add verification progress as user message so agent sees it
-                self.messages.append({"role": "user", "content": verification_msg})
-                self._log_to_chat(f"**Task Progress:**\n```\n{verification_msg}\n```\n\n")
+                self.messages.append({"role": "user", "content": rendered_progress})
+                # chat.md mirrors what the LLM actually saw
+                self._log_to_chat(f"**Task Progress:**\n```\n{rendered_progress}\n```\n\n")
                 self._log_to_chat("---\n\n")
 
-                # Always display verification progress on console
+                # Always display the FULL verification progress on console
                 # This gives visibility into task progress during the run
                 self.console.system_notification(verification_msg)
 

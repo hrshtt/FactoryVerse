@@ -72,8 +72,10 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Severity:** medium. Agent used place/pickup of poles as a tile scanner (hundreds of RCON calls, ~70 pole debris via position-snap lookup misses). Provide find_water()/is_buildable(area).
 - **Fix:** `remote_view.find_water(near, radius, limit)` — water tiles from the certified water_tile table, distance-sorted, with a doc'd staleness check (chunk_snapshot_meta) before concluding "no water". `placement_hints.is_buildable(left_top, right_bottom)` — batch non-mutating engine validation (manual build-check) over the area, returns all_buildable/counts/blocked_positions, max 1600 tiles/call. Both registered in the doc registry (the API-1 lesson) + validators mapping; L5.1 + drift suite green. Live exercise rides the L2.2 battery.
 
-#### [OBS-2] Token waste: Task Progress block repeated verbatim x163; 30k static prefix per call
+#### [OBS-2] Token waste: Task Progress block repeated verbatim x163; 30k static prefix per call — FIXED 2026-06-11 (live cache-hit check pending)
 - **Severity:** medium (cost). ~10.08M prompt tokens in 17 turns. Dedupe progress block (emit on change), prompt-cache the static prefix.
+- **Measured (trajectory replay):** 163 emissions / only 35 distinct contents / 128 verbatim repeats; ~27.8k-token byte-stable prefix re-sent on all 163 calls ≈ 45% of all prompt tokens.
+- **Fix:** `ProgressDeduper` (full block on change + refresh every 10 repeats, one-line pointer otherwise; honesty invariant: changed content never collapsed; console/chat.md stay faithful) wired into orchestrator. Anthropic `cache_control` on the system prefix in `OpenAICompatibleClient`, gated to anthropic/* models via the Prime Intellect factory, logged retry-without fallback if the gateway rejects. Replay vs measured run: −5.4% dedupe, −40.3% caching, **−49.7% combined**. 15 new unit tests on real blocks from the run. Live check pending: `cache_read_input_tokens > 0` on the next eval run. Evidence: `.fv-output/certification/2026-06-11/OBS-2/`.
 
 ---
 
