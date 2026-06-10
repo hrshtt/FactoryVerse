@@ -904,38 +904,6 @@ def cmd_models_select(args):
 
 
 # =============================================================================
-# MCP Server Command
-# =============================================================================
-
-
-def cmd_mcp_server(args):
-    """Start MCP server using Environment."""
-
-    async def _run_mcp():
-        config = EnvironmentConfig.for_mcp(instance=args.instance)
-        env = Environment(config=config)
-
-        print("🔌 Starting FactoryVerse MCP Server...")
-        print("   Connect your IDE (Cursor, Claude Desktop, etc.)")
-
-        try:
-            await env.initialize(up_to=Tier.RUNTIME)
-            print("✅ Environment ready for MCP")
-
-            # TODO: Integrate with actual MCP server
-            from FactoryVerse.infra.mcp import run_mcp_server
-
-            await run_mcp_server()
-
-        except KeyboardInterrupt:
-            print("\n⏹️  MCP server stopped")
-        finally:
-            await env.shutdown()
-
-    asyncio.run(_run_mcp())
-
-
-# =============================================================================
 # UI Commands
 # =============================================================================
 
@@ -1140,11 +1108,6 @@ def main():
     models_select = models_sub.add_parser("select", help="Interactively select a model")
     models_select.add_argument("-p", "--provider", help="LLM provider")
     models_select.set_defaults(func=cmd_models_select)
-
-    # ========== MCP COMMAND ==========
-    mcp_parser = subparsers.add_parser("mcp", help="Start MCP server")
-    mcp_parser.add_argument("-i", "--instance", help="Instance")
-    mcp_parser.set_defaults(func=cmd_mcp_server)
 
     # ========== UI COMMAND ==========
     ui_parser = subparsers.add_parser("ui", help="Launch Control Center")
