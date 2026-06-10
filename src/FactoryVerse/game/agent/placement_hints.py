@@ -35,6 +35,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ConnectionQueryError(RuntimeError):
+    """A connection-solving query failed to execute.
+
+    Distinct from a successful query with zero candidates (which returns []).
+    Returning [] on failure teaches the agent "no candidates exist" — a false
+    world-model (see ERR-3, docs/retros/2026-06-10-engine-unit-retro.md).
+    """
+
+    def __init__(self, query: str, source: str, target: str, cause: Exception):
+        self.query = query
+        self.source = source
+        self.target = target
+        self.cause = cause
+        super().__init__(
+            f"{query} failed for {source} -> {target}: {cause}. "
+            f"This is a query/transport failure, NOT 'no valid positions' — "
+            f"do not conclude the connection is impossible."
+        )
+
+
 # =============================================================================
 # DATA STRUCTURES
 # =============================================================================
@@ -683,8 +703,12 @@ class PlacementHints:
         elif connection_type == ConnectionType.ELECTRIC_WIRE:
             return self._get_electric_wire_positions(source_entity, target_entity_name)
         else:
-            logger.warning(f"Connection type {connection_type} not yet implemented")
-            return []
+            raise NotImplementedError(
+                f"Connection type {connection_type} is not supported by "
+                f"get_connection_positions. Supported: ITEM_DROP, FLUID_PIPE, "
+                f"ELECTRIC_WIRE. For inserters use "
+                f"get_inserter_placement_positions(source, target)."
+            )
 
     def _get_item_drop_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
@@ -713,7 +737,9 @@ class PlacementHints:
             ]
         except Exception as e:
             logger.error(f"get_item_drop_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_item_drop_positions", source_entity.name, target_entity_name, e
+            ) from e
 
     def _get_fluid_pipe_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
@@ -742,7 +768,9 @@ class PlacementHints:
             ]
         except Exception as e:
             logger.error(f"get_fluid_pipe_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_fluid_pipe_positions", source_entity.name, target_entity_name, e
+            ) from e
 
     def _get_electric_wire_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
@@ -788,7 +816,9 @@ class PlacementHints:
             ]
         except Exception as e:
             logger.error(f"get_electric_wire_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_electric_wire_positions", source_entity.name, target_entity_name, e
+            ) from e
 
     def get_inserter_placement_positions(
         self,
@@ -821,7 +851,12 @@ class PlacementHints:
             ]
         except Exception as e:
             logger.error(f"get_inserter_placement_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_inserter_placement_positions",
+                source_entity.name,
+                target_entity.name,
+                e,
+            ) from e
 
     # =========================================================================
     # POLE PLANNING - High-level algorithms using Lua primitives

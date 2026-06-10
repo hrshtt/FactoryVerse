@@ -55,8 +55,9 @@ A living document that captures issues observed during agent eval runs. Designed
 #### [SNAP-2] initial_state.md generated before snapshot ready (race)
 - **Severity:** high. Evidence: showed empty inventory + empty resource queries at session start; real inventory only visible via in-run query at T1.
 
-#### [ERR-3] Silent exception swallowing in placement_hints Python wrapper
+#### [ERR-3] Silent exception swallowing in placement_hints Python wrapper — FIXED 2026-06-11
 - **Severity:** high. `_get_fluid_pipe_positions` except->return [] made a solver bug indistinguishable from "no candidates" for 3 calls. Same family as vacuous tests: silence reads as data. Remove blanket except; propagate cause.
+- **Fix:** all 4 connection-solver wrappers (`item_drop`/`fluid_pipe`/`electric_wire`/`inserter_placement`) now raise `ConnectionQueryError` (carries query, source, target, cause; message explicitly tells the agent "query failure ≠ no valid positions"). Unimplemented connection types raise `NotImplementedError` pointing at the right method instead of returning []. Successful-but-empty stays `[]`. Offline-verified; live exercise rides with the L2.2 battery.
 
 #### [PROMPT-3] Cell bounds undocumented
 - **Severity:** medium. Agent probed x=-5, y=-100, (200,70); WalkingUnreachableError gave no boundary context (couples with ERR-2).
