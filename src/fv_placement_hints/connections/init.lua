@@ -243,10 +243,38 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
         if not tproto or not tproto.fluidbox_prototypes or #tproto.fluidbox_prototypes == 0 then
             return nil
         end
-        local staging = surface.find_non_colliding_position(target_name, source_position, 64, 1)
-        if not staging then
+        -- Per-direction staging with retries: find_non_colliding_position
+        -- uses the prototype's DEFAULT orientation, so a rotated footprint
+        -- can collide at the same spot and create_entity returns nil. A
+        -- single shared staging silently dropped whole directions (field
+        -- failure 2026-06-10: east-facing boiler near a lab-grid cell edge
+        -- got zero steam-engine candidates while certification on open
+        -- test-ground passed all four rotations).
+        local function create_probe(dir)
+            for attempt = 0, 4 do
+                local near = {
+                    x = source_position.x + attempt * 9,
+                    y = source_position.y - attempt * 7,
+                }
+                local p = surface.find_non_colliding_position(target_name, near, 64, 1)
+                if p then
+                    local ok, temp = pcall(function()
+                        return surface.create_entity{
+                            name = target_name,
+                            position = p,
+                            direction = dir,
+                            force = "player",
+                            create_build_effect_smoke = false,
+                        }
+                    end)
+                    if ok and temp and temp.valid then
+                        return temp
+                    end
+                end
+            end
             return nil
         end
+
         local by_direction = {}
         local any = false
         for _, dir in ipairs({
@@ -255,16 +283,8 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
             defines.direction.south,
             defines.direction.west,
         }) do
-            local ok, temp = pcall(function()
-                return surface.create_entity{
-                    name = target_name,
-                    position = staging,
-                    direction = dir,
-                    force = "player",
-                    create_build_effect_smoke = false,
-                }
-            end)
-            if ok and temp and temp.valid then
+            local temp = create_probe(dir)
+            if temp then
                 local actual_dir = temp.direction
                 if not by_direction[actual_dir] then
                     local center = temp.position
