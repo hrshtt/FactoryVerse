@@ -390,6 +390,15 @@ local function generate_all_tiles(surface)
                 surface.set_tiles(tiles, false)
             end
 
+            -- Mark the chunk fully generated: the pathfinder refuses to path
+            -- through chunks without generated status, so without this EVERY
+            -- walk_to fails map-wide (PATH-1 — the comment block above always
+            -- promised this call; it never existed).
+            surface.set_chunk_generated_status(
+                {x = chunk_x, y = chunk_y},
+                defines.chunk_generated_status.entities
+            )
+
             chunks_processed = chunks_processed + 1
         end
 

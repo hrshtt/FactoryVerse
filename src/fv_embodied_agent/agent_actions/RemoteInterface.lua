@@ -984,13 +984,18 @@ function M:register_remote_interface()
             local args = ...
             -- Check if called with a single table argument (RCON pattern)
             if type(args) == "table" and select("#", ...) == 1 and meta.paramspec and meta.paramspec._param_order then
+                -- Explicit index + bounded unpack, NOT table.insert + plain
+                -- unpack: those skip/truncate at nil values, shifting later
+                -- named params into earlier slots (ARG-1 — e.g. omitting
+                -- `direction` shifted ghost=true into the direction slot).
+                -- Same bug as the admin-path ParamSpec fix; this was its
+                -- unfixed twin.
+                local order = meta.paramspec._param_order
                 local ordered_args = {}
-                for _, key in ipairs(meta.paramspec._param_order) do
-                    table.insert(ordered_args, args[key])
+                for i, key in ipairs(order) do
+                    ordered_args[i] = args[key]
                 end
-                -- If we found ordered args, use them, otherwise might be a regular call
-                -- But if paramspec exists, we should probably follow it if args matches
-                return meta.func(self, table.unpack(ordered_args))
+                return meta.func(self, table.unpack(ordered_args, 1, #order))
             end
             -- Fallback to positional arguments
             return meta.func(self, ...)
