@@ -213,12 +213,32 @@ class SnapshotLoader:
     def replay_updates(self, from_sequence: Optional[int] = None) -> int:
         """Replay all update files in sequence order.
 
+        Update records that predate their chunk's init snapshot tick are
+        dropped: the init files already reflect that state, and replaying a
+        stale upsert over a fresher init resurrects old data (SNAP-5 / L2.2
+        stale-pipe_neighbours finding). The per-chunk init tick comes from the
+        kind=chunk_meta line recorded into chunk_snapshot_meta during the same
+        load pass. Records without a tick keep the old replay-always behavior.
+
         Args:
             from_sequence: Only replay operations after this sequence
 
         Returns:
             Last sequence number processed
         """
+        # Per-chunk init snapshot ticks (recorded by _iter_jsonl meta lines)
+        init_ticks = self._chunk_init_ticks()
+        stale_dropped = 0
+
+        def _is_stale(data: Dict[str, Any], chunk: ChunkKey) -> bool:
+            tick = data.get("tick")
+            init_tick = init_ticks.get((chunk.x, chunk.y))
+            return (
+                isinstance(tick, (int, float))
+                and init_tick is not None
+                and tick < init_tick
+            )
+
         # Collect all operations from update files
         operations = []
 
@@ -230,6 +250,9 @@ class SnapshotLoader:
             updates_file = chunk_dir / "entities-updates.jsonl"
             if updates_file.exists():
                 for data in self._iter_jsonl(updates_file):
+                    if _is_stale(data, chunk):
+                        stale_dropped += 1
+                        continue
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     operations.append(data)
 
@@ -237,6 +260,9 @@ class SnapshotLoader:
             trees_updates = chunk_dir / "trees_rocks-updates.jsonl"
             if trees_updates.exists():
                 for data in self._iter_jsonl(trees_updates):
+                    if _is_stale(data, chunk):
+                        stale_dropped += 1
+                        continue
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     data["_type"] = "resource_entity"
                     operations.append(data)
@@ -245,9 +271,18 @@ class SnapshotLoader:
             ghost_updates = chunk_dir / "ghosts-updates.jsonl"
             if ghost_updates.exists():
                 for data in self._iter_jsonl(ghost_updates):
+                    if _is_stale(data, chunk):
+                        stale_dropped += 1
+                        continue
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     data["_type"] = "ghost"
                     operations.append(data)
+
+        if stale_dropped:
+            logger.info(
+                f"Dropped {stale_dropped} update records older than their "
+                f"chunk's init snapshot tick"
+            )
 
         # Sort by sequence number
         operations.sort(key=lambda x: x.get("sequence", 0))
@@ -519,6 +554,22 @@ class SnapshotLoader:
                         self._record_chunk_meta(data)
                         continue
                     yield data
+
+    def _chunk_init_ticks(self) -> Dict[tuple, int]:
+        """Per-chunk init snapshot ticks from chunk_snapshot_meta.
+
+        Populated during the same load pass (init files' kind=chunk_meta lines
+        via _record_chunk_meta). Empty dict if the table is missing/empty —
+        replay then keeps its old apply-everything behavior.
+        """
+        try:
+            rows = self._db.execute(
+                "SELECT chunk_x, chunk_y, tick FROM chunk_snapshot_meta"
+            ).fetchall()
+            return {(int(x), int(y)): int(t) for x, y, t in rows}
+        except Exception as e:
+            logger.warning(f"Could not read chunk_snapshot_meta: {e}")
+            return {}
 
     def _record_chunk_meta(self, data: Dict[str, Any]) -> None:
         """Record per-chunk snapshot tick from an init file's meta line."""
