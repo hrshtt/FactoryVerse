@@ -55,9 +55,19 @@ fv_filters.yaml → factorio-data-dump.json → PrototypeDataManager (singleton)
 ```
 
 - Mods can modify existing prototypes → must extract from running Factorio
-- `fv_filters.yaml` scopes to 73 entities / 113 recipes / 85 items (excludes military, trains, circuits, space) — counts certified L3.3, 2026-06-10
+- `fv_filters.yaml` scopes the prototype set (excludes military, trains, circuits, space). Counts are version-dependent — the current certified counts live in the L3.3 ledger row (docs/FLOOR_CERTIFICATION.md), and an engine-image bump VOIDS them until re-run
 - Singleton ensures DuckDB schemas, Factory Objects, prompts all see same filtered data
-- Regenerate: `uv run fv data refresh`
+- Regenerate (no `fv data refresh` command exists): one-shot dump from the current image, then prune:
+  ```bash
+  docker run --rm --platform linux/arm64 --entrypoint "" \
+    -v "$HOME/Library/Application Support/factorio/mods":/opt/factorio/mods \
+    -v /tmp/fv-dump-out:/opt/factorio/script-output \
+    factoriotools/factorio:<version> /bin/box64 /opt/factorio/bin/x64/factorio \
+    --mod-directory /opt/factorio/mods --dump-data
+  cp /tmp/fv-dump-out/data-raw-dump.json .fv-output/server_0/
+  uv run python -c "from FactoryVerse.infra.data_dump import refresh_data_dump; refresh_data_dump('server_0')"
+  uv run python scripts/certification/check_L3_3.py   # re-earn L3.3 against the new dump
+  ```
 
 ## Commands
 
@@ -65,17 +75,18 @@ fv_filters.yaml → factorio-data-dump.json → PrototypeDataManager (singleton)
 # Install
 uv pip install -e . && uv sync --group dev
 
-# Test
-pytest                                    # all tests
-pytest tests/actions/test_crafting.py -v  # specific file
+# Test (offline; tests/actions + tests/sync have audited-unsound suites — see ledger Audit log)
+uv run pytest tests/unit -q                           # the audited offline battery
 
 # Validate (no Factorio needed)
-pytest tests/unit/test_documentation_coverage.py -v  # type system validation
-uv run fv docs generate                              # regenerate API docs
+pytest tests/unit/test_documentation_coverage.py -v   # type system validation
+uv run python scripts/certification/check_L5_1.py     # namespace completeness
+uv run fv docs generate                               # regenerate API docs
 
 # Run
-uv run fv client start --scenario test-ground
-uv run fv server start --num 1 --scenario test-ground --watch
+uv run fv client start --scenario lab-grid
+uv run fv server start --num 1 --scenario lab-grid    # docker; --save <name> loads a save
+uv run fv dev census --instance server_0              # ground-truth entity census
 uv run fv agent                                       # interactive agent mode
 ```
 
@@ -89,19 +100,21 @@ pytest tests/unit/test_documentation_coverage.py::TestDocumentationIntegration::
 
 This catches doc/code drift (e.g., `patch.total_amount` when property is `patch.total`).
 
-When adding new accessors or classes, update `src/FactoryVerse/docs/validators.py`:
+When adding new accessors or classes, update `src/FactoryVerse/utils/docs/validators.py`:
 - `ACCESSOR_RETURN_TYPES` - method → return type
 - `_class_map` - type name → class for introspection
 - `POLYMORPHIC_RETURN_TYPES` - context-dependent returns
+- Unmapped accessor calls in documented examples now FAIL LOUDLY (L3.1b); either map them or add a rationale'd `UNMAPPED_ACCESSOR_SKIP_LIST` entry
 
 ## Key Directories
 
 - `src/FactoryVerse/environment/` - Tiered orchestrator (start here)
-- `src/FactoryVerse/agent/embodied_actions/` - Async action classes
-- `src/FactoryVerse/agent/reachable_view.py` - Nearby entities (full access)
-- `src/FactoryVerse/agent/remote_view.py` - Map-wide SQL queries (read-only)
+- `src/FactoryVerse/game/agent/embodied_actions/` - Async action classes
+- `src/FactoryVerse/game/agent/reachable_view.py` - Nearby entities (full access)
+- `src/FactoryVerse/game/agent/remote_view.py` - Map-wide SQL queries (read-only)
 - `src/fv_embodied_agent/` - Lua mod for agent control
 - `src/fv_snapshot/` - Lua mod for game state serialization
+- `scripts/certification/` - Check-runner harnesses (the ledger's executable half)
 - `tests/conftest.py` - Environment-based test fixtures
 
 ## Design Patterns
@@ -127,13 +140,11 @@ This applies across all contexts: Python ↔ Lua, mod ↔ mod, RCON calls, DuckD
 | Service | Server N | Client |
 |---------|----------|--------|
 | RCON | 27000+N | 27100 |
-| Snapshot UDP | 34400+N | 34500 |
-| Agent UDP | 34202+(N×10) | 34202+ |
+| Snapshot UDP | 34400 (mod default; socat forwards ONLY 34400 — do not repoint) | 34400 |
+| Agent UDP | 34202–34211 (socat-forwarded range) | 34202+ |
+
+See `docs/RUNTIME_PLAYBOOK.md` §1 for the live-verified connection facts; the playbook wins over this table on conflict.
 
 ## Known Issues
 
-Stability claims live in `docs/FLOOR_CERTIFICATION.md` (executed checks only — prose doesn't count). Unsettled items pending their checks:
-
-- Map DB on entity removal: code reads as handled (`sync.py`), this list previously said broken → settled by check L1.2 when run
-- Mining resource entities (trees/rocks) needs verification
-- Ghost placement not fully tested (check L2.5)
+**Stability claims live in `docs/FLOOR_CERTIFICATION.md` (executed checks only — prose doesn't count). Do not trust this file, any doc, or memory for "X works" claims — look up the ledger row.** Issue tracking lives in `docs/EVAL_ISSUE_TRACKER.md`. Still-open at last edit (2026-06-11): mining resource entities (trees/rocks) unverified; L2.4/L2.5/L4.5 harnesses drafted but not yet executed; L0.3 save/load and L3.2 dump-scope drift pending.
