@@ -371,7 +371,9 @@ class FactorioServerManager:
             "platform": cfg.docker_platform,
             "entrypoint": [],
             "command": command,
-            "environment": ["DLC_SPACE_AGE=false"],
+            # No DLC_SPACE_AGE env: it is only honored by the image's
+            # docker-entrypoint.sh, which entrypoint: [] bypasses (box64
+            # wrapper). DLC is disabled via mod-list by prepare_mods instead.
             "deploy": {"resources": {"limits": {"cpus": "1", "memory": "1024m"}}},
             "ports": ports,
             "volumes": [

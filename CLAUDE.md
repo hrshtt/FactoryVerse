@@ -57,13 +57,14 @@ fv_filters.yaml → factorio-data-dump.json → PrototypeDataManager (singleton)
 - Mods can modify existing prototypes → must extract from running Factorio
 - `fv_filters.yaml` scopes the prototype set (excludes military, trains, circuits, space). Counts are version-dependent — the current certified counts live in the L3.3 ledger row (docs/FLOOR_CERTIFICATION.md), and an engine-image bump VOIDS them until re-run
 - Singleton ensures DuckDB schemas, Factory Objects, prompts all see same filtered data
-- Regenerate (no `fv data refresh` command exists): one-shot dump from the current image, then prune:
+- Regenerate (no `fv data refresh` command exists): one-shot dump from the current image, then prune. ⚠️ `--dump-data` force-loads ALL available mods (including DLC, ignoring mod-list) and persists re-enabled flags back to mod-list.json — remove the DLC data dirs in-container or the dump captures Space Age (live-verified 2026-06-11, L3.2):
   ```bash
   docker run --rm --platform linux/arm64 --entrypoint "" \
     -v "$HOME/Library/Application Support/factorio/mods":/opt/factorio/mods \
     -v /tmp/fv-dump-out:/opt/factorio/script-output \
-    factoriotools/factorio:<version> /bin/box64 /opt/factorio/bin/x64/factorio \
-    --mod-directory /opt/factorio/mods --dump-data
+    factoriotools/factorio:<version> /bin/sh -c \
+    "rm -rf /opt/factorio/data/space-age /opt/factorio/data/quality /opt/factorio/data/elevated-rails && \
+     /bin/box64 /opt/factorio/bin/x64/factorio --mod-directory /opt/factorio/mods --dump-data"
   cp /tmp/fv-dump-out/data-raw-dump.json .fv-output/server_0/
   uv run python -c "from FactoryVerse.infra.data_dump import refresh_data_dump; refresh_data_dump('server_0')"
   uv run python scripts/certification/check_L3_3.py   # re-earn L3.3 against the new dump

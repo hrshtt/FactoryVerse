@@ -110,14 +110,6 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ---
 
-### Data Pipeline
-
-#### [DATA-1] 2.0.76 dump shifts prototype scope; L3.3 voided pending re-cert
-- **Severity:** high (blocks L3.2/L3.3 green; prompts/schemas consume the filtered set)
-- **Found:** 2026-06-11, by running the real dump pipeline against the new image (the `fv data refresh` command in CLAUDE.md never existed; actual procedure now documented there).
-- **Evidence:** fresh 2.0.76 dump (with fv mods) → PrototypeDataManager caches 89 entities / 106 recipes / 99 items vs certified 73/113/85; sample recipes `electronic-circuit`/`copper-cable`/`transport-belt` missing from RecipePrototypes; hydration itself exact (431 comparisons, 0 mismatches). Old dump source was Dec 28 (2.0.72-era, unknown mod set).
-- **Status:** investigation running (old-vs-new raw diff, attribution per scope change: engine drift vs mod-set vs filters.py assumption). Ledger rows L3.2/L3.3 await its verdict.
-
 ---
 
 ## Archive
@@ -140,6 +132,7 @@ A living document that captures issues observed during agent eval runs. Designed
 - [AFFORD-1] Placement-as-sonar (no terrain affordance) — fixed 2026-06-11 (f6fd8b7): `remote_view.find_water()` + `placement_hints.is_buildable()`, doc-registered. Live exercise in LIVE-1 #7.
 - [OBS-2] Task Progress ×163 + 30k uncached prefix (~10M prompt tokens/17 turns) — fixed 2026-06-11 (675ac71): ProgressDeduper + anthropic cache_control, −49.7% on trajectory replay. Cache-hit observation in LIVE-1 #5.
 - [LOOP-1] Assistant messages missing content field — fixed 2026-03-28. Was: `to_dict()` omitted `content` when None, causing 422 on APIs that require it.
+- [DATA-1] 2.0.76 dump shifted prototype scope (89/106/99 vs certified 73/113/85) — resolved 2026-06-11, L3.2/L3.3 green. Was: `--dump-data` force-loads DLC ignoring mod-list (and persists re-enabled flags back!); 100% of scope drift attributed to Space Age recategorization, 0 to engine/filters. Runtime was never contaminated (prepare_mods disables DLC at every server start; verified via script.active_mods). Re-dump with DLC dirs removed in-container → 73/113/85 restored, 458/458 hydration exact on 2.0.76. Dead `DLC_SPACE_AGE` env removed from compose generator.
 
 ---
 
