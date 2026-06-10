@@ -108,3 +108,11 @@ LEDGER-EDIT: <the exact status-cell text to put in FLOOR_CERTIFICATION.md>
 ```
 
 BLOCKED = couldn't run (no instance, missing affordance) — say what's missing. Never pad the verdict with narration; the orchestrator reads dozens of these.
+
+**Heartbeats (mandatory for mutating checks):** before and after every phase that touches the game, append one line to `.fv-output/certification/<date>/<check-id>/progress.log`:
+`<ISO-time> <phase>: <one-line, e.g. "placing rig: 3 belts + inserter at (10,10)" / "rig placed, 9 entities verified present">`.
+This is the orchestrator's and the user's live lens into what you're doing — a runner that mutates silently is indistinguishable from a stuck one.
+
+## 7. Observer lens (for the orchestrator and the user)
+
+`uv run python scripts/certification/observe.py [--watch 5]` — read-only, safe anytime, shows: game tick, entity census by name, test-ground bounds, freshest snapshot file age, and the last heartbeat lines of recent runners. This is the standing answer to "is anything actually happening?" — run it instead of inferring from agent status. If census says the world didn't change and heartbeats are stale, the runner is stuck or still reading code; the game never lies.
