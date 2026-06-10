@@ -53,6 +53,27 @@ CHECK_UDP_PORT = 34571  # our standalone listener; mod port restored afterwards
 
 SNAP_ROOT = Path.home() / "Library/Application Support/factorio/script-output"
 
+
+def configure_instance(name: str) -> None:
+    """Point module globals at 'client' or 'server_N'. Server script-output
+    maps to host .fv-output/server_N (compose volume). NOTE: on servers the
+    mod's UDP leaves the container via the udp_forwarder sidecar — whether a
+    host listener on CHECK_UDP_PORT receives it is itself under test."""
+    global RCON_PORT, SNAP_ROOT, CHECK_UDP_PORT
+    if name == "client":
+        return
+    if name.startswith("server_"):
+        n = int(name.split("_")[1])
+        RCON_PORT = 27000 + n
+        SNAP_ROOT = REPO / ".fv-output" / name
+        # The socat sidecar only forwards specific container ports to the
+        # host (34202-34211 agent + 34400 snapshot). An arbitrary port like
+        # 34571 dies inside the container — verified empirically 2026-06-10.
+        # So on servers we listen on the forwarded snapshot port itself.
+        CHECK_UDP_PORT = 34400 + n
+        return
+    raise SystemExit(f"unknown instance {name!r}; use 'client' or 'server_N'")
+
 # Work area: exactly chunk (2,2) → tiles [64,96)
 WORK = {"left_top": {"x": 64, "y": 64}, "right_bottom": {"x": 96, "y": 96}}
 WORK_CHUNK = (2, 2)
@@ -454,6 +475,12 @@ async def live_phase(rcon: RCONClient, con, initial_sequence: int) -> None:
 
 
 def main() -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--instance", default="client", help="client or server_N")
+    configure_instance(ap.parse_args().instance)
+
     hb("=== check_L1_sync start ===")
 
     # --- 0. smoke ritual -------------------------------------------------------

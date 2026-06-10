@@ -39,6 +39,12 @@ If `remote.interfaces` is missing `agent`/`snapshot`, the mods didn't load → s
 
 NOTE: CLAUDE.md says `fv client launch` — that's stale; the subcommand is `start`.
 
+**Docker server specifics (verified live 2026-06-10):**
+- Host `.fv-output/server_N` IS the container's script-output (compose volume) — snapshots at `.fv-output/server_N/factoryverse/snapshots`.
+- UDP leaves the container ONLY via the socat sidecar, which forwards a fixed port list: **34202–34211 (agent) and 34400 (snapshot)** to `host.docker.internal`. `snapshot.set_udp_port` to any other port silently blackholes every sync packet inside the container — listen on the forwarded port instead of repointing. A `127.0.0.1`-bound host listener receives forwarded traffic fine.
+- Headless server has **no player character** (client world has one) — don't assume a character exists.
+- All certification scripts take `--instance server_N` (default `client`).
+
 ## 2. Executing Lua over RCON
 
 - Prefix: `/c <lua>`. RCON executes in the **scenario** runtime: no `require`, no mod-local state; mod functionality only via `remote.call`.

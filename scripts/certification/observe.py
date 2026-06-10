@@ -20,8 +20,19 @@ from pathlib import Path
 
 from factorio_rcon import RCONClient
 
-CERT_DIR = Path(__file__).resolve().parents[2] / ".fv-output" / "certification"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CERT_DIR = REPO_ROOT / ".fv-output" / "certification"
 SCRIPT_OUTPUT = Path.home() / "Library/Application Support/factorio/script-output"
+
+
+def resolve_instance(name: str) -> tuple[int, Path]:
+    """(rcon_port, script_output_root) for 'client' or 'server_N'.
+    Server script-output maps to host .fv-output/server_N (compose volume)."""
+    if name == "client":
+        return 27100, Path.home() / "Library/Application Support/factorio/script-output"
+    if name.startswith("server_"):
+        return 27000 + int(name.split("_")[1]), REPO_ROOT / ".fv-output" / name
+    raise SystemExit(f"unknown instance {name!r}; use 'client' or 'server_N'")
 
 CENSUS_LUA = """
 local ok, res = xpcall(function()
@@ -88,10 +99,12 @@ def probe(rcon: RCONClient) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--watch", type=float, default=0, help="re-probe every N seconds")
-    ap.add_argument("--port", type=int, default=27100)
+    ap.add_argument("--instance", default="client", help="client or server_N")
     args = ap.parse_args()
 
-    rcon = RCONClient("localhost", args.port, "factorio")
+    global SCRIPT_OUTPUT
+    port, SCRIPT_OUTPUT = resolve_instance(args.instance)
+    rcon = RCONClient("localhost", port, "factorio")
     rcon.send_command("/c rcon.print('ping')")
     while True:
         probe(rcon)

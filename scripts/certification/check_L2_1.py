@@ -56,6 +56,20 @@ SNAPSHOT_DIR = SCRIPT_OUTPUT / "factoryverse" / "snapshots"
 
 RCON_HOST, RCON_PORT, RCON_PASS = "localhost", 27100, "factorio"
 
+
+def configure_instance(name: str) -> None:
+    """Point module globals at 'client' or 'server_N' (server script-output
+    maps to host .fv-output/server_N via the compose volume)."""
+    global SCRIPT_OUTPUT, SNAPSHOT_DIR, RCON_PORT
+    if name == "client":
+        return
+    if name.startswith("server_"):
+        RCON_PORT = 27000 + int(name.split("_")[1])
+        SCRIPT_OUTPUT = REPO_ROOT / ".fv-output" / name
+        SNAPSHOT_DIR = SCRIPT_OUTPUT / "factoryverse" / "snapshots"
+        return
+    raise SystemExit(f"unknown instance {name!r}; use 'client' or 'server_N'")
+
 # ---------------------------------------------------------------------------
 # Rig layout (all inside chunk (0,0): x,y in [0,32))
 # ---------------------------------------------------------------------------
@@ -793,8 +807,12 @@ def main() -> int:
             REPO_ROOT / ".fv-output" / "certification" / date.today().isoformat() / "L2.1"
         ),
     )
+    ap.add_argument("--instance", default="client", help="client or server_N")
     args = ap.parse_args()
+    configure_instance(args.instance)
     art = Path(args.artifacts_dir)
+    if args.instance != "client":
+        art = art / args.instance
     art.mkdir(parents=True, exist_ok=True)
     log = Log(art / "run.log")
 
