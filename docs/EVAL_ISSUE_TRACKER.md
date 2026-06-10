@@ -46,12 +46,13 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### API Gaps
 
-#### [API-1] No entity pickup/removal method
-- **Severity:** critical
+#### [API-1] No entity pickup/removal method — RECLASSIFIED: documentation gap (fixed 2026-06-10)
+- **Severity:** critical → resolved pending live cert
 - **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28
 - **Evidence:** Agent tried `entity_ops.pick_up()`, `entity_ops.remove()`, `steam_engine.remove()` — all raised `AttributeError`. Agent needed to undo a misplaced steam engine and pipes to rebuild, had no way to do so.
-- **Impact:** Agent got permanently stuck with a broken layout. Spent 10+ steps trying to remove entities before giving up. Could not recover from placement mistakes — any wrong placement is permanent and fatal.
-- **Fix direction:** Add `pickup()` or `mine_entity()` to entity operations or as a method on reachable entities. This is how human players fix mistakes (they pick up and re-place).
+- **Root cause (found via FLOOR_CERTIFICATION L5.5, 2026-06-10):** the affordance EXISTED the whole time — `entity_ops.pickup_entity(entity_name, position)` → `EntityPickedUp` (`entity_operations.py:407`), bound in the agent namespace. But `EntityOperationsAction` was never registered in the doc registry, so the method was absent from the generated api_reference and the agent's system prompt. The agent guessed plausible names because the real one was invisible.
+- **Fix applied:** EntityOperationsAction (all 7 members), MiningAction, PlacementAction registered with examples; system prompts now carry them (generated live from the registry).
+- **Remaining:** live certification that `pickup_entity` actually works (place → pickup → inventory credited), and a re-run of engine_unit_throughput to confirm agents recover from misplacements.
 
 #### [API-2] No way to check why placement failed before attempting it
 - **Severity:** high

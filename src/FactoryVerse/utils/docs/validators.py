@@ -282,6 +282,9 @@ class ExampleValidator:
             "crafting": getattr(runtime, "crafting", None),
             "research": getattr(runtime, "research", None),
             "inventory": getattr(runtime, "inventory", None),
+            "mining": getattr(runtime, "mining", None),
+            "placement": getattr(runtime, "placement", None),
+            "entity_ops": getattr(runtime, "entity_ops", None),
             "reachable_view": getattr(runtime, "reachable_view", None),
             "remote_view": getattr(runtime, "remote_view", None),
             "ghost_builder": getattr(runtime, "ghost_builder", None),
@@ -416,6 +419,25 @@ class StaticAttributeValidator:
         "crafting.craft": "List[ItemStack]",
         "crafting.status": "Dict",
 
+        # Mining
+        "mining.mine": "List[ItemStack]",
+        "mining.cancel": "MiningCancelled",
+
+        # Placement
+        # NOTE: place has polymorphic return type based on return_entity flag
+        # Default to EntityPlaced, refined by POLYMORPHIC_RETURN_TYPES below
+        "placement.place": "EntityPlaced",
+        "placement.remove_ghost": "GhostRemoved",
+
+        # EntityOperations
+        "entity_ops.inspect_entity": "Dict",
+        "entity_ops.pickup_entity": "EntityPickedUp",
+        "entity_ops.set_entity_recipe": "EntityRecipeSet",
+        "entity_ops.set_entity_filter": "EntityFilterSet",
+        "entity_ops.set_inventory_limit": "InventoryLimitSet",
+        "entity_ops.take_inventory_item": "InventoryItemTaken",
+        "entity_ops.put_inventory_item": "InventoryItemPut",
+
         # Walking
         "walking.walk_to": "MapPosition",
         "walking.walk_to_position": "MapPosition",
@@ -467,6 +489,8 @@ class StaticAttributeValidator:
         # get_connection_positions returns WireConnectionPosition for ELECTRIC_WIRE
         ("placement_hints.get_connection_positions", "ConnectionType.ELECTRIC_WIRE"): "List[WireConnectionPosition]",
         ("placement_hints.get_connection_positions", "ELECTRIC_WIRE"): "List[WireConnectionPosition]",
+        # place returns a full BaseEntity when return_entity=True
+        ("placement.place", "return_entity=True"): "BaseEntity",
     }
 
     def __init__(self, registry: Optional[DocumentationRegistry] = None):
@@ -487,6 +511,14 @@ class StaticAttributeValidator:
                 ConnectionPosition, WireConnectionPosition, GhostPlan, PolePlacementResult
             )
             from FactoryVerse.game.agent.embodied_actions.research import ResearchStatus, QueuedTechnology
+            from FactoryVerse.game.agent.embodied_actions.mining import MiningCancelled
+            from FactoryVerse.game.agent.embodied_actions.place_entity import (
+                EntityPlaced, GhostRemoved
+            )
+            from FactoryVerse.game.agent.embodied_actions.entity_operations import (
+                EntityRecipeSet, EntityFilterSet, InventoryLimitSet,
+                InventoryItemTaken, InventoryItemPut, EntityPickedUp,
+            )
 
             class_map.update({
                 "ResourceOrePatch": ResourceOrePatch,
@@ -504,6 +536,15 @@ class StaticAttributeValidator:
                 "PolePlacementResult": PolePlacementResult,
                 "ResearchStatus": ResearchStatus,
                 "QueuedTechnology": QueuedTechnology,
+                "MiningCancelled": MiningCancelled,
+                "EntityPlaced": EntityPlaced,
+                "GhostRemoved": GhostRemoved,
+                "EntityRecipeSet": EntityRecipeSet,
+                "EntityFilterSet": EntityFilterSet,
+                "InventoryLimitSet": InventoryLimitSet,
+                "InventoryItemTaken": InventoryItemTaken,
+                "InventoryItemPut": InventoryItemPut,
+                "EntityPickedUp": EntityPickedUp,
             })
         except ImportError as e:
             # If imports fail, that's a bug in the type system setup
