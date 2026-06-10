@@ -394,6 +394,7 @@ class StaticAttributeValidator:
         "remote_view.get_resources": "List[BaseResource]",
         "remote_view.get_ghosts": "List[BaseEntity]",
         "remote_view.query": "List[Dict]",
+        "remote_view.find_water": "List[Dict]",
         "remote_view.count_entities": "int",
         "remote_view.count_ghosts": "int",
 
@@ -407,6 +408,7 @@ class StaticAttributeValidator:
         # NOTE: get_connection_positions has polymorphic return type based on connection_type
         # Default to ConnectionPosition, but refined by POLYMORPHIC_RETURN_TYPES below
         "placement_hints.get_connection_positions": "List[ConnectionPosition]",
+        "placement_hints.is_buildable": "Dict",
         "placement_hints.get_placement_line": "GhostPlan",
         "placement_hints.get_underground_segment": "GhostPlan",
         "placement_hints.get_pole_line": "GhostPlan",

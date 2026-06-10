@@ -621,6 +621,58 @@ class PlacementHints:
         """Expose validator for direct access."""
         return self._validator
 
+    def is_buildable(
+        self,
+        left_top: MapPosition,
+        right_bottom: MapPosition,
+        entity_name: str = "wooden-chest",
+    ) -> Dict[str, Any]:
+        """Check whether an area is buildable land WITHOUT placing anything.
+
+        Terrain affordance (AFFORD-1): probes every integer tile in the area
+        with a non-mutating placement validation (engine rules, manual
+        build-check). Never use real place/pickup calls as a terrain scanner.
+
+        Args:
+            left_top: Top-left corner of the area
+            right_bottom: Bottom-right corner (exclusive)
+            entity_name: 1x1 entity used as the probe (default wooden-chest)
+
+        Returns:
+            {'all_buildable': bool, 'buildable_count': int, 'total': int,
+             'blocked_positions': [{'x','y'} up to 25]}
+
+        Raises:
+            ValueError: empty area, or area over 1600 tiles (probe sub-areas)
+        """
+        import math
+
+        x0, x1 = math.floor(left_top.x), math.ceil(right_bottom.x)
+        y0, y1 = math.floor(left_top.y), math.ceil(right_bottom.y)
+        total = (x1 - x0) * (y1 - y0)
+        if total <= 0:
+            raise ValueError(
+                f"Empty area: ({left_top.x},{left_top.y})..({right_bottom.x},{right_bottom.y})"
+            )
+        if total > 1600:
+            raise ValueError(
+                f"Area is {total} tiles; max 1600 per call — probe sub-areas"
+            )
+
+        positions = [
+            MapPosition(x=x + 0.5, y=y + 0.5)
+            for y in range(y0, y1)
+            for x in range(x0, x1)
+        ]
+        results = self._client.validate_positions(entity_name, positions)
+        blocked = [p for p, ok in zip(positions, results) if not ok]
+        return {
+            "all_buildable": not blocked,
+            "buildable_count": total - len(blocked),
+            "total": total,
+            "blocked_positions": [{"x": p.x, "y": p.y} for p in blocked[:25]],
+        }
+
     # =========================================================================
     # LINE PLANNING
     # =========================================================================

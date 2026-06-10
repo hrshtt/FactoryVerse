@@ -361,6 +361,51 @@ class RemoteView:
         self._ensure_query_ready()
         return self._query.get_resources(sql)
 
+    def find_water(
+        self,
+        near: Optional["MapPosition"] = None,
+        radius: Optional[float] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Find water tiles on the map (e.g. offshore-pump sites).
+
+        Terrain affordance: answers "where is water?" from the snapshot DB
+        without probing placements (AFFORD-1 — never use place/pickup as a
+        terrain scanner).
+
+        Args:
+            near: If given, results are ordered by distance to this position
+                and each row includes a 'distance' field
+            radius: With `near`, only tiles within this many tiles
+            limit: Max rows returned (default 500)
+
+        Returns:
+            List of dicts: {'x': float, 'y': float[, 'distance': float]},
+            empty list if the map truly has no water in range. If the whole
+            map unexpectedly returns [], check snapshot freshness via
+            `query("SELECT MAX(tick) FROM chunk_snapshot_meta")` before
+            concluding water does not exist.
+        """
+        self._ensure_query_ready()
+        limit = int(limit)
+        if near is not None:
+            nx, ny = float(near.x), float(near.y)
+            dist_expr = (
+                f"sqrt((position_x - {nx})*(position_x - {nx}) + "
+                f"(position_y - {ny})*(position_y - {ny}))"
+            )
+            where = f"WHERE {dist_expr} <= {float(radius)}" if radius is not None else ""
+            sql = (
+                f"SELECT position_x AS x, position_y AS y, {dist_expr} AS distance "
+                f"FROM water_tile {where} ORDER BY distance LIMIT {limit}"
+            )
+        else:
+            sql = (
+                f"SELECT position_x AS x, position_y AS y "
+                f"FROM water_tile ORDER BY position_y, position_x LIMIT {limit}"
+            )
+        return self._query.query(sql)
+
     def get_ghosts(self, sql: str) -> List["BaseEntity"]:
         """Execute SQL against ghost table, return ghost entities with REMOTE view.
 

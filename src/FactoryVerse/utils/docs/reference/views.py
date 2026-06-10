@@ -322,6 +322,34 @@ furnaces = remote_view.get_entities(f'''
 
     registry.register_method(
         cls=RemoteView,
+        method_name="find_water",
+        description="Find water tiles on the map (offshore-pump sites). Terrain affordance — "
+        "never probe placements to discover terrain.",
+        examples=[
+            Example(
+                code="""# Nearest water to my position
+pos = walking.current_position
+water = remote_view.find_water(near=pos, radius=120)
+if water:
+    closest = water[0]
+    print(f"Water at ({closest['x']}, {closest['y']}), {closest['distance']:.1f} tiles away")
+else:
+    # Distinguish 'no water' from 'stale snapshot' before concluding
+    freshness = remote_view.query("SELECT MAX(tick) AS t FROM chunk_snapshot_meta")
+    print(f"No water in range; snapshot tick {freshness[0]['t']}")""",
+                decision_context="Siting an offshore pump / boiler chain",
+                expected_outcome="List of {'x','y','distance'} sorted by distance, or []",
+                validation_level=ValidationLevel.SYNTAX,
+            ),
+        ],
+        decision_points=[
+            "Empty list + stale chunk_snapshot_meta tick means OLD DATA, not 'no water'",
+            "Offshore pumps need a shoreline: pick a water tile adjacent to land",
+        ],
+    )
+
+    registry.register_method(
+        cls=RemoteView,
         method_name="get_entity",
         description="Execute SQL with LIMIT 1 and return single entity.",
         examples=[

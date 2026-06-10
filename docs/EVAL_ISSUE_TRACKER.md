@@ -68,8 +68,9 @@ A living document that captures issues observed during agent eval runs. Designed
 #### [PROMPT-3] Cell bounds undocumented
 - **Severity:** medium. Agent probed x=-5, y=-100, (200,70); WalkingUnreachableError gave no boundary context (couples with ERR-2).
 
-#### [AFFORD-1] No terrain affordance -> placement-as-sonar
+#### [AFFORD-1] No terrain affordance -> placement-as-sonar — FIXED 2026-06-11 (Python side; live exercise pending)
 - **Severity:** medium. Agent used place/pickup of poles as a tile scanner (hundreds of RCON calls, ~70 pole debris via position-snap lookup misses). Provide find_water()/is_buildable(area).
+- **Fix:** `remote_view.find_water(near, radius, limit)` — water tiles from the certified water_tile table, distance-sorted, with a doc'd staleness check (chunk_snapshot_meta) before concluding "no water". `placement_hints.is_buildable(left_top, right_bottom)` — batch non-mutating engine validation (manual build-check) over the area, returns all_buildable/counts/blocked_positions, max 1600 tiles/call. Both registered in the doc registry (the API-1 lesson) + validators mapping; L5.1 + drift suite green. Live exercise rides the L2.2 battery.
 
 #### [OBS-2] Token waste: Task Progress block repeated verbatim x163; 30k static prefix per call
 - **Severity:** medium (cost). ~10.08M prompt tokens in 17 turns. Dedupe progress block (emit on change), prompt-cache the static prefix.
