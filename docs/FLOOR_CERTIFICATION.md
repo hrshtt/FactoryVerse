@@ -37,7 +37,7 @@ The substrate everything else assumes. If two fresh launches differ, no downstre
 
 | ID | Claim | How to check | Pass criterion | Req | Status |
 |----|-------|--------------|----------------|-----|--------|
-| L0.1 | All three mods load cleanly (embodied_agent, snapshot, placement_hints) | Launch client; grep `factorio-current.log` for `Error`/`fv_`; probe `remote.interfaces` over RCON | Zero mod errors; agent/snapshot/scenario interfaces registered | live | ✅ PASS 2026-06-10 — client/lab-grid tick 4726, commit cd19317; 0 log errors; 10 interfaces live; mods base 2.0.76 + fv_embodied_agent 0.1.3 + fv_snapshot 0.1.0 + fv_placement_hints 0.1.0 (`.fv-output/certification/2026-06-10/L0.1/`) |
+| L0.1 | All three mods load cleanly (embodied_agent, snapshot, placement_hints) | Launch client; grep `factorio-current.log` for `Error`/`fv_`; probe `remote.interfaces` over RCON | Zero mod errors; agent/snapshot/scenario interfaces registered | live | ✅ PASS 2026-06-11 — server_0/lab-grid tick 687, image 2.0.76 (re-certified after image bump 2.0.72→2.0.76; `.env` FV_DOCKER_IMAGE pin was silently overriding the config.py default — fixed); 0 log errors; 10 interfaces; 3 fv mods (`.fv-output/certification/2026-06-11/L0.1/`). Prior: ✅ 2026-06-10 client/lab-grid @ cd19317. |
 | L0.2 | Fresh scenario is reproducible | Launch lab-grid twice from scratch; dump full entity census (name+position set) each time; diff | Identical census | live | 🔧 needs census dumper (see L1.1) |
 | L0.3 | State survives save/load | Census → save → reload → census; diff | Identical census; all relational reads (L2) still resolve (no unit_number leakage) | live | 🔧 |
 
