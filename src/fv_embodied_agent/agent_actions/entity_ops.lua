@@ -48,6 +48,47 @@ local function _can_use_recipe(self, recipe_name)
     return recipe ~= nil and recipe.enabled
 end
 
+--- Valid inventory_type names accepted by put_inventory_item (ERR-1 treatment:
+--- invalid names must error with this list — the names were undocumented,
+--- field failure mode #6, 2026-06-10 retro).
+local PUT_INVENTORY_TYPE_NAMES = {
+    auto = true, fuel = true, input = true,
+    chest = true, output = true, modules = true,
+}
+local PUT_INVENTORY_TYPE_NAMES_DOC =
+    '"auto" (default — engine routes automatically: fuel to fuel slot, ingredients to input), ' ..
+    '"fuel", "input", "chest", "output", "modules"'
+
+--- Helper: list the inventory names (from the put/get name mapping) that this
+--- entity actually has, for error guidance.
+--- @param entity LuaEntity
+--- @return string Comma-separated names, or a fallback note
+local function _available_inventory_names(entity)
+    local is_crafter = entity.type == "furnace" or entity.type == "assembling-machine" or
+                       entity.type == "chemical-plant" or entity.type == "oil-refinery"
+    local candidates = {
+        { "chest", defines.inventory.chest },
+        { "fuel", defines.inventory.fuel },
+        { "input", is_crafter and defines.inventory.crafter_input or defines.inventory.assembling_machine_input },
+        { "output", is_crafter and defines.inventory.crafter_output or defines.inventory.assembling_machine_output },
+        { "modules", defines.inventory.assembling_machine_modules },
+    }
+    local names = {}
+    for _, c in ipairs(candidates) do
+        local ok, inv = pcall(function() return entity.get_inventory(c[2]) end)
+        if ok and inv then
+            table.insert(names, "'" .. c[1] .. "'")
+        end
+    end
+    if entity.type == "mining-drill" and entity.get_output_inventory() then
+        table.insert(names, "'output'")
+    end
+    if #names == 0 then
+        return "none of the named inventories (try 'auto' routing, or this entity may not accept items)"
+    end
+    return table.concat(names, ", ")
+end
+
 --- Set recipe on entity
 --- @param entity_name string Entity prototype name
 --- @param position table|nil Position {x, y} (nil to use agent position with radius search)
@@ -650,8 +691,34 @@ function EntityOpsActions.pickup_entity(self, entity_name, position)
         end
     end
 
-    -- Mine entity
-    self.character.mine_entity(entity)
+    -- Pre-check capacity BEFORE mutating: with a full inventory the engine
+    -- does NOT fail the mine — it spills products on the ground (verified
+    -- live 2026-06-11), which would read as success with extracted_items={}
+    -- while the item silently lies on the floor.
+    local products = entity.prototype.mineable_properties
+        and entity.prototype.mineable_properties.products
+    if products then
+        for _, product in pairs(products) do
+            if product.type == "item" then
+                local needed = product.amount or product.amount_max or 1
+                if not agent_inventory.can_insert({name = product.name, count = needed}) then
+                    error("Agent: Cannot pick up '" .. entity_name .. "' — your inventory " ..
+                          "cannot fit " .. needed .. "x " .. product.name .. ". " ..
+                          "Free up inventory space first; nothing was removed.")
+                end
+            end
+        end
+    end
+
+    -- Mine entity INTO the agent inventory, raising script_raised_destroy so
+    -- the snapshot pipeline sees the removal. character.mine_entity on a
+    -- non-player character raises NO event -> permanent phantom map_entity
+    -- rows that rebuild cannot recover (SNAP-4, L1.6 churn battery).
+    local mined = entity.mine{inventory = agent_inventory, raise_destroyed = true}
+    if not mined then
+        error("Agent: Failed to mine entity '" .. entity_name .. "' — nothing was removed. " ..
+              "Most likely the agent inventory cannot fit the items; free up space and retry.")
+    end
 
     -- get_contents() returns an array of {name, count, quality} objects
     -- Convert to {item_name = count} format

@@ -1538,7 +1538,45 @@ local function phase_serialize(state)
                 chunk = { x = chunk_x, y = chunk_y },
             }
         end
-        
+
+        -- SNAP-3: a re-snapshot must overwrite previously-written categories
+        -- even when they are now EMPTY, else the stale init file survives on
+        -- disk and a fresh DB load resurrects phantoms (e.g. all entities in
+        -- the chunk removed without raised events). A meta-only file is the
+        -- honest "empty now" marker; it also keeps chunk_meta ticks fresh.
+        do
+            local category_paths = {
+                resource = snapshot.resources_init_path,
+                water = snapshot.water_init_path,
+                trees_rocks = snapshot.trees_rocks_init_path,
+                entities_init = snapshot.entities_init_path,
+                ghosts_init = snapshot.ghosts_init_path,
+            }
+            local written_now = {}
+            for _, w in ipairs(write_queue) do
+                written_now[w.file_type] = true
+            end
+            local tracker = M.get_chunk_tracker()
+            local entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
+            local previously = entry.files_written or {}
+            for cat, path_fn in pairs(category_paths) do
+                if previously[cat] and not written_now[cat] then
+                    write_queue[#write_queue + 1] = {
+                        path = path_fn(chunk_x, chunk_y),
+                        content = chunk_meta_line .. "\n",
+                        file_type = cat,
+                        event_type = "file_created",
+                    }
+                end
+            end
+            -- Grow-only union: once a category has a file on disk it is
+            -- rewritten (full or meta-only) on every future snapshot pass
+            for cat in pairs(written_now) do
+                previously[cat] = true
+            end
+            entry.files_written = previously
+        end
+
         -- Transition to WRITE phase
         state.phase = SnapshotPhase.WRITE
         
