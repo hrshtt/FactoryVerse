@@ -16,6 +16,17 @@ This document is the single ledger for the question "how do we know the floor is
 
 **Everything starts ⬜/🔧/🔍 — including things "live-verified" in past sessions. Past sessions are prose.**
 
+## The harness-audit gate
+
+**A green from an unaudited harness is rumor with a checkmark.** All tests in this repo are agent-written with inconsistent quality, so a ✅ only counts if the harness itself has passed a one-time audit (recorded in the Audit log below; re-audit when the harness changes). An audit asks four questions:
+
+1. **Can it pass vacuously?** Empty registry / zero items / conditional assertions (`if X in y: assert ...`) / always-true assertions (`assert n >= 0`) all pass while testing nothing. Require non-emptiness guards.
+2. **Does it test the real layer or a mock of it?** Mock-only tests certify call-shape coherence, never behavior. They can support L-claims about pure logic, nothing about the game.
+3. **Is ground truth constructed independently?** A test that derives its expectation from the same code path it checks proves consistency, not correctness. Live checks must get truth from a different layer (raw RCON scan vs DB; hand-built rig vs reads).
+4. **Do the assertions cover the claim in the ledger row?** A test can be honest and still certify less than the row says — narrow the row or widen the test.
+
+Precedent for why this gate exists: the first audit (2026-06-10) found this repo's flagship guard — `test_all_examples_valid_attributes`, the doc-drift catcher recommended in CLAUDE.md — was validating **zero examples** in full-suite runs. `register_all_documentation()` relied on import side effects, which Python caches, so after any `reset_registry()` it silently re-registered nothing, and the test "passed" on an empty registry. Three tests in that suite were vacuous; one was a production bug.
+
 Requirements column: `offline` = no Factorio needed. `live` = needs a running client (`uv run fv client launch --scenario lab-grid`). `scale` = needs a large generated factory.
 
 ---
@@ -60,7 +71,8 @@ Each check builds a known rig with TestGroundHelper, then asserts the SAME story
 
 | ID | Claim | How to check | Pass criterion | Req | Status |
 |----|-------|--------------|----------------|-----|--------|
-| L3.1 | Doc/code drift: every documented accessor exists with documented type | `pytest tests/unit/test_documentation_coverage.py -v` | All pass | offline | ✅ 2026-06-10 (21/21) |
+| L3.1 | Doc/code drift: every documented accessor exists with documented type | `pytest tests/unit/test_documentation_coverage.py -v` | All pass, `total_examples > 0` | offline | ✅ 2026-06-10 (harness audited & hardened same day — see Audit log) |
+| L3.1b | Drift validator covers ALL accessors (examples using accessors unmapped in `validators.py` must fail loudly, not skip silently) | Inspect `StaticAttributeValidator` skip path; add a sentinel example with unmapped accessor | Unmapped accessor → loud failure or explicit skip-list | offline | 🔧 — suspected silent-skip scope limit, unverified |
 | L3.2 | Data dump pipeline regenerates | `uv run fv data refresh`; diff entity set against `fv_filters.yaml` scope | Succeeds; filtered set as scoped | live | ⬜ |
 | L3.3 | Prototype hydration matches dump | For sample entities: collision box, crafting speed, belt speed from Python objects vs `factorio-data-dump.json` | Values equal | offline | 🔧 |
 
@@ -115,9 +127,18 @@ These statements exist in docs/memory and are *contradictory or unverified* — 
 - "iron_plate_throughput passes" (run 2026-03-28) → **L5.4**
 - "DuckDB scales to end-game factories" (design assumption, never run) → **L6.x**
 
+## Audit log (harness quality, one-time per harness)
+
+| Date | Harness | Verdict | Findings |
+|------|---------|---------|----------|
+| 2026-06-10 | `tests/unit/test_documentation_coverage.py` | **AUDITED — was unsound, now hardened** | 3 vacuous tests: attribute validation ran on 0 examples (import-side-effect registration + cached imports = silent no-op after `reset_registry()`; fixed in `reference/__init__.py` by calling `_register_*()` explicitly); tautological `or len(classes) > 0`; conditional Quick-Reference assertion; always-true `>= 0` assertions. All fixed; non-emptiness guards added. Residual: L3.1b silent-skip question still open. |
+| 2026-06-10 | `tests/unit/test_environment_tiers.py` | **PARTIAL** — mock-only; certifies tier-wiring logic, nothing about the game. One stale mock fixed (`initial_inventory` param drift). Acceptable for logic-level claims only. | |
+| 2026-06-10 | `tests/unit/test_task_verification.py` | **PARTIAL** — exercises verifier math on synthetic stats; does NOT certify the JSONL pipeline feeding it (that's a live check). | |
+| — | `tests/sync/`, `tests/functional/`, `tests/actions/` (all 🔍 rows above) | UNAUDITED | |
+
 ## Run log
 
 | Date | Commit | Checks run | Result |
 |------|--------|-----------|--------|
-| 2026-06-10 | 9bc13d0 | L3.1 (`tests/unit/test_documentation_coverage.py`) | ✅ 21/21 |
-| 2026-06-10 | 9bc13d0 | full offline unit battery (`tests/unit/`) | ✅ 58/58 after fixing one stale mock in `test_tier4_agent_reconciliation` (code had grown `initial_inventory` param; test assertion hadn't — test drift, not code bug) |
+| 2026-06-10 | 9bc13d0 | L3.1 + offline unit battery, **pre-audit** | "58/58" — superseded: 3 of those passes were vacuous (see Audit log). Recorded as a cautionary entry. |
+| 2026-06-10 | (this commit) | L3.1 + full offline unit battery, post-audit, hardened assertions | ✅ 58/58, non-vacuous; drift validator confirmed running on >0 real examples |

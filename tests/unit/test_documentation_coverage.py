@@ -348,7 +348,7 @@ class TestDocumentationIntegration:
 
         # Check that key classes are present
         class_names = {c.class_name for c in classes}
-        assert "MovementAction" in class_names or len(classes) > 0  # At least something registered
+        assert "MovementAction" in class_names
 
     def test_all_examples_valid_syntax(self):
         """Test that all registered examples have valid syntax."""
@@ -361,6 +361,9 @@ class TestDocumentationIntegration:
 
         validator = ExampleValidator(get_registry())
         report = validator.validate_all_syntax()
+
+        # Guard against vacuous pass: an empty registry validates nothing
+        assert report.total_examples > 0
 
         # All examples should have valid syntax
         if not report.all_valid:
@@ -388,6 +391,9 @@ class TestDocumentationIntegration:
         validator = StaticAttributeValidator(get_registry())
         report = validator.validate_all_attributes()
 
+        # Guard against vacuous pass: an empty registry validates nothing
+        assert report.total_examples > 0
+
         # All examples should reference valid attributes
         if not report.all_valid:
             # Print failures for debugging
@@ -411,11 +417,10 @@ class TestDocumentationIntegration:
 
         # Should have key sections
         assert "## Overview" in markdown
-        # Quick Reference only appears if classes are registered
-        # The reference modules register classes on import
-        if "## Quick Reference" in markdown:
-            # If classes were registered, check for more content
-            assert len(markdown) > 1000
+        # generate_api_reference() calls register_all_documentation(), so
+        # registered classes must appear — no conditional escape hatch
+        assert "## Quick Reference" in markdown
+        assert len(markdown) > 1000
 
     def test_coverage_report(self):
         """Test that coverage report can be generated."""
@@ -429,10 +434,9 @@ class TestDocumentationIntegration:
         validator = CoverageValidator(get_registry())
         report = validator.validate()
 
-        # Should have some coverage (exact numbers depend on implementation)
+        # Guard against vacuous pass: registry must actually contain methods
         print(report.summary())
-        assert report.total_methods >= 0
-        assert report.coverage_percent >= 0
+        assert report.total_methods > 0
 
 
 class TestDecorators:

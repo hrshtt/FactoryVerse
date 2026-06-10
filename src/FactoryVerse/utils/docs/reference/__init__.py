@@ -17,15 +17,21 @@ from FactoryVerse.utils.docs.registry import get_registry
 def register_all_documentation() -> None:
     """Register all documentation with the global registry.
 
-    This function should be called once at application startup
-    to ensure all documentation is registered before validation
-    or generation.
+    Safe to call repeatedly (registration is keyed by class/method name,
+    so re-registration overwrites idempotently). Must NOT rely on import
+    side effects alone: Python caches imports, so after a reset_registry()
+    a bare re-import would silently register nothing.
     """
-    # Import all reference modules to trigger registration
     from FactoryVerse.utils.docs.reference import actions
     from FactoryVerse.utils.docs.reference import views
     from FactoryVerse.utils.docs.reference import placement
     from FactoryVerse.utils.docs.reference import types
+
+    actions._register_actions()
+    views._register_views()
+    placement._register_placement()
+    placement._register_ghost_builder()
+    types._register_types()
 
 
 __all__ = ["register_all_documentation"]
