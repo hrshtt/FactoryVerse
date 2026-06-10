@@ -981,6 +981,45 @@ def cmd_docs_validate(args):
 
 
 # =============================================================================
+# Dev Commands (certification / debugging tooling)
+# =============================================================================
+
+
+def cmd_dev_census(args):
+    """Dump a ground-truth entity census from a running instance to JSONL."""
+    from FactoryVerse.dev.census import CensusError, dump_census, parse_bounds
+
+    try:
+        bounds = parse_bounds(args.bounds)
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
+
+    print("📋 Census dump")
+    print(f"   Instance: {args.instance}")
+    print(f"   Force: {args.force} (+neutral resources: {not args.no_resources})")
+    print(f"   Bounds: {bounds or 'all generated chunks'}")
+
+    try:
+        result = dump_census(
+            instance=args.instance,
+            force=args.force,
+            include_resources=not args.no_resources,
+            bounds=bounds,
+            chunks_per_call=args.chunks_per_call,
+        )
+    except CensusError as e:
+        print(f"❌ Census failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n✅ {len(result)} entities @ tick {result.tick} "
+          f"({result.chunk_count} chunks, {result.rcon_calls} RCON calls)")
+    for etype, n in sorted(result.counts_by_type.items(), key=lambda kv: -kv[1]):
+        print(f"   {etype:<20} {n}")
+    print(f"\n📁 {result.host_path}")
+
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -1136,6 +1175,39 @@ def main():
         help="Fail if coverage is incomplete",
     )
     docs_validate.set_defaults(func=cmd_docs_validate)
+
+    # ========== DEV COMMANDS ==========
+    dev_parser = subparsers.add_parser(
+        "dev", help="Developer / certification tooling"
+    )
+    dev_sub = dev_parser.add_subparsers(dest="dev_action")
+
+    # dev census
+    dev_census = dev_sub.add_parser(
+        "census",
+        help="Dump ground-truth entity census to JSONL (read-only, chunked)",
+    )
+    dev_census.add_argument(
+        "-i", "--instance", default="client", help="client or server_N"
+    )
+    dev_census.add_argument(
+        "-f", "--force", default="player", help="Force to enumerate (default: player)"
+    )
+    dev_census.add_argument(
+        "--bounds", help="Tile bounds x1,y1,x2,y2 (default: all generated chunks)"
+    )
+    dev_census.add_argument(
+        "--no-resources",
+        action="store_true",
+        help="Skip neutral type='resource' entities",
+    )
+    dev_census.add_argument(
+        "--chunks-per-call",
+        type=int,
+        default=64,
+        help="32x32 chunks scanned per RCON call (default: 64)",
+    )
+    dev_census.set_defaults(func=cmd_dev_census)
 
     # ========== PARSE AND EXECUTE ==========
     args = parser.parse_args()
