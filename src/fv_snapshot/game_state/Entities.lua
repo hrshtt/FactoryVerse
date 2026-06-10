@@ -694,10 +694,20 @@ local function _on_entity_configuration_changed(event)
         if not ghost_data then
             return
         end
-        
+
+        -- Persist as ghost upsert so rebuilds/replays recover the new config
+        -- (config changes previously skipped the update log entirely)
+        ghost_data.chunk = { x = chunk_coords.x, y = chunk_coords.y }
+        local operation = snapshot.make_ghost_upsert_operation(ghost_data)
+        snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
+
         -- Send UDP notification for ghost configuration change
+        -- IMPORTANT: Use the SAME sequence number that was written to the file —
+        -- an unstamped payload falls back to the separate udp_sequence counter,
+        -- which the consumer sees as a sequence gap and drops the operation.
         local payload = udp_payloads.entity_configuration_changed(chunk, ghost_data)
         payload.is_ghost = true
+        payload.sequence = operation.sequence
         udp_payloads.send_entity_operation(payload)
     else
         -- Serialize regular entity to get updated configuration
@@ -705,9 +715,15 @@ local function _on_entity_configuration_changed(event)
         if not entity_data then
             return
         end
-        
+
+        -- Persist as upsert so rebuilds/replays recover the new config
+        local operation = snapshot.make_upsert_operation(entity_data)
+        snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+
         -- Send UDP notification for configuration change
+        -- IMPORTANT: Use the SAME sequence number that was written to the file
         local payload = udp_payloads.entity_configuration_changed(chunk, entity_data)
+        payload.sequence = operation.sequence
         udp_payloads.send_entity_operation(payload)
     end
 end
@@ -1008,10 +1024,20 @@ local function _on_agent_entity_configuration_changed(event)
         if not ghost_data then
             return
         end
-        
+
+        -- Persist as ghost upsert so rebuilds/replays recover the new config
+        -- (config changes previously skipped the update log entirely)
+        ghost_data.chunk = { x = chunk_coords.x, y = chunk_coords.y }
+        local operation = snapshot.make_ghost_upsert_operation(ghost_data)
+        snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
+
         -- Send UDP notification for ghost configuration change
+        -- IMPORTANT: Use the SAME sequence number that was written to the file —
+        -- an unstamped payload falls back to the separate udp_sequence counter,
+        -- which the consumer sees as a sequence gap and drops the operation.
         local payload = udp_payloads.entity_configuration_changed(chunk, ghost_data)
         payload.is_ghost = true
+        payload.sequence = operation.sequence
         udp_payloads.send_entity_operation(payload)
     else
         -- Serialize regular entity to get updated configuration
@@ -1019,9 +1045,15 @@ local function _on_agent_entity_configuration_changed(event)
         if not entity_data then
             return
         end
-        
+
+        -- Persist as upsert so rebuilds/replays recover the new config
+        local operation = snapshot.make_upsert_operation(entity_data)
+        snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+
         -- Send UDP notification for configuration change
+        -- IMPORTANT: Use the SAME sequence number that was written to the file
         local payload = udp_payloads.entity_configuration_changed(chunk, entity_data)
+        payload.sequence = operation.sequence
         udp_payloads.send_entity_operation(payload)
     end
 end
