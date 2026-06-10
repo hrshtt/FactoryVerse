@@ -68,7 +68,9 @@ out = json.loads(rcon.send_command("/c " + LUA.strip()))
 | `entities`, `map`, `research` | fv_snapshot mod | snapshot domain interfaces (enumerate methods via `remote.interfaces` dump) |
 | `placement_hints` | fv_placement_hints mod | placement reasoning (enumerate via dump) |
 | `admin`, `custom_events`, `factorio_verse_docs` | mods | admin/util surfaces (enumerate via dump) |
-| `test_ground` | test-ground scenario only | `place_entity`, `place_resource_patch`, `clear_area`, `reset_test_area`, `force_resnapshot` |
+| `test_ground` | test-ground scenario only | `place_entity`, `place_entity_grid`, `place_resource_patch`, `place_resource_patch_circle`, `clear_area`, `reset_test_area`, `validate_entity_at`, `validate_resource_at`, `get_test_bounds`, `get_test_metadata`, ~~`force_resnapshot`~~ |
+
+⚠️ **`test_ground.force_resnapshot` is a no-op** (verified live 2026-06-10, twice): it enqueues chunks without clearing `snapshot_tick`, so every chunk is skipped as already-snapshotted and zero files are written. Use `remote.call('map','re_snapshot_area', bounds, priority)` instead — delivers in seconds. Also: `place_entity` cannot express underground-belt `type`; place the output end via raw `create_entity{..., type='output'}`.
 | `lab_grid` | lab-grid scenario only | `get_config`, `allocate_cell`, `release_cell`, `create_agent_in_cell`, `get_cell_status` |
 
 Python wrappers: `TestGroundHelper(rcon)` in `src/FactoryVerse/game/scenarios/test_ground.py`; `LabGridAdapter(rcon)` in `lab_grid.py`. Generic call shape:
