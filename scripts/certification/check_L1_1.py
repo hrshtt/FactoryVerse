@@ -77,6 +77,20 @@ def key(name: str, x, y) -> tuple:
     return (name, round(float(x), 2), round(float(y), 2))
 
 
+def tile_key(name: str, x, y) -> tuple:
+    """Resource parity key: anchor tile coords.
+
+    The mod snapshots resources as TILES (integer x/y per resource tile in
+    resources-init.jsonl) while the game census reports entity positions
+    (tile center, +0.5). Verified live 2026-06-11: census == resource_tile
+    shifted by exactly +0.5 on both axes, 1459/1459 in lab-grid cell 0
+    (incl. crude-oil). Floor both sides to the tile to compare like-for-like.
+    """
+    import math
+
+    return (name, math.floor(float(x)), math.floor(float(y)))
+
+
 def finish(status: str, code: int) -> int:
     results["status"] = status
     (ART / "results.json").write_text(json.dumps(results, indent=2, default=str))
@@ -92,10 +106,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--instance", default="client", help="client or server_N")
     ap.add_argument("--bounds", help="tile bounds x1,y1,x2,y2 (default: whole map)")
+    ap.add_argument(
+        "--force",
+        default="player",
+        help="force whose entities to census (lab-grid cells use per-cell forces, "
+        "e.g. cell_0; neutral resources are always included)",
+    )
     args = ap.parse_args()
     bounds = parse_bounds(args.bounds)
 
-    hb(f"=== check_L1_1 start (instance={args.instance}, bounds={bounds}) ===")
+    hb(f"=== check_L1_1 start (instance={args.instance}, bounds={bounds}, force={args.force}) ===")
 
     if args.instance == "client":
         inst = FactorioInstanceManager.get_client()
@@ -127,7 +147,7 @@ def main() -> int:
     # --- 1. census dump (ground truth, side A) --------------------------------
     hb("phase 1: census dump via dev.census (chunked, read-only)")
     try:
-        census = dump_census(instance=inst.name, bounds=bounds, rcon=rcon)
+        census = dump_census(instance=inst.name, bounds=bounds, force=args.force, rcon=rcon)
     except CensusError as e:
         finding(f"census dump failed: {e}")
         return finish("BLOCKED", 2)
@@ -144,7 +164,7 @@ def main() -> int:
 
     # Independent count for the anti-vacuity guard (single-call path, not the
     # chunked dumper under test).
-    surface_n = direct_count(instance=inst.name, bounds=bounds, rcon=rcon)
+    surface_n = direct_count(instance=inst.name, bounds=bounds, force=args.force, rcon=rcon)
     results["surface_direct_count"] = surface_n
 
     census_entities = {
@@ -153,7 +173,7 @@ def main() -> int:
         if r["type"] not in ("resource", "character")
     }
     census_resources = {
-        key(r["name"], r["position"]["x"], r["position"]["y"])
+        tile_key(r["name"], r["position"]["x"], r["position"]["y"])
         for r in census.rows
         if r["type"] == "resource"
     }
@@ -203,7 +223,7 @@ def main() -> int:
         ).fetchall()
     }
     db_resources = {
-        key(r[0], r[1], r[2])
+        tile_key(r[0], r[1], r[2])
         for r in con.execute(
             f"SELECT name, position_x, position_y FROM resource_tile WHERE {where}",
             params,
