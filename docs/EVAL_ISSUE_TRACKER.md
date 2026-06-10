@@ -57,15 +57,6 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Walking / Pathfinding
 
-#### [PATH-1] lab-grid pathfinder dead: chunk_generated_status never set — ALL walk_to fail without workaround
-- **Severity:** critical for evals (very plausibly the real driver of the field run's WalkingUnreachableError x8 cascade)
-- **Found:** 2026-06-11 by check_L4_5 first execution: every walk_to failed in ~1 tick map-wide; `surface.is_chunk_generated` false everywhere because `initialize_map` never calls `set_chunk_generated_status` (the control.lua:305 comment block PROMISES it as "Key technique" but the call does not exist). Proven causal: flagging the cell's chunks → identical walk completes.
-- **Fix direction:** call `set_chunk_generated_status(defines.chunk_generated_status.entities)` for in-grid chunks during initialize_map (and in the on_chunk_generated restore path); re-run check_L4_5 walk cases without the harness workaround.
-
-#### [ARG-1] Per-agent action interfaces still corrupt sparse named-table calls
-- **Severity:** high. The SNAP-2 ParamSpec fix covered `Agents.lua register_remote_interface` (admin methods, live-certified) — but L2.5's runner hit the arg-shift on `agent_N.place_entity` (omitting `direction` shifted `ghost=true` into the direction slot, "Invalid direction true"). The per-agent ACTION method registration path normalizes args separately and wasn't fixed.
-- **Fix direction:** find the per-agent interface registration (RemoteInterface.lua) and apply the same table.pack/explicit-index/bounded-unpack treatment; live probe = named-table place_entity without direction.
-
 #### [ARG-2] walk_to options.entity_ref dead via remote interface
 - **Severity:** medium. RemoteInterface.lua:371 dispatches 3 args; walking.lua reads entity_ref as 4th positional — entity-aware walking is unreachable from RCON/agents. Found by check_L4_5.
 - **Fix direction:** align the dispatch arity; add an L4.5 case for entity-aware walk.
@@ -145,6 +136,8 @@ A living document that captures issues observed during agent eval runs. Designed
 - [PROMPT-3] Cell bounds undocumented — fixed 2026-06-11 (7012629): initial_state "Your Working Area" section with hard bounds + don't-probe-beyond guidance. Live render check in LIVE-1 #6.
 - [AFFORD-1] Placement-as-sonar (no terrain affordance) — fixed 2026-06-11 (f6fd8b7): `remote_view.find_water()` + `placement_hints.is_buildable()`, doc-registered. Live-exercised 2026-06-11 (LIVE-1A: find_water SQL + validate_positions green vs engine truth); full RemoteView object path rides the next eval.
 - [OBS-2] Task Progress ×163 + 30k uncached prefix (~10M prompt tokens/17 turns) — fixed 2026-06-11 (675ac71): ProgressDeduper + anthropic cache_control, −49.7% on trajectory replay. Cache-hit observation in LIVE-1 #5.
+- [PATH-1] lab-grid pathfinder dead (chunk_generated_status never set) — fixed in 339f792, live-accepted 2026-06-11 (two walk_to round-trips with UDP completions, no workaround). Was: ALL walk_to failed map-wide in ~1 tick; the control.lua "Key technique" comment promised a call that never existed.
+- [ARG-1] Per-agent action interfaces corrupted sparse named-table calls — fixed in 339f792 (ParamSpec table.pack treatment on the per-agent twin), live-accepted 2026-06-11 (named-table place_entity without direction places real chest + ghost; positional unaffected). Was: omitted optional args shifted later named args into their slots.
 - [LOOP-1] Assistant messages missing content field — fixed 2026-03-28. Was: `to_dict()` omitted `content` when None, causing 422 on APIs that require it.
 - [DATA-1] 2.0.76 dump shifted prototype scope (89/106/99 vs certified 73/113/85) — resolved 2026-06-11, L3.2/L3.3 green. Was: `--dump-data` force-loads DLC ignoring mod-list (and persists re-enabled flags back!); 100% of scope drift attributed to Space Age recategorization, 0 to engine/filters. Runtime was never contaminated (prepare_mods disables DLC at every server start; verified via script.active_mods). Re-dump with DLC dirs removed in-container → 73/113/85 restored, 458/458 hydration exact on 2.0.76. Dead `DLC_SPACE_AGE` env removed from compose generator.
 
