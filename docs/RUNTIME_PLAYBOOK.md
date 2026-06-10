@@ -72,6 +72,11 @@ out = json.loads(rcon.send_command("/c " + LUA.strip()))
 | `agent_<id>` | per-agent | `walk_to`, `mine_resource`, `craft_enqueue`, `place_entity`, `pickup_entity`, `inspect_entity`, `get_reachable`, `get_position`, `get_inventory_items` |
 
 ⚠️ `get_inventory_items` returns a **list** of `{name, quality, count}` (Factorio 2.0 quality-aware), NOT a `{item: count}` dict — verified live 2026-06-10. Raw `test_ground.clear_area` over remote.call has a different arg shape than `TestGroundHelper.clear_area(top_left, bottom_right)` — use the Python helper, or read `control.lua:293` before calling raw.
+
+⚠️ More live-verified traps (2026-06-10, L4 battery):
+- On the docker server, an unwrapped `/c` error returns an **EMPTY RCON response** — the error text never reaches the requester. The §2 xpcall pattern is mandatory, not stylistic. To capture agent-facing errors verbatim, replicate RconHandler's envelope (`/sc` + xpcall(debug.traceback) → `{success=false, error=...}`, rcon_handler.py:99).
+- `agent.create_agent` single-table named args silently corrupt sparse calls: `ParamSpec:normalize_varargs` rebuilds positionals with `table.insert`, which skips nils — `{initial_inventory=...}` arrives as `udp_port`. Use positional args, or no-arg create + `agent.add_items(id, {item=count})`.
+- Agent `place_entity` uses `fast_replace=true`: same-group occupied cells are honestly placeable, and the **displaced entity drops as item-on-ground**, blocking later script placement until cleaned up.
 | `snapshot` | fv_snapshot mod | `get_snapshot_status`, `set_udp_port` |
 | `entities`, `map`, `research` | fv_snapshot mod | snapshot domain interfaces (enumerate methods via `remote.interfaces` dump) |
 | `placement_hints` | fv_placement_hints mod | placement reasoning (enumerate via dump) |

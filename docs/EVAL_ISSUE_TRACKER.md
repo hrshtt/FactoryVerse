@@ -54,12 +54,12 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Fix applied:** EntityOperationsAction (all 7 members), MiningAction, PlacementAction registered with examples; system prompts now carry them (generated live from the registry).
 - **Remaining:** live certification that `pickup_entity` actually works (place → pickup → inventory credited), and a re-run of engine_unit_throughput to confirm agents recover from misplacements.
 
-#### [API-2] No way to check why placement failed before attempting it
-- **Severity:** high
+#### [API-2] No way to check why placement failed before attempting it — RECLASSIFIED: affordance exists, reason is a stub (L4.1, 2026-06-10)
+- **Severity:** high → medium (polish + visibility)
 - **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28
 - **Evidence:** Agent called `.place()` 16 times, many failed with opaque errors. No pre-check like `can_place_at(entity_name, position, direction)` that returns a reason.
-- **Impact:** Agent resorted to brute-force trial-and-error placement across multiple positions/directions. Each failed attempt costs an RCON round-trip and a tool call.
-- **Fix direction:** Expose `can_place_entity` check (Factorio has this natively with `build_check_type`). Return structured result: `{can_place: false, reason: "collides_with: pipe at (110,68)"}`.
+- **Root cause (L4.1 certification):** the pre-check EXISTS and is agent-reachable — `placement_hints` is in the DSL namespace; `validate_placement` works but returns stub `reason:"placement_blocked"` (area.lua:50 TODO), while `get_placement_cue` already returns `colliding_entities` + `reason:"collision"` + footprint. The gap is the stub reason string and prompt visibility, not a missing affordance. Placement honesty itself certified: 22-cell sweep, prediction ⇔ outcome 0 disagreements.
+- **Fix direction:** replace the area.lua stub reason with `get_placement_cue`-grade detail; ensure docs/prompt surface `validate_placement`/`get_placement_cue` (same doc-gap class as API-1).
 
 ---
 
@@ -71,6 +71,7 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Evidence:** Failed placements return: `RuntimeError: RCON command failed: Error when running interface function agent_1.place_entity: __fv_embodied_agent__/agent_actions/placement.lua:162: Agent: Cannot place entity at position 110, 68 stack traceback: [C]: in function 'error' ...`
 - **Impact:** Agent sees a wall of Lua internals. The actual reason (collision? wrong terrain? too far?) is not stated. Agent can't diagnose and retries blindly. Spent 6+ attempts placing at invalid positions.
 - **Fix direction:** Catch placement failures in Lua and return structured error: `"Cannot place boiler at (110,68): tile occupied by pipe at (110,68)"` or `"Cannot place offshore-pump at (110,70): requires water tile"`. Strip stack traces from agent-facing output.
+- **Floor-certified (L4.2, 2026-06-10):** confirmed 4/4 — collision errors state NO cause (placement.lua:162 TODO). The structured reason already exists in `get_placement_cue` (`colliding_entities`, `reason`); the fix is wiring it into `place_entity`'s error payload. Acceptance test: `check_L4_placement.py` L4.2 section.
 
 #### [ERR-2] WalkingUnreachableError gives no spatial context
 - **Severity:** high
@@ -107,6 +108,7 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Evidence:** `placement_hints.get_connection_positions(boiler, "steam-engine", ConnectionType.FLUID_PIPE)` returned `[]`. Agent needed to know where to place a steam engine relative to a boiler and got no help.
 - **Impact:** This is the single biggest cause of failure in this run. Without valid connection hints, the agent spent 20+ steps trial-and-error placing and re-placing the steam engine. The entire power setup (pump→boiler→steam engine) which should be a 3-step operation became a 30-step ordeal that consumed the full eval budget.
 - **Fix direction:** Ensure `get_connection_positions` works for all fluid-connected entity pairs: pump↔pipe, pipe↔boiler, boiler↔steam-engine. These are the most common connections in early-game Factorio.
+- **Root cause found (L4.4, 2026-06-10, with controls):** boiler→pipe returns 5 candidates, boiler→steam-engine returns 0 — the solver (`fv_placement_hints` connections/init.lua:205-234) tries the TARGET's center at the connection point ±1 tile and never offsets by the target's own fluidbox geometry, so any multi-tile target structurally gets zero candidates. Fix the solver's target-side offset; acceptance: `check_L4_placement.py` L4.4b flips + non-empty candidates must place successfully. Half-good news: drill `drop_position` round-trips into `place()` honestly (engine snap), and `get_item_drop_connections` works.
 
 #### [PLACE-2] Agent gets physically trapped by placed entities
 - **Severity:** high
