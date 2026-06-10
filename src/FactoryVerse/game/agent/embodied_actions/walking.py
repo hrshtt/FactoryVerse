@@ -51,10 +51,28 @@ class WalkingUnreachableError(WalkingError):
         message: str,
         failure_type: str = "blocked_path",
         candidates_tried: int = 1,
+        agent_position: Optional[MapPosition] = None,
+        target_position: Optional[MapPosition] = None,
     ):
-        super().__init__(message)
+        spatial = ""
+        if agent_position is not None and target_position is not None:
+            dx = target_position.x - agent_position.x
+            dy = target_position.y - agent_position.y
+            distance = (dx * dx + dy * dy) ** 0.5
+            ns = "south" if dy > 0 else "north"
+            ew = "east" if dx > 0 else "west"
+            spatial = (
+                f" [you are at ({agent_position.x:.1f}, {agent_position.y:.1f}); "
+                f"target ({target_position.x:.1f}, {target_position.y:.1f}) is "
+                f"{distance:.1f} tiles to the {ns}-{ew}. If this is far beyond "
+                f"your working area, the target may be outside your reachable "
+                f"map bounds rather than merely obstructed]"
+            )
+        super().__init__(message + spatial)
         self.failure_type = failure_type
         self.candidates_tried = candidates_tried
+        self.agent_position = agent_position
+        self.target_position = target_position
 
 
 class WalkingEntityNotFoundError(WalkingError):
@@ -305,10 +323,18 @@ class MovementAction:
             candidates_tried = completion_dict.get("candidates_tried", 1)
             message = completion_dict.get("message", "Walking failed")
 
+            agent_pos: Optional[MapPosition] = None
+            try:
+                agent_pos = self.current_position
+            except Exception:
+                pass  # spatial context is best-effort; never mask the real error
+
             raise WalkingUnreachableError(
                 message=message,
                 failure_type=failure_type,
                 candidates_tried=candidates_tried,
+                agent_position=agent_pos,
+                target_position=goal,
             )
 
         # UDP payload nests action-specific data in 'result' field

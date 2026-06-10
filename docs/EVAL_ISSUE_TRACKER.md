@@ -105,7 +105,8 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Fix direction:** Catch placement failures in Lua and return structured error: `"Cannot place boiler at (110,68): tile occupied by pipe at (110,68)"` or `"Cannot place offshore-pump at (110,70): requires water tile"`. Strip stack traces from agent-facing output.
 - **Floor-certified (L4.2, 2026-06-10):** confirmed 4/4 — collision errors state NO cause (placement.lua:162 TODO). The structured reason already exists in `get_placement_cue` (`colliding_entities`, `reason`); the fix is wiring it into `place_entity`'s error payload. Acceptance test: `check_L4_placement.py` L4.2 section.
 
-#### [ERR-2] WalkingUnreachableError gives no spatial context
+#### [ERR-2] WalkingUnreachableError gives no spatial context — FIXED 2026-06-11 (Python side)
+- **Fix:** the error now carries `agent_position`/`target_position` attrs and the message appends "[you are at (x,y); target (x,y) is N tiles to the south-east. If this is far beyond your working area, the target may be outside your reachable map bounds...]". Agent position is read best-effort at raise time (never masks the original error). Couples with PROMPT-3 (cell bounds in prompt) for the full treatment. Original entry below.
 - **Severity:** high
 - **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28
 - **Evidence:** Agent got `WalkingUnreachableError: Walking failed` three times in a row. No information about what's blocking the path or where the agent is relative to the target.
