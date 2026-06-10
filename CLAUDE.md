@@ -55,7 +55,7 @@ fv_filters.yaml → factorio-data-dump.json → PrototypeDataManager (singleton)
 ```
 
 - Mods can modify existing prototypes → must extract from running Factorio
-- `fv_filters.yaml` scopes to ~100-200 entities (excludes military, trains, circuits, space)
+- `fv_filters.yaml` scopes to 73 entities / 113 recipes / 85 items (excludes military, trains, circuits, space) — counts certified L3.3, 2026-06-10
 - Singleton ensures DuckDB schemas, Factory Objects, prompts all see same filtered data
 - Regenerate: `uv run fv data refresh`
 

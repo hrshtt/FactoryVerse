@@ -12,6 +12,44 @@ from pathlib import Path
 from typing import Dict, List, Set, Optional
 import fnmatch
 
+# Dump categories that are NOT entity prototypes. Shared with
+# EntityPrototypes (prototypes.py) so the entity scope and the entity
+# accessor agree — certified L3.3 found `item` prototypes leaking into
+# get_filtered_entities() and being silently dropped downstream.
+NON_ENTITY_CATEGORIES = {
+    "item",
+    "recipe",
+    "technology",
+    "fluid",
+    "tile",
+    "virtual-signal",
+    "achievement",
+    "item-group",
+    "item-subgroup",
+    "recipe-category",
+    "fuel-category",
+    "resource-category",
+    "module-category",
+    "equipment-category",
+    "ammo-category",
+    "autoplace-control",
+    "custom-input",
+    "font",
+    "gui-style",
+    "mouse-cursor",
+    "noise-layer",
+    "particle",
+    "sound",
+    "sprite",
+    "tile-effect",
+    "tips-and-tricks-item-category",
+    "tips-and-tricks-item",
+    "trivial-smoke",
+    "utility-constants",
+    "utility-sounds",
+    "utility-sprites",
+}
+
 
 def _find_repo_root() -> Path:
     """Find repository root by looking for fv_filters.yaml.
@@ -126,11 +164,13 @@ class FilterConfig:
             # Collect all entities from included subgroups
             result = set()
             
-            # Iterate over all entity categories
+            # Iterate over ALL categories, including `item`: in the dump,
+            # `subgroup` lives on the item prototype, so entities are
+            # selected via their placing-item's subgroup.
             for category, entities in prototype_data.items():
                 if not isinstance(entities, dict):
                     continue
-                
+
                 # Filter by subgroup
                 filtered = self._filter_by_subgroup(
                     entities,
@@ -138,7 +178,19 @@ class FilterConfig:
                     entity_config['exclude_subgroups']
                 )
                 result.update(filtered)
-        
+
+            # Subgroup selection via item prototypes can pull in pure items
+            # with no entity counterpart (e.g. empty-module-slot, no-item —
+            # certified L3.3). Keep only names that exist in some entity
+            # category, so the scope and EntityPrototypes can never disagree.
+            entity_names: Set[str] = set()
+            for category, entities in prototype_data.items():
+                if category in NON_ENTITY_CATEGORIES:
+                    continue
+                if isinstance(entities, dict):
+                    entity_names.update(entities.keys())
+            result &= entity_names
+
         # Apply explicit exclusions (glob patterns)
         exclude_patterns = entity_config['exclude']
         result = {name for name in result 

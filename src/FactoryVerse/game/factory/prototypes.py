@@ -48,40 +48,11 @@ class EntityPrototypes:
         self._filtered_entities = set(manager.get_filtered_entities())
 
         # Build reverse map: entity_name -> category (type)
-        # Only include entities that pass the filter
-        ignore_categories = {
-            "item",
-            "recipe",
-            "technology",
-            "fluid",
-            "tile",
-            "virtual-signal",
-            "achievement",
-            "item-group",
-            "item-subgroup",
-            "recipe-category",
-            "fuel-category",
-            "resource-category",
-            "module-category",
-            "equipment-category",
-            "ammo-category",
-            "autoplace-control",
-            "custom-input",
-            "font",
-            "gui-style",
-            "mouse-cursor",
-            "noise-layer",
-            "particle",
-            "sound",
-            "sprite",
-            "tile-effect",
-            "tips-and-tricks-item-category",
-            "tips-and-tricks-item",
-            "trivial-smoke",
-            "utility-constants",
-            "utility-sounds",
-            "utility-sprites",
-        }
+        # Only include entities that pass the filter. Shared denylist so
+        # the filter scope and this accessor can never disagree (L3.3).
+        from FactoryVerse.utils.filters import NON_ENTITY_CATEGORIES
+
+        ignore_categories = NON_ENTITY_CATEGORIES
 
         self.entity_type_map: Dict[str, str] = {}
         for category, entities in self.data.items():
