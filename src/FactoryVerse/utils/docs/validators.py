@@ -418,6 +418,8 @@ class StaticAttributeValidator:
         # Crafting
         "crafting.craft": "List[ItemStack]",
         "crafting.status": "Dict",
+        "crafting.enqueue": "Dict",
+        "crafting.dequeue": "Dict",
 
         # Mining
         "mining.mine": "List[ItemStack]",
@@ -443,14 +445,25 @@ class StaticAttributeValidator:
         "walking.walk_to_position": "MapPosition",
         "walking.walk_to_entity": "MapPosition",
         "walking.position": "MapPosition",
+        "walking.stop": "WalkingStopped",
 
         # Research
         "research.status": "ResearchStatus",
         "research.queue": "List[QueuedTechnology]",
+        "research.enqueue": "Dict",
+        "research.dequeue": "Dict",
+        "research.get_queue": "Dict",
+
+        # RemoteView tile queries
+        "remote_view.is_tile_occupied": "bool",
+        "remote_view.get_entity_at_tile": "BaseEntity",
+        "remote_view.get_entities_in_tile_area": "List[BaseEntity]",
+        "remote_view.get_entities_at_anchor_tile": "List[BaseEntity]",
 
         # GhostBuilder
         "ghost_builder.build_plan": "Dict",
         "ghost_builder.build_ghosts": "Dict",
+        "ghost_builder.build_ghost": "bool",
 
         # Entity methods
         ".inspect": "EntityInspection",
@@ -493,9 +506,36 @@ class StaticAttributeValidator:
         ("placement.place", "return_entity=True"): "BaseEntity",
     }
 
+    # ==========================================================================
+    # EXPLICIT SKIP-LIST FOR UNMAPPED ACCESSOR CALLS (L3.1b)
+    # ==========================================================================
+    # Any example calling `<accessor>.<method>(...)` on a known accessor
+    # namespace MUST have that call mapped in ACCESSOR_RETURN_TYPES, OR appear
+    # here with a rationale. Anything else FAILS validation loudly — silent
+    # skipping of unmapped accessors is the bug this list exists to prevent.
+    UNMAPPED_ACCESSOR_SKIP_LIST: Dict[str, str] = {}
+
     def __init__(self, registry: Optional[DocumentationRegistry] = None):
         self._registry = registry or get_registry()
         self._class_map = self._build_class_map()
+        # Non-vacuity instrumentation (L3.1b): number of accessor method calls
+        # actually checked against ACCESSOR_RETURN_TYPES during the last
+        # validate_all_attributes() run. Tests assert this is > 0 so the
+        # unmapped-accessor check can never pass by not running.
+        self.accessor_calls_checked: int = 0
+
+    @classmethod
+    def _accessor_namespaces(cls) -> set:
+        """Known accessor namespaces (e.g. 'reachable_view', 'inventory').
+
+        Derived from ACCESSOR_RETURN_TYPES so a new accessor namespace is
+        covered the moment its first method is mapped.
+        """
+        return {
+            key.split(".", 1)[0]
+            for key in cls.ACCESSOR_RETURN_TYPES
+            if "." in key and not key.startswith(".")
+        }
 
     def _build_class_map(self) -> Dict[str, Type]:
         """Build mapping of type names to actual Python classes for introspection."""
@@ -512,6 +552,7 @@ class StaticAttributeValidator:
             )
             from FactoryVerse.game.agent.embodied_actions.research import ResearchStatus, QueuedTechnology
             from FactoryVerse.game.agent.embodied_actions.mining import MiningCancelled
+            from FactoryVerse.game.agent.embodied_actions.walking import WalkingStopped
             from FactoryVerse.game.agent.embodied_actions.place_entity import (
                 EntityPlaced, GhostRemoved
             )
@@ -537,6 +578,7 @@ class StaticAttributeValidator:
                 "ResearchStatus": ResearchStatus,
                 "QueuedTechnology": QueuedTechnology,
                 "MiningCancelled": MiningCancelled,
+                "WalkingStopped": WalkingStopped,
                 "EntityPlaced": EntityPlaced,
                 "GhostRemoved": GhostRemoved,
                 "EntityRecipeSet": EntityRecipeSet,
@@ -547,8 +589,13 @@ class StaticAttributeValidator:
                 "EntityPickedUp": EntityPickedUp,
             })
         except ImportError as e:
-            # If imports fail, that's a bug in the type system setup
-            pass
+            # If imports fail, that's a bug in the type system setup.
+            # Failing loudly here is mandatory: an empty class map would make
+            # every attribute check silently pass (L3.1b hardening).
+            raise ImportError(
+                f"StaticAttributeValidator could not import type-system classes; "
+                f"validation would be vacuous: {e}"
+            ) from e
 
         return class_map
 
@@ -695,8 +742,36 @@ class StaticAttributeValidator:
                 error_type="SyntaxError",
             )
 
-        # Find all attribute accesses
         errors = []
+
+        # ----------------------------------------------------------------
+        # L3.1b: unmapped-accessor check (loud failure, no silent skips)
+        # ----------------------------------------------------------------
+        # Every method call on a known accessor namespace must be mapped in
+        # ACCESSOR_RETURN_TYPES or listed in UNMAPPED_ACCESSOR_SKIP_LIST.
+        # Without this, a call like `x = reachable_view.made_up_method()`
+        # leaves `x` untyped and every attribute access on it passes silently.
+        namespaces = self._accessor_namespaces()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in namespaces
+            ):
+                full_accessor = f"{node.func.value.id}.{node.func.attr}"
+                self.accessor_calls_checked += 1
+                if (
+                    full_accessor not in self.ACCESSOR_RETURN_TYPES
+                    and full_accessor not in self.UNMAPPED_ACCESSOR_SKIP_LIST
+                ):
+                    errors.append(
+                        f"'{full_accessor}(...)' - accessor not mapped in "
+                        f"ACCESSOR_RETURN_TYPES and not in UNMAPPED_ACCESSOR_SKIP_LIST. "
+                        f"Add the mapping (preferred) or skip-list it with a rationale."
+                    )
+
+        # Find all attribute accesses
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute):
                 # Get the variable name (e.g., 'patch' from patch.total_amount)
@@ -745,6 +820,7 @@ class StaticAttributeValidator:
         total = 0
         valid = 0
         failed: List[ExampleValidationResult] = []
+        self.accessor_calls_checked = 0  # reset non-vacuity counter for this run
 
         for class_doc in self._registry.get_all_classes():
             for method_doc in class_doc.methods + class_doc.properties:
