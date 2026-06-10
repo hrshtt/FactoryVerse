@@ -269,7 +269,10 @@ def cmd_server_start(args):
         env = Environment(config=config)
 
         print(f"🚀 Starting {args.num} Factorio server(s)...")
-        print(f"   Scenario: {args.scenario}")
+        if getattr(args, "save", None):
+            print(f"   Loading save: {args.save} (scenario '{args.scenario}' used for mod prep only)")
+        else:
+            print(f"   Scenario: {args.scenario}")
 
         try:
             await env.initialize(up_to=Tier.SETTINGS)
@@ -282,6 +285,7 @@ def cmd_server_start(args):
             await tier1.start_server(
                 scenario=args.scenario,
                 num_instances=args.num,
+                save=getattr(args, "save", None),
             )
 
             # Print connection info
@@ -1074,6 +1078,11 @@ def main():
     )
     server_start.add_argument(
         "-s", "--scenario", default="test-ground", help="Scenario"
+    )
+    server_start.add_argument(
+        "--save",
+        help="Load this save instead of a fresh scenario start "
+        "(name in .fv-output/server_N/saves/, written by game.server_save)",
     )
     server_start.set_defaults(func=cmd_server_start)
 

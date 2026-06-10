@@ -276,6 +276,7 @@ class FactorioServerManager:
         num_instances: int,
         scenario: str,
         max_agents: Optional[int] = None,
+        save: Optional[str] = None,
     ) -> Dict[str, dict]:
         """Generate Factorio server services for Docker Compose.
 
@@ -283,6 +284,8 @@ class FactorioServerManager:
             num_instances: Number of server instances
             scenario: Scenario to load
             max_agents: Maximum agents per server (determines UDP port range)
+            save: Save name to load instead of starting the scenario fresh
+                (resolved against the per-server saves volume)
 
         Returns:
             Dict of service definitions for docker-compose
@@ -299,13 +302,15 @@ class FactorioServerManager:
 
         for i in range(num_instances):
             # Add Factorio server
-            services[f"factorio_{i}"] = self._build_service_config(i, scenario)
+            services[f"factorio_{i}"] = self._build_service_config(i, scenario, save=save)
             # Add UDP forwarder sidecar (Alpine + socat)
             services[f"udp_forwarder_{i}"] = self._build_udp_forwarder_config(i)
 
         return services
 
-    def _build_service_config(self, instance_id: int, scenario: str) -> dict:
+    def _build_service_config(
+        self, instance_id: int, scenario: str, save: Optional[str] = None
+    ) -> dict:
         """Build Docker Compose service config for a single server instance."""
         cfg = self.config
 
@@ -314,13 +319,25 @@ class FactorioServerManager:
         rcon_port = cfg.get_rcon_port(f"server_{instance_id}")
         output_dir = self.get_server_script_output_dir(instance_id)
 
+        # Saves live on a host volume so game.server_save() works out-of-box
+        # (entrypoint [] skips the image init that creates /factorio/saves)
+        # and saves survive `docker compose down` (L0.3)
+        saves_dir = output_dir / "saves"
+        saves_dir.mkdir(parents=True, exist_ok=True)
+
         # Build Factorio command
         emulator = cfg.factorio_emulator
         factorio_bin = f"{emulator} /opt/factorio/bin/x64/factorio".strip()
 
+        if save:
+            save_file = save if save.endswith(".zip") else f"{save}.zip"
+            start_arg = f"--start-server /factorio/saves/{save_file}"
+        else:
+            start_arg = f"--start-server-load-scenario {scenario}"
+
         command_parts = [
             factorio_bin,
-            f"--start-server-load-scenario {scenario}",
+            start_arg,
             f"--port {cfg.internal_game_port}",
             f"--rcon-port {cfg.internal_rcon_port}",
             f'--rcon-password "{cfg.rcon_password}"',
@@ -362,6 +379,7 @@ class FactorioServerManager:
                 f"{self.mod_path.resolve()}:/opt/factorio/mods",
                 f"{self.config_dir.resolve()}:/factorio/config",
                 f"{output_dir.resolve()}:/opt/factorio/script-output",
+                f"{saves_dir.resolve()}:/factorio/saves",
             ],
             # extra_hosts needed here since sidecar shares network namespace
             "extra_hosts": ["host.docker.internal:host-gateway"],

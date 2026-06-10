@@ -259,12 +259,15 @@ class Tier1Factorio(TierBase):
         self,
         scenario: str,
         num_instances: int = 1,
+        save: Optional[str] = None,
     ) -> None:
         """Start Factorio server container(s).
 
         Args:
             scenario: Scenario to load
             num_instances: Number of server instances
+            save: Save name to load instead of a fresh scenario start
+                (from the per-server saves volume, .fv-output/server_N/saves)
         """
         if not self._server_manager or not self._docker_compose_manager:
             raise RuntimeError("Server manager not initialized")
@@ -276,6 +279,7 @@ class Tier1Factorio(TierBase):
         services = self._server_manager.get_services(
             num_instances=num_instances,
             scenario=scenario,
+            save=save,
         )
         self._docker_compose_manager.add_services("factorio", services)
         self._docker_compose_manager.write_compose()
