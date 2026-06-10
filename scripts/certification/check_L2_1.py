@@ -17,7 +17,7 @@ Layers compared (each artifact records which code path produced it):
       FactoryVerse.game.factory.entity.transform.transform_inspection_data,
       AND the L2 raw payload fed through the same transform (its designed input).
   L4  DB path (best effort) — load snapshot dir into in-memory DuckDB via
-      FactoryVerse.game.infra.duckdb.db.loader.main.load_all; query
+      Stack A SnapshotDatabase+SnapshotLoader; query
       `inserter` and `transport_belt` tables.
 
 Idempotent: clears its area, builds, asserts, reports, clears again.
@@ -488,45 +488,62 @@ def layer3_transform(
 # ---------------------------------------------------------------------------
 def layer4_db(log: Log) -> Dict[str, Any]:
     out: Dict[str, Any] = {
-        "_code_path": "FactoryVerse.game.infra.duckdb.db.loader.main.load_all "
-        "(in-memory duckdb) over the snapshot dir; query inserter & "
-        "transport_belt tables",
+        "_code_path": "Stack A (what Tier4 uses): SnapshotDatabase(in-memory)"
+        ".ensure_schema() + SnapshotLoader.load_all() over the snapshot dir; "
+        "query map_entity raw_data for the rig (component tables are known "
+        "schema-only — L1.5 ❌ — so relational fields live in raw_data JSON)",
         "status": "ran",
     }
     try:
-        import contextlib
-        import io
+        from FactoryVerse.game.infra.duckdb.database import SnapshotDatabase
+        from FactoryVerse.game.infra.duckdb.loader import SnapshotLoader
 
-        import duckdb
-
-        from FactoryVerse.game.infra.duckdb.db.loader.main import load_all
-
-        con = duckdb.connect(":memory:")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            load_all(con, SNAPSHOT_DIR, include_analytics=False)
-        out["loader_stdout_tail"] = buf.getvalue()[-2000:]
+        db = SnapshotDatabase(db_path=None)
+        db.ensure_schema()
+        con = db.connection
+        result = SnapshotLoader(db=con, snapshot_dir=SNAPSHOT_DIR).load_all()
+        out["load_result"] = str(result)
 
         def rows(sql: str) -> List[Dict]:
             cur = con.execute(sql)
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
 
-        out["inserter_rows"] = rows(
-            "SELECT entity_name, position_x, position_y, direction, "
-            "to_json(output) AS output, to_json(input) AS input FROM inserter "
+        area = (
             f"WHERE position_x BETWEEN {AREA_LT[0]} AND {AREA_RB[0]} "
             f"AND position_y BETWEEN {AREA_LT[1]} AND {AREA_RB[1]}"
         )
-        out["transport_belt_rows"] = rows(
+        out["map_entity_rows"] = rows(
             "SELECT entity_name, position_x, position_y, direction, "
-            "to_json(output) AS output, to_json(input) AS input FROM transport_belt "
-            f"WHERE position_x BETWEEN {AREA_LT[0]} AND {AREA_RB[0]} "
-            f"AND position_y BETWEEN {AREA_LT[1]} AND {AREA_RB[1]}"
+            f"raw_data FROM map_entity {area}"
         )
+        # Relational fields live in raw_data JSON (component tables are
+        # schema-only, L1.5 ❌). Flatten through the same adapter as L3 so the
+        # comparator checks DuckDB round-trip fidelity of the snapshot record.
+        out["flat_rows"] = []
+        for r in out["map_entity_rows"]:
+            rec = (
+                json.loads(r["raw_data"])
+                if isinstance(r["raw_data"], str)
+                else (r["raw_data"] or {})
+            )
+            out["flat_rows"].append(
+                {
+                    "entity_name": r["entity_name"],
+                    "position_x": r["position_x"],
+                    "position_y": r["position_y"],
+                    "flat": snapshot_to_transform_input(rec),
+                }
+            )
+        # Component tables: empty per L1.5 until populated by design; record
+        # counts so this layer flags the day that changes.
+        out["component_counts"] = {
+            t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+            for t in ("inserter", "transport_belt", "mining_drill", "assembler")
+        }
         log(
-            f"layer4 (DuckDB) loaded: {len(out['inserter_rows'])} inserter rows, "
-            f"{len(out['transport_belt_rows'])} transport_belt rows"
+            f"layer4 (DuckDB Stack A) loaded: {len(out['map_entity_rows'])} "
+            f"map_entity rows in rig area; component counts {out['component_counts']}"
         )
     except Exception as e:  # noqa: BLE001 — BLOCKED-evidence, not a crash
         import traceback
@@ -556,41 +573,22 @@ def compare_layers(
     # ---- DB row lookup helpers ----
     db_ok = l4.get("status") == "ran"
 
-    def db_inserter() -> Optional[Dict]:
+    def db_flat(name: str, x: float, y: float) -> Optional[Dict]:
+        """map_entity.raw_data flattened via the L3 adapter, by name+position."""
         if not db_ok:
             return None
-        for r in l4["inserter_rows"]:
-            if r["entity_name"] == "burner-inserter" and pos_eq(
-                {"x": r["position_x"], "y": r["position_y"]},
-                {"x": INSERTER_POS[0], "y": INSERTER_POS[1]},
-            ):
-                return r
-        return None
-
-    def db_belt(x: float, y: float) -> Optional[Dict]:
-        if not db_ok:
-            return None
-        for r in l4["transport_belt_rows"]:
-            if pos_eq(
+        for r in l4["flat_rows"]:
+            if r["entity_name"] == name and pos_eq(
                 {"x": r["position_x"], "y": r["position_y"]}, {"x": x, "y": y}
             ):
-                return r
+                return r["flat"]
         return None
 
-    def db_struct(row: Optional[Dict], col: str) -> Optional[Dict]:
-        """DB output/input JSON struct → canonical ref {name, position}."""
-        if row is None or row.get(col) is None:
-            return None
-        s = json.loads(row[col]) if isinstance(row[col], str) else row[col]
-        if s is None:
-            return None
-        if isinstance(s, list):  # transport_belt.input is an array
-            return [
-                {"name": i["entity_name"], "position": {"x": i["position_x"], "y": i["position_y"]}}
-                for i in s
-            ]
-        pos = s.get("position") or {"x": s.get("position_x"), "y": s.get("position_y")}
-        return {"name": s.get("entity_name"), "position": {"x": pos["x"], "y": pos["y"]}}
+    def db_inserter() -> Optional[Dict]:
+        return db_flat("burner-inserter", *INSERTER_POS)
+
+    def db_belt(x: float, y: float) -> Optional[Dict]:
+        return db_flat("transport-belt", x, y)
 
     # ======================= INSERTER pickup/drop ==========================
     ins_db = db_inserter()
@@ -599,8 +597,7 @@ def compare_layers(
         e2 = l2["inserter"].get(side)
         t_snap = (l3["from_snapshot"]["inserter"].get("inserter") or {}).get(side)
         t_insp = (l3["from_inspect"]["inserter"].get("inserter") or {}).get(side)
-        db_col = "input" if side == "pickup_target" else "output"
-        e4 = db_struct(ins_db, db_col)
+        e4 = None if ins_db is None else ins_db.get(side)
 
         agree = (
             e1 is not None
@@ -673,7 +670,7 @@ def compare_layers(
         t_insp = norm_refs(typed_belt(l3["from_inspect"], key).get(attr, []))
         x, y = (BELT_XS[2], BELT_Y) if key == "belt3" else (BELT_XS[3], BELT_Y)
         row = db_belt(x, y)
-        e4 = db_struct(row, db_col)
+        e4 = None if row is None else row.get(attr)
         if e4 is not None and not isinstance(e4, list):
             e4 = [e4]
         agree = (
@@ -771,8 +768,7 @@ def compare_layers(
     leaks += [f"L3:{p}" for p in find_unit_numbers(l3["from_inspect"])]
     leaks += [f"L3:{p}" for p in find_unit_numbers(l3["from_snapshot"])]
     if db_ok:
-        leaks += [f"L4:{p}" for p in find_unit_numbers(l4.get("inserter_rows", []))]
-        leaks += [f"L4:{p}" for p in find_unit_numbers(l4.get("transport_belt_rows", []))]
+        leaks += [f"L4:{p}" for p in find_unit_numbers(l4.get("flat_rows", []))]
     add(
         "no_unit_number_leakage",
         {"leaks": leaks},

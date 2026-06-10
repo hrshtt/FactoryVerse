@@ -232,8 +232,11 @@ def collect_api_surface() -> Tuple[List[Dict[str, Any]], Set[str]]:
 # =============================================================================
 
 SYNC_PY = REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/sync.py"
-LOADER_DIR = REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/db/loader"
-DB_SCHEMA_PY = REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/db/schema.py"
+STACK_A_LOADER = REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/loader.py"
+STATUS_LOADER = REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/status_loader.py"
+# The parallel `db/` stack (create_schema/load_all/derived_loader) was dead
+# code, deleted 2026-06-10 by design decision: belt aggregation = labels on
+# primitives + Python graph functions on top; derived tables are off-design.
 
 # Case-sensitive on purpose: SQL keywords are uppercase in this codebase,
 # while docstrings/log strings use sentence case ("Update only the...").
@@ -314,17 +317,15 @@ def collect_tables() -> Dict[str, Set[str]]:
     component = {t.name for t in sd.COMPONENT_TABLES}
     analytics = {t.name for t in sd.ANALYTICS_TABLES}
 
-    schema_created = set(CREATE_TABLE_RE.findall(DB_SCHEMA_PY.read_text()))
-
-    derived_src = (LOADER_DIR / "derived_loader.py").read_text()
-    derived = set(SQL_TABLE_RE.findall(derived_src)) | set(
-        CREATE_TABLE_RE.findall(derived_src)
-    )
+    # Stack B deleted (see note at top): derived/schema_created universes are
+    # empty by design now. Keys kept so downstream set algebra is stable.
+    schema_created: Set[str] = set()
+    derived: Set[str] = set()
 
     loader_written: Set[str] = set()
-    for py in LOADER_DIR.glob("*.py"):
-        text = py.read_text()
-        loader_written |= set(SQL_TABLE_RE.findall(text))
+    for py in (STACK_A_LOADER, STATUS_LOADER):
+        if py.exists():
+            loader_written |= set(SQL_TABLE_RE.findall(py.read_text()))
 
     return {
         "core": core,
@@ -338,9 +339,10 @@ def collect_tables() -> Dict[str, Set[str]]:
 
 def collect_jsonl_kinds() -> List[str]:
     kinds: Set[str] = set()
-    sources = list(LOADER_DIR.glob("*.py")) + [
-        REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/loader.py",
-        REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/snapshot.py",
+    sources = [
+        STACK_A_LOADER,
+        STATUS_LOADER,
+        REPO_ROOT / "src/FactoryVerse/game/infra/duckdb/sync.py",
     ]
     for py in sources:
         if not py.exists():
