@@ -69,7 +69,9 @@ out = json.loads(rcon.send_command("/c " + LUA.strip()))
 | Interface | Provider | Key methods |
 |-----------|----------|-------------|
 | `agent` | fv_embodied_agent mod | `create_agent`, `destroy_agents`, `list_agents` |
-| `agent_<id>` | per-agent | `walk_to`, `mine_resource`, `craft_enqueue`, `place_entity`, `inspect_entity`, `get_reachable`, `get_position`, `get_inventory_items` |
+| `agent_<id>` | per-agent | `walk_to`, `mine_resource`, `craft_enqueue`, `place_entity`, `pickup_entity`, `inspect_entity`, `get_reachable`, `get_position`, `get_inventory_items` |
+
+⚠️ `get_inventory_items` returns a **list** of `{name, quality, count}` (Factorio 2.0 quality-aware), NOT a `{item: count}` dict — verified live 2026-06-10. Raw `test_ground.clear_area` over remote.call has a different arg shape than `TestGroundHelper.clear_area(top_left, bottom_right)` — use the Python helper, or read `control.lua:293` before calling raw.
 | `snapshot` | fv_snapshot mod | `get_snapshot_status`, `set_udp_port` |
 | `entities`, `map`, `research` | fv_snapshot mod | snapshot domain interfaces (enumerate methods via `remote.interfaces` dump) |
 | `placement_hints` | fv_placement_hints mod | placement reasoning (enumerate via dump) |
