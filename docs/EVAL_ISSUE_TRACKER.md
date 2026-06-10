@@ -65,7 +65,7 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Error Quality
 
-#### [ERR-1] Placement errors are raw Lua stack traces
+#### [ERR-1] Placement errors are raw Lua stack traces — FIXED 2026-06-10 (certified L4.2)
 - **Severity:** critical
 - **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28
 - **Evidence:** Failed placements return: `RuntimeError: RCON command failed: Error when running interface function agent_1.place_entity: __fv_embodied_agent__/agent_actions/placement.lua:162: Agent: Cannot place entity at position 110, 68 stack traceback: [C]: in function 'error' ...`
@@ -102,7 +102,7 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Placement / Spatial
 
-#### [PLACE-1] placement_hints returns empty for steam engine connections
+#### [PLACE-1] placement_hints returns empty for steam engine connections — FIXED 2026-06-10 (certified L4.4: candidate placed, fluidbox_connections=1)
 - **Severity:** critical
 - **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28
 - **Evidence:** `placement_hints.get_connection_positions(boiler, "steam-engine", ConnectionType.FLUID_PIPE)` returned `[]`. Agent needed to know where to place a steam engine relative to a boiler and got no help.
