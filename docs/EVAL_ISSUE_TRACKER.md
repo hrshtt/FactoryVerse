@@ -72,6 +72,24 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Formalizes:** TYPE-1's remaining ask (symbolic status names at payload/dump tier; names exist only in `__repr__` today).
 - **Fix direction:** map `defines.entity_status` ints → names in the snapshot payload + inspection results + DB column (or a lookup table the prompt documents); add the diagnose-upstream idiom to the prompt (PROMPT-2b) so no_power triggers a generator-side status walk.
 
+### Information Surfaces (attempt-3 base archaeology, docs/retros/2026-06-11-attempt3-base-archaeology.md)
+
+#### [RESERVE-1] Inserter drop/pickup cells are invisible at placement time
+- **Severity:** high — the single most damaging layout mechanic in attempt 3: poles placed onto cells an inserter's hand needs (Harshit's obs #2, class A), triggering place→pickup→replace rework loops whose residue is the smelting-row gaps and disconnected belt stubs (obs #1/#3/#4, class D).
+- **Fix direction:** placement validation/cues must treat occupied drop/pickup cells as soft-blocked and NAME the reserving inserter in errors; expose reserved cells as a queryable surface.
+
+#### [ISLAND-1] Nothing tells the agent about its own orphans (ghosts, disconnected islands)
+- **Severity:** medium-high — 20 ghost belts and an entire abandoned left factory (obs #7/#8) kept producing/lingering with zero signal; Task Progress shows throughput only.
+- **Fix direction:** Task Progress inventory line: pending ghosts count, producing-but-uncollected machines, disconnected belt segments.
+
+#### [REASON-1] Empty cue lists drop their reason at the Python wrapper
+- **Severity:** medium — the Lua tier now returns a structured `reason` on zero cues (L4.6 fix) but `get_connection_positions` returns a bare list; attempt 3's agent got `[]` for its second power rig and improvised the dead boiler-next-to-pump placement (obs #9, class C aggravated by missing why).
+- **Fix direction:** surface `reason`/`blocked_candidates` through the wrapper (rich return or exception message).
+
+#### [POLE-PREVIEW-1] No pre-placement pole supply/reach preview
+- **Severity:** low-medium — poles mostly worked (obs #10, class B), but supply-area reasoning was blind guessing; also reconcile the generator-boundary network split (nets 1 vs 9, silent).
+- **Fix direction:** expose supply-area coverage + wire-reach preview in pole cues; pole-network census in remote_view.
+
 ### Walking / Pathfinding
 
 #### [ARG-2] walk_to options.entity_ref dead via remote interface
