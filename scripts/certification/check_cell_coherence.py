@@ -152,9 +152,13 @@ OPEN-QUESTIONS for the first (clean) live run (offline draft cannot settle):
          booted from a SAVE may legitimately carry older snapshot ticks.
          This check assumes a fresh scenario boot; on a loaded save the
          CELL-2 gates need re-derivation.
-    OQ5  Queue-drain criterion (phase IDLE + pending stable across 5 polls,
-         inherited from check_L2_5's first-run fix) may need tuning when N
-         creates enqueue back-to-back re_snapshots.
+    OQ5  RESOLVED 2026-06-11 (first clean-run audit): the inherited 'IDLE +
+         pending stable across 5 polls' criterion was dishonest — the mod
+         idles ~300 ticks before processing enqueued re_snapshots, so the
+         stability window aliased the bootstrap wait and the DB was read
+         mid-flight. Now wait_fresh: IDLE + pending==0 (reachable on
+         lab-grid) + per-chunk lookup snapshot_tick >= ref tick; timeout
+         is a recorded failure, never a silent proceed.
     OQ6  destroy_agents is called with an explicit {id} list (the nil/0
          destroy-ALL semantics and the ParamSpec sparse-table trap are both
          live, playbook §3); runner must confirm destroyed=[id] comes back.
@@ -427,24 +431,67 @@ def assert_bijection(storage: Dict[str, Any], label: str, failures: List[str]) -
     return len(ac)
 
 
-def wait_queue_drain(rcon: Any, label: str) -> List[Dict[str, Any]]:
-    """Drain criterion from check_L2_5's first-run fix: pending_chunks counts
-    every never-snapshotted chunk map-wide, so pending==0 is unreachable;
-    instead require phase IDLE with pending stable across 5 polls."""
+def lookup_snapshot_ticks(rcon: Any) -> Dict[Tuple[int, int], int]:
+    """This boot's per-chunk snapshot ticks from map.get_chunk_lookup
+    (shape live-verified 2026-06-11: dict keyed 'cx,cy', snapshot_tick int)."""
+    lookup = lua(rcon, "return remote.call('map','get_chunk_lookup')")
+    snapped: Dict[Tuple[int, int], int] = {}
+    if isinstance(lookup, dict):
+        for k, v in lookup.items():
+            if isinstance(v, dict) and v.get("snapshot_tick") is not None:
+                cx, cy = k.split(",")
+                snapped[(int(cx), int(cy))] = int(v["snapshot_tick"])
+    return snapped
+
+
+def wait_fresh(rcon: Any, label: str, failures: List[str],
+               want: Optional[Dict[Tuple[int, int], int]] = None
+               ) -> List[Dict[str, Any]]:
+    """Honest wait (the da0cb2f wait_for_cell_snapshot criterion, Stack-A
+    edition): queue fully drained (phase IDLE + pending_chunks==0, stable
+    across 2 polls) AND — if `want` maps (cx,cy)->min_tick — every wanted
+    chunk's lookup snapshot_tick >= min_tick. Timeout is a RECORDED FAILURE,
+    never a silent proceed.
+
+    Replaces the OQ5 'IDLE + pending stable across 5 polls' criterion, which
+    this harness's own first clean run (2026-06-11) proved dishonest: the
+    mod idles ~300 ticks (5s) before processing enqueued re_snapshots, so
+    'stable pending=31' aliased the bootstrap window and the DB was read
+    mid-flight (73 phantom failures run 1, 9 run 2; writes actually landed
+    ~700+ ticks after create). pending==0 IS reachable on lab-grid — the
+    inherited check_L2_5 premise was wrong here."""
     timeline: List[Dict[str, Any]] = []
+    stale: List[str] = []
     deadline = time.time() + DRAIN_TIMEOUT_S
     while time.time() < deadline:
         st = lua(rcon, "return remote.call('map','get_snapshot_status')")
         entry = {"t": round(time.time(), 1), "phase": st.get("phase"),
                  "pending": st.get("pending_chunks")}
         timeline.append(entry)
-        tail = timeline[-5:]
-        if (len(tail) == 5
-                and all(e["phase"] == "IDLE" for e in tail)
-                and len({e["pending"] for e in tail}) == 1):
-            break
+        tail = timeline[-2:]
+        drained = (len(tail) == 2
+                   and all(e["phase"] == "IDLE" and e["pending"] == 0
+                           for e in tail))
+        if drained:
+            if want:
+                snapped = lookup_snapshot_ticks(rcon)
+                stale = [f"({cx},{cy}) snapped@{snapped.get((cx, cy))} < {t}"
+                         for (cx, cy), t in sorted(want.items())
+                         if snapped.get((cx, cy), -1) < t]
+                if stale:
+                    time.sleep(1.0)
+                    continue
+            hb(f"wait_fresh ({label}): drained+fresh after {len(timeline)} polls, "
+               f"last={timeline[-1]}")
+            return timeline
         time.sleep(1.0)
-    hb(f"queue drain ({label}): {len(timeline)} polls, last={timeline[-1]}")
+    failures.append(
+        f"WAIT[{label}]: {DRAIN_TIMEOUT_S:.0f}s timeout — last={timeline[-1]}, "
+        f"{len(stale)} stale chunk(s): {stale[:8]} — snapshot writes never "
+        "landed (the CELL-1 lying-wait class; downstream DB checks below "
+        "read a mid-flight state)")
+    hb(f"wait_fresh ({label}): TIMEOUT after {len(timeline)} polls, "
+       f"last={timeline[-1]}")
     return timeline
 
 
@@ -764,7 +811,12 @@ def run_check(instance: str = "server_0", agents: int = 2,
 
         # ---- Invariant 4: vision scope = body cell (CELL-1) -------------------
         hb("PHASE 4: snapshot settle + fresh DB load (CELL-1 invariant)")
-        wait_queue_drain(rcon, "post-create settle")
+        want_fresh: Dict[Tuple[int, int], int] = {}
+        for c in created:
+            for ch in cell_chunks(c["bounds"]):
+                want_fresh[ch] = max(want_fresh.get(ch, 0),
+                                     int(c["tick_before"]))
+        wait_fresh(rcon, "post-create settle", failures, want=want_fresh)
         con, load_stats = fresh_db(ART / "session_postcreate.duckdb")
         results["phases"]["db_load_postcreate"] = load_stats
         hb(f"DB loaded: {load_stats}")
@@ -999,9 +1051,12 @@ def run_check(instance: str = "server_0", agents: int = 2,
         if len(placed) < MIN_MARKERS:
             failures.append(f"MARKERS: only {len(placed)}/{len(markers)} placed "
                             f"(< {MIN_MARKERS}) — invariant 5 cannot be certified")
+        resnap_tick = lua_strict(rcon, "return game.tick")
         lua_strict(rcon, "return remote.call('map','re_snapshot_area',"
                          f"{bounds_lua(a['bounds'])},50)")
-        wait_queue_drain(rcon, "marker snapshot")
+        wait_fresh(rcon, "marker snapshot", failures,
+                   want={ch: int(resnap_tick)
+                         for ch in cell_chunks(a["bounds"])})
         con2, load2 = fresh_db(ART / "session_postmarker.duckdb")
         results["phases"]["db_load_postmarker"] = load2
         db_a = db_cell_rows(con2, a["bounds"])
@@ -1057,9 +1112,12 @@ def run_check(instance: str = "server_0", agents: int = 2,
             return {{removed=removed}}
         """)
         results["phases"]["marker_cleanup"] = cleanup
+        cleanup_tick = lua_strict(rcon, "return game.tick")
         lua_strict(rcon, "return remote.call('map','re_snapshot_area',"
                          f"{bounds_lua(a['bounds'])},50)")
-        wait_queue_drain(rcon, "marker cleanup snapshot")
+        wait_fresh(rcon, "marker cleanup snapshot", failures,
+                   want={ch: int(cleanup_tick)
+                         for ch in cell_chunks(a["bounds"])})
         con3, _ = fresh_db(ART / "session_postcleanup.duckdb")
         leftover = db_cell_rows(con3, a["bounds"])["entities"]
         con3.close()
