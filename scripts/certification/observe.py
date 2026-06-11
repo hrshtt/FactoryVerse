@@ -37,13 +37,19 @@ def resolve_instance(name: str) -> tuple[int, Path]:
 CENSUS_LUA = """
 local ok, res = xpcall(function()
   local s = game.surfaces[1]
-  local by_name = {}
-  local n = 0
-  for _, e in pairs(s.find_entities_filtered{force='player'}) do
-    by_name[e.name] = (by_name[e.name] or 0) + 1
-    n = n + 1
+  -- All build-capable forces: 'player' AND lab-grid cell forces (agents
+  -- build on cell_N, so a player-only census shows an empty world)
+  local by_name, by_force, n = {}, {}, 0
+  for _, e in pairs(s.find_entities_filtered{}) do
+    local f = e.force.name
+    if f ~= 'neutral' and f ~= 'enemy' then
+      by_name[e.name] = (by_name[e.name] or 0) + 1
+      by_force[f] = (by_force[f] or 0) + 1
+      n = n + 1
+    end
   end
-  local out = {tick = game.tick, total = n, by_name = by_name, interfaces = {}}
+  local out = {tick = game.tick, total = n, by_name = by_name,
+               by_force = by_force, interfaces = {}}
   for name, _ in pairs(remote.interfaces) do table.insert(out.interfaces, name) end
   return out
 end, debug.traceback)
@@ -86,7 +92,10 @@ def heartbeats() -> list[str]:
 def probe(rcon: RCONClient) -> None:
     now = datetime.now().strftime("%H:%M:%S")
     census = lua(rcon, CENSUS_LUA)
-    print(f"[{now}] tick={census.get('tick')} entities(player)={census.get('total')}")
+    forces = ", ".join(f"{f}={c}" for f, c in
+                       sorted((census.get("by_force") or {}).items()))
+    print(f"[{now}] tick={census.get('tick')} entities={census.get('total')}"
+          f" ({forces})")
     for name, count in sorted((census.get("by_name") or {}).items()):
         print(f"    {count:5d}  {name}")
     if "test_ground" in (census.get("interfaces") or []):
