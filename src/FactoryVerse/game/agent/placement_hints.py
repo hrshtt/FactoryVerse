@@ -812,7 +812,11 @@ class PlacementHints:
             return [
                 ConnectionPosition(
                     position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
-                    direction=Direction(p["direction"]) if p.get("direction") else None,
+                    # `is not None`: defines.direction.north == 0 is falsy —
+                    # a plain truthiness check silently stripped the rotation
+                    # off every north-facing cue (L4.6 finding, 2026-06-11)
+                    direction=(Direction(p["direction"])
+                               if p.get("direction") is not None else None),
                     perpendicular_offset=0.0,
                 )
                 for p in positions

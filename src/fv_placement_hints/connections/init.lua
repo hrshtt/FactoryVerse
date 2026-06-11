@@ -519,13 +519,20 @@ function M.get_inserter_placements(pickup_name, pickup_position, drop_name, drop
                 )
                 local actual_drop = geometry.add_offset(inserter_pos, rotated_drop)
 
-                -- Check if pickup position is near pickup entity
-                local pickup_dist = geometry.distance(actual_pickup, pickup_position)
-                -- Check if drop position is near drop entity
-                local drop_dist = geometry.distance(actual_drop, drop_position)
+                -- ENGINE-TRUTH reach check (L4.6 fix, 2026-06-11): the
+                -- inserter's actual pickup/drop POINTS must land inside the
+                -- entities' live bounding boxes. The previous heuristic
+                -- (distance-to-CENTER <= 1.5) accepted geometrically wrong
+                -- configs — e.g. an inserter diagonally off a 1x1 chest
+                -- whose hand reaches an empty tile (live-caught: 2 of 3
+                -- chest->furnace cues placed inserters that bridged nothing).
+                local function point_in_bbox(p, bbox)
+                    return p.x >= bbox.left_top.x and p.x <= bbox.right_bottom.x
+                       and p.y >= bbox.left_top.y and p.y <= bbox.right_bottom.y
+                end
 
-                -- Allow 1.5 tile tolerance for reach
-                if pickup_dist <= 1.5 and drop_dist <= 1.5 then
+                if point_in_bbox(actual_pickup, pickup_entity.bounding_box)
+                    and point_in_bbox(actual_drop, drop_entity.bounding_box) then
                     candidates_in_reach = candidates_in_reach + 1
 
                     -- Validate inserter placement

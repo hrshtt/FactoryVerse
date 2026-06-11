@@ -7,8 +7,11 @@ for how the agent should query and interact with the game.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocol(Protocol):
@@ -123,6 +126,13 @@ print(json.dumps({
         try:
             data = json.loads(output)
         except (json.JSONDecodeError, ValueError):
+            # Loud skip (was silent: a missing namespace name dropped this
+            # section for every eval until the LIVE-1 #3 render check)
+            logger.warning(
+                "Initial state: working-area bounds section skipped — "
+                "code output was not JSON: %r",
+                output[:200],
+            )
             return "", {}
 
         area = data.get("buildable_area", {})
