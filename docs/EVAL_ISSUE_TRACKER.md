@@ -46,14 +46,16 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Pending live acceptance
 
-#### [LIVE-1] Consolidated live-acceptance backlog — items 1–4, 7 DONE (LIVE-1A battery, 2026-06-11, all green)
-- **Severity:** medium (remaining items)
-- **Remaining:**
-  - **OBS-2** (prompt caching): next eval run shows `cache_read_input_tokens > 0`.
-  - **PROMPT-3** (cell bounds): initial_state.md renders the Working Area section in a real session.
-  - **L0.3**: save → `fv server start --save` → census diff (affordances built, check unrun) — Battery B.
-  - **Drafted harnesses**: execute `check_L2_4.py`, `check_L2_5.py`, `check_L4_5.py` — Battery B.
-  - **Minor new residuals from LIVE-1A:** inserter typed ElectricState=None (inspect_inserter emits no energy block); `electric_network_id` DB column unlifted (raw_data only).
+#### [LIVE-1] NEXT-SESSION WORKLIST (handoff 2026-06-11 — the certification session ended here; everything below is sequenced and unblocked)
+- **Severity:** high (gates the CELL-1 closure + the eval program)
+- **State at handoff:** server_0 still up at game.speed=2 from the field run (safe to recycle); ALL fixes committed through `da0cb2f`; the next `fv server start` will CLEAR the snapshot volume (new CELL-2b behavior) — expected, not a bug.
+- **Sequence:**
+  1. Restart server fresh (`fv server stop && fv server start --num 1 --scenario lab-grid`) — deploys nothing mod-side (CELL fixes are Python) but exercises boot invalidation for the first time.
+  2. First CLEAN `check_cell_coherence.py --path scenario` run (L0.4 row; harness drafted+committed, tainted pre-run held all invariants). Then implement `--path orchestrator` (the harness BLOCKs on it with the exact pointer) and run it — that's the path the field run used.
+  3. **CELL-1/CELL-2 live acceptance** (the big one): one eval-path session (`fv eval` or equivalent) asserting: initial_state.md shows the agent's OWN cell (its 484-tile patches at in-cell coords + Working Area section = PROMPT-3 render check); `wait_for_cell_snapshot` verifies-or-raises (no silent proceed); `remote_view.query` == `execute_duckdb` on the same SQL; zero phantom entities (CELL-2); `cache_read_input_tokens > 0` in the LLM usage (OBS-2). The T0 preflight ("CELL COHERENCE VIOLATION") should stay silent.
+  4. Small live confirmations owed: `map.get_chunk_lookup` JSON shape through table_to_json (the honest wait's layer 1 depends on it); `chunks_pending` vs `pending_chunks` adapter key sweep (pre-existing, no longer load-bearing).
+  5. Then the **gated finale** (Harshit's spend approval): engine_unit field re-run WITH observe.py in-run ground-truth probes.
+- **Known residuals (non-blocking):** client-mode fresh starts don't clear snapshots (docker-only); execute_duckdb still accepts non-SELECT (same exposure as before, now on the shared DB); inserter typed ElectricState=None; `electric_network_id` DB column unlifted; raw-int statuses; L1.5 component tables (Harshit's parked design call); L1.7 belt segments (expected red); L6 scale battery (needs factory generator).
 
 ### Cell / Vision Coherence
 
