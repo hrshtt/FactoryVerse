@@ -80,16 +80,26 @@ ALLOCATION PATHS (--path):
                   IMPLEMENTED.
     orchestrator  The Python eval path: Orchestrator._allocate_cell ->
                   LabGridAdapter.allocate_cell(cell_index, agent_id, ...) +
-                  tier4.reload_snapshot_data() (orchestrator.py:758-817).
-                  NOT IMPLEMENTED in this draft: it is only constructed
-                  inside the Environment tier stack (tier4 runtime, session
-                  DB, agent UDP wiring) and is not honestly exercisable
-                  headless without replicating that stack — a replica would
-                  test a mock of the layer (audit Q2). Selecting it exits 2
-                  with a loud message. This is the path the CELL-1 field run
-                  used; once the fix lands, implementing it here (driving the
-                  real LabGridAdapter exactly as orchestrator.py calls it) is
-                  the priority follow-up.
+                  tier4.reload_snapshot_data() + the T0 coherence preflight
+                  (orchestrator.py). IMPLEMENTED 2026-06-11 (post-CELL-1-fix,
+                  da0cb2f): builds the REAL Environment stack (tiers 1-4,
+                  FULL variant, in-process execution) attached to the running
+                  instance and runs `--agents` sequential allocate -> verify
+                  -> release cycles through env.orchestrator — the exact
+                  calls run_task makes. No fv code is mocked; engine truth
+                  still comes from this harness's own RCON connection, and
+                  vision is asserted on the ORCHESTRATOR'S OWN session DB
+                  through RemoteView.execute_raw (the unified query path,
+                  CELL-1 item 6) — the surface the field run failed on.
+                  Per cycle: O1 allocation+bijection, O2 body+force,
+                  O3 vision (shared vision_battery), O4 honest-wait evidence
+                  (cell chunks' lookup snapshot_tick >= pre-alloc tick),
+                  O5 one-DB-truth (both DB holders content-equal on the same
+                  SQL), O6 explicit preflight re-run stays silent,
+                  O7 release unbinds; cycle 2+ is the reuse invariant.
+                  NOT covered: concurrent allocation races, multi-env
+                  same-process allocation, tier5/6 initial_state ordering
+                  (that is the LIVE-1 #3 eval-path acceptance, not this).
 
 AUDIT-GATE ANSWERS (as designed; the first executing runner re-validates
 and includes these in its verdict per FLOOR_CERTIFICATION.md):
@@ -185,6 +195,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime
 import json
 import math
@@ -216,31 +227,6 @@ MIN_MARKERS = 3                 # invariant 5
 SPOT_SAMPLE = 25
 DRAIN_TIMEOUT_S = 120.0
 BOOT_WINDOW_SLACK_S = 300.0     # OQ3
-
-ORCHESTRATOR_PATH_MSG = """
-================================================================================
---path orchestrator IS NOT IMPLEMENTED YET (exiting BLOCKED, code 2).
-
-The orchestrator allocation path is:
-    Orchestrator._allocate_cell (environment/orchestrator.py:758)
-      -> LabGridAdapter.allocate_cell(cell_index, agent_id,
-             starting_inventory, wait_for_snapshot=True, snapshot_timeout=60)
-         (game/scenarios/lab_grid.py:644 — reset_cell + create_agent +
-          assign_agent_to_cell + teleport + wait_for_cell_snapshot)
-      -> tier4.reload_snapshot_data()
-
-It only exists inside the Environment tier stack (tier4 runtime, session
-DuckDB, agent UDP wiring) and cannot be honestly exercised headless without
-replicating that stack — which would test a replica, not the layer
-(harness-audit gate Q2). THIS IS THE PATH THE CELL-1 FIELD RUN USED.
-Implementing it here — driving the real LabGridAdapter exactly as
-orchestrator.py calls it, then running the same seven invariants — is the
-priority follow-up once the CELL-1 fix lands.
-
-Run with --path scenario for the implemented lab_grid.create_agent_in_cell
-path.
-================================================================================
-"""
 
 results: Dict[str, Any] = {"findings": [], "phases": {}}
 ART: Path = REPO / ".fv-output" / "certification" / "unset" / CHECK_ID
@@ -448,48 +434,61 @@ def wait_fresh(rcon: Any, label: str, failures: List[str],
                want: Optional[Dict[Tuple[int, int], int]] = None
                ) -> List[Dict[str, Any]]:
     """Honest wait (the da0cb2f wait_for_cell_snapshot criterion, Stack-A
-    edition): queue fully drained (phase IDLE + pending_chunks==0, stable
-    across 2 polls) AND — if `want` maps (cx,cy)->min_tick — every wanted
-    chunk's lookup snapshot_tick >= min_tick. Timeout is a RECORDED FAILURE,
-    never a silent proceed.
+    edition). Timeout is a RECORDED FAILURE, never a silent proceed.
+
+    Success criterion with `want` ((cx,cy)->min_tick): phase IDLE,
+    write_queue_size == 0 (serialized AND flushed to disk), and every wanted
+    chunk's lookup snapshot_tick >= min_tick. pending_chunks is deliberately
+    NOT required to reach 0: it counts never-requested chunks map-wide, so
+    it drains to 0 only on a fresh boot (first clean run) and idles >0
+    forever once cell resets accumulate (live-observed 2026-06-11: stuck at
+    54-63 for 120s while every wanted write had long landed) — the
+    check_L2_5 premise holds on busy boots. Freshness of the chunks under
+    test is the invariant; queue-wide drainage is not.
+
+    Without `want`: phase IDLE + pending stable across 2 polls (legacy
+    criterion, still honest because timeout records a failure).
 
     Replaces the OQ5 'IDLE + pending stable across 5 polls' criterion, which
-    this harness's own first clean run (2026-06-11) proved dishonest: the
-    mod idles ~300 ticks (5s) before processing enqueued re_snapshots, so
-    'stable pending=31' aliased the bootstrap window and the DB was read
-    mid-flight (73 phantom failures run 1, 9 run 2; writes actually landed
-    ~700+ ticks after create). pending==0 IS reachable on lab-grid — the
-    inherited check_L2_5 premise was wrong here."""
+    the first clean runs (2026-06-11) proved dishonest: the mod idles ~300
+    ticks (5s) before processing enqueued re_snapshots, so 'stable
+    pending=31' aliased the bootstrap window and the DB was read mid-flight
+    (73 phantom failures run 1, 9 run 2; writes actually landed ~700+ ticks
+    after create)."""
     timeline: List[Dict[str, Any]] = []
     stale: List[str] = []
     deadline = time.time() + DRAIN_TIMEOUT_S
     while time.time() < deadline:
         st = lua(rcon, "return remote.call('map','get_snapshot_status')")
         entry = {"t": round(time.time(), 1), "phase": st.get("phase"),
-                 "pending": st.get("pending_chunks")}
+                 "pending": st.get("pending_chunks"),
+                 "write_queue": st.get("write_queue_size")}
         timeline.append(entry)
-        tail = timeline[-2:]
-        drained = (len(tail) == 2
-                   and all(e["phase"] == "IDLE" and e["pending"] == 0
-                           for e in tail))
-        if drained:
-            if want:
+        if want:
+            if entry["phase"] == "IDLE" and entry["write_queue"] == 0:
                 snapped = lookup_snapshot_ticks(rcon)
                 stale = [f"({cx},{cy}) snapped@{snapped.get((cx, cy))} < {t}"
                          for (cx, cy), t in sorted(want.items())
                          if snapped.get((cx, cy), -1) < t]
-                if stale:
-                    time.sleep(1.0)
-                    continue
-            hb(f"wait_fresh ({label}): drained+fresh after {len(timeline)} polls, "
-               f"last={timeline[-1]}")
-            return timeline
+                if not stale:
+                    hb(f"wait_fresh ({label}): fresh+flushed after "
+                       f"{len(timeline)} polls, last={timeline[-1]}")
+                    return timeline
+        else:
+            tail = timeline[-2:]
+            if (len(tail) == 2
+                    and all(e["phase"] == "IDLE" for e in tail)
+                    and len({e["pending"] for e in tail}) == 1):
+                hb(f"wait_fresh ({label}): queue stable after "
+                   f"{len(timeline)} polls, last={timeline[-1]}")
+                return timeline
         time.sleep(1.0)
+    detail = (f"{len(stale)} stale chunk(s): {stale[:8]}" if want
+              else "queue never stabilized")
     failures.append(
         f"WAIT[{label}]: {DRAIN_TIMEOUT_S:.0f}s timeout — last={timeline[-1]}, "
-        f"{len(stale)} stale chunk(s): {stale[:8]} — snapshot writes never "
-        "landed (the CELL-1 lying-wait class; downstream DB checks below "
-        "read a mid-flight state)")
+        f"{detail} — wanted snapshot state never reached (the CELL-1 "
+        "lying-wait class; downstream DB checks below may read mid-flight)")
     hb(f"wait_fresh ({label}): TIMEOUT after {len(timeline)} polls, "
        f"last={timeline[-1]}")
     return timeline
@@ -648,6 +647,348 @@ def db_cell_rows(con, b: Dict) -> Dict[str, Any]:
     }
 
 
+def vision_battery(rcon: Any, ci: int, census: Dict[str, Any],
+                   db: Dict[str, Any], failures: List[str]) -> int:
+    """The CELL-1 vision invariant, shared by both paths: anti-vacuity
+    floors, two-sided count equality, spot positions both directions,
+    water count + bounding box. Returns spot checks performed. Extracted
+    verbatim from the scenario path's phase 4 (clean-run green dbe4cd4)."""
+    spots_done = 0
+
+    # anti-vacuity floors
+    if census["resource_total"] < MIN_CELL_RESOURCE_TILES:
+        failures.append(
+            f"FLOOR cell {ci}: engine census {census['resource_total']} "
+            f"resource tiles < {MIN_CELL_RESOURCE_TILES} — barren cell "
+            "(SNAP-1a class), nothing here can certify vision")
+    if db["resource_count"] + db["water_count"] < MIN_DB_WATER_ORE_ROWS:
+        failures.append(
+            f"FLOOR cell {ci}: DB water+ore rows "
+            f"{db['resource_count'] + db['water_count']} < "
+            f"{MIN_DB_WATER_ORE_ROWS} — the CELL-1 emptiness signature")
+
+    # 4a. counts, both directions (exact equality)
+    if db["resource_count"] != census["resource_total"]:
+        failures.append(f"VISION cell {ci}: resource_tile DB "
+                        f"{db['resource_count']} != engine "
+                        f"{census['resource_total']}")
+    for name, n in sorted(census["resource_counts"].items()):
+        if db["resource_by_name"].get(name, 0) != n:
+            failures.append(f"VISION cell {ci}: {name} DB "
+                            f"{db['resource_by_name'].get(name, 0)} != "
+                            f"engine {n}")
+    for name, n in sorted(db["resource_by_name"].items()):
+        if census["resource_counts"].get(name, 0) != n:
+            failures.append(f"VISION cell {ci}: DB has {n} {name} rows, "
+                            f"engine has {census['resource_counts'].get(name, 0)}")
+
+    # 4a. spot positions, engine -> DB (floored tile coords, OQ2)
+    engine_spots = census["spots"]
+    if len(engine_spots) < MIN_SPOT_CHECKS:
+        failures.append(f"FLOOR cell {ci}: only {len(engine_spots)} engine "
+                        f"spot samples (< {MIN_SPOT_CHECKS})")
+    for sp in engine_spots:
+        key = (sp["name"], math.floor(float(sp["x"])), math.floor(float(sp["y"])))
+        if key not in db["resource_tile_set"]:
+            failures.append(f"VISION cell {ci}: engine resource {key} has "
+                            "NO resource_tile row in DB")
+    spots_done += len(engine_spots)
+
+    # 4a. spot positions, DB -> engine
+    db_specs = [{"name": s["name"],
+                 "tile_x": math.floor(s["x"]), "tile_y": math.floor(s["y"])}
+                for s in db["resource_sample"]]
+    if len(db_specs) < MIN_SPOT_CHECKS:
+        failures.append(f"FLOOR cell {ci}: only {len(db_specs)} DB spot "
+                        f"samples (< {MIN_SPOT_CHECKS})")
+    if db_specs:
+        misses = engine_has_resources_at(rcon, db_specs)
+        for m in misses:
+            failures.append(f"VISION cell {ci}: DB resource_tile "
+                            f"{m} has NO engine resource at that tile "
+                            "(stale/foreign row — CELL-1/CELL-2 signature)")
+        spots_done += len(db_specs)
+
+    # 4b. water: count + engine-derived bounding box
+    if census["water"] == 0:
+        failures.append(f"VISION cell {ci}: engine reports 0 water tiles — "
+                        "broken cell layout (SNAP-1a class)")
+    if db["water_count"] != census["water"]:
+        failures.append(f"VISION cell {ci}: water_tile DB {db['water_count']} "
+                        f"!= engine {census['water']}")
+    ebox, dbox = census.get("water_box"), db.get("water_box")
+    if ebox and not dbox:
+        failures.append(f"VISION cell {ci}: engine water box {ebox} but DB "
+                        "has no water rows in-cell")
+    elif ebox and dbox:
+        for k in ("min_x", "min_y", "max_x", "max_y"):
+            if math.floor(float(dbox[k])) != math.floor(float(ebox[k])):
+                failures.append(f"VISION cell {ci}: water box {k} DB "
+                                f"{dbox[k]} != engine {ebox[k]}")
+    hb(f"cell {ci} vision: res {db['resource_count']}/{census['resource_total']} "
+       f"water {db['water_count']}/{census['water']} "
+       f"spots {len(engine_spots)}+{len(db_specs)}")
+    return spots_done
+
+
+def rv_conn(remote_view: Any) -> Any:
+    """db_cell_rows-compatible shim over RemoteView.execute_raw — the
+    UNIFIED agent query path (CELL-1 item 6: same connection, lock and
+    flush-before-read as remote_view.query/execute_duckdb). Numeric
+    placeholders are inlined because execute_raw takes SQL only."""
+    class _Res:
+        def __init__(self, rows): self._rows = rows
+        def fetchall(self): return self._rows
+        def fetchone(self): return self._rows[0] if self._rows else (None,)
+
+    class _Conn:
+        def execute(self, sql: str, params: Optional[List[Any]] = None) -> "_Res":
+            for p in (params or []):
+                lit = repr(float(p)) if isinstance(p, float) else str(int(p))
+                sql = sql.replace("?", lit, 1)
+            return _Res(remote_view.execute_raw(sql))
+
+    return _Conn()
+
+
+# ----------------------------------------------------------------------------
+# The orchestrator path (the CELL-1 field-run path, driven for real)
+# ----------------------------------------------------------------------------
+async def _orchestrator_cycles(rcon: Any, agents: int, instance: str,
+                               failures: List[str],
+                               counters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """`agents` sequential allocate->verify->release cycles through the REAL
+    Environment stack — env.orchestrator._allocate_cell/_release_cell, the
+    exact calls run_task makes. Engine truth via this harness's own RCON;
+    vision via the orchestrator's OWN session DB through the unified
+    RemoteView.execute_raw path."""
+    from FactoryVerse.environment.environment import Environment, Tier
+    from FactoryVerse.environment.config import (
+        EnvironmentConfig, ExecutionMode, InfraConfig, InfraMode,
+        PythonConfig, RuntimeConfig, RuntimeVariant, SettingsConfig)
+
+    hb(f"PHASE O0: building the REAL Environment stack (tiers 1-4, "
+       f"instance={instance}, variant=FULL, in-process execution)")
+    env = Environment(config=EnvironmentConfig(
+        # EXTERNAL: attach to the running instance, manage NO lifecycles.
+        # The default (CLIENT) made tier1 adopt + SIGTERM a pre-existing
+        # client on shutdown; SERVER would have cleared the RUNNING boot's
+        # snapshot dirs (CELL-2b clear fires in start_server) and claimed
+        # compose-down ownership of the live server. Both live-observed
+        # or traced 2026-06-11.
+        tier1=InfraConfig(mode=InfraMode.EXTERNAL),
+        tier2=SettingsConfig(scenario="lab-grid"),
+        tier3=PythonConfig(instance=instance),
+        tier4=RuntimeConfig(variant=RuntimeVariant.FULL,
+                            agent_id="agent_1",
+                            execution_mode=ExecutionMode.INPROCESS),
+    ))
+    cycles: List[Dict[str, Any]] = []
+    try:
+        await env.initialize(up_to=Tier.RUNTIME)
+        tier4 = env.tier4
+        orch = env.orchestrator
+        if tier4 is None or tier4.scenario is None:
+            failures.append("O0: tier4/scenario is None after RUNTIME init — "
+                            "adapter never built")
+            return cycles
+        aid = int((tier4.config.agent_id or "agent_1").split("_")[1])
+
+        for cyc in range(1, agents + 1):
+            cycle: Dict[str, Any] = {"cycle": cyc}
+            tick_before = int(lua_strict(rcon, "return game.tick"))
+            cycle["tick_before"] = tick_before
+            hb(f"PHASE O1 (cycle {cyc}/{agents}): orchestrator._allocate_cell "
+               f"(tick_before={tick_before}) — run_task's exact call")
+
+            # O1 + O6 (first half): _allocate_cell includes the honest wait,
+            # the post-allocation reload AND the T0 preflight — it raising
+            # IS the failure signal, never a silent wrong state.
+            try:
+                cell = await orch._allocate_cell(None)
+            except Exception as e:  # noqa: BLE001
+                failures.append(f"O1 cycle {cyc}: _allocate_cell raised: "
+                                f"{type(e).__name__}: {e}")
+                break
+            if cell is None:
+                failures.append(f"O1 cycle {cyc}: _allocate_cell returned None "
+                                "on a lab-grid runtime (adapter missing?)")
+                break
+            cycle["cell"] = cell
+            counters["alloc_cycles"] += 1
+            counters["cells_touched"].append(cell)
+            hb(f"O1: allocated cell {cell} for agent {aid}")
+
+            b = lua_strict(rcon,
+                           f"return remote.call('lab_grid','get_cell_bounds',{cell})")
+            storage = get_storage(rcon)
+            assert_bijection(storage, f"O1-cycle{cyc}", failures)
+            if storage["agent_cells"].get(aid) != cell:
+                failures.append(f"O1 cycle {cyc}: orchestrator says cell {cell} "
+                                f"but storage agent_cells[{aid}]="
+                                f"{storage['agent_cells'].get(aid)!r}")
+            if storage["cell_agents"].get(cell) != aid:
+                failures.append(f"O1 cycle {cyc}: storage cell_agents[{cell}]="
+                                f"{storage['cell_agents'].get(cell)!r}, "
+                                f"expected {aid}")
+
+            # O2: body placement + force isolation (engine truth)
+            census = cell_engine_census(rcon, b)
+            cell_force = lua_strict(
+                rcon, f"return remote.call('lab_grid','get_cell_force',{cell})")
+            cell_force = (cell_force if isinstance(cell_force, str)
+                          else str(cell_force))
+            chars = census["characters"]
+            if len(chars) != 1:
+                failures.append(f"O2 cycle {cyc}: expected exactly 1 character in "
+                                f"cell {cell}, engine sees {len(chars)}: {chars}")
+            else:
+                ch = chars[0]
+                if not in_bounds(ch["x"], ch["y"], b):
+                    failures.append(f"O2 cycle {cyc}: body ({ch['x']},{ch['y']}) "
+                                    f"OUTSIDE cell {cell} bounds — the CELL-1 "
+                                    "body half")
+                if ch["force"] != cell_force:
+                    failures.append(f"O2 cycle {cyc}: character force "
+                                    f"{ch['force']!r} != cell force "
+                                    f"{cell_force!r}")
+
+            # O4: honest-wait evidence. _allocate_cell already awaited the
+            # per-cell wait; if any cell chunk's lookup tick predates the
+            # allocation, that wait lied (the field-run class).
+            snapped = lookup_snapshot_ticks(rcon)
+            stale = [f"({cx},{cy}) snapped@{snapped.get((cx, cy))} < {tick_before}"
+                     for (cx, cy) in cell_chunks(b)
+                     if snapped.get((cx, cy), -1) < tick_before]
+            if stale:
+                failures.append(f"O4 cycle {cyc}: wait_for_cell_snapshot returned "
+                                f"but {len(stale)} cell chunk(s) are stale: "
+                                f"{stale[:6]} — the lying-wait class")
+
+            # O3: vision on the orchestrator's OWN session DB via the
+            # unified RemoteView.execute_raw path (the field-failure surface)
+            rv = tier4.remote_view
+            if rv is None or not rv.is_loaded:
+                failures.append(f"O3 cycle {cyc}: tier4.remote_view is "
+                                f"{'None' if rv is None else 'not loaded'} "
+                                "post-allocation — session DB uninspectable")
+            else:
+                db = db_cell_rows(rv_conn(rv), b)
+                cycle["db"] = {k: v for k, v in db.items()
+                               if k != "resource_tile_set"}
+                counters["spot_checks"] += vision_battery(
+                    rcon, cell, census, db, failures)
+
+                # O5: one DB truth (CELL-1 item 6). The design is two holders
+                # (tier4's SnapshotDatabase + RemoteView's) reloaded from the
+                # same files in the same reload, with the agent-facing
+                # execute_duckdb routed through execute_raw — so the honest
+                # assertion is content equality across both connections.
+                sql = ("SELECT (SELECT COUNT(*) FROM resource_tile), "
+                       "(SELECT COUNT(*) FROM water_tile), "
+                       "(SELECT COUNT(*) FROM map_entity)")
+                via_rv = rv.execute_raw(sql)
+                via_db = tier4.database.execute(sql).fetchall()
+                if via_rv != via_db:
+                    failures.append(f"O5 cycle {cyc}: execute_raw {via_rv} != "
+                                    f"tier4.database {via_db} on the same SQL "
+                                    "— two DB truths (CELL-1 item 6 regressed)")
+                counters["db_truth_checks"] += 1
+
+            # O6 (second half): explicit preflight re-run must stay silent
+            try:
+                orch._verify_cell_coherence(cell, aid)
+            except Exception as e:  # noqa: BLE001
+                failures.append(f"O6 cycle {cyc}: T0 preflight raised on a "
+                                f"settled allocation: {e}")
+
+            # O7: release unbinds (engine truth); next cycle re-allocates —
+            # that IS the reuse invariant.
+            hb(f"PHASE O7 (cycle {cyc}): orchestrator._release_cell({cell})")
+            await orch._release_cell(cell, reset=True)
+            storage = get_storage(rcon)
+            if storage["agent_cells"].get(aid) is not None:
+                failures.append(f"O7 cycle {cyc}: agent {aid} still bound to "
+                                f"{storage['agent_cells'].get(aid)} after "
+                                "release")
+            if storage["cell_agents"].get(cell) is not None:
+                failures.append(f"O7 cycle {cyc}: cell {cell} still holds agent "
+                                f"{storage['cell_agents'].get(cell)} after "
+                                "release")
+            assert_bijection(storage, f"O7-cycle{cyc}", failures)
+            cycles.append(cycle)
+    finally:
+        try:
+            await env.shutdown()
+            hb("PHASE O8: env.shutdown() clean")
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"O8: env.shutdown() raised: {e}")
+    return cycles
+
+
+def run_check_orchestrator(instance: str, agents: int,
+                           artifacts_dir: Optional[str]) -> Dict[str, Any]:
+    """--path orchestrator entry: same verdict contract as run_check."""
+    global ART, PROGRESS
+    configure_instance(instance)
+    date = datetime.date.today().isoformat()
+    if artifacts_dir:
+        ART = Path(artifacts_dir)
+    else:
+        ART = REPO / ".fv-output" / "certification" / date / CHECK_ID
+        if instance != "client":
+            ART = ART / instance
+    ART.mkdir(parents=True, exist_ok=True)
+    PROGRESS = ART / "progress_orchestrator.log"
+
+    commit = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True).stdout.strip()
+    hb(f"=== check_cell_coherence start (instance={instance}, agents={agents}, "
+       f"path=orchestrator, commit={commit}) ===")
+
+    from factorio_rcon import RCONClient
+    try:
+        rcon = RCONClient(RCON_HOST, RCON_PORT, RCON_PASS)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "BLOCKED",
+                "blocked_reason": f"cannot connect RCON {RCON_HOST}:{RCON_PORT}: {e}",
+                "failures": [], "counters": {}}
+
+    failures: List[str] = []
+    counters: Dict[str, Any] = {"alloc_cycles": 0, "cells_touched": [],
+                                "spot_checks": 0, "db_truth_checks": 0}
+    try:
+        boot = smoke(rcon)
+        results["smoke"] = boot
+        pre_storage = get_storage(rcon)
+        if pre_storage["agent_cells"]:
+            finding(f"pre-existing agent bindings: {pre_storage['agent_cells']} "
+                    "(OQ7: bijection is asserted globally)")
+        results["phases"]["orchestrator_cycles"] = asyncio.run(
+            _orchestrator_cycles(rcon, agents, instance, failures, counters))
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        failures.append(f"UNHANDLED: {type(e).__name__}: {e}")
+        (ART / "traceback_orchestrator.txt").write_text(traceback.format_exc())
+
+    counters["failures"] = len(failures)
+    # anti-vacuity: a PASS that never completed its cycles is vacuous
+    if not failures and counters["alloc_cycles"] < agents:
+        status = "VACUOUS-RISK"
+    elif not failures and counters["spot_checks"] < MIN_SPOT_CHECKS * agents:
+        status = "VACUOUS-RISK"
+    else:
+        status = "PASS" if not failures else "FAIL"
+    now_tick = lua(rcon, "return game.tick")
+    verdict = {"status": status, "failures": failures, "counters": counters,
+               "commit": commit, "tick": now_tick, "path": "orchestrator"}
+    results["verdict"] = verdict
+    save("results_orchestrator.json", results)
+    hb("=== check_cell_coherence end (orchestrator) ===")
+    return verdict
+
+
 # ----------------------------------------------------------------------------
 # The check
 # ----------------------------------------------------------------------------
@@ -666,11 +1007,8 @@ def run_check(instance: str = "server_0", agents: int = 2,
                                   "(anti-vacuity floor)",
                 "failures": [], "counters": {}}
     if path == "orchestrator":
-        print(ORCHESTRATOR_PATH_MSG, file=sys.stderr)
-        return {"status": "BLOCKED",
-                "blocked_reason": "--path orchestrator not implemented "
-                                  "(see module docstring / stderr)",
-                "failures": [], "counters": {}}
+        return run_check_orchestrator(instance=instance, agents=agents,
+                                      artifacts_dir=artifacts_dir)
     if path != "scenario":
         return {"status": "BLOCKED",
                 "blocked_reason": f"unknown --path {path!r}",
@@ -829,79 +1167,7 @@ def run_check(instance: str = "server_0", agents: int = 2,
             c["db_postcreate"] = {k: v for k, v in db.items()
                                   if k != "resource_tile_set"}
 
-            # anti-vacuity floors
-            if census["resource_total"] < MIN_CELL_RESOURCE_TILES:
-                failures.append(
-                    f"FLOOR cell {ci}: engine census {census['resource_total']} "
-                    f"resource tiles < {MIN_CELL_RESOURCE_TILES} — barren cell "
-                    "(SNAP-1a class), nothing here can certify vision")
-            if db["resource_count"] + db["water_count"] < MIN_DB_WATER_ORE_ROWS:
-                failures.append(
-                    f"FLOOR cell {ci}: DB water+ore rows "
-                    f"{db['resource_count'] + db['water_count']} < "
-                    f"{MIN_DB_WATER_ORE_ROWS} — the CELL-1 emptiness signature")
-
-            # 4a. counts, both directions (exact equality)
-            if db["resource_count"] != census["resource_total"]:
-                failures.append(f"VISION cell {ci}: resource_tile DB "
-                                f"{db['resource_count']} != engine "
-                                f"{census['resource_total']}")
-            for name, n in sorted(census["resource_counts"].items()):
-                if db["resource_by_name"].get(name, 0) != n:
-                    failures.append(f"VISION cell {ci}: {name} DB "
-                                    f"{db['resource_by_name'].get(name, 0)} != "
-                                    f"engine {n}")
-            for name, n in sorted(db["resource_by_name"].items()):
-                if census["resource_counts"].get(name, 0) != n:
-                    failures.append(f"VISION cell {ci}: DB has {n} {name} rows, "
-                                    f"engine has {census['resource_counts'].get(name, 0)}")
-
-            # 4a. spot positions, engine -> DB (floored tile coords, OQ2)
-            engine_spots = census["spots"]
-            if len(engine_spots) < MIN_SPOT_CHECKS:
-                failures.append(f"FLOOR cell {ci}: only {len(engine_spots)} engine "
-                                f"spot samples (< {MIN_SPOT_CHECKS})")
-            for sp in engine_spots:
-                key = (sp["name"], math.floor(float(sp["x"])), math.floor(float(sp["y"])))
-                if key not in db["resource_tile_set"]:
-                    failures.append(f"VISION cell {ci}: engine resource {key} has "
-                                    "NO resource_tile row in DB")
-            spot_checks_total += len(engine_spots)
-
-            # 4a. spot positions, DB -> engine
-            db_specs = [{"name": s["name"],
-                         "tile_x": math.floor(s["x"]), "tile_y": math.floor(s["y"])}
-                        for s in db["resource_sample"]]
-            if len(db_specs) < MIN_SPOT_CHECKS:
-                failures.append(f"FLOOR cell {ci}: only {len(db_specs)} DB spot "
-                                f"samples (< {MIN_SPOT_CHECKS})")
-            if db_specs:
-                misses = engine_has_resources_at(rcon, db_specs)
-                for m in misses:
-                    failures.append(f"VISION cell {ci}: DB resource_tile "
-                                    f"{m} has NO engine resource at that tile "
-                                    "(stale/foreign row — CELL-1/CELL-2 signature)")
-                spot_checks_total += len(db_specs)
-
-            # 4b. water: count + engine-derived bounding box
-            if census["water"] == 0:
-                failures.append(f"VISION cell {ci}: engine reports 0 water tiles — "
-                                "broken cell layout (SNAP-1a class)")
-            if db["water_count"] != census["water"]:
-                failures.append(f"VISION cell {ci}: water_tile DB {db['water_count']} "
-                                f"!= engine {census['water']}")
-            ebox, dbox = census.get("water_box"), db.get("water_box")
-            if ebox and not dbox:
-                failures.append(f"VISION cell {ci}: engine water box {ebox} but DB "
-                                "has no water rows in-cell")
-            elif ebox and dbox:
-                for k in ("min_x", "min_y", "max_x", "max_y"):
-                    if math.floor(float(dbox[k])) != math.floor(float(ebox[k])):
-                        failures.append(f"VISION cell {ci}: water box {k} DB "
-                                        f"{dbox[k]} != engine {ebox[k]}")
-            hb(f"cell {ci} vision: res {db['resource_count']}/{census['resource_total']} "
-               f"water {db['water_count']}/{census['water']} "
-               f"spots {len(engine_spots)}+{len(db_specs)}")
+            spot_checks_total += vision_battery(rcon, ci, census, db, failures)
 
         # 4c. GLOBAL coherence (CELL-2): every DB row in a this-boot, charted,
         # play-area chunk.
@@ -1286,9 +1552,10 @@ def main() -> int:
     ap.add_argument("--path", choices=["scenario", "orchestrator"],
                     default="scenario",
                     help="allocation path under test: scenario = "
-                         "lab_grid.create_agent_in_cell over RCON (implemented); "
-                         "orchestrator = Environment/LabGridAdapter.allocate_cell "
-                         "(NOT IMPLEMENTED — exits 2 with instructions)")
+                         "lab_grid.create_agent_in_cell over RCON; orchestrator "
+                         "= the REAL Environment stack driving "
+                         "Orchestrator._allocate_cell/_release_cell cycles "
+                         "(run_task's exact calls; --agents = cycle count)")
     ap.add_argument("--artifacts-dir", default=None, help="override evidence dir")
     args = ap.parse_args()
 

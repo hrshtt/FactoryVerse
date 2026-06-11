@@ -238,6 +238,17 @@ class Tier1Factorio(TierBase):
         if not self._client_manager:
             raise RuntimeError("Client manager not initialized")
 
+        # Ownership guard: ClientManager.start() no-ops when a client is
+        # already running, so marking started_by_us after the fact would make
+        # shutdown() kill a client we never started (live-observed 2026-06-11:
+        # the L0.4 orchestrator-path harness SIGTERMed a pre-existing client
+        # on env.shutdown()).
+        if self._client_manager.is_running():
+            logger.info(
+                "Tier 1: Client already running — not ours; shutdown leaves it alone"
+            )
+            return
+
         if save_path:
             self._client_manager.start(save_file=str(save_path), **kwargs)
         elif scenario:
