@@ -30,15 +30,16 @@ A living document that captures issues observed during agent eval runs. Designed
 
 | Category | Critical | High | Medium | Low | Total |
 |----------|----------|------|--------|-----|-------|
+| Verification Integrity | 1 | 1 | 0 | 0 | 2 |
 | Pending live acceptance (gated finale only) | 0 | 1 | 0 | 0 | 1 |
 | Walking/Pathfinding | 0 | 0 | 2 | 0 | 2 |
 | API Gaps | 0 | 0 | 1 | 0 | 1 |
 | Type System | 0 | 1 | 1 | 0 | 2 |
 | Placement/Spatial | 0 | 1 | 0 | 0 | 1 |
-| Prompt/Docs | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **0** | **2** | **5** | **0** | **8** |
+| Prompt/Docs | 0 | 1 | 0 | 0 | 1 |
+| **Total** | **1** | **5** | **4** | **0** | **10** |
 
-*Last updated: 2026-06-11 (second session) — CELL-1/CELL-2 live-accepted and archived; LIVE-1 reduced to the gated finale; 3 new bugs caught+fixed by the acceptance itself (see LIVE-1 #3)*
+*Last updated: 2026-06-11 (second session, post attempt-3 retro) — CELL-1/CELL-2 archived; L4.6 certified incl. field amendment; NEW from retro: VERIF-1 (frozen verification feed, CRITICAL) + STATUS-1 (raw-int statuses, formalizes TYPE-1's residual); PROMPT-2 part-done (power-chain idiom landed, followed verbatim in field), PROMPT-2b remains*
 
 ---
 
@@ -56,6 +57,20 @@ A living document that captures issues observed during agent eval runs. Designed
   4. ✅ DONE 2026-06-11: `map.get_chunk_lookup` JSON shape live-verified (dict keyed "cx,cy" → {snapshot_tick, files_written, ...}) — now load-bearing in both the harness's wait_fresh and its CELL-2 sub-check. `pending_chunks` semantics pinned down as bycatch: drains to 0 ONLY on fresh boots; idles >0 forever once cell resets accumulate (it counts never-requested chunks map-wide).
   5. Then the **gated finale** (Harshit's spend approval): engine_unit field re-run WITH observe.py in-run ground-truth probes.
 - **Known residuals (non-blocking):** NEW: Environment SERVER-mode init calls tier1.start_server unconditionally → would CLEAR a RUNNING boot's snapshot dirs + claim compose-down ownership (harnesses/tests attaching to live servers must use EXTERNAL; tier2 should probably check is-running before starting — design call). NEW: tier1 client SIGTERM-not-ours bug FIXED (ownership guard in start_client) but the symmetric start_server path still sets started_by_us after a compose up that may have been a no-op. Pre-existing: client-mode fresh starts don't clear snapshots (docker-only); execute_duckdb still accepts non-SELECT (same exposure as before, now on the shared DB); inserter typed ElectricState=None; `electric_network_id` DB column unlifted; raw-int statuses; L1.5 component tables (Harshit's parked design call); L1.7 belt segments (expected red); L6 scale battery (needs factory generator).
+
+### Verification Integrity
+
+#### [VERIF-1] Throughput meter's snapshot tick FROZE mid-run — production feedback stale for 7 turns
+- **Severity:** CRITICAL for eval verdicts (a producing factory can read as a false FAIL; agent sees phantom "0 produced")
+- **Observed in:** engine_unit_throughput attempt 3 / claude-sonnet-4.6 / 2026-06-11_15-14-28 (found by the trace retro, independently confirmed: `Snapshot tick: 404340` repeated 63× in the throughput meter T10→T16 while observe.py probes show the game advancing 360557→554661)
+- **Evidence:** the in-run Task Progress notifications kept reporting the same snapshot tick + 0 rate for the entire back half of the run; the agent's production feedback channel was a frozen frame indistinguishable from "factory dead".
+- **Impact:** double: (a) ThroughputVerifier may judge PASS/FAIL on stale state; (b) the agent loses its only closed-loop production signal — it can't tell a broken factory from a stale meter.
+- **Fix direction:** find why the verifier's snapshot stopped advancing (chunk re-snapshot cadence for the cell? verifier reading a cached DB connection that stopped reloading?); make staleness LOUD in the meter (builds on the SNAP-1 staleness-banner TODO — `chunk_snapshot_meta` exists for exactly this); add an L-row check: meter tick must track game tick within a bound during a live run.
+
+#### [STATUS-1] Entity statuses reach the agent as raw integers — diagnosis latency is the cost
+- **Severity:** high (twice load-bearing on 2026-06-11: attempt 3 lost ~3 turns chasing pole topology while `54` meant no_power and the root cause `53`/no_fuel sat one inspection upstream; the retro shows the agent reacted faster wherever the symbolic name leaked via `__repr__`)
+- **Formalizes:** TYPE-1's remaining ask (symbolic status names at payload/dump tier; names exist only in `__repr__` today).
+- **Fix direction:** map `defines.entity_status` ints → names in the snapshot payload + inspection results + DB column (or a lookup table the prompt documents); add the diagnose-upstream idiom to the prompt (PROMPT-2b) so no_power triggers a generator-side status walk.
 
 ### Walking / Pathfinding
 
@@ -113,7 +128,7 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Severity:** medium → high (now the main residual blocker for engine_unit)
 - **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28; re-observed 2026-06-11 finale attempt
 - **Evidence:** Only 2 belt / 4 inserter references in 55 code blocks; planning comments never described belt/inserter layouts. 2026-06-11 finale: agent used the new AFFORD-1 affordances well (find_water, 8× is_buildable) but called `get_connection_positions` ZERO times — hand-placed a steam engine flush against a boiler WATER port (adjacent, fluid-dead) then tore the rig down. The cue layer itself is now certified connection-guaranteeing (L4.6, 18/18) — the gap is purely that nothing teaches the model to reach for it.
-- **Fix direction:** system-prompt worked example for the power-chain idiom (pump→boiler→engine VIA get_connection_positions, place at cues[0]), plus drill→belt→furnace logistics pattern. Pure prompt work; the affordance is certified.
+- **Fix direction:** ~~system-prompt worked example for the power-chain idiom~~ DONE @ 40353fb — and attempt 3 followed it verbatim, power chain first-pass at T0. REMAINING (PROMPT-2b, from the attempt-3 retro): (a) power-as-consumable-loop — the worked pattern must end with coal automation INTO the boiler (drill→inserter→boiler), not a one-time add_fuel; (b) diagnose-upstream idiom — no_power means walk the generator chain's own statuses (engine→boiler→fuel) before touching pole topology; (c) note the boiler's tiny fuel buffer (~11 coal/insert observed). Belt/inserter logistics worked-pattern still open. |
 
 ---
 
@@ -160,3 +175,5 @@ Summary of eval runs and which issues were observed, for tracking recurrence.
 | 2026-06-10 | engine_unit_throughput | anthropic/claude-sonnet-4.6 | KILLED T17/64 (0 produced) | SNAP-1 (run-killer), SNAP-2, PLACE-1 (field regression), ERR-2, ERR-3, ERR-4, PROMPT-3, AFFORD-1, OBS-2, TYPE batch | ~$8-10 (10.08M prompt tokens) |
 | 2026-06-11 | (lab-grid run, post-certification) | — | FAIL (0 produced) | CELL-1 (run-killer: body/vision cell desync), CELL-2 (stale snapshot contamination) — agent reasoned correctly on wrong-cell data | — |
 | 2026-06-11 | iron_plate_throughput (LIVE-1C acceptance) | anthropic/claude-sonnet-4.6 | PASS (70 automation) | None blocking — caught PROMPT-3 render gap, OBS-2 observability gap, server-ownership teardown (all fixed same day) | ~$1.4 |
+| 2026-06-11 | engine_unit_throughput (finale attempt 2) | anthropic/claude-sonnet-4.6 | KILLED T1 | Agent USED the cue API verbatim (PROMPT-2 fix works) but LUA-1 fallback served a direction-less garbage cue when its own body blocked both boiler mates → fluid-dead boiler. Fallback killed + cue/act parity + BODY-BLOCKED battery case same day (L4.6 amendment) | ~$0.5 |
+| 2026-06-11 | engine_unit_throughput (finale attempt 3) | anthropic/claude-sonnet-4.6 | KILLED T16 (0 produced, Harshit's call) | BEST RUN YET — first failure that's a genuine strategy gap, not a harness lie. Power chain connected FIRST-PASS via cues at T0 (the assembly that killed 3 prior runs); factory RAN (1,893 ore, 1,604 plates by engine stats) then died of FUEL STARVATION: boiler cycled no_fuel (53) hand-fed 4×, coal→chest loop built 30 tiles from the boiler, never coal→boiler; no_power traced upstream only at T16 (correct diagnosis, out of turns). NOT generation undersizing — retro corrected that early hypothesis. → STATUS-1, PROMPT-2b, VERIF-1 (frozen verification feed found by retro). 12.35M prompt / 97% cached (OBS-2 live; March was 10M at 0%). Full retro: docs/retros/2026-06-11-engine-unit-attempt3-retro.md | ~$1.5-2 |
