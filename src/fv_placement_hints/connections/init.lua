@@ -326,6 +326,59 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
 
     local target_offsets = (#source_conns > 0) and probe_target_offsets() or nil
 
+    -- Diagnostics for the empty-result contract below
+    local geom_matched = 0   -- geometric mates found (pre-placement-check)
+    local geom_blocked = 0   -- mates rejected by can_place (collision/terrain)
+    local blocked_at = {}    -- sample of blocked candidate positions
+
+    -- Two-stage placeability (L4.6 field fix #2, 2026-06-11): the `manual`
+    -- build check hard-rejects characters, but the ACT layer (place_entity)
+    -- steps the agent aside for validation and creates with
+    -- move_stuck_players=true (live-validated on free-standing characters)
+    -- — so a mate blocked ONLY by characters IS placeable by the agent.
+    -- The cue layer must agree with the act layer, or it reports
+    -- "impossible" for placements that would succeed (live-observed:
+    -- shore-sited pump, the agent's own body on BOTH boiler mates -> zero
+    -- geometry cues -> the old fallback's garbage cue).
+    -- Matrix (live-verified): with a character in the footprint, `manual`
+    -- is false while `manual_ghost` stays true; vehicles/units would also
+    -- pass the ghost check but move_stuck_players cannot move them, so
+    -- they keep the mate blocked.
+    local function placeability(cx, cy, dir)
+        local params = {
+            name = target_name,
+            position = {x = cx, y = cy},
+            direction = dir,
+            force = "player",
+            build_check_type = build_check,
+        }
+        if surface.can_place_entity(params) then
+            return "clear"
+        end
+        if ghost then
+            return "blocked"  -- ghost check already tolerates characters
+        end
+        params.build_check_type = defines.build_check_type.manual_ghost
+        if not surface.can_place_entity(params) then
+            return "blocked"
+        end
+        local tproto = prototypes.entity[target_name]
+        local cb = tproto and tproto.collision_box
+        local half = 1.0
+        if cb then
+            half = math.max(math.abs(cb.left_top.x), math.abs(cb.left_top.y),
+                            math.abs(cb.right_bottom.x), math.abs(cb.right_bottom.y))
+        end
+        local area = {{cx - half, cy - half}, {cx + half, cy + half}}
+        local chars = surface.find_entities_filtered{area = area, type = "character"}
+        local movables = surface.find_entities_filtered{
+            area = area, type = {"car", "spider-vehicle", "unit"}}
+        if #chars > 0 and #movables == 0 then
+            return "displaces_character"
+        end
+        return "blocked"
+    end
+
     if target_offsets then
         for _, sc in ipairs(source_conns) do
             if count >= max_results then break end
@@ -344,13 +397,9 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
                             local key = cx .. "," .. cy .. "," .. dir
                             if not seen[key] then
                                 seen[key] = true
-                                if surface.can_place_entity{
-                                    name = target_name,
-                                    position = {x = cx, y = cy},
-                                    direction = dir,
-                                    force = "player",
-                                    build_check_type = build_check,
-                                } then
+                                geom_matched = geom_matched + 1
+                                local verdict = placeability(cx, cy, dir)
+                                if verdict ~= "blocked" then
                                     count = count + 1
                                     table.insert(positions, {
                                         position = {x = cx, y = cy},
@@ -358,8 +407,21 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
                                         connection_index = sc.connection_index,
                                         fluidbox_index = sc.fluidbox_index,
                                         flow_direction = sc.flow_direction,
+                                        -- placing here steps the standing
+                                        -- character aside (the act layer's
+                                        -- move_stuck_players semantics)
+                                        displaces_character =
+                                            (verdict == "displaces_character")
+                                            or nil,
                                         valid = true,
                                     })
+                                else
+                                    geom_blocked = geom_blocked + 1
+                                    if #blocked_at < 6 then
+                                        table.insert(blocked_at, {
+                                            x = cx, y = cy, direction = dir,
+                                        })
+                                    end
                                 end
                             end
                         end
@@ -369,60 +431,29 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
         end
     end
 
-    -- Legacy center/adjacent fallback: keeps pre-existing behavior for
-    -- sources/targets the probe path cannot handle (no live source entity,
-    -- unprobeable target like offshore-pump on land, missing API fields).
+    -- NO FALLBACK (L4.6 field fix, 2026-06-11). The old "legacy
+    -- center/adjacent" path emitted direction-less, geometry-unvalidated
+    -- cues whenever the geometry path came up empty. First live firing
+    -- (engine_unit finale, shore-sited pump with both boiler mates blocked):
+    -- the agent — correctly trusting the cue contract — placed a boiler at
+    -- a raw connection-point coordinate with no rotation: adjacent and
+    -- fluid-dead. A lying cue is strictly worse than an empty answer.
+    -- Contract: zero cues ALWAYS carries a structured reason so the agent
+    -- can act (clear space / re-site) instead of guessing.
+    local reason = nil
     if count == 0 then
-        for _, conn in ipairs(conn_info.connections) do
-            if count >= max_results then
-                break
-            end
-
-            local conn_pos = conn.position
-
-            -- Try placing target at the connection point first
-            local params = {
-                name = target_name,
-                position = conn_pos,
-                force = "player",
-                build_check_type = build_check,
-            }
-
-            if surface.can_place_entity(params) then
-                count = count + 1
-                table.insert(positions, {
-                    position = conn_pos,
-                    connection_index = conn.connection_index,
-                    fluidbox_index = conn.fluidbox_index,
-                    flow_direction = conn.flow_direction,
-                    valid = true,
-                })
-            else
-                -- Try adjacent positions (connection point might be inside collision box)
-                for _, dir_vec in pairs(geometry.DIRECTION_VECTORS) do
-                    if count >= max_results then
-                        break
-                    end
-
-                    local adjacent_pos = {
-                        x = conn_pos.x + dir_vec.x,
-                        y = conn_pos.y + dir_vec.y,
-                    }
-
-                    params.position = adjacent_pos
-                    if surface.can_place_entity(params) then
-                        count = count + 1
-                        table.insert(positions, {
-                            position = adjacent_pos,
-                            connection_index = conn.connection_index,
-                            fluidbox_index = conn.fluidbox_index,
-                            flow_direction = conn.flow_direction,
-                            offset_from_connection = dir_vec,
-                            valid = true,
-                        })
-                    end
-                end
-            end
+        if #source_conns == 0 then
+            reason = "source entity exposes no live pipe connections"
+        elseif not target_offsets then
+            reason = "could not probe target connection offsets "
+                .. "(staging blocked near source?)"
+        elseif geom_matched == 0 then
+            reason = "no geometric mate: no target port lines up with any "
+                .. "source port (flow directions or port layout incompatible)"
+        else
+            reason = "all " .. geom_matched .. " geometric placement(s) are "
+                .. "blocked (collision/terrain) — clear space around the "
+                .. "source's ports or re-site the source"
         end
     end
 
@@ -432,6 +463,8 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
         target_name = target_name,
         positions = positions,
         count = count,
+        reason = reason,
+        blocked_candidates = (count == 0) and blocked_at or nil,
     }
 end
 

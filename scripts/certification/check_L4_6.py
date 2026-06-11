@@ -664,6 +664,141 @@ def run_check(instance: str = "server_0", cell: int = 3,
                        "pipe", expected_min=1)
             fluid_case("FLUID offshore-pump->boiler", "offshore-pump", pump_pos,
                        "boiler", expected_min=1)
+
+            # THE FIELD SCENARIO (engine_unit finale, 2026-06-11): the
+            # agent's own body standing on the boiler mates. The killed
+            # fallback used to answer with a direction-less garbage cue
+            # (byte-reproduced: pos (106.828125, 80.5), no direction).
+            # Contract now: the SAME mates come back, flagged
+            # displaces_character, and placing at them (with the act
+            # layer's move_stuck_players semantics) CONNECTS and steps
+            # the character aside, alive.
+            counters["cases"] += 1
+            rep: Dict[str, Any] = {"case": "FLUID pump->boiler BODY-BLOCKED",
+                                   "cues": []}
+            base = lua(rcon, "return remote.call('placement_hints',"
+                             f"'get_fluid_connections','offshore-pump',"
+                             f"{pos_lua(pump_pos)},'boiler',{{max_results=20}})")
+            base_cues = as_list(base.get("positions")) if isinstance(base, dict) else []
+            if not base_cues:
+                failures.append("BODY-BLOCKED: no baseline cues to stand on — "
+                                "case cannot run")
+            else:
+                stand = base_cues[0]["position"]
+                char_r = lua(rcon, f"""
+                    local s = game.surfaces[1]
+                    local c = s.create_entity{{name='character',
+                        position={pos_lua(stand)}, force='player'}}
+                    return {{ok = c ~= nil and c.valid,
+                             x = c and c.position.x, y = c and c.position.y}}
+                """)
+                if not (isinstance(char_r, dict) and char_r.get("ok")):
+                    failures.append("BODY-BLOCKED: could not stage the character")
+                else:
+                    res = lua(rcon, "return remote.call('placement_hints',"
+                                    f"'get_fluid_connections','offshore-pump',"
+                                    f"{pos_lua(pump_pos)},'boiler',"
+                                    f"{{max_results=20}})")
+                    cues = as_list(res.get("positions")) if isinstance(res, dict) else []
+                    rep["returned"] = len(cues)
+                    counters["cues_returned"] += len(cues)
+                    if len(cues) < len(base_cues):
+                        failures.append(
+                            f"BODY-BLOCKED: character on the mate dropped cues "
+                            f"{len(base_cues)}->{len(cues)} — cue layer still "
+                            "disagrees with the act layer (the field failure)")
+                    for cue in cues:
+                        cp, cdir = cue.get("position") or {}, cue.get("direction")
+                        disp = bool(cue.get("displaces_character"))
+                        crep = {"position": cp, "direction": cdir,
+                                "displaces_character": disp}
+                        rep["cues"].append(crep)
+                        counters["cues_tested"] += 1
+                        if cdir is None:
+                            failures.append("BODY-BLOCKED: direction-less cue "
+                                            "(the killed fallback resurfaced?)")
+                            crep["verdict"] = "no-direction"
+                            continue
+                        r = lua(rcon, FLUID_CONNECTED_FN + f"""
+                            local s = game.surfaces[1]
+                            local src = find_at('offshore-pump', {pos_lua(pump_pos)})
+                            if not src then return {{err = 'pump vanished'}} end
+                            local chars_before = s.find_entities_filtered{{
+                                type='character',
+                                area={{{{{stand['x']}-2,{stand['y']}-2}},
+                                      {{{stand['x']}+2,{stand['y']}+2}}}}}}
+                            local t = s.create_entity{{name='boiler',
+                                position={pos_lua(cp)}, direction={int(cdir)},
+                                force='player', raise_built=true,
+                                move_stuck_players=true,
+                                create_build_effect_smoke=false}}
+                            if not (t and t.valid) then
+                                return {{created = false}}
+                            end
+                            local link = fluid_link(src, t)
+                            local char_ok, char_clear = false, true
+                            for _, c in ipairs(chars_before) do
+                                if c.valid then
+                                    char_ok = true
+                                    local p = c.position
+                                    local bb = t.bounding_box
+                                    if p.x >= bb.left_top.x and p.x <= bb.right_bottom.x
+                                       and p.y >= bb.left_top.y and p.y <= bb.right_bottom.y then
+                                        char_clear = false
+                                    end
+                                end
+                            end
+                            local out = {{created = true,
+                                          connected = link ~= nil,
+                                          char_survived = char_ok,
+                                          char_outside_footprint = char_clear}}
+                            t.destroy{{raise_destroy = true}}
+                            return out
+                        """)
+                        if not isinstance(r, dict) or "__lua_error" in r:
+                            failures.append(f"BODY-BLOCKED: cue test lua error: {r}")
+                            crep["verdict"] = "lua-error"
+                            continue
+                        if r.get("created"):
+                            counters["destroyed"] += 1
+                        if not r.get("created"):
+                            failures.append(f"BODY-BLOCKED: cue ({cp.get('x')},"
+                                            f"{cp.get('y')},d={cdir}) did not "
+                                            "create with move_stuck_players")
+                            crep["verdict"] = "uncreatable"
+                        elif not r.get("connected"):
+                            failures.append(f"BODY-BLOCKED: cue ({cp.get('x')},"
+                                            f"{cp.get('y')},d={cdir}) placed but "
+                                            "NOT connected")
+                            crep["verdict"] = "not-connected"
+                        elif not disp and crep.get("position") == stand:
+                            failures.append("BODY-BLOCKED: cue on the occupied "
+                                            "mate lacks displaces_character flag")
+                            crep["verdict"] = "unflagged"
+                        elif not (r.get("char_survived")
+                                  and r.get("char_outside_footprint")):
+                            failures.append(f"BODY-BLOCKED: character "
+                                            f"survived={r.get('char_survived')} "
+                                            f"outside={r.get('char_outside_footprint')}"
+                                            " — displacement semantics broken")
+                            crep["verdict"] = "char-not-displaced"
+                        else:
+                            counters["connected"] += 1
+                            crep["verdict"] = "connected"
+                    hb(f"BODY-BLOCKED: {rep['returned']} cues, "
+                       f"{sum(1 for c in rep['cues'] if c.get('verdict') == 'connected')}"
+                       " connected (char displaced)")
+                    # clean the staged character
+                    lua(rcon, f"""
+                        local s = game.surfaces[1]
+                        for _, c in ipairs(s.find_entities_filtered{{type='character',
+                            area={{{{{ox},{oy}}},{{{ox}+128,{oy}+128}}}}}}) do
+                            c.destroy()
+                        end
+                        return {{ok = true}}
+                    """)
+            case_reports.append(rep)
+
             destroy("offshore-pump", pump_pos)
             created_rigs.pop()
 

@@ -150,11 +150,16 @@ class ConnectionPosition:
         position: The map position where the target entity should be placed.
         direction: The direction the target entity should face (if applicable).
         perpendicular_offset: Alignment quality metric - lower is better (0.0 = perfectly aligned).
+        displaces_character: True when the only thing in the footprint is a
+            character (usually YOU). The placement still works — the engine
+            steps the character aside, exactly like building on your own
+            tile in the GUI. Not an error; do not skip these cues.
     """
 
     position: MapPosition
     direction: Optional[Direction]
     perpendicular_offset: float = 0.0  # Lower = better alignment
+    displaces_character: bool = False
 
     def __post_init__(self):
         if self.perpendicular_offset < 0:
@@ -818,6 +823,7 @@ class PlacementHints:
                     direction=(Direction(p["direction"])
                                if p.get("direction") is not None else None),
                     perpendicular_offset=0.0,
+                    displaces_character=bool(p.get("displaces_character")),
                 )
                 for p in positions
                 if p.get("valid", True)

@@ -112,10 +112,11 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
         can_place_params.build_check_type = defines.build_check_type.manual_ghost
     end
 
-    -- Check if agent's own character might be blocking placement
-    -- move_stuck_players in create_entity may not work for non-player characters,
-    -- and can_place_entity has no way to account for character movement.
-    -- Solution: temporarily teleport character out of the way for validation.
+    -- Check if agent's own character might be blocking placement.
+    -- (2026-06-11 validation: move_stuck_players DOES work on free-standing
+    -- script characters — it is passed at create below as belt-and-braces.
+    -- This pre-teleport remains the validation-side fix: can_place(manual)
+    -- hard-rejects characters, so we step the agent aside before checking.)
     local surface = game.surfaces[1]
     local original_char_pos = nil
 
