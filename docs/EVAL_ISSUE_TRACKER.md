@@ -109,11 +109,11 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Prompt / Docs
 
-#### [PROMPT-2] Model doesn't know belt/inserter placement patterns
-- **Severity:** medium
-- **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28
-- **Evidence:** Only 2 belt / 4 inserter references in 55 code blocks; planning comments never described belt/inserter layouts.
-- **Fix direction:** review system-prompt examples for drill→furnace→assembler logistics patterns; add worked examples if absent. (Design/prompt work, not a bug.)
+#### [PROMPT-2] Model doesn't know belt/inserter placement patterns — WIDENED 2026-06-11: connection-cue discoverability
+- **Severity:** medium → high (now the main residual blocker for engine_unit)
+- **Observed in:** engine_unit_throughput / claude-sonnet-4.6 / 2026-03-28; re-observed 2026-06-11 finale attempt
+- **Evidence:** Only 2 belt / 4 inserter references in 55 code blocks; planning comments never described belt/inserter layouts. 2026-06-11 finale: agent used the new AFFORD-1 affordances well (find_water, 8× is_buildable) but called `get_connection_positions` ZERO times — hand-placed a steam engine flush against a boiler WATER port (adjacent, fluid-dead) then tore the rig down. The cue layer itself is now certified connection-guaranteeing (L4.6, 18/18) — the gap is purely that nothing teaches the model to reach for it.
+- **Fix direction:** system-prompt worked example for the power-chain idiom (pump→boiler→engine VIA get_connection_positions, place at cues[0]), plus drill→belt→furnace logistics pattern. Pure prompt work; the affordance is certified.
 
 ---
 
