@@ -55,6 +55,20 @@ A living document that captures issues observed during agent eval runs. Designed
   - **Drafted harnesses**: execute `check_L2_4.py`, `check_L2_5.py`, `check_L4_5.py` — Battery B.
   - **Minor new residuals from LIVE-1A:** inserter typed ElectricState=None (inspect_inserter emits no energy block); `electric_network_id` DB column unlifted (raw_data only).
 
+### Cell / Vision Coherence
+
+#### [CELL-1] Agent cell assignment desynced from snapshot/remote_view scope — body and vision in DIFFERENT cells
+- **Severity:** CRITICAL — nullifies every lab-grid eval until fixed (run-killer of the 2026-06-11 field run)
+- **Observed in:** field run 2026-06-11 (post-certification): agent spawned on cell_0 at (50,119); engine ground truth has cell_0's iron at (5.5,59.5) right next to it; but the DB/initial_state served iron at (334.5,229.5), water at (433,238) — cell ~10's patches, 250+ tiles away behind force walls. Agent reasoned correctly on the data, walked into walls, burned the budget probing for an exit. 0 produced; model not at fault.
+- **Corroboration:** the "chests at (382–388,227)" in the agent's DB are the PATH-1/ARG-1 probe's test chests (same boot, cell 10) — destroyed in probe cleanup but never re-snapshotted → the DB served a destroyed rig from stale init files (see CELL-2).
+- **Hypothesis to trace:** the eval's allocation path (orchestrator `_allocate_agent_in_cell` vs `lab_grid.create_agent_in_cell`) diverges from the chart+re_snapshot scope — the agent's cell never got charted/snapshotted into the session DB, so the only content in the DB was other cells' stale files. NOTE: scenario fns are positional-only (playbook trap) — a named-table call into create_agent_in_cell would nil-collapse cell_index and silently change behavior.
+- **Status:** trace running.
+
+#### [CELL-2] Snapshot dir is never cleaned across sessions/boots — stale cells' files load into every new session DB
+- **Severity:** high (CELL-1 made it fatal; on its own it serves destroyed entities + other cells' contents as live data)
+- **Evidence:** same field run — cell 10's init files (written by an earlier probe on the same boot, rig destroyed without a post-cleanup re-snapshot) loaded into the eval session's DB. Host volume `.fv-output/server_0/factoryverse/snapshots` also persists across container restarts, so FRESH scenario boots inherit prior boots' snapshots entirely.
+- **Fix direction:** (a) on fresh scenario boot, invalidate/clear old snapshots — chunk_meta tick > current game tick is a clean staleness signal (previous boot's ticks are "in the future"); (b) optionally scope session loads to the agent's allocated cell; (c) mutating probes must re-snapshot after cleanup (runner protocol addition).
+
 ### Walking / Pathfinding
 
 #### [ARG-2] walk_to options.entity_ref dead via remote interface
@@ -153,3 +167,4 @@ Summary of eval runs and which issues were observed, for tracking recurrence.
 | 2026-03-28 | production_science_pack_throughput | anthropic/claude-sonnet-4.6 | FAIL (0 produced) | LOOP-1 | $0.67 |
 | 2026-03-28 | engine_unit_throughput | anthropic/claude-sonnet-4.6 | FAIL (0 produced) | API-1, API-2, ERR-1, ERR-2, TYPE-1, TYPE-2, PLACE-1, PLACE-2, PROMPT-1, PROMPT-2 | ~$2-3 |
 | 2026-06-10 | engine_unit_throughput | anthropic/claude-sonnet-4.6 | KILLED T17/64 (0 produced) | SNAP-1 (run-killer), SNAP-2, PLACE-1 (field regression), ERR-2, ERR-3, ERR-4, PROMPT-3, AFFORD-1, OBS-2, TYPE batch | ~$8-10 (10.08M prompt tokens) |
+| 2026-06-11 | (lab-grid run, post-certification) | — | FAIL (0 produced) | CELL-1 (run-killer: body/vision cell desync), CELL-2 (stale snapshot contamination) — agent reasoned correctly on wrong-cell data | — |
