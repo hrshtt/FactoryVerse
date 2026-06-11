@@ -72,7 +72,12 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Formalizes:** TYPE-1's remaining ask (symbolic status names at payload/dump tier; names exist only in `__repr__` today).
 - **Fix direction:** map `defines.entity_status` ints → names in the snapshot payload + inspection results + DB column (or a lookup table the prompt documents); add the diagnose-upstream idiom to the prompt (PROMPT-2b) so no_power triggers a generator-side status walk.
 
-### Information Surfaces (attempt-3 base archaeology, docs/retros/2026-06-11-attempt3-base-archaeology.md)
+### Information Surfaces (attempt-3 base archaeology + legibility audit; docs/INFORMATION_SURFACES.md is the parent doc)
+
+#### [MIRAGE-1] System prompt documents DEAD database surfaces with worked examples
+- **Severity:** high (documentation actively teaches false world-facts)
+- **Evidence:** prompt schema reference documents the `inserter`/`transport_belt`/`mining_drill`/`assembler` component tables incl. a worked JOIN example (`schema_reference.py:327-332`; in attempt-3's actual prompt at lines 3033/3163) — tables certified **0 rows always** since 2026-06-10 (ledger L1.5 ❌). `power_statistics` likely same class (mod writes jsonl, loader never ingests, schema documented). An agent following our docs gets empty results and learns "no inserters exist".
+- **Fix direction:** Harshit's L1.5 design call (populate vs views-over-raw_data vs drop) now has a forcing function — whichever way, the schema reference must reconcile; add a standing audit gate: ledger ❌ on a surface propagates to every surface documenting it.
 
 #### [RESERVE-1] Inserter drop/pickup cells are invisible at placement time
 - **Severity:** high — the single most damaging layout mechanic in attempt 3: poles placed onto cells an inserter's hand needs (Harshit's obs #2, class A), triggering place→pickup→replace rework loops whose residue is the smelting-row gaps and disconnected belt stubs (obs #1/#3/#4, class D).
