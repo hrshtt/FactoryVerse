@@ -148,20 +148,28 @@ def save(name: str, data: Any) -> None:
 # RCON helpers (RUNTIME_PLAYBOOK §2)
 # ----------------------------------------------------------------------------
 def lua(rcon: RCONClient, body: str) -> Any:
+    # HARNESS-FIX 2026-06-11 (first run, same as check_L2_4): non-table returns
+    # (teleport -> boolean) raised in table_to_json OUTSIDE the xpcall -> empty
+    # RCON response on the docker server. Serialize an envelope table instead.
     wrapped = (
         "/c local ok, res = xpcall(function() "
         + body
         + " end, debug.traceback) "
-        + "if ok then rcon.print(helpers.table_to_json(res == nil and {ok=true} or res)) "
+        + "if ok then rcon.print(helpers.table_to_json({__v = res})) "
         + "else rcon.print(helpers.table_to_json({__lua_error = tostring(res)})) end"
     )
     out = rcon.send_command(wrapped)
     if out is None or out.strip() == "":
         return {"__lua_error": "empty RCON response (unwrapped error?)"}
     try:
-        return json.loads(out)
+        data = json.loads(out)
     except json.JSONDecodeError:
         return {"__lua_error": f"non-JSON response: {out[:500]}"}
+    if isinstance(data, dict) and "__lua_error" in data:
+        return data
+    if isinstance(data, dict):
+        return data.get("__v", {"ok": True})
+    return data
 
 
 def lua_strict(rcon: RCONClient, body: str) -> Any:
@@ -205,7 +213,12 @@ def ensure_cell_agent(rcon: RCONClient, cell: int) -> Dict[str, Any]:
     if st.get("has_agent"):
         storage = lua_strict(rcon, "return remote.call('lab_grid','get_storage')")
         agent_id = None
-        for aid, ci in (storage.get("agent_cells") or {}).items():
+        ac = storage.get("agent_cells") or {}
+        # HARNESS-FIX 2026-06-11 (same as check_L2_4): consecutive-int-keyed
+        # Lua tables serialize as JSON arrays; list index i -> agent_id i+1.
+        if isinstance(ac, list):
+            ac = {i + 1: v for i, v in enumerate(ac) if v is not None}
+        for aid, ci in ac.items():
             if int(ci) == cell:
                 agent_id = int(aid)
                 break
@@ -239,6 +252,11 @@ def ghost_census(rcon: RCONClient, box_lua: str) -> List[Dict[str, Any]]:
 
 
 def wait_queue_drain(rcon: RCONClient, label: str) -> List[Dict[str, Any]]:
+    # HARNESS-FIX 2026-06-11 (first run): `pending_chunks` counts EVERY
+    # never-snapshotted chunk in the tracker (29 exist map-wide on lab-grid),
+    # so `pending == 0` is unreachable and the loop always burned the full
+    # timeout. New drain criterion: phase IDLE with pending stable across 5
+    # consecutive polls = our queued chunks have been worked off.
     timeline = []
     deadline = time.time() + DRAIN_TIMEOUT_S
     while time.time() < deadline:
@@ -246,7 +264,10 @@ def wait_queue_drain(rcon: RCONClient, label: str) -> List[Dict[str, Any]]:
         entry = {"t": round(time.time(), 1), "phase": st.get("phase"),
                  "pending": st.get("pending_chunks")}
         timeline.append(entry)
-        if entry["pending"] == 0 and entry["phase"] == "IDLE" and len(timeline) > 2:
+        tail = timeline[-5:]
+        if (len(tail) == 5
+                and all(e["phase"] == "IDLE" for e in tail)
+                and len({e["pending"] for e in tail}) == 1):
             break
         time.sleep(1.0)
     hb(f"queue drain ({label}): {len(timeline)} polls, last={timeline[-1]}")
@@ -365,7 +386,13 @@ def main() -> int:
         hb(f"placing {len(GHOSTS)} ghosts via agent place_entity(ghost=true)")
         placements = []
         for g in GHOSTS:
-            dir_part = f", direction={g['dir']}" if g["dir"] is not None else ""
+            # HARNESS-FIX 2026-06-11 (first run): omitting `direction` from the
+            # named-table call made the DEPLOYED mod shift ghost=true into the
+            # direction slot ("Invalid direction true") — the playbook §3
+            # sparse-named-table trap is live for place_entity. Keep the table
+            # dense: explicit direction=0 (defines.direction.north, the
+            # engine default) for direction-less ghosts.
+            dir_part = f", direction={g['dir'] if g['dir'] is not None else 0}"
             res = lua(rcon, f"""
                 return remote.call('{iface}','place_entity',
                     {{entity_name='{g['name']}', position={pos_lua(g['pos'])}{dir_part},
@@ -435,13 +462,23 @@ def main() -> int:
         dir_rows = []
         l1_by_key = {k: g for g, k in ((g, (g["ghost_name"], round(float(g["x"]), 2),
                                             round(float(g["y"]), 2))) for g in l1)}
+        # HARNESS-FIX 2026-06-11 (first run): the DB `ghost.direction` column is
+        # VARCHAR (schema_definitions.py:209) while engine/reachable return the
+        # numeric defines.direction — coerce to int for comparison; raw values
+        # are still recorded in dir_rows so a real value drift stays visible.
+        def _dir_norm(v: Any) -> Any:
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return v
+
         for layer_name, layer in (("L2", l2), ("L3", l3)):
             for g in layer:
                 k = (g["ghost_name"], round(float(g["x"]), 2), round(float(g["y"]), 2))
                 ref = l1_by_key.get(k)
                 if ref is None:
                     continue  # already counted as a set diff above
-                agree = (g.get("direction") == ref.get("direction"))
+                agree = (_dir_norm(g.get("direction")) == _dir_norm(ref.get("direction")))
                 dir_rows.append({"layer": layer_name, "ghost": k,
                                  "l1_dir": ref.get("direction"),
                                  "dir": g.get("direction"), "agree": agree})

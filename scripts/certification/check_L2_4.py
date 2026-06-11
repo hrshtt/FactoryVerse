@@ -151,20 +151,29 @@ def save(name: str, data: Any) -> None:
 # RCON helpers (RUNTIME_PLAYBOOK §2: xpcall mandatory)
 # ----------------------------------------------------------------------------
 def lua(rcon: RCONClient, body: str) -> Any:
+    # HARNESS-FIX 2026-06-11 (first run): original wrapper did
+    # table_to_json(res) directly — non-table returns (teleport -> boolean)
+    # raised OUTSIDE the xpcall, which on the docker server yields an EMPTY
+    # RCON response (playbook §3 trap). Serialize an envelope table instead.
     wrapped = (
         "/c local ok, res = xpcall(function() "
         + body
         + " end, debug.traceback) "
-        + "if ok then rcon.print(helpers.table_to_json(res == nil and {ok=true} or res)) "
+        + "if ok then rcon.print(helpers.table_to_json({__v = res})) "
         + "else rcon.print(helpers.table_to_json({__lua_error = tostring(res)})) end"
     )
     out = rcon.send_command(wrapped)
     if out is None or out.strip() == "":
         return {"__lua_error": "empty RCON response (unwrapped error?)"}
     try:
-        return json.loads(out)
+        data = json.loads(out)
     except json.JSONDecodeError:
         return {"__lua_error": f"non-JSON response: {out[:500]}"}
+    if isinstance(data, dict) and "__lua_error" in data:
+        return data
+    if isinstance(data, dict):
+        return data.get("__v", {"ok": True})
+    return data
 
 
 def lua_strict(rcon: RCONClient, body: str) -> Any:
@@ -201,7 +210,13 @@ def ensure_cell_agent(rcon: RCONClient, cell: int) -> Dict[str, Any]:
         # Reuse: find the agent bound to this cell from scenario storage.
         storage = lua_strict(rcon, "return remote.call('lab_grid','get_storage')")
         agent_id = None
-        for aid, ci in (storage.get("agent_cells") or {}).items():
+        ac = storage.get("agent_cells") or {}
+        # HARNESS-FIX 2026-06-11 (first run): Lua tables with consecutive
+        # integer keys serialize as JSON ARRAYS ({[1]=3} -> [3]); 0-based
+        # list index i corresponds to agent_id i+1. Handle both shapes.
+        if isinstance(ac, list):
+            ac = {i + 1: v for i, v in enumerate(ac) if v is not None}
+        for aid, ci in ac.items():
             if int(ci) == cell:
                 agent_id = int(aid)
                 break
