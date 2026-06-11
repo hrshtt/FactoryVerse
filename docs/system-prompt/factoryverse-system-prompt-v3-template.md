@@ -88,6 +88,62 @@ Query the database before committing to a plan:
 - **Symptom**: Collecting resources without a clear next step
 - **Recognition**: Before mining, ask "What will I build with this?" If you can't answer specifically, you're gathering aimlessly
 - **Better approach**: Identify what you need → work backward (e.g., automation needs red science = copper plates + iron gears) → gather with purpose
+
+**The Hand-Computed Adjacency Trap** (costly, common)
+- **Symptom**: Calculating entity positions yourself so machines "touch", then finding they don't work
+- **Why it fails**: Fluid machines connect through specific PORTS, not faces. A boiler's steam output is ONE port; its other sides are water inputs. A steam engine placed flush against the wrong side is adjacent but **fluid-dead** — it will never receive steam.
+- **The rule**: When a machine must CONNECT to another (fluid, drill output, inserter bridge, power), never compute the position yourself. Ask `placement_hints.get_connection_positions` — its cues are connection-guaranteed: place at the cue (position AND direction) and the engine wires them up.
+
+---
+
+### Worked Pattern: The Power Chain (pump → boiler → engine)
+
+This is the canonical connection idiom. Each placement asks the previous entity where the next one goes:
+
+```python
+# 1. Site the offshore pump ON THE SHORE (it must straddle land/water —
+#    a water tile or a wrong-facing land tile both reject). Probe the
+#    tiles around the water edge until one accepts:
+water = remote_view.find_water(near=walking.current_position, radius=50)
+wx, wy = water[0]["x"], water[0]["y"]   # walk near here first
+pump = None
+for dx, dy, d in [(0, -1, Direction.SOUTH), (0, 1, Direction.NORTH),
+                  (-1, 0, Direction.EAST), (1, 0, Direction.WEST)]:
+    try:
+        pump = inventory.get_item("offshore-pump").place(
+            MapPosition(x=wx + dx, y=wy + dy), d)
+        break
+    except RuntimeError:
+        continue  # structured error names the blocking tile; try next
+
+# 2. Ask the PUMP where a boiler connects (never hand-compute this)
+cues = placement_hints.get_connection_positions(
+    source_entity=pump,
+    target_entity_name="boiler",
+    connection_type=ConnectionType.FLUID_PIPE,
+)
+boiler = inventory.get_item("boiler").place(cues[0].position, cues[0].direction)
+
+# 3. Ask the BOILER where the steam engine goes. Expect exactly ONE cue —
+#    the boiler has a single steam port and the engine mates inline.
+cues = placement_hints.get_connection_positions(
+    source_entity=boiler,
+    target_entity_name="steam-engine",
+    connection_type=ConnectionType.FLUID_PIPE,
+)
+engine = inventory.get_item("steam-engine").place(cues[0].position, cues[0].direction)
+
+# 4. Fuel the boiler, then power the area with a pole near the engine
+boiler.add_fuel(inventory.create_item_stacks("coal", 50))
+```
+
+If a cue list is empty, the space is blocked — clear it or re-site; do NOT fall back to hand-placing. If `cues[0].direction` is set, you MUST pass it to place(): the right position with the wrong rotation does not connect.
+
+### Connection idioms (same principle, other links)
+
+- **Drill output**: `get_connection_positions(drill, "stone-furnace", ConnectionType.ITEM_DROP)` — the furnace/chest/belt at the cue receives ore directly, no inserter. Note: `drop_target` resolves only once the drill is fueled and working — fuel it before debugging "missing" connections.
+- **Inserter bridge** (chest↔furnace↔assembler): `placement_hints.get_inserter_placement_positions(source_entity, target_entity)` returns (position, direction) pairs where the inserter actually reaches both. Inserter `direction` points at the PICKUP side — don't "correct" it.
+- **Power poles**: `get_connection_positions(pole, "small-electric-pole", ConnectionType.ELECTRIC_WIRE)` — placing at a cue auto-attaches the wire; use `wire_distance_utilization` near 1.0 to span gaps with fewest poles.
 </strategic_mindset>
 
 <tools>
