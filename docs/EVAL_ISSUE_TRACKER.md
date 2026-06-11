@@ -74,6 +74,11 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Information Surfaces (attempt-3 base archaeology + legibility audit; docs/INFORMATION_SURFACES.md is the parent doc)
 
+#### [MIRAGE-2] `electric_network_id` DB column documented but always NULL
+- **Severity:** high (measured legibility failure: battery probe V18 — model read all-null ids and correctly concluded "0 networks, nothing powered" about a powered factory)
+- **Evidence:** scripts/battery/results/v0_claude-sonnet-4.6.json V18; the long-known "electric_network_id column unlifted" residual, upgraded from cosmetic to lying-surface by measurement.
+- **Fix direction:** lift it from raw_data in the loader, or drop the column + schema docs (MIRAGE-1's reconciliation rule applies).
+
 #### [MIRAGE-1] System prompt documents DEAD database surfaces with worked examples
 - **Severity:** high (documentation actively teaches false world-facts)
 - **Evidence:** prompt schema reference documents the `inserter`/`transport_belt`/`mining_drill`/`assembler` component tables incl. a worked JOIN example (`schema_reference.py:327-332`; in attempt-3's actual prompt at lines 3033/3163) — tables certified **0 rows always** since 2026-06-10 (ledger L1.5 ❌). `power_statistics` likely same class (mod writes jsonl, loader never ingests, schema documented). An agent following our docs gets empty results and learns "no inserters exist".
