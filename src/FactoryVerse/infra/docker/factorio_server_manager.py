@@ -114,17 +114,29 @@ class FactorioServerManager:
         return self.config.get_server_output_dir(instance_id)
 
     def clear_server_snapshot_dir(self, instance_id: int = 0) -> None:
-        """Clear the snapshot directory for a server instance."""
+        """Clear the snapshot directory for a server instance.
+
+        Called on FRESH scenario boots (CELL-2b): the host volume persists
+        across container restarts, so a previous boot's snapshot files would
+        otherwise load into every new session DB as live data. Logs what was
+        removed so staleness incidents are auditable.
+        """
         script_output_dir = self.get_server_script_output_dir(instance_id)
         snapshot_dir = script_output_dir / "factoryverse" / "snapshots"
 
         if snapshot_dir.exists():
+            chunk_dirs = [d for d in snapshot_dir.glob("*/*") if d.is_dir()]
+            file_count = sum(1 for f in snapshot_dir.rglob("*") if f.is_file())
             print(
-                f"🧹 Clearing server {instance_id} snapshot directory: {snapshot_dir}"
+                f"🧹 Clearing server {instance_id} snapshot directory "
+                f"({len(chunk_dirs)} chunk dirs, {file_count} files): {snapshot_dir}"
             )
             shutil.rmtree(snapshot_dir)
             snapshot_dir.mkdir(parents=True, exist_ok=True)
-            print(f"✓ Server {instance_id} snapshot directory cleared")
+            print(
+                f"✓ Server {instance_id} snapshot directory cleared "
+                f"(removed {file_count} stale files)"
+            )
         else:
             snapshot_dir.mkdir(parents=True, exist_ok=True)
 

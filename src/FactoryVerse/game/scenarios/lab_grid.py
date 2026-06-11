@@ -561,85 +561,169 @@ class LabGridAdapter(ScenarioAdapter):
     async def wait_for_cell_snapshot(
         self,
         cell_index: int,
+        min_tick: int,
         timeout: float = 60.0,
         poll_interval: float = 0.5,
     ) -> CellSnapshotStatus:
-        """Wait for a cell's chunks to be fully snapshotted.
+        """Wait for a cell's chunks to be fully snapshotted — PER-CELL, honest.
 
-        The lab-grid scenario triggers snapshot_area() when resetting a cell.
-        This method polls the snapshot system to check when those chunks complete.
+        Replaces the old global pending==0 heuristic + 2s "proceeding anyway"
+        fallback (CELL-1: the post-allocation reload ran mid-write and missed
+        cell_0's water file by ~1s; the wait lied complete=True).
+
+        Verification is two-layered, both per-cell:
+        1. RCON: every chunk of the cell's play area has
+           chunk_lookup[chunk].snapshot_tick >= min_tick. The mod sets
+           snapshot_tick in its COMPLETE phase, strictly AFTER all of that
+           chunk's init files (including water-init, which is legitimately
+           written last) are flushed to disk — so this covers empty chunks
+           that write no files at all.
+        2. Disk: every init file present under the cell's chunk dirs has a
+           chunk_meta first-line tick >= min_tick (catches stale leftovers
+           and host/container volume propagation lag).
 
         Args:
             cell_index: Cell to wait for
+            min_tick: Game tick at/just before the snapshot trigger
+                (reset_cell / re_snapshot_area). Caller MUST capture it
+                BEFORE triggering — files written by the pass carry
+                ticks >= the trigger tick.
             timeout: Max seconds to wait
             poll_interval: Seconds between polls
 
         Returns:
-            CellSnapshotStatus with completion info
+            CellSnapshotStatus with complete=True (never a lying complete)
+
+        Raises:
+            ScenarioError: On timeout — NO silent proceed. The error names
+                which chunks/files failed verification.
         """
         start_time = time.time()
-        cell_chunks = set(self.get_cell_chunk_coordinates(cell_index))
+        cell_chunks = self.get_cell_chunk_coordinates(cell_index)
         chunks_total = len(cell_chunks)
 
-        # CRITICAL: Give Lua time to queue chunks after reset_cell returns
-        # RCON returns immediately but chunk processing happens over subsequent ticks
-        await asyncio.sleep(0.5)
-
-        # Track if we've seen any chunks being processed
-        seen_processing = False
+        last_missing: List[str] = []
+        last_stale_files: List[str] = []
 
         while True:
             elapsed = time.time() - start_time
+
+            # Layer 1 (RCON): per-chunk completion ticks from the mod's
+            # chunk tracker. snapshot_tick is set only after ALL of the
+            # chunk's files are written.
+            fresh_chunks = 0
+            missing: List[str] = []
+            try:
+                lookup = self._map_api.get_chunk_lookup()
+            except Exception as e:
+                logger.warning(f"LabGrid: get_chunk_lookup failed: {e}")
+                lookup = {}
+
+            for cx, cy in cell_chunks:
+                entry = lookup.get(f"{cx},{cy}")
+                tick = entry.get("snapshot_tick") if isinstance(entry, dict) else None
+                if isinstance(tick, (int, float)) and tick >= min_tick:
+                    fresh_chunks += 1
+                else:
+                    missing.append(
+                        f"({cx},{cy}): snapshot_tick={tick} < min_tick={min_tick}"
+                    )
+            last_missing = missing
+
+            if fresh_chunks == chunks_total:
+                # Layer 2 (disk): the files the loader will read must be the
+                # fresh ones (host-visible; minds docker volume path mapping).
+                stale_files = self._stale_cell_init_files(cell_chunks, min_tick)
+                last_stale_files = stale_files
+                if not stale_files:
+                    return CellSnapshotStatus(
+                        complete=True,
+                        chunks_total=chunks_total,
+                        chunks_snapshotted=fresh_chunks,
+                        chunks_pending=0,
+                        elapsed_seconds=time.time() - start_time,
+                    )
+                # RCON says complete but host files are stale/not yet visible
+                # — keep polling (volume propagation), timeout below is honest.
+
             if elapsed > timeout:
-                return CellSnapshotStatus(
-                    complete=False,
-                    chunks_total=chunks_total,
-                    chunks_snapshotted=0,
-                    chunks_pending=chunks_total,
-                    elapsed_seconds=elapsed,
-                )
-
-            # Check snapshot status
-            status = self.get_snapshot_status()
-            system_phase = status.get("system_phase", "")
-            pending = status.get("pending_chunks", 0)
-            snapshotted = status.get("chunks_snapshotted", 0)
-
-            # Track if we've seen processing activity
-            if pending > 0 or system_phase == "INITIAL_SNAPSHOTTING":
-                seen_processing = True
-
-            # In SELECTIVE mode, chunks are done when:
-            # 1. We've seen processing activity (chunks were queued)
-            # 2. AND pending == 0 (all queued chunks processed)
-            # 3. OR system is in MAINTENANCE with no pending
-            if seen_processing and pending == 0:
-                # Give a brief moment for file writes to complete
-                await asyncio.sleep(0.3)
-                return CellSnapshotStatus(
-                    complete=True,
-                    chunks_total=chunks_total,
-                    chunks_snapshotted=snapshotted,
-                    chunks_pending=0,
-                    elapsed_seconds=time.time() - start_time,
-                )
-
-            # If we haven't seen processing and it's been a while, check files directly
-            if not seen_processing and elapsed > 2.0:
-                # Fallback: check if snapshot files exist for this cell
-                logger.warning(
-                    f"LabGrid: No snapshot activity detected for cell {cell_index} after {elapsed:.1f}s, "
-                    "proceeding anyway"
-                )
-                return CellSnapshotStatus(
-                    complete=True,  # Assume complete, let loader handle missing files
-                    chunks_total=chunks_total,
-                    chunks_snapshotted=snapshotted,
-                    chunks_pending=0,
-                    elapsed_seconds=elapsed,
+                detail_lines = []
+                if last_missing:
+                    detail_lines.append(
+                        f"chunks not freshly snapshotted ({len(last_missing)}/{chunks_total}): "
+                        + "; ".join(last_missing[:8])
+                    )
+                if last_stale_files:
+                    detail_lines.append(
+                        "stale init files on host disk (tick < min_tick or no "
+                        "chunk_meta): " + "; ".join(last_stale_files[:8])
+                        + " — if RCON reports complete but files never freshen, "
+                        "check the snapshot_dir host/container path mapping"
+                    )
+                raise ScenarioError(
+                    f"Cell {cell_index} snapshot did NOT complete within "
+                    f"{timeout:.0f}s (min_tick={min_tick}). Refusing to "
+                    f"proceed with an unverified cell (CELL-1 honest-wait). "
+                    + " | ".join(detail_lines)
                 )
 
             await asyncio.sleep(poll_interval)
+
+    def _stale_cell_init_files(
+        self, cell_chunks: List[Tuple[int, int]], min_tick: int
+    ) -> List[str]:
+        """List init files under the cell's chunk dirs older than min_tick.
+
+        A file with no chunk_meta first line is reported stale too: it cannot
+        prove freshness, and the mod always writes chunk_meta (legacy files
+        are by definition leftovers).
+
+        Returns [] if snapshot_dir was not provided (RCON layer remains).
+        """
+        if self._snapshot_dir is None:
+            return []
+
+        # Mind docker path mapping: accept script-output root or the
+        # snapshots dir itself (same normalization as SnapshotLoader).
+        snapshot_dir = Path(self._snapshot_dir)
+        subdir = snapshot_dir / "factoryverse" / "snapshots"
+        if subdir.exists():
+            snapshot_dir = subdir
+
+        stale: List[str] = []
+        for cx, cy in cell_chunks:
+            chunk_dir = snapshot_dir / str(cx) / str(cy)
+            if not chunk_dir.exists():
+                continue  # empty chunks legitimately write no files
+            for init_file in sorted(chunk_dir.glob("*-init.jsonl")):
+                tick = self._init_file_tick(init_file)
+                if tick is None or tick < min_tick:
+                    stale.append(f"{init_file} (tick={tick})")
+        return stale
+
+    @staticmethod
+    def _init_file_tick(path: Path) -> Optional[int]:
+        """Read chunk_meta tick from an init file's first line, or None."""
+        try:
+            with open(path, "r") as f:
+                first_line = f.readline().strip()
+            if not first_line:
+                return None
+            data = json.loads(first_line)
+            if (
+                isinstance(data, dict)
+                and data.get("kind") == "chunk_meta"
+                and "tick" in data
+            ):
+                return int(data["tick"])
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+        return None
+
+    def _game_tick(self) -> int:
+        """Current game tick via RCON (used to anchor snapshot freshness)."""
+        result = self._rcon.send_command("/c rcon.print(game.tick)")
+        return int(result.strip()) if result and result.strip() else 0
 
     async def allocate_cell(
         self,
@@ -686,6 +770,11 @@ class LabGridAdapter(ScenarioAdapter):
             )
 
         logger.info(f"LabGrid: Allocating cell {cell_index} for agent {agent_id}")
+
+        # Capture the trigger tick BEFORE the reset: every snapshot file
+        # written by the reset's re_snapshot_area pass carries a chunk_meta
+        # tick >= this value. wait_for_cell_snapshot verifies against it.
+        reset_trigger_tick = self._game_tick()
 
         # 2. Reset cell (spawns resources, triggers re_snapshot_area)
         reset_result = self.reset_cell(cell_index, preserve_agent=True)
@@ -751,15 +840,29 @@ class LabGridAdapter(ScenarioAdapter):
             chunks_pending=self.CHUNKS_PER_CELL,
         )
         if wait_for_snapshot:
-            logger.info(f"LabGrid: Waiting for cell {cell_index} snapshot...")
-            snapshot_status = await self.wait_for_cell_snapshot(
-                cell_index, timeout=snapshot_timeout
+            logger.info(
+                f"LabGrid: Waiting for cell {cell_index} snapshot "
+                f"(min_tick={reset_trigger_tick})..."
             )
-            if snapshot_status.complete:
-                logger.info(
-                    f"LabGrid: Cell {cell_index} snapshot complete "
-                    f"({snapshot_status.elapsed_seconds:.1f}s)"
+            try:
+                snapshot_status = await self.wait_for_cell_snapshot(
+                    cell_index,
+                    min_tick=reset_trigger_tick,
+                    timeout=snapshot_timeout,
                 )
+            except ScenarioError as e:
+                # Honest failure: never hand out a cell whose snapshot is
+                # unverified (the old path proceeded anyway → CELL-1).
+                return CellAllocationResult(
+                    success=False,
+                    cell_index=cell_index,
+                    agent_id=agent_id,
+                    error=str(e),
+                )
+            logger.info(
+                f"LabGrid: Cell {cell_index} snapshot complete "
+                f"({snapshot_status.elapsed_seconds:.1f}s)"
+            )
 
         # 7. Set starting inventory
         if starting_inventory:

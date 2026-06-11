@@ -106,6 +106,7 @@ Script-output locations: macOS Steam client → `~/Library/Application Support/f
 - Read-only probes (census scans, inspects, DB reads) may run concurrently with anything.
 - DuckDB: secondary processes read-only, always.
 - Don't leave state behind: `clear_area`/`release_cell` when done, or the next check's census inherits your junk.
+- **Mutating check-runners MUST `re_snapshot_area` their cells after cleanup.** Destroying your rig via RCON does not rewrite the chunk init files — the snapshot dir then keeps serving the destroyed entities to every later session DB load on the same boot (CELL-1/CELL-2, 2026-06-11: a probe's destroyed test chests resurfaced in an eval's DB). Cleanup is not done until `remote.call("map", "re_snapshot_area", <your cell bounds>)` has run and completed; `release_cell` with reset triggers this for lab-grid cells, but any manual `clear_area`-style cleanup needs the explicit call.
 
 ## 6. Verdict protocol (what a check-runner returns)
 

@@ -184,9 +184,14 @@ class RemoteView:
         )
 
         # Load data (with lock to prevent concurrent access)
-        logger.info("Loading snapshot data from disk...")
+        # current_game_tick guards against previous-boot files whose ticks
+        # are "from the future" (CELL-2a)
+        current_game_tick = self._current_game_tick()
+        logger.info(
+            f"Loading snapshot data from disk (game tick guard: {current_game_tick})..."
+        )
         with self._db_lock:
-            result = self._loader.load_all()
+            result = self._loader.load_all(current_game_tick=current_game_tick)
 
         self._last_sequence = result.last_sequence
         self._database.set_last_sequence(result.last_sequence)
@@ -207,6 +212,9 @@ class RemoteView:
         This is synchronous because it's called from sync service callbacks.
         """
         logger.info("RemoteView rebuild triggered")
+
+        # Fetch tick OUTSIDE the lock (RCON call); guards stale-boot files
+        current_game_tick = self._current_game_tick()
 
         with self._db_lock:
             self._database.reset()
@@ -235,7 +243,7 @@ class RemoteView:
                 )
 
             # Load data synchronously (already holding lock)
-            result = self._loader.load_all()
+            result = self._loader.load_all(current_game_tick=current_game_tick)
             self._last_sequence = result.last_sequence
             self._database.set_last_sequence(result.last_sequence)
 
@@ -280,6 +288,27 @@ class RemoteView:
     # =========================================================================
     # Query API
     # =========================================================================
+
+    def execute_raw(self, sql: str) -> List[tuple]:
+        """Execute SQL on the view's DuckDB, return raw fetchall() tuples.
+
+        This is the unification point for the `execute_duckdb` tool path
+        (CELL-1 item 6): it reads the SAME connection as query()/get_entities(),
+        with the same flush-before-read and lock discipline, so the two agent
+        query paths can never serve different truths.
+
+        Unlike query(), the SQL is not restricted to SELECT (preserves the
+        legacy execute_duckdb behavior) and rows are tuples, not dicts.
+        """
+        if not self._loaded:
+            raise RuntimeError("RemoteView not loaded. Call load() first.")
+
+        # Flush pending UDP-synced writes before reading (same as QueryExecutor)
+        if self._sync:
+            self._sync.flush_pending()
+
+        with self._db_lock:
+            return self._database.connection.execute(sql).fetchall()
 
     def query(self, sql: str) -> List[Dict[str, Any]]:
         """Execute raw SQL query, return list of dicts.
@@ -710,6 +739,22 @@ class RemoteView:
     # =========================================================================
     # Internal
     # =========================================================================
+
+    def _current_game_tick(self) -> Optional[int]:
+        """Current game tick via RCON, or None if unavailable.
+
+        Used as the loader's future-tick guard (CELL-2a): init files /
+        update records with tick > now are previous-boot leftovers.
+        None disables the guard (old behavior) rather than failing the load.
+        """
+        if self._rcon_client is None:
+            return None
+        try:
+            result = self._rcon_client.send_command("/c rcon.print(game.tick)")
+            return int(result.strip()) if result and result.strip() else None
+        except Exception as e:
+            logger.warning(f"Could not fetch game tick for load guard: {e}")
+            return None
 
     async def _wait_for_bootstrap_complete(self, timeout: float = 120.0) -> None:
         """Wait for bootstrap phase to complete (INITIAL_SNAPSHOTTING → MAINTENANCE).

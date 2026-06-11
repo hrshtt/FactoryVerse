@@ -272,6 +272,17 @@ class Tier1Factorio(TierBase):
         if not self._server_manager or not self._docker_compose_manager:
             raise RuntimeError("Server manager not initialized")
 
+        # CELL-2b: a FRESH scenario boot must not inherit a previous boot's
+        # snapshot files (host volume persists across container restarts;
+        # stale cells/destroyed rigs would load into every new session DB).
+        # Saves keep their snapshots — the on-disk state matches the save.
+        if save is None:
+            self._server_manager.clear_all_server_snapshot_dirs(num_instances)
+        else:
+            logger.info(
+                "Tier 1: Loading save '%s' — keeping existing snapshot dirs", save
+            )
+
         # Prepare mods
         self._server_manager.prepare_mods(scenario)
 

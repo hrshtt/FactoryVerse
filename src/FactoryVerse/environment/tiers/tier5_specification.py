@@ -324,6 +324,22 @@ class Tier5Specification(TierBase):
         await self._compose_system_prompt()
         return self._system_prompt or ""
 
+    async def regenerate_initial_state(self) -> Optional[str]:
+        """Regenerate the initial-state summary from CURRENT runtime state.
+
+        Use after the world changed under an already-initialized tier5 —
+        e.g. cell allocation + snapshot reload (CELL-1 ordering fix): the
+        anchor observation baked at initialize() time would otherwise
+        predate the agent's cell. Rewrites initial_state.md in the session
+        directory.
+
+        Returns:
+            The regenerated initial state, or None if generation failed
+        """
+        if self.config.include_initial_state:
+            await self._generate_initial_state()
+        return self._initial_state
+
     def set_task(self, task_name: str, task_definition: Dict[str, Any]) -> None:
         """Set task definition manually.
 
