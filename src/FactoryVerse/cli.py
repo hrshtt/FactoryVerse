@@ -275,7 +275,15 @@ def cmd_server_start(args):
             print(f"   Scenario: {args.scenario}")
 
         try:
-            await env.initialize(up_to=Tier.SETTINGS)
+            # Save loads must bypass tier2's implicit fresh-scenario start:
+            # tier2.initialize() starts the server WITHOUT the save (it has no
+            # server-save concept), and tier1's attach guard then no-ops the
+            # explicit save-bearing call below (live-caught 2026-06-11:
+            # `--save` silently booted a fresh scenario instead).
+            up_to = (
+                Tier.FACTORIO_INFRA if getattr(args, "save", None) else Tier.SETTINGS
+            )
+            await env.initialize(up_to=up_to)
 
             tier1 = env.tier1
             if tier1 is None:
