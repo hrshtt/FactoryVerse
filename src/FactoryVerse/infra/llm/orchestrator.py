@@ -309,6 +309,12 @@ class AgentOrchestrator:
                     "completion_tokens": result.usage.completion_tokens,
                     "total_tokens": result.usage.total_tokens,
                 }
+                # OBS-2 observability: record cache hits when reported;
+                # absent key = gateway doesn't report, not "cache failed"
+                if result.usage.cached_prompt_tokens is not None:
+                    usage_data["cached_prompt_tokens"] = (
+                        result.usage.cached_prompt_tokens
+                    )
             else:
                 try:
                     usage_data = self._calculate_fallback_usage(

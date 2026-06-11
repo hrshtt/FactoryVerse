@@ -392,6 +392,12 @@ class _InitialStateRuntimeAdapter:
             "research": tier4._research if hasattr(tier4, "_research") else None,
             "inventory": tier4._inventory if hasattr(tier4, "_inventory") else None,
             "reachable_view": tier4.reachable_view,
+            # Scenario adapter (PROMPT-3: _generate_map_bounds derives the
+            # agent's hard cell bounds from scenario.config/get_cell_bounds;
+            # this name was missing here, so the Working Area section
+            # NameError'd and silently dropped — caught by LIVE-1 #3 render
+            # check 2026-06-11)
+            "scenario": tier4.scenario,
             # Standard library
             "json": __import__("json"),
         }

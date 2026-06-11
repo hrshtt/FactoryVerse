@@ -283,6 +283,19 @@ class Tier1Factorio(TierBase):
         if not self._server_manager or not self._docker_compose_manager:
             raise RuntimeError("Server manager not initialized")
 
+        # Ownership guard (mirrors start_client): if the compose stack is
+        # already up, attach — do NOT clear the RUNNING boot's snapshot dirs
+        # (the CELL-2b clear below is for fresh boots only) and do NOT claim
+        # started_by_us (shutdown would compose-down a server we never
+        # started; live-observed 2026-06-11: the LIVE-1 #3 eval session tore
+        # down server_0 on exit and wiped its live snapshot dirs on entry).
+        if self._docker_compose_manager.is_running():
+            logger.info(
+                "Tier 1: Server already running — attaching (not ours; "
+                "snapshots untouched; shutdown leaves it alone)"
+            )
+            return
+
         # CELL-2b: a FRESH scenario boot must not inherit a previous boot's
         # snapshot files (host volume persists across container restarts;
         # stale cells/destroyed rigs would load into every new session DB).

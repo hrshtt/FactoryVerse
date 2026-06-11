@@ -248,10 +248,18 @@ class OpenAICompatibleClient(LLMClient):
 
         usage = None
         if response.usage:
+            # OBS-2 observability: surface cached-prefix hits when the
+            # gateway reports them (OpenAI-style prompt_tokens_details.
+            # cached_tokens, or Anthropic-style cache_read_input_tokens).
+            details = getattr(response.usage, "prompt_tokens_details", None)
+            cached = getattr(details, "cached_tokens", None) if details else None
+            if cached is None:
+                cached = getattr(response.usage, "cache_read_input_tokens", None)
             usage = ChatCompletionUsage(
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=response.usage.completion_tokens,
                 total_tokens=response.usage.total_tokens,
+                cached_prompt_tokens=cached,
             )
 
         return ChatCompletionResult(
