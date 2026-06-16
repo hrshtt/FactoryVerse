@@ -200,57 +200,260 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
 
     local positions = {}
     local count = 0
+    local seen = {}
 
-    -- For each connection point, find valid pipe/pump positions
-    for _, conn in ipairs(conn_info.connections) do
-        if count >= max_results then
-            break
+    -- ------------------------------------------------------------------
+    -- Geometry-aware path (fixes PLACE-1, certified L4.4): a candidate
+    -- center must be offset so one of the TARGET's OWN fluid connection
+    -- cells lands on the source connection's partner cell, facing back.
+    -- The old code tried the target's CENTER at the connection point ±1
+    -- tile, which structurally yields zero candidates for any multi-tile
+    -- target (steam-engine, boiler, ...). Target offsets are probed from
+    -- the engine itself (temporary create per direction), so this never
+    -- guesses prototype rotation semantics.
+    -- ------------------------------------------------------------------
+
+    -- Live world-space source connections (own cell + partner cell + flow).
+    local source_conns = {}
+    local source_entity = entity_lookup.find_entity(source_name, source_position)
+    if source_entity and source_entity.valid and source_entity.fluidbox then
+        for fb_index = 1, #source_entity.fluidbox do
+            local ok, pipe_conns = pcall(function()
+                return source_entity.fluidbox.get_pipe_connections(fb_index)
+            end)
+            if ok and pipe_conns then
+                for conn_index, pc in ipairs(pipe_conns) do
+                    if pc.position and pc.target_position then
+                        table.insert(source_conns, {
+                            own = pc.position,
+                            partner = pc.target_position,
+                            flow_direction = pc.flow_direction or "input-output",
+                            fluidbox_index = fb_index,
+                            connection_index = conn_index,
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    -- Probe the target's own connection offsets per placeable direction.
+    local function probe_target_offsets()
+        local tproto = prototypes.entity[target_name]
+        if not tproto or not tproto.fluidbox_prototypes or #tproto.fluidbox_prototypes == 0 then
+            return nil
+        end
+        -- Per-direction staging with retries: find_non_colliding_position
+        -- uses the prototype's DEFAULT orientation, so a rotated footprint
+        -- can collide at the same spot and create_entity returns nil. A
+        -- single shared staging silently dropped whole directions (field
+        -- failure 2026-06-10: east-facing boiler near a lab-grid cell edge
+        -- got zero steam-engine candidates while certification on open
+        -- test-ground passed all four rotations).
+        local function create_probe(dir)
+            for attempt = 0, 4 do
+                local near = {
+                    x = source_position.x + attempt * 9,
+                    y = source_position.y - attempt * 7,
+                }
+                local p = surface.find_non_colliding_position(target_name, near, 64, 1)
+                if p then
+                    local ok, temp = pcall(function()
+                        return surface.create_entity{
+                            name = target_name,
+                            position = p,
+                            direction = dir,
+                            force = "player",
+                            create_build_effect_smoke = false,
+                        }
+                    end)
+                    if ok and temp and temp.valid then
+                        return temp
+                    end
+                end
+            end
+            return nil
         end
 
-        local conn_pos = conn.position
+        local by_direction = {}
+        local any = false
+        for _, dir in ipairs({
+            defines.direction.north,
+            defines.direction.east,
+            defines.direction.south,
+            defines.direction.west,
+        }) do
+            local temp = create_probe(dir)
+            if temp then
+                local actual_dir = temp.direction
+                if not by_direction[actual_dir] then
+                    local center = temp.position
+                    local conns = {}
+                    if temp.fluidbox then
+                        for i = 1, #temp.fluidbox do
+                            local ok2, pcs = pcall(function()
+                                return temp.fluidbox.get_pipe_connections(i)
+                            end)
+                            if ok2 and pcs then
+                                for _, pc in ipairs(pcs) do
+                                    if pc.position and pc.target_position then
+                                        table.insert(conns, {
+                                            own = {x = pc.position.x - center.x, y = pc.position.y - center.y},
+                                            partner = {x = pc.target_position.x - center.x, y = pc.target_position.y - center.y},
+                                            flow_direction = pc.flow_direction or "input-output",
+                                        })
+                                        any = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    by_direction[actual_dir] = conns
+                end
+                temp.destroy()
+            end
+        end
+        if any then return by_direction end
+        return nil
+    end
 
-        -- Try placing target at the connection point first
+    local function flows_compatible(a, b)
+        -- A strict output cannot feed a strict output, nor input an input.
+        if a == "output" and b == "output" then return false end
+        if a == "input" and b == "input" then return false end
+        return true
+    end
+
+    local target_offsets = (#source_conns > 0) and probe_target_offsets() or nil
+
+    -- Diagnostics for the empty-result contract below
+    local geom_matched = 0   -- geometric mates found (pre-placement-check)
+    local geom_blocked = 0   -- mates rejected by can_place (collision/terrain)
+    local blocked_at = {}    -- sample of blocked candidate positions
+
+    -- Two-stage placeability (L4.6 field fix #2, 2026-06-11): the `manual`
+    -- build check hard-rejects characters, but the ACT layer (place_entity)
+    -- steps the agent aside for validation and creates with
+    -- move_stuck_players=true (live-validated on free-standing characters)
+    -- — so a mate blocked ONLY by characters IS placeable by the agent.
+    -- The cue layer must agree with the act layer, or it reports
+    -- "impossible" for placements that would succeed (live-observed:
+    -- shore-sited pump, the agent's own body on BOTH boiler mates -> zero
+    -- geometry cues -> the old fallback's garbage cue).
+    -- Matrix (live-verified): with a character in the footprint, `manual`
+    -- is false while `manual_ghost` stays true; vehicles/units would also
+    -- pass the ghost check but move_stuck_players cannot move them, so
+    -- they keep the mate blocked.
+    local function placeability(cx, cy, dir)
         local params = {
             name = target_name,
-            position = conn_pos,
+            position = {x = cx, y = cy},
+            direction = dir,
             force = "player",
             build_check_type = build_check,
         }
-
         if surface.can_place_entity(params) then
-            count = count + 1
-            table.insert(positions, {
-                position = conn_pos,
-                connection_index = conn.connection_index,
-                fluidbox_index = conn.fluidbox_index,
-                flow_direction = conn.flow_direction,
-                valid = true,
-            })
-        else
-            -- Try adjacent positions (connection point might be inside collision box)
-            for _, dir_vec in pairs(geometry.DIRECTION_VECTORS) do
-                if count >= max_results then
-                    break
-                end
+            return "clear"
+        end
+        if ghost then
+            return "blocked"  -- ghost check already tolerates characters
+        end
+        params.build_check_type = defines.build_check_type.manual_ghost
+        if not surface.can_place_entity(params) then
+            return "blocked"
+        end
+        local tproto = prototypes.entity[target_name]
+        local cb = tproto and tproto.collision_box
+        local half = 1.0
+        if cb then
+            half = math.max(math.abs(cb.left_top.x), math.abs(cb.left_top.y),
+                            math.abs(cb.right_bottom.x), math.abs(cb.right_bottom.y))
+        end
+        local area = {{cx - half, cy - half}, {cx + half, cy + half}}
+        local chars = surface.find_entities_filtered{area = area, type = "character"}
+        local movables = surface.find_entities_filtered{
+            area = area, type = {"car", "spider-vehicle", "unit"}}
+        if #chars > 0 and #movables == 0 then
+            return "displaces_character"
+        end
+        return "blocked"
+    end
 
-                local adjacent_pos = {
-                    x = conn_pos.x + dir_vec.x,
-                    y = conn_pos.y + dir_vec.y,
-                }
-
-                params.position = adjacent_pos
-                if surface.can_place_entity(params) then
-                    count = count + 1
-                    table.insert(positions, {
-                        position = adjacent_pos,
-                        connection_index = conn.connection_index,
-                        fluidbox_index = conn.fluidbox_index,
-                        flow_direction = conn.flow_direction,
-                        offset_from_connection = dir_vec,
-                        valid = true,
-                    })
+    if target_offsets then
+        for _, sc in ipairs(source_conns) do
+            if count >= max_results then break end
+            for dir, tconns in pairs(target_offsets) do
+                if count >= max_results then break end
+                for _, tc in ipairs(tconns) do
+                    if count >= max_results then break end
+                    if flows_compatible(sc.flow_direction, tc.flow_direction) then
+                        -- Target center such that its connection cell lands
+                        -- on the source connection's partner cell...
+                        local cx = sc.partner.x - tc.own.x
+                        local cy = sc.partner.y - tc.own.y
+                        -- ...and points back at the source's own cell.
+                        if math.abs(cx + tc.partner.x - sc.own.x) < 0.01
+                            and math.abs(cy + tc.partner.y - sc.own.y) < 0.01 then
+                            local key = cx .. "," .. cy .. "," .. dir
+                            if not seen[key] then
+                                seen[key] = true
+                                geom_matched = geom_matched + 1
+                                local verdict = placeability(cx, cy, dir)
+                                if verdict ~= "blocked" then
+                                    count = count + 1
+                                    table.insert(positions, {
+                                        position = {x = cx, y = cy},
+                                        direction = dir,
+                                        connection_index = sc.connection_index,
+                                        fluidbox_index = sc.fluidbox_index,
+                                        flow_direction = sc.flow_direction,
+                                        -- placing here steps the standing
+                                        -- character aside (the act layer's
+                                        -- move_stuck_players semantics)
+                                        displaces_character =
+                                            (verdict == "displaces_character")
+                                            or nil,
+                                        valid = true,
+                                    })
+                                else
+                                    geom_blocked = geom_blocked + 1
+                                    if #blocked_at < 6 then
+                                        table.insert(blocked_at, {
+                                            x = cx, y = cy, direction = dir,
+                                        })
+                                    end
+                                end
+                            end
+                        end
+                    end
                 end
             end
+        end
+    end
+
+    -- NO FALLBACK (L4.6 field fix, 2026-06-11). The old "legacy
+    -- center/adjacent" path emitted direction-less, geometry-unvalidated
+    -- cues whenever the geometry path came up empty. First live firing
+    -- (engine_unit finale, shore-sited pump with both boiler mates blocked):
+    -- the agent — correctly trusting the cue contract — placed a boiler at
+    -- a raw connection-point coordinate with no rotation: adjacent and
+    -- fluid-dead. A lying cue is strictly worse than an empty answer.
+    -- Contract: zero cues ALWAYS carries a structured reason so the agent
+    -- can act (clear space / re-site) instead of guessing.
+    local reason = nil
+    if count == 0 then
+        if #source_conns == 0 then
+            reason = "source entity exposes no live pipe connections"
+        elseif not target_offsets then
+            reason = "could not probe target connection offsets "
+                .. "(staging blocked near source?)"
+        elseif geom_matched == 0 then
+            reason = "no geometric mate: no target port lines up with any "
+                .. "source port (flow directions or port layout incompatible)"
+        else
+            reason = "all " .. geom_matched .. " geometric placement(s) are "
+                .. "blocked (collision/terrain) — clear space around the "
+                .. "source's ports or re-site the source"
         end
     end
 
@@ -260,6 +463,8 @@ function M.get_fluid_connections(source_name, source_position, target_name, opti
         target_name = target_name,
         positions = positions,
         count = count,
+        reason = reason,
+        blocked_candidates = (count == 0) and blocked_at or nil,
     }
 end
 
@@ -347,13 +552,20 @@ function M.get_inserter_placements(pickup_name, pickup_position, drop_name, drop
                 )
                 local actual_drop = geometry.add_offset(inserter_pos, rotated_drop)
 
-                -- Check if pickup position is near pickup entity
-                local pickup_dist = geometry.distance(actual_pickup, pickup_position)
-                -- Check if drop position is near drop entity
-                local drop_dist = geometry.distance(actual_drop, drop_position)
+                -- ENGINE-TRUTH reach check (L4.6 fix, 2026-06-11): the
+                -- inserter's actual pickup/drop POINTS must land inside the
+                -- entities' live bounding boxes. The previous heuristic
+                -- (distance-to-CENTER <= 1.5) accepted geometrically wrong
+                -- configs — e.g. an inserter diagonally off a 1x1 chest
+                -- whose hand reaches an empty tile (live-caught: 2 of 3
+                -- chest->furnace cues placed inserters that bridged nothing).
+                local function point_in_bbox(p, bbox)
+                    return p.x >= bbox.left_top.x and p.x <= bbox.right_bottom.x
+                       and p.y >= bbox.left_top.y and p.y <= bbox.right_bottom.y
+                end
 
-                -- Allow 1.5 tile tolerance for reach
-                if pickup_dist <= 1.5 and drop_dist <= 1.5 then
+                if point_in_bbox(actual_pickup, pickup_entity.bounding_box)
+                    and point_in_bbox(actual_drop, drop_entity.bounding_box) then
                     candidates_in_reach = candidates_in_reach + 1
 
                     -- Validate inserter placement

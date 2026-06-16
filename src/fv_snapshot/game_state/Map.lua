@@ -1024,25 +1024,44 @@ function M.snapshot_area(bounds, priority)
     local tracker = M.get_chunk_tracker()
     local sys_state = get_system_state()
 
+    -- snapshot_area is snapshot-at-least-once: chunks with an existing
+    -- snapshot are skipped — but that skip must be VISIBLE to the caller,
+    -- not silent (a caller seeing chunks_queued > 0 while zero files get
+    -- written was the frozen-tick failure of the 2026-06-10 field run).
+    -- Use re_snapshot_area to force fresh files.
+    local queued = 0
+    local skipped = 0
     for _, chunk in ipairs(chunks) do
-        -- Mark for snapshotting (this enqueues the chunk)
-        tracker:mark_chunk_needs_snapshot(chunk.x, chunk.y)
-        enqueue_chunk_for_snapshot(chunk.x, chunk.y, priority)
+        local entry = tracker:_get_chunk_entry(chunk.x, chunk.y)
+        if entry.snapshot_tick == nil then
+            enqueue_chunk_for_snapshot(chunk.x, chunk.y, priority)
+            queued = queued + 1
+        else
+            skipped = skipped + 1
+        end
     end
 
     -- If we're in maintenance and chunks were queued, switch to initial snapshotting
     -- This ensures the snapshot state machine processes them
-    if #chunks > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+    if queued > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
         sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
         sys_state.stats.phase_start_tick = game.tick
     end
 
     if DEBUG and game and game.print then
-        game.print(string.format("[Map] snapshot_area: queued %d chunks from bounds (%d,%d) to (%d,%d)",
-            #chunks, bounds.left_top.x, bounds.left_top.y, bounds.right_bottom.x, bounds.right_bottom.y))
+        game.print(string.format("[Map] snapshot_area: queued %d, skipped %d (already snapshotted) from bounds (%d,%d) to (%d,%d)",
+            queued, skipped, bounds.left_top.x, bounds.left_top.y, bounds.right_bottom.x, bounds.right_bottom.y))
     end
 
-    return { success = true, chunks_queued = #chunks, chunks = chunks }
+    return {
+        success = true,
+        chunks_queued = queued,
+        chunks_skipped = skipped,
+        chunks = chunks,
+        warning = skipped > 0
+            and (skipped .. " chunk(s) already snapshotted were NOT re-queued; no new files will be written for them. Use re_snapshot_area to force fresh files.")
+            or nil,
+    }
 end
 
 --- Re-snapshot an area (clears existing snapshot state and re-processes)
@@ -1061,12 +1080,10 @@ function M.re_snapshot_area(bounds, priority)
     local sys_state = get_system_state()
 
     for _, chunk in ipairs(chunks) do
-        -- Clear the snapshot tick to force re-processing
+        -- Clear the snapshot tick to force re-processing, then enqueue once
+        -- (mark_chunk_needs_snapshot would enqueue a duplicate at priority 1)
         local entry = tracker:_get_chunk_entry(chunk.x, chunk.y)
         entry.snapshot_tick = nil
-
-        -- Mark for snapshotting and enqueue
-        tracker:mark_chunk_needs_snapshot(chunk.x, chunk.y)
         enqueue_chunk_for_snapshot(chunk.x, chunk.y, priority)
     end
 
@@ -1428,10 +1445,20 @@ local function phase_serialize(state)
         state.write_queue = {}
         state.write_index = 1
         local write_queue = state.write_queue  -- Cache for repeated insertions
-        
+
+        -- First line of every init file: tick metadata, so freshness is
+        -- falsifiable from disk (init files previously carried no tick and
+        -- staleness was invisible to the loader). Loader skips kind=chunk_meta.
+        local chunk_meta_line = table_to_json({
+            kind = "chunk_meta",
+            tick = game.tick,
+            chunk_x = chunk_x,
+            chunk_y = chunk_y,
+        })
+
         -- Queue resources-init.jsonl write (ore tiles)
         if #serialized_resources_json > 0 then
-            local content = table_concat(serialized_resources_json, "\n") .. "\n"
+            local content = chunk_meta_line .. "\n" .. table_concat(serialized_resources_json, "\n") .. "\n"
             local path = snapshot.resources_init_path(chunk_x, chunk_y)
             write_queue[#write_queue + 1] = {
                 path = path,
@@ -1443,7 +1470,7 @@ local function phase_serialize(state)
         
         -- Queue water-init.jsonl write
         if #serialized_water_json > 0 then
-            local content = table_concat(serialized_water_json, "\n") .. "\n"
+            local content = chunk_meta_line .. "\n" .. table_concat(serialized_water_json, "\n") .. "\n"
             local path = snapshot.water_init_path(chunk_x, chunk_y)
             write_queue[#write_queue + 1] = {
                 path = path,
@@ -1455,7 +1482,7 @@ local function phase_serialize(state)
         
         -- Queue trees_rocks-init.jsonl write (trees + rocks)
         if #serialized_entities_json > 0 then
-            local content = table_concat(serialized_entities_json, "\n") .. "\n"
+            local content = chunk_meta_line .. "\n" .. table_concat(serialized_entities_json, "\n") .. "\n"
             local path = snapshot.trees_rocks_init_path(chunk_x, chunk_y)
             write_queue[#write_queue + 1] = {
                 path = path,
@@ -1484,7 +1511,7 @@ local function phase_serialize(state)
             
             local entity_json_count = #entity_json_lines
             if entity_json_count > 0 then
-                local content = table_concat(entity_json_lines, "\n") .. "\n"
+                local content = chunk_meta_line .. "\n" .. table_concat(entity_json_lines, "\n") .. "\n"
                 local path = snapshot.entities_init_path(chunk_x, chunk_y)
                 write_queue[#write_queue + 1] = {
                     path = path,
@@ -1499,7 +1526,7 @@ local function phase_serialize(state)
         -- Queue ghosts for chunk-wise ghosts-init.jsonl
         local ghosts_json_count = #serialized_ghosts_json
         if ghosts_json_count > 0 then
-            local content = table_concat(serialized_ghosts_json, "\n") .. "\n"
+            local content = chunk_meta_line .. "\n" .. table_concat(serialized_ghosts_json, "\n") .. "\n"
             local path = snapshot.ghosts_init_path(chunk_x, chunk_y)
             write_queue[#write_queue + 1] = {
                 path = path,
@@ -1511,7 +1538,45 @@ local function phase_serialize(state)
                 chunk = { x = chunk_x, y = chunk_y },
             }
         end
-        
+
+        -- SNAP-3: a re-snapshot must overwrite previously-written categories
+        -- even when they are now EMPTY, else the stale init file survives on
+        -- disk and a fresh DB load resurrects phantoms (e.g. all entities in
+        -- the chunk removed without raised events). A meta-only file is the
+        -- honest "empty now" marker; it also keeps chunk_meta ticks fresh.
+        do
+            local category_paths = {
+                resource = snapshot.resources_init_path,
+                water = snapshot.water_init_path,
+                trees_rocks = snapshot.trees_rocks_init_path,
+                entities_init = snapshot.entities_init_path,
+                ghosts_init = snapshot.ghosts_init_path,
+            }
+            local written_now = {}
+            for _, w in ipairs(write_queue) do
+                written_now[w.file_type] = true
+            end
+            local tracker = M.get_chunk_tracker()
+            local entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
+            local previously = entry.files_written or {}
+            for cat, path_fn in pairs(category_paths) do
+                if previously[cat] and not written_now[cat] then
+                    write_queue[#write_queue + 1] = {
+                        path = path_fn(chunk_x, chunk_y),
+                        content = chunk_meta_line .. "\n",
+                        file_type = cat,
+                        event_type = "file_created",
+                    }
+                end
+            end
+            -- Grow-only union: once a category has a file on disk it is
+            -- rewritten (full or meta-only) on every future snapshot pass
+            for cat in pairs(written_now) do
+                previously[cat] = true
+            end
+            entry.files_written = previously
+        end
+
         -- Transition to WRITE phase
         state.phase = SnapshotPhase.WRITE
         

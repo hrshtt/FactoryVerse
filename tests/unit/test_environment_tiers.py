@@ -111,6 +111,7 @@ async def test_tier4_agent_reconciliation():
     mock_env = MagicMock(spec=Environment)
     mock_env.config.tier4.agent_id = "test_agent"
     mock_env.config.tier4.variant = RuntimeVariant.MINIMAL
+    mock_env.config.tier4.initial_inventory = None
     # Mock Tier 6 so model capture works
     mock_env.tier6 = None
     mock_env.config.tier6 = MagicMock()
@@ -160,6 +161,7 @@ async def test_tier4_agent_reconciliation():
         udp_port=expected_udp_port,
         set_unique_forces=False,
         default_common_force="player",
+        initial_inventory=None,
     )
 
     # Check registration happened in Python registry
@@ -254,4 +256,5 @@ async def test_tier4_agent_reconciliation():
         udp_port=expected_udp_port,
         set_unique_forces=False,
         default_common_force="player",
+        initial_inventory=None,
     )

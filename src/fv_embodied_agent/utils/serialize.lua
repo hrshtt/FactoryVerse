@@ -277,8 +277,38 @@ end
 --- @param entity LuaEntity
 --- @param out table Output table to populate
 local function _serialize_pole_data(entity, out)
-    out.max_wire_distance = entity.prototype.get_max_wire_distance()
-    out.supply_area_distance = entity.prototype.get_supply_area_distance()
+    -- nil-safe: the "poles" component also matches power-switch, whose
+    -- prototype lacks the pole distance getters
+    local ok_wire, max_wire = pcall(function() return entity.prototype.get_max_wire_distance() end)
+    if ok_wire then out.max_wire_distance = max_wire end
+    local ok_supply, supply = pcall(function() return entity.prototype.get_supply_area_distance() end)
+    if ok_supply then out.supply_area_distance = supply end
+
+    -- Copper-wire neighbours (connected poles) as name+position refs.
+    -- Factorio 2.0: entity.neighbours RAISES on poles — use the wire connector
+    -- API (same pattern as fv_placement_hints/utils/entity_lookup.lua).
+    local connected = {}
+    local ok, copper = pcall(function()
+        return entity.get_wire_connector(defines.wire_connector_id.pole_copper, false)
+    end)
+    if ok and copper then
+        local conns = copper.real_connections
+        if conns then
+            for _, conn in ipairs(conns) do
+                local target = conn.target
+                if target and target.owner and target.owner.valid and target.owner.position then
+                    connected[#connected + 1] = {
+                        name = target.owner.name,
+                        position = {x = target.owner.position.x, y = target.owner.position.y}
+                    }
+                end
+            end
+        end
+    end
+
+    out.pole_data = {
+        connected_poles = ((#connected > 0) and connected) or nil
+    }
 end
 
 --- Serialize entity data for JSON storage
@@ -303,8 +333,8 @@ function M.serialize_entity(entity, builder_info)
         _serialize_pipe_data(entity, out)
     elseif component_type == "mining-drill" then
         _serialize_mining_drill_data(entity, out)
-    -- elseif component_type == "poles" then
-    --     _serialize_pole_data(entity, out)
+    elseif component_type == "poles" then
+        _serialize_pole_data(entity, out)
     end
 
     -- Inserter IO (pickup/drop positions and resolved targets)

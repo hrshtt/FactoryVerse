@@ -10,6 +10,19 @@ from FactoryVerse.infra.llm.client.base import LLMClient
 from FactoryVerse.infra.llm.client.openai_compatible import OpenAICompatibleClient
 
 
+def _is_anthropic_model(model: Optional[str]) -> bool:
+    """True when the model id names an Anthropic model (e.g. 'anthropic/claude-sonnet-4.6').
+
+    Used to gate Anthropic-specific prompt caching (cache_control on the static
+    prefix, OBS-2) on provider-agnostic gateways. Non-Anthropic models never get
+    the annotation.
+    """
+    if not model:
+        return False
+    namespace = model.split("/", 1)[0].lower()
+    return namespace == "anthropic" or model.lower().startswith("claude")
+
+
 def create_openai_client(
     api_key: Optional[str] = None,
     model: str = "gpt-4o",
@@ -62,6 +75,10 @@ def create_prime_intellect_client(
         api_key=api_key,
         model=model,
         base_url="https://api.pinference.ai/api/v1",
+        # OBS-2: Anthropic prompt caching for anthropic/* models served via the
+        # gateway. The ~30k-token static prefix (system prompt + tools) is then
+        # read from cache (~0.1x cost) instead of re-sent at full price per call.
+        cache_static_prefix=_is_anthropic_model(model),
     )
 
 

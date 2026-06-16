@@ -935,10 +935,27 @@ class Tier4Runtime(TierBase):
         await self._wait_for_snapshot_bootstrap(timeout=120.0)
 
         # Now load snapshot data - system is in MAINTENANCE mode
-        logger.info("Tier 4: Loading snapshot data into database...")
-        loader.load_all()
+        # Pass game.tick so previous-boot files ("from the future") are
+        # skipped instead of loaded as live data (CELL-2a)
+        current_game_tick = self._safe_game_tick()
+        logger.info(
+            f"Tier 4: Loading snapshot data into database "
+            f"(game tick guard: {current_game_tick})..."
+        )
+        loader.load_all(current_game_tick=current_game_tick)
 
         logger.info("Tier 4: Database synced with game state (bootstrap complete)")
+
+    def _safe_game_tick(self) -> Optional[int]:
+        """Current game tick via tier3 RCON, or None (guard disabled)."""
+        tier3 = self._env.tier3
+        if tier3 is None:
+            return None
+        try:
+            return tier3.get_game_tick()
+        except Exception as e:
+            logger.warning(f"Tier 4: Could not fetch game tick for load guard: {e}")
+            return None
 
     async def _load_remote_view(self) -> None:
         """Load RemoteView module (SQL-based entity querying).
@@ -1117,6 +1134,7 @@ class Tier4Runtime(TierBase):
         # Core spatial types
         from FactoryVerse.game.factory.types import (
             MapPosition,
+            TilePosition,
             Direction,
             BoundingBox,
             # Status types
@@ -1176,6 +1194,7 @@ class Tier4Runtime(TierBase):
             # Core spatial types (MapPosition, Direction, BoundingBox)
             # =================================================================
             "MapPosition": MapPosition,
+            "TilePosition": TilePosition,
             "Direction": Direction,
             "BoundingBox": BoundingBox,
             # =================================================================
@@ -1402,6 +1421,12 @@ class Tier4Runtime(TierBase):
         when you know the snapshot files have been written but the bootstrap
         wait already completed earlier.
 
+        Refreshes BOTH database holders (CELL-1 item 6): tier4's own
+        SnapshotDatabase (legacy fallback for execute_duckdb) AND RemoteView's
+        database (the connection actually served to agents via remote_view.query
+        and the unified execute_duckdb path). Previously only tier4's was
+        reloaded, so the two query paths served different truths.
+
         This is different from sync_database() which waits for bootstrap first.
         """
         if self._database is None:
@@ -1423,6 +1448,20 @@ class Tier4Runtime(TierBase):
             snapshot_dir=snapshot_dir,
         )
 
-        logger.info("Tier 4: Reloading snapshot data into database...")
-        result = loader.load_all()
+        current_game_tick = self._safe_game_tick()
+        logger.info(
+            f"Tier 4: Reloading snapshot data into database "
+            f"(game tick guard: {current_game_tick})..."
+        )
+        result = loader.load_all(current_game_tick=current_game_tick)
         logger.info(f"Tier 4: Snapshot reload complete - {result.entity_count} entities, {result.resource_count} resources")
+
+        # ONE DB: rebuild RemoteView from the same files so remote_view.query
+        # and execute_duckdb read the same post-allocation state
+        if self._remote_view is not None and self._remote_view.is_loaded:
+            logger.info("Tier 4: Rebuilding RemoteView database (same reload)...")
+            rv_result = self._remote_view.rebuild()
+            logger.info(
+                f"Tier 4: RemoteView rebuilt - {rv_result.entity_count} entities, "
+                f"{rv_result.resource_count} resources"
+            )

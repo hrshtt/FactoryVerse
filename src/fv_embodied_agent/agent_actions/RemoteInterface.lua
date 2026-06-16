@@ -295,7 +295,7 @@ Returns an item reference that can be used for further operations.]],
             _param_order = { "entity_name", "position", "inventory_type", "item_name", "count" },
             entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
             position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
-            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to take from" },
+            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to take from. Valid names: \"chest\", \"fuel\", \"input\", \"output\" (raw defines.inventory number also accepted)" },
             item_name = { type = "string", required = true, doc = "Item name to take" },
             count = { type = "number", default = nil, doc = "Count to take (nil = all available)" },
         },
@@ -315,12 +315,15 @@ Returns an item reference that can be used for further operations.]],
         category = "inventory",
         is_async = false,
         doc = [[Put items from the agent's inventory into an entity's inventory.
-The agent must have the items in their inventory.]],
+The agent must have the items in their inventory.
+Partial inserts succeed: count in the result is what actually fit; the
+remainder returns to the agent inventory (see message). Zero-capacity
+targets fail before anything moves.]],
         paramspec = {
             _param_order = { "entity_name", "position", "inventory_type", "item_name", "count" },
             entity_name = { type = "entity_name", required = true, doc = "Entity prototype name" },
             position = { type = "position", default = nil, doc = "Entity position (nil = nearest)" },
-            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to put into" },
+            inventory_type = { type = "inventory_type", required = true, doc = "Inventory type to put into. Valid names: \"auto\" (engine routes fuel/ingredients automatically), \"fuel\", \"input\", \"chest\", \"output\", \"modules\" (raw defines.inventory number also accepted)" },
             item_name = { type = "string", required = true, doc = "Item name to put" },
             count = { type = "number", required = true, doc = "Count to put" },
         },
@@ -328,7 +331,9 @@ The agent must have the items in their inventory.]],
             type = "result",
             schema = {
                 success = { type = "boolean", doc = "True if items were placed" },
-                count = { type = "number", doc = "Actual count placed" },
+                count = { type = "number", doc = "Actual count placed (may be less than requested on partial insert)" },
+                requested_count = { type = "number", doc = "Count originally requested" },
+                message = { type = "string", doc = "Set on partial insert: explains how many fit and that the rest returned to the agent" },
             },
         },
         func = function(self, entity_name, position, inventory_type, item_name, count)
@@ -979,13 +984,18 @@ function M:register_remote_interface()
             local args = ...
             -- Check if called with a single table argument (RCON pattern)
             if type(args) == "table" and select("#", ...) == 1 and meta.paramspec and meta.paramspec._param_order then
+                -- Explicit index + bounded unpack, NOT table.insert + plain
+                -- unpack: those skip/truncate at nil values, shifting later
+                -- named params into earlier slots (ARG-1 — e.g. omitting
+                -- `direction` shifted ghost=true into the direction slot).
+                -- Same bug as the admin-path ParamSpec fix; this was its
+                -- unfixed twin.
+                local order = meta.paramspec._param_order
                 local ordered_args = {}
-                for _, key in ipairs(meta.paramspec._param_order) do
-                    table.insert(ordered_args, args[key])
+                for i, key in ipairs(order) do
+                    ordered_args[i] = args[key]
                 end
-                -- If we found ordered args, use them, otherwise might be a regular call
-                -- But if paramspec exists, we should probably follow it if args matches
-                return meta.func(self, table.unpack(ordered_args))
+                return meta.func(self, table.unpack(ordered_args, 1, #order))
             end
             -- Fallback to positional arguments
             return meta.func(self, ...)

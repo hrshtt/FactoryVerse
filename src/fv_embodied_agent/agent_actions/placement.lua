@@ -29,12 +29,26 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
         error("Agent: position {x, y} is required")
     end
 
-    if direction and type(direction) ~= "number" then
-        error("Agent: direction (number) must be nil or a number")
+    -- Agent-reachable failures return {success=false, error=...} so the
+    -- agent sees a clean actionable cause, never a traceback (ERR-1/L4.2).
+    if direction ~= nil and (type(direction) ~= "number"
+        or direction ~= math.floor(direction)
+        or direction < 0 or direction > 15) then
+        return {
+            success = false,
+            error = string.format(
+                "Invalid direction %s: must be an integer 0-15 (defines.direction: 0=north, 4=east, 8=south, 12=west)",
+                tostring(direction)),
+            entity_name = entity_name,
+        }
     end
-    
+
     if ghost ~= nil and type(ghost) ~= "boolean" then
-        error("Agent: ghost (boolean) must be nil or true/false")
+        return {
+            success = false,
+            error = "Invalid ghost flag: must be true/false or omitted",
+            entity_name = entity_name,
+        }
     end
 
     ghost = ghost or false
@@ -43,19 +57,47 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
 
     -- Validate agent can reach placement position
     if not ghost and not self:can_reach_position(position) then
-        error("Agent: Placement position is out of reach: " .. position.x .. ", " .. position.y)
+        local char_pos = self.character.position
+        local dx, dy = position.x - char_pos.x, position.y - char_pos.y
+        local distance = math.sqrt(dx * dx + dy * dy)
+        local build_distance = self.character.build_distance or 10
+        return {
+            success = false,
+            error = string.format(
+                "Cannot place %s at (%.1f, %.1f): out of reach — agent at (%.1f, %.1f), distance %.1f > build distance %.1f. Walk closer first.",
+                entity_name, position.x, position.y, char_pos.x, char_pos.y, distance, build_distance),
+            entity_name = entity_name,
+            position = { x = position.x, y = position.y },
+            agent_position = { x = char_pos.x, y = char_pos.y },
+            distance = distance,
+            build_distance = build_distance,
+        }
     end
-    
+
     -- Validate entity prototype exists
     local proto = prototypes and prototypes.entity and prototypes.entity[entity_name]
     if not proto then
-        error("Agent: Unknown entity prototype: " .. entity_name)
+        return {
+            success = false,
+            error = string.format(
+                "Unknown entity prototype: %s (check spelling; use factoriopedia or the API reference for valid names)",
+                tostring(entity_name)),
+            entity_name = entity_name,
+        }
     end
 
     if not ghost then
         local item_count = self.character.get_main_inventory().get_item_count(entity_name)
         if item_count < 1 then
-            error("Agent: Insufficient items in agent inventory (have " .. item_count .. ", need 1)")
+            return {
+                success = false,
+                error = string.format(
+                    "Cannot place %s: no %s in agent inventory (have %d, need 1) — craft or pick up one first",
+                    entity_name, entity_name, item_count),
+                entity_name = entity_name,
+                have = item_count,
+                need = 1,
+            }
         end
     end
     
@@ -70,10 +112,11 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
         can_place_params.build_check_type = defines.build_check_type.manual_ghost
     end
 
-    -- Check if agent's own character might be blocking placement
-    -- move_stuck_players in create_entity may not work for non-player characters,
-    -- and can_place_entity has no way to account for character movement.
-    -- Solution: temporarily teleport character out of the way for validation.
+    -- Check if agent's own character might be blocking placement.
+    -- (2026-06-11 validation: move_stuck_players DOES work on free-standing
+    -- script characters — it is passed at create below as belt-and-braces.
+    -- This pre-teleport remains the validation-side fix: can_place(manual)
+    -- hard-rejects characters, so we step the agent aside before checking.)
     local surface = game.surfaces[1]
     local original_char_pos = nil
 
@@ -158,8 +201,77 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
                     original_char_pos.x, original_char_pos.y))
             end
         end
-        -- TODO: Need to implement proper diagnostics for why it can't be placed
-        error("Agent: Cannot place entity at position " .. position.x .. ", " .. position.y)
+        -- Structured diagnostics instead of a bare error (certified L4.2 /
+        -- tracker ERR-1: raw tracebacks with no cause). Returning
+        -- {success=false, error=...} reaches the agent as a clean message —
+        -- execute_and_parse_json raises RuntimeError(error) with no traceback.
+        local reasons = {}
+        local colliding = {}
+
+        if proto.collision_box then
+            local cb = proto.collision_box
+            -- Approximate footprint; swap extents for east/west rotations.
+            local hx = math.max(math.abs(cb.left_top.x), math.abs(cb.right_bottom.x))
+            local hy = math.max(math.abs(cb.left_top.y), math.abs(cb.right_bottom.y))
+            if direction == defines.direction.east or direction == defines.direction.west then
+                hx, hy = hy, hx
+            end
+            local found = surface.find_entities_filtered{
+                area = {
+                    { position.x - hx, position.y - hy },
+                    { position.x + hx, position.y + hy },
+                },
+            }
+            for _, e in pairs(found) do
+                if e.valid and e ~= self.character and e.type ~= "character" then
+                    table.insert(colliding, {
+                        name = e.name,
+                        position = { x = e.position.x, y = e.position.y },
+                    })
+                end
+            end
+        end
+
+        if #colliding > 0 then
+            local parts = {}
+            for i = 1, math.min(#colliding, 5) do
+                local c = colliding[i]
+                table.insert(parts, string.format("%s at (%.1f, %.1f)", c.name, c.position.x, c.position.y))
+            end
+            table.insert(reasons, "collides with " .. table.concat(parts, ", "))
+        end
+
+        local char_pos = original_char_pos or self.character.position
+        local dx, dy = position.x - char_pos.x, position.y - char_pos.y
+        local distance = math.sqrt(dx * dx + dy * dy)
+        local build_distance = self.character.build_distance or 10
+        if distance > build_distance then
+            table.insert(reasons, string.format(
+                "out of reach: distance %.1f > build distance %.1f", distance, build_distance))
+        end
+
+        local tile_ok, tile = pcall(function() return surface.get_tile(position.x, position.y) end)
+        if #reasons == 0 and tile_ok and tile and tile.valid then
+            table.insert(reasons, string.format(
+                "blocked by terrain: tile '%s' (no colliding entities found — check tile buildability and direction)",
+                tile.name))
+        end
+
+        local reason = string.format(
+            "Cannot place %s at (%.1f, %.1f): %s",
+            entity_name, position.x, position.y,
+            #reasons > 0 and table.concat(reasons, "; ") or "placement blocked")
+
+        return {
+            success = false,
+            error = reason,
+            entity_name = entity_name,
+            position = { x = position.x, y = position.y },
+            direction = direction,
+            colliding_entities = colliding,
+            distance = distance,
+            build_distance = build_distance,
+        }
     end
 
     -- Note: We intentionally leave the character at the safe position if validation passed.

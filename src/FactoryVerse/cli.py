@@ -269,10 +269,21 @@ def cmd_server_start(args):
         env = Environment(config=config)
 
         print(f"🚀 Starting {args.num} Factorio server(s)...")
-        print(f"   Scenario: {args.scenario}")
+        if getattr(args, "save", None):
+            print(f"   Loading save: {args.save} (scenario '{args.scenario}' used for mod prep only)")
+        else:
+            print(f"   Scenario: {args.scenario}")
 
         try:
-            await env.initialize(up_to=Tier.SETTINGS)
+            # Save loads must bypass tier2's implicit fresh-scenario start:
+            # tier2.initialize() starts the server WITHOUT the save (it has no
+            # server-save concept), and tier1's attach guard then no-ops the
+            # explicit save-bearing call below (live-caught 2026-06-11:
+            # `--save` silently booted a fresh scenario instead).
+            up_to = (
+                Tier.FACTORIO_INFRA if getattr(args, "save", None) else Tier.SETTINGS
+            )
+            await env.initialize(up_to=up_to)
 
             tier1 = env.tier1
             if tier1 is None:
@@ -282,6 +293,7 @@ def cmd_server_start(args):
             await tier1.start_server(
                 scenario=args.scenario,
                 num_instances=args.num,
+                save=getattr(args, "save", None),
             )
 
             # Print connection info
@@ -397,8 +409,14 @@ def cmd_connect(args):
 # =============================================================================
 
 
-def _detect_instance(args) -> str:
-    """Detect or validate Factorio instance."""
+async def _detect_instance(args, scenario: str = None, auto_launch: bool = True) -> str:
+    """Detect, validate, or auto-launch Factorio instance.
+
+    Args:
+        args: CLI args (must have .instance attribute)
+        scenario: Scenario to launch with if auto-launching client
+        auto_launch: If True, launch Factorio client when no instance found
+    """
     from FactoryVerse.infra.instance_manager import FactorioInstanceManager
 
     if args.instance:
@@ -415,10 +433,53 @@ def _detect_instance(args) -> str:
         print(f"🔍 Auto-detected instance: {detected.name}")
         return detected.name
 
-    print("❌ No running Factorio instance detected")
-    print("   Start a server with: fv server start")
-    print("   Or start client with: fv client start")
+    if not auto_launch:
+        print("❌ No running Factorio instance detected")
+        print("   Start a server with: fv server start")
+        print("   Or start client with: fv client start")
+        sys.exit(1)
+
+    # Auto-launch Factorio client
+    print("🔍 No running Factorio instance detected — launching client...")
+    await _auto_launch_client(scenario=scenario)
+
+    # Wait for instance to become available
+    for attempt in range(30):
+        await asyncio.sleep(2)
+        detected = FactorioInstanceManager.detect_active()
+        if detected:
+            print(f"✅ Client ready: {detected.name}")
+            return detected.name
+        if attempt % 5 == 4:
+            print(f"   Waiting for client to start... ({(attempt + 1) * 2}s)")
+
+    print("❌ Timed out waiting for Factorio client to start (60s)")
+    print("   Try launching manually: fv client start --scenario lab-grid")
     sys.exit(1)
+
+
+async def _auto_launch_client(scenario: str = None) -> None:
+    """Launch Factorio client."""
+    launch_scenario = scenario or "lab-grid"
+    print(f"🚀 Starting Factorio client with scenario: {launch_scenario}")
+
+    config = EnvironmentConfig(
+        tier1=InfraConfig(mode=InfraMode.CLIENT),
+        tier2=SettingsConfig(scenario=launch_scenario),
+    )
+    env = Environment(config=config)
+
+    try:
+        await env.initialize(up_to=Tier.SETTINGS)
+        tier1 = env.tier1
+        tier2 = env.tier2
+        if tier1 is None or tier2 is None:
+            raise RuntimeError("Failed to initialize tiers for client launch")
+        launch_args = tier2.get_launch_args()
+        await tier1.start_client(**launch_args)
+    finally:
+        # Don't shutdown — we want the client to keep running
+        pass
 
 
 def _build_environment_config(
@@ -491,7 +552,7 @@ def cmd_eval(args):
     """
 
     async def _run():
-        instance_name = _detect_instance(args)
+        instance_name = await _detect_instance(args, scenario=args.scenario or "lab-grid")
 
         print("\n" + "=" * 60)
         print("📊 FactoryVerse Task Evaluation")
@@ -599,7 +660,7 @@ def cmd_freeplay(args):
     """
 
     async def _run():
-        instance_name = _detect_instance(args)
+        instance_name = await _detect_instance(args, scenario=args.scenario or "freeplay")
 
         print("\n" + "=" * 60)
         print("🎮 FactoryVerse Freeplay")
@@ -666,7 +727,7 @@ def cmd_agent(args):
     async def _run():
         nonlocal interrupt_count
 
-        instance_name = _detect_instance(args)
+        instance_name = await _detect_instance(args, scenario=getattr(args, 'scenario', None))
 
         print("\n" + "=" * 60)
         print("🤖 FactoryVerse Agent - Assisted Mode")
@@ -855,38 +916,6 @@ def cmd_models_select(args):
 
 
 # =============================================================================
-# MCP Server Command
-# =============================================================================
-
-
-def cmd_mcp_server(args):
-    """Start MCP server using Environment."""
-
-    async def _run_mcp():
-        config = EnvironmentConfig.for_mcp(instance=args.instance)
-        env = Environment(config=config)
-
-        print("🔌 Starting FactoryVerse MCP Server...")
-        print("   Connect your IDE (Cursor, Claude Desktop, etc.)")
-
-        try:
-            await env.initialize(up_to=Tier.RUNTIME)
-            print("✅ Environment ready for MCP")
-
-            # TODO: Integrate with actual MCP server
-            from FactoryVerse.infra.mcp import run_mcp_server
-
-            await run_mcp_server()
-
-        except KeyboardInterrupt:
-            print("\n⏹️  MCP server stopped")
-        finally:
-            await env.shutdown()
-
-    asyncio.run(_run_mcp())
-
-
-# =============================================================================
 # UI Commands
 # =============================================================================
 
@@ -964,6 +993,45 @@ def cmd_docs_validate(args):
 
 
 # =============================================================================
+# Dev Commands (certification / debugging tooling)
+# =============================================================================
+
+
+def cmd_dev_census(args):
+    """Dump a ground-truth entity census from a running instance to JSONL."""
+    from FactoryVerse.dev.census import CensusError, dump_census, parse_bounds
+
+    try:
+        bounds = parse_bounds(args.bounds)
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
+
+    print("📋 Census dump")
+    print(f"   Instance: {args.instance}")
+    print(f"   Force: {args.force} (+neutral resources: {not args.no_resources})")
+    print(f"   Bounds: {bounds or 'all generated chunks'}")
+
+    try:
+        result = dump_census(
+            instance=args.instance,
+            force=args.force,
+            include_resources=not args.no_resources,
+            bounds=bounds,
+            chunks_per_call=args.chunks_per_call,
+        )
+    except CensusError as e:
+        print(f"❌ Census failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n✅ {len(result)} entities @ tick {result.tick} "
+          f"({result.chunk_count} chunks, {result.rcon_calls} RCON calls)")
+    for etype, n in sorted(result.counts_by_type.items(), key=lambda kv: -kv[1]):
+        print(f"   {etype:<20} {n}")
+    print(f"\n📁 {result.host_path}")
+
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -1019,6 +1087,11 @@ def main():
     server_start.add_argument(
         "-s", "--scenario", default="test-ground", help="Scenario"
     )
+    server_start.add_argument(
+        "--save",
+        help="Load this save instead of a fresh scenario start "
+        "(name in .fv-output/server_N/saves/, written by game.server_save)",
+    )
     server_start.set_defaults(func=cmd_server_start)
 
     # server stop
@@ -1044,8 +1117,8 @@ def main():
     eval_parser.add_argument(
         "-t", "--task", required=True, help="Task key (e.g., iron_plate_throughput)"
     )
-    eval_parser.add_argument("-p", "--provider", default="anthropic")
-    eval_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    eval_parser.add_argument("-p", "--provider", default="prime_intellect")
+    eval_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
     eval_parser.add_argument("-s", "--scenario", default="lab-grid", help="Scenario")
     eval_parser.add_argument("-i", "--instance", help="Factorio instance")
     eval_parser.add_argument("--agent-id", default="agent_1")
@@ -1057,8 +1130,8 @@ def main():
     freeplay_parser = subparsers.add_parser(
         "freeplay", help="Run open-ended freeplay (no task/verification)"
     )
-    freeplay_parser.add_argument("-p", "--provider", default="anthropic")
-    freeplay_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    freeplay_parser.add_argument("-p", "--provider", default="prime_intellect")
+    freeplay_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
     freeplay_parser.add_argument("-s", "--scenario", default="freeplay", help="Scenario")
     freeplay_parser.add_argument("-i", "--instance", help="Factorio instance")
     freeplay_parser.add_argument("--agent-id", default="agent_1")
@@ -1070,8 +1143,8 @@ def main():
     agent_parser = subparsers.add_parser(
         "agent", help="Run LLM agent in assisted (interactive) mode"
     )
-    agent_parser.add_argument("-p", "--provider", default="anthropic")
-    agent_parser.add_argument("--model", default="claude-sonnet-4-20250514")
+    agent_parser.add_argument("-p", "--provider", default="prime_intellect")
+    agent_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
     agent_parser.add_argument("-s", "--scenario", help="Scenario")
     agent_parser.add_argument("-i", "--instance", help="Factorio instance")
     agent_parser.add_argument("--agent-id", default="agent_1")
@@ -1091,11 +1164,6 @@ def main():
     models_select = models_sub.add_parser("select", help="Interactively select a model")
     models_select.add_argument("-p", "--provider", help="LLM provider")
     models_select.set_defaults(func=cmd_models_select)
-
-    # ========== MCP COMMAND ==========
-    mcp_parser = subparsers.add_parser("mcp", help="Start MCP server")
-    mcp_parser.add_argument("-i", "--instance", help="Instance")
-    mcp_parser.set_defaults(func=cmd_mcp_server)
 
     # ========== UI COMMAND ==========
     ui_parser = subparsers.add_parser("ui", help="Launch Control Center")
@@ -1124,6 +1192,39 @@ def main():
         help="Fail if coverage is incomplete",
     )
     docs_validate.set_defaults(func=cmd_docs_validate)
+
+    # ========== DEV COMMANDS ==========
+    dev_parser = subparsers.add_parser(
+        "dev", help="Developer / certification tooling"
+    )
+    dev_sub = dev_parser.add_subparsers(dest="dev_action")
+
+    # dev census
+    dev_census = dev_sub.add_parser(
+        "census",
+        help="Dump ground-truth entity census to JSONL (read-only, chunked)",
+    )
+    dev_census.add_argument(
+        "-i", "--instance", default="client", help="client or server_N"
+    )
+    dev_census.add_argument(
+        "-f", "--force", default="player", help="Force to enumerate (default: player)"
+    )
+    dev_census.add_argument(
+        "--bounds", help="Tile bounds x1,y1,x2,y2 (default: all generated chunks)"
+    )
+    dev_census.add_argument(
+        "--no-resources",
+        action="store_true",
+        help="Skip neutral type='resource' entities",
+    )
+    dev_census.add_argument(
+        "--chunks-per-call",
+        type=int,
+        default=64,
+        help="32x32 chunks scanned per RCON call (default: 64)",
+    )
+    dev_census.set_defaults(func=cmd_dev_census)
 
     # ========== PARSE AND EXECUTE ==========
     args = parser.parse_args()

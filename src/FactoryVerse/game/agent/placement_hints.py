@@ -35,6 +35,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ConnectionQueryError(RuntimeError):
+    """A connection-solving query failed to execute.
+
+    Distinct from a successful query with zero candidates (which returns []).
+    Returning [] on failure teaches the agent "no candidates exist" — a false
+    world-model (see ERR-3, docs/retros/2026-06-10-engine-unit-retro.md).
+    """
+
+    def __init__(self, query: str, source: str, target: str, cause: Exception):
+        self.query = query
+        self.source = source
+        self.target = target
+        self.cause = cause
+        super().__init__(
+            f"{query} failed for {source} -> {target}: {cause}. "
+            f"This is a query/transport failure, NOT 'no valid positions' — "
+            f"do not conclude the connection is impossible."
+        )
+
+
 # =============================================================================
 # DATA STRUCTURES
 # =============================================================================
@@ -130,11 +150,16 @@ class ConnectionPosition:
         position: The map position where the target entity should be placed.
         direction: The direction the target entity should face (if applicable).
         perpendicular_offset: Alignment quality metric - lower is better (0.0 = perfectly aligned).
+        displaces_character: True when the only thing in the footprint is a
+            character (usually YOU). The placement still works — the engine
+            steps the character aside, exactly like building on your own
+            tile in the GUI. Not an error; do not skip these cues.
     """
 
     position: MapPosition
     direction: Optional[Direction]
     perpendicular_offset: float = 0.0  # Lower = better alignment
+    displaces_character: bool = False
 
     def __post_init__(self):
         if self.perpendicular_offset < 0:
@@ -601,6 +626,58 @@ class PlacementHints:
         """Expose validator for direct access."""
         return self._validator
 
+    def is_buildable(
+        self,
+        left_top: MapPosition,
+        right_bottom: MapPosition,
+        entity_name: str = "wooden-chest",
+    ) -> Dict[str, Any]:
+        """Check whether an area is buildable land WITHOUT placing anything.
+
+        Terrain affordance (AFFORD-1): probes every integer tile in the area
+        with a non-mutating placement validation (engine rules, manual
+        build-check). Never use real place/pickup calls as a terrain scanner.
+
+        Args:
+            left_top: Top-left corner of the area
+            right_bottom: Bottom-right corner (exclusive)
+            entity_name: 1x1 entity used as the probe (default wooden-chest)
+
+        Returns:
+            {'all_buildable': bool, 'buildable_count': int, 'total': int,
+             'blocked_positions': [{'x','y'} up to 25]}
+
+        Raises:
+            ValueError: empty area, or area over 1600 tiles (probe sub-areas)
+        """
+        import math
+
+        x0, x1 = math.floor(left_top.x), math.ceil(right_bottom.x)
+        y0, y1 = math.floor(left_top.y), math.ceil(right_bottom.y)
+        total = (x1 - x0) * (y1 - y0)
+        if total <= 0:
+            raise ValueError(
+                f"Empty area: ({left_top.x},{left_top.y})..({right_bottom.x},{right_bottom.y})"
+            )
+        if total > 1600:
+            raise ValueError(
+                f"Area is {total} tiles; max 1600 per call — probe sub-areas"
+            )
+
+        positions = [
+            MapPosition(x=x + 0.5, y=y + 0.5)
+            for y in range(y0, y1)
+            for x in range(x0, x1)
+        ]
+        results = self._client.validate_positions(entity_name, positions)
+        blocked = [p for p, ok in zip(positions, results) if not ok]
+        return {
+            "all_buildable": not blocked,
+            "buildable_count": total - len(blocked),
+            "total": total,
+            "blocked_positions": [{"x": p.x, "y": p.y} for p in blocked[:25]],
+        }
+
     # =========================================================================
     # LINE PLANNING
     # =========================================================================
@@ -683,8 +760,12 @@ class PlacementHints:
         elif connection_type == ConnectionType.ELECTRIC_WIRE:
             return self._get_electric_wire_positions(source_entity, target_entity_name)
         else:
-            logger.warning(f"Connection type {connection_type} not yet implemented")
-            return []
+            raise NotImplementedError(
+                f"Connection type {connection_type} is not supported by "
+                f"get_connection_positions. Supported: ITEM_DROP, FLUID_PIPE, "
+                f"ELECTRIC_WIRE. For inserters use "
+                f"get_inserter_placement_positions(source, target)."
+            )
 
     def _get_item_drop_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
@@ -713,7 +794,9 @@ class PlacementHints:
             ]
         except Exception as e:
             logger.error(f"get_item_drop_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_item_drop_positions", source_entity.name, target_entity_name, e
+            ) from e
 
     def _get_fluid_pipe_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
@@ -734,15 +817,22 @@ class PlacementHints:
             return [
                 ConnectionPosition(
                     position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
-                    direction=Direction(p["direction"]) if p.get("direction") else None,
+                    # `is not None`: defines.direction.north == 0 is falsy —
+                    # a plain truthiness check silently stripped the rotation
+                    # off every north-facing cue (L4.6 finding, 2026-06-11)
+                    direction=(Direction(p["direction"])
+                               if p.get("direction") is not None else None),
                     perpendicular_offset=0.0,
+                    displaces_character=bool(p.get("displaces_character")),
                 )
                 for p in positions
                 if p.get("valid", True)
             ]
         except Exception as e:
             logger.error(f"get_fluid_pipe_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_fluid_pipe_positions", source_entity.name, target_entity_name, e
+            ) from e
 
     def _get_electric_wire_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
@@ -788,7 +878,9 @@ class PlacementHints:
             ]
         except Exception as e:
             logger.error(f"get_electric_wire_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_electric_wire_positions", source_entity.name, target_entity_name, e
+            ) from e
 
     def get_inserter_placement_positions(
         self,
@@ -821,7 +913,12 @@ class PlacementHints:
             ]
         except Exception as e:
             logger.error(f"get_inserter_placement_positions failed: {e}")
-            return []
+            raise ConnectionQueryError(
+                "get_inserter_placement_positions",
+                source_entity.name,
+                target_entity.name,
+                e,
+            ) from e
 
     # =========================================================================
     # POLE PLANNING - High-level algorithms using Lua primitives

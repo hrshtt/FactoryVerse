@@ -404,7 +404,20 @@ class _RuntimeAdapter:
     def execute_duckdb(
         self, query: str, metadata: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Execute DuckDB query."""
+        """Execute DuckDB query.
+
+        ONE DB (CELL-1 item 6): when RemoteView is loaded, route through its
+        connection (same flush-before-read + lock as remote_view.query) so
+        the two agent query paths can never serve different truths. Tier4's
+        own database is only the fallback for MINIMAL/partial runtimes.
+        """
+        if self._tier4 and self._tier4.remote_view is not None:
+            try:
+                if self._tier4.remote_view.is_loaded:
+                    result = self._tier4.remote_view.execute_raw(query)
+                    return str(result)
+            except RuntimeError:
+                pass  # not loaded yet — fall through to tier4 database
         if self._tier4 and self._tier4.database:
             result = self._tier4.database.execute(query).fetchall()
             return str(result)

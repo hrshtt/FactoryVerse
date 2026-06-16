@@ -184,9 +184,14 @@ class RemoteView:
         )
 
         # Load data (with lock to prevent concurrent access)
-        logger.info("Loading snapshot data from disk...")
+        # current_game_tick guards against previous-boot files whose ticks
+        # are "from the future" (CELL-2a)
+        current_game_tick = self._current_game_tick()
+        logger.info(
+            f"Loading snapshot data from disk (game tick guard: {current_game_tick})..."
+        )
         with self._db_lock:
-            result = self._loader.load_all()
+            result = self._loader.load_all(current_game_tick=current_game_tick)
 
         self._last_sequence = result.last_sequence
         self._database.set_last_sequence(result.last_sequence)
@@ -207,6 +212,9 @@ class RemoteView:
         This is synchronous because it's called from sync service callbacks.
         """
         logger.info("RemoteView rebuild triggered")
+
+        # Fetch tick OUTSIDE the lock (RCON call); guards stale-boot files
+        current_game_tick = self._current_game_tick()
 
         with self._db_lock:
             self._database.reset()
@@ -235,7 +243,7 @@ class RemoteView:
                 )
 
             # Load data synchronously (already holding lock)
-            result = self._loader.load_all()
+            result = self._loader.load_all(current_game_tick=current_game_tick)
             self._last_sequence = result.last_sequence
             self._database.set_last_sequence(result.last_sequence)
 
@@ -280,6 +288,27 @@ class RemoteView:
     # =========================================================================
     # Query API
     # =========================================================================
+
+    def execute_raw(self, sql: str) -> List[tuple]:
+        """Execute SQL on the view's DuckDB, return raw fetchall() tuples.
+
+        This is the unification point for the `execute_duckdb` tool path
+        (CELL-1 item 6): it reads the SAME connection as query()/get_entities(),
+        with the same flush-before-read and lock discipline, so the two agent
+        query paths can never serve different truths.
+
+        Unlike query(), the SQL is not restricted to SELECT (preserves the
+        legacy execute_duckdb behavior) and rows are tuples, not dicts.
+        """
+        if not self._loaded:
+            raise RuntimeError("RemoteView not loaded. Call load() first.")
+
+        # Flush pending UDP-synced writes before reading (same as QueryExecutor)
+        if self._sync:
+            self._sync.flush_pending()
+
+        with self._db_lock:
+            return self._database.connection.execute(sql).fetchall()
 
     def query(self, sql: str) -> List[Dict[str, Any]]:
         """Execute raw SQL query, return list of dicts.
@@ -360,6 +389,51 @@ class RemoteView:
         """
         self._ensure_query_ready()
         return self._query.get_resources(sql)
+
+    def find_water(
+        self,
+        near: Optional["MapPosition"] = None,
+        radius: Optional[float] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Find water tiles on the map (e.g. offshore-pump sites).
+
+        Terrain affordance: answers "where is water?" from the snapshot DB
+        without probing placements (AFFORD-1 — never use place/pickup as a
+        terrain scanner).
+
+        Args:
+            near: If given, results are ordered by distance to this position
+                and each row includes a 'distance' field
+            radius: With `near`, only tiles within this many tiles
+            limit: Max rows returned (default 500)
+
+        Returns:
+            List of dicts: {'x': float, 'y': float[, 'distance': float]},
+            empty list if the map truly has no water in range. If the whole
+            map unexpectedly returns [], check snapshot freshness via
+            `query("SELECT MAX(tick) FROM chunk_snapshot_meta")` before
+            concluding water does not exist.
+        """
+        self._ensure_query_ready()
+        limit = int(limit)
+        if near is not None:
+            nx, ny = float(near.x), float(near.y)
+            dist_expr = (
+                f"sqrt((position_x - {nx})*(position_x - {nx}) + "
+                f"(position_y - {ny})*(position_y - {ny}))"
+            )
+            where = f"WHERE {dist_expr} <= {float(radius)}" if radius is not None else ""
+            sql = (
+                f"SELECT position_x AS x, position_y AS y, {dist_expr} AS distance "
+                f"FROM water_tile {where} ORDER BY distance LIMIT {limit}"
+            )
+        else:
+            sql = (
+                f"SELECT position_x AS x, position_y AS y "
+                f"FROM water_tile ORDER BY position_y, position_x LIMIT {limit}"
+            )
+        return self._query.query(sql)
 
     def get_ghosts(self, sql: str) -> List["BaseEntity"]:
         """Execute SQL against ghost table, return ghost entities with REMOTE view.
@@ -665,6 +739,22 @@ class RemoteView:
     # =========================================================================
     # Internal
     # =========================================================================
+
+    def _current_game_tick(self) -> Optional[int]:
+        """Current game tick via RCON, or None if unavailable.
+
+        Used as the loader's future-tick guard (CELL-2a): init files /
+        update records with tick > now are previous-boot leftovers.
+        None disables the guard (old behavior) rather than failing the load.
+        """
+        if self._rcon_client is None:
+            return None
+        try:
+            result = self._rcon_client.send_command("/c rcon.print(game.tick)")
+            return int(result.strip()) if result and result.strip() else None
+        except Exception as e:
+            logger.warning(f"Could not fetch game tick for load guard: {e}")
+            return None
 
     async def _wait_for_bootstrap_complete(self, timeout: float = 120.0) -> None:
         """Wait for bootstrap phase to complete (INITIAL_SNAPSHOTTING → MAINTENANCE).

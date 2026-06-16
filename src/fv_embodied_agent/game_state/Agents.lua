@@ -248,8 +248,10 @@ function M.destroy_agents(agent_refs, remove_forces)
     local errors = {}
     local refs_to_destroy = {}
     
-    -- Special case: 0 means destroy all agents
-    if agent_refs == 0 or agent_refs == "0" then
+    -- Special case: 0 or nil means destroy all agents. nil previously fell
+    -- through to an empty list — a silent no-op that returned
+    -- {destroyed={}} and looked like success (certified L4.6).
+    if agent_refs == nil or agent_refs == 0 or agent_refs == "0" then
         -- Collect all agent IDs from storage
         if storage.agents then
             for agent_id, agent in pairs(storage.agents) do
@@ -261,9 +263,7 @@ function M.destroy_agents(agent_refs, remove_forces)
         end
     else
         -- Normalize input: if single value, wrap in table
-        if agent_refs == nil then
-            refs_to_destroy = {}
-        elseif type(agent_refs) == "table" then
+        if type(agent_refs) == "table" then
             refs_to_destroy = agent_refs
         else
             -- Single value (number or string)
@@ -967,7 +967,9 @@ function M.register_remote_interface()
         local spec = M.AdminApiSpecs[api_name]
         interface[api_name] = function(...)
             local normalized_args = ParamSpec:normalize_varargs(spec, ...)
-            return api_func(table.unpack(normalized_args))
+            -- Explicit length: normalized_args may contain nil holes for
+            -- optional params; plain unpack would truncate at the first one
+            return api_func(table.unpack(normalized_args, 1, normalized_args.n or #normalized_args))
         end
     end
     

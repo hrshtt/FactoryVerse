@@ -170,7 +170,7 @@ class FactoryVerseConfig(BaseSettings):
     # =========================================================================
 
     docker_image: str = Field(
-        default="factoriotools/factorio:2.0.72",
+        default="factoriotools/factorio:2.0.76",
         description="Docker image for Factorio server",
     )
     force_amd64: bool = Field(

@@ -11,39 +11,49 @@ if TYPE_CHECKING:
     from FactoryVerse.game.factory.types import BoundingBox
 
 
-class ElectricPoleState(BaseModel):
-    """State for electric pole entities (stub - implement later).
+class PoleNeighbour(BaseModel):
+    """An entity wired to / supplied by this pole. name+position so the agent
+    can act on it (entities are referenced by name+position, never unit_number)."""
 
-    Source: runtime_inspection.jsonl electric pole fields
+    name: str
+    position: Optional[dict] = None
+
+
+class ElectricPoleState(BaseModel):
+    """State for electric pole entities.
+
+    Source: Lua inspect_electric_pole (copper wire connector + supply-area scan)
     """
 
     electric_network_id: Optional[int] = None
-    connected_poles: List[str] = Field(default_factory=list)  # Entity names
-    supply_area_entities: int = 0  # Count of entities in supply area
+    is_connected: Optional[bool] = None
+    # Poles wired to this one via copper wire (name+position refs)
+    connected_poles: List[PoleNeighbour] = Field(default_factory=list)
+    # Entities inside the supply area (refs capped at ~50 Lua-side; count is exact)
+    supply_area_entities: List[PoleNeighbour] = Field(default_factory=list)
+    supply_area_entity_count: int = 0
 
 
 class ElectricPoleMixin:
-    """Mixin for electric pole entities (stub)."""
+    """Mixin for electric pole entities."""
 
     is_ghost: bool
 
     def _get_electric_pole_state(self, inspection_data: dict) -> ElectricPoleState:
-        """Get electric pole state from inspection data."""
+        """Get electric pole state from inspection data.
+
+        Delegates to the transform module (single source of truth for the
+        Lua-payload -> state mapping; the previous duplicate stub here drifted).
+        """
         if self.is_ghost:
             return ElectricPoleState()
 
-        # Parse connected poles
-        connected = []
-        neighbours = inspection_data.get("neighbours", [])
-        if isinstance(neighbours, list):
-            for n in neighbours:
-                if n and n.get("name"):
-                    connected.append(n["name"])
+        from FactoryVerse.game.factory.entity.transform import _transform_electric_pole
 
-        return ElectricPoleState(
-            electric_network_id=inspection_data.get("electric_network_id"),
-            connected_poles=connected,
+        state = _transform_electric_pole(
+            inspection_data, inspection_data.get("entity_type", "electric-pole")
         )
+        return state if state else ElectricPoleState()
 
 
 class ElectricPole(ElectricPoleMixin, BaseEntity):

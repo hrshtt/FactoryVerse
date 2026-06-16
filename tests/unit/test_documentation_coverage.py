@@ -235,6 +235,74 @@ print(entity.position)
         result = validator.validate_example_attributes(example)
         assert result.valid, f"Should pass: {result.error}"
 
+    def test_unmapped_accessor_fails_loudly(self):
+        """L3.1b: an example calling an accessor method NOT in ACCESSOR_RETURN_TYPES
+        must be rejected loudly, not silently skipped.
+
+        Before the 2026-06-11 fix, a fabricated accessor left the variable
+        untyped and every downstream attribute access passed silently.
+        """
+        from FactoryVerse.utils.docs.validators import StaticAttributeValidator
+        from FactoryVerse.utils.docs.models import Example
+
+        validator = StaticAttributeValidator()
+        validator.accessor_calls_checked = 0
+
+        example = Example(
+            code="""
+patch = reachable_view.definitely_not_real_accessor_xyz()
+print(patch.definitely_not_real_attr)
+            """,
+            decision_context="Sentinel: fabricated accessor",
+            expected_outcome="Must be rejected",
+        )
+
+        result = validator.validate_example_attributes(example)
+
+        # Non-vacuity: the accessor-call check must have actually run
+        assert validator.accessor_calls_checked > 0, (
+            "Validator did not inspect any accessor calls - check is vacuous"
+        )
+        assert not result.valid, (
+            "Unmapped accessor was silently accepted - L3.1b regression"
+        )
+        assert "definitely_not_real_accessor_xyz" in result.error
+        assert "not mapped" in result.error
+
+    def test_skip_listed_accessor_is_allowed_with_rationale(self):
+        """L3.1b: the explicit skip-list is the ONLY sanctioned way to leave an
+        accessor unmapped, and every entry must carry a non-empty rationale."""
+        from FactoryVerse.utils.docs.validators import StaticAttributeValidator
+        from FactoryVerse.utils.docs.models import Example
+
+        class _SkipListedValidator(StaticAttributeValidator):
+            UNMAPPED_ACCESSOR_SKIP_LIST = {
+                "reachable_view.experimental_method": "test rationale: return type intentionally unmapped",
+            }
+
+        validator = _SkipListedValidator()
+        validator.accessor_calls_checked = 0
+
+        example = Example(
+            code="x = reachable_view.experimental_method()",
+            decision_context="Skip-listed accessor",
+            expected_outcome="Allowed via explicit skip-list",
+        )
+
+        result = validator.validate_example_attributes(example)
+        assert validator.accessor_calls_checked > 0
+        assert result.valid, f"Skip-listed accessor should pass: {result.error}"
+
+        # Skip-list hygiene on the real validator: every entry (if any) needs a
+        # non-empty rationale and must not shadow an existing mapping.
+        for accessor, rationale in StaticAttributeValidator.UNMAPPED_ACCESSOR_SKIP_LIST.items():
+            assert isinstance(rationale, str) and rationale.strip(), (
+                f"Skip-list entry '{accessor}' has no rationale"
+            )
+            assert accessor not in StaticAttributeValidator.ACCESSOR_RETURN_TYPES, (
+                f"Skip-list entry '{accessor}' is already mapped - remove the dead entry"
+            )
+
     def test_invalid_syntax(self):
         """Test detection of invalid Python syntax."""
         from FactoryVerse.utils.docs.validators import ExampleValidator
@@ -348,7 +416,7 @@ class TestDocumentationIntegration:
 
         # Check that key classes are present
         class_names = {c.class_name for c in classes}
-        assert "MovementAction" in class_names or len(classes) > 0  # At least something registered
+        assert "MovementAction" in class_names
 
     def test_all_examples_valid_syntax(self):
         """Test that all registered examples have valid syntax."""
@@ -361,6 +429,9 @@ class TestDocumentationIntegration:
 
         validator = ExampleValidator(get_registry())
         report = validator.validate_all_syntax()
+
+        # Guard against vacuous pass: an empty registry validates nothing
+        assert report.total_examples > 0
 
         # All examples should have valid syntax
         if not report.all_valid:
@@ -388,6 +459,15 @@ class TestDocumentationIntegration:
         validator = StaticAttributeValidator(get_registry())
         report = validator.validate_all_attributes()
 
+        # Guard against vacuous pass: an empty registry validates nothing
+        assert report.total_examples > 0
+
+        # Guard against vacuous pass of the unmapped-accessor check (L3.1b):
+        # real examples call accessors, so the check must have inspected >0 calls
+        assert validator.accessor_calls_checked > 0, (
+            "Unmapped-accessor check inspected 0 accessor calls - vacuous run"
+        )
+
         # All examples should reference valid attributes
         if not report.all_valid:
             # Print failures for debugging
@@ -411,11 +491,10 @@ class TestDocumentationIntegration:
 
         # Should have key sections
         assert "## Overview" in markdown
-        # Quick Reference only appears if classes are registered
-        # The reference modules register classes on import
-        if "## Quick Reference" in markdown:
-            # If classes were registered, check for more content
-            assert len(markdown) > 1000
+        # generate_api_reference() calls register_all_documentation(), so
+        # registered classes must appear — no conditional escape hatch
+        assert "## Quick Reference" in markdown
+        assert len(markdown) > 1000
 
     def test_coverage_report(self):
         """Test that coverage report can be generated."""
@@ -429,10 +508,9 @@ class TestDocumentationIntegration:
         validator = CoverageValidator(get_registry())
         report = validator.validate()
 
-        # Should have some coverage (exact numbers depend on implementation)
+        # Guard against vacuous pass: registry must actually contain methods
         print(report.summary())
-        assert report.total_methods >= 0
-        assert report.coverage_percent >= 0
+        assert report.total_methods > 0
 
 
 class TestDecorators:

@@ -110,8 +110,16 @@ local function inspect_burner(burner, entity)
     
     local currently_burning = burner.currently_burning
     if currently_burning then
-        data.currently_burning = currently_burning.name
-        
+        -- Factorio 2.0: burner.currently_burning is an ItemWithQuality pair whose
+        -- `name` field is a LuaItemPrototype (serializes to null over RCON).
+        -- Emit the prototype's .name string instead (L2.2 cert finding, 2026-06-11).
+        local item = currently_burning.name or currently_burning
+        if type(item) == "string" then
+            data.currently_burning = item
+        elseif item and item.name then
+            data.currently_burning = item.name
+        end
+
         -- Calculate burning progress
         -- Note: We can't calculate progress without fuel_value, so we skip it
         -- The remaining_burning_fuel is already provided which gives relative progress info
@@ -198,6 +206,69 @@ local function make_bounding_box(box)
     }
 end
 
+--- Inspect all fluidboxes of an entity (shared helper).
+--- One source of truth for fluid reads: pipes, pumps, storage tanks, boilers,
+--- generators all go through here (L2.2 cert: boiler/engine shipped NO fluid data).
+--- @param entity LuaEntity
+--- @return table|nil Array of per-box data {index, name, amount, temperature,
+---         capacity, connections={ {name, position}, ... }} or nil if no fluidboxes
+local function inspect_fluidboxes(entity)
+    local ok_fb, fb = pcall(function() return entity.fluidbox end)
+    if not ok_fb or not fb or #fb == 0 then
+        return nil
+    end
+
+    local boxes = {}
+    for i = 1, #fb do
+        local box = { index = i, amount = 0 }
+
+        local ok_cap, capacity = pcall(function() return fb.get_capacity(i) end)
+        if ok_cap and capacity then
+            box.capacity = capacity
+        end
+
+        local fluid = fb[i]
+        if fluid then
+            box.name = fluid.name
+            box.amount = fluid.amount or 0
+            box.temperature = fluid.temperature or 15
+        end
+
+        -- Connected fluidbox owners as name+position refs (never unit_number).
+        -- get_connections is the same 2.0 API utils/serialize.lua uses for pipe_neighbours.
+        local connections = {}
+        local ok_conn, conns = pcall(function() return fb.get_connections(i) end)
+        if ok_conn and conns then
+            for _, conn in pairs(conns) do
+                if conn and conn.owner and conn.owner.valid then
+                    table.insert(connections, make_entity_ref(conn.owner))
+                end
+            end
+        end
+        if next(connections) ~= nil then
+            box.connections = connections
+        end
+
+        table.insert(boxes, box)
+    end
+
+    if next(boxes) == nil then
+        return nil
+    end
+    return boxes
+end
+
+--- Read entity.electric_network_id nil-safely (machines, poles, accumulators).
+--- @param entity LuaEntity
+--- @return number|nil
+local function get_electric_network_id(entity)
+    local ok, network_id = pcall(function() return entity.electric_network_id end)
+    if ok and network_id then
+        return network_id
+    end
+    return nil
+end
+
 -- ============================================================================
 -- CATEGORY INSPECTORS
 -- ============================================================================
@@ -227,8 +298,10 @@ local function inspect_crafting_machine(entity)
     -- Inventories (type-specific)
     -- Factorio 2.0+: Use crafter_input/crafter_output for all crafting machines
     -- Structure inventories properly for Python parsing
+    -- NOTE: chemical-plant/oil-refinery/centrifuge have runtime TYPE
+    -- "assembling-machine" in 2.0, so the assembling-machine branch covers them.
     data.inventories = {}
-    
+
     if entity.type == "assembling-machine" then
         local input_inv = format_inventory_data(entity, defines.inventory.crafter_input, "crafter_input")
         if input_inv then
@@ -255,21 +328,8 @@ local function inspect_crafting_machine(entity)
         if fuel_inv then
             data.inventories.fuel = fuel_inv
         end
-    elseif entity.type == "chemical-plant" or entity.type == "oil-refinery" then
-        local input_inv = format_inventory_data(entity, defines.inventory.crafter_input, "crafter_input")
-        if input_inv then
-            data.inventories.crafter_input = input_inv
-        end
-        local output_inv = format_inventory_data(entity, defines.inventory.crafter_output, "crafter_output")
-        if output_inv then
-            data.inventories.crafter_output = output_inv
-        end
-        local modules_inv = format_inventory_data(entity, defines.inventory.assembling_machine_modules, "crafter_modules")
-        if modules_inv then
-            data.inventories.crafter_modules = modules_inv
-        end
     end
-    
+
     -- Energy
     if entity.energy then
         data.energy = {
@@ -277,7 +337,13 @@ local function inspect_crafting_machine(entity)
             capacity = entity.electric_buffer_size or 0
         }
     end
-    
+
+    -- Electric network membership (nil-safe; absent on pure burner machines)
+    data.electric_network_id = get_electric_network_id(entity)
+
+    -- Fluidboxes (chemical plants / refineries / fluid-input assemblers)
+    data.fluidbox = inspect_fluidboxes(entity)
+
     -- Beacons
     if entity.beacons_count then
         data.beacons_count = entity.beacons_count
@@ -356,7 +422,10 @@ local function inspect_mining_drill(entity)
             capacity = entity.electric_buffer_size or 0
         }
     end
-    
+
+    -- Electric network membership (nil-safe; absent on burner drills)
+    data.electric_network_id = get_electric_network_id(entity)
+
     -- Burner (burner mining drills)
     data.burner = inspect_burner(entity.burner, entity)
     
@@ -443,7 +512,10 @@ local function inspect_inserter(entity)
     if entity.use_filters ~= nil then
         data.use_filters = entity.use_filters
     end
-    
+
+    -- Electric network membership (nil-safe; absent on burner inserters)
+    data.electric_network_id = get_electric_network_id(entity)
+
     return data
 end
 
@@ -512,25 +584,34 @@ local function inspect_transport_belt(entity)
     local data = {}
     
     -- Belt shape (only available on TransportBelt, not underground-belt or splitter)
-    if entity.type == "transport-belt" or entity.type == "fast-transport-belt" or entity.type == "express-transport-belt" then
+    -- Runtime TYPE is "transport-belt" for all belt tiers (fast/express are NAMES)
+    if entity.type == "transport-belt" then
         local success, belt_shape = pcall(function() return entity.belt_shape end)
         if success and belt_shape ~= nil then
             data.belt_shape = belt_shape
         end
     end
     
-    -- Belt neighbours (safely access - may not exist on all belt types)
+    -- Belt neighbours: directional flow. entity.belt_neighbours is
+    -- {inputs = LuaEntity[], outputs = LuaEntity[]}: inputs feed THIS belt,
+    -- THIS belt feeds outputs. Preserve the split so the agent can read "A feeds B".
     local success, belt_neighbours = pcall(function() return entity.belt_neighbours end)
-    if success and belt_neighbours ~= nil then
-        local neighbours = {}
-        for _, neighbour in pairs(belt_neighbours) do
-            if neighbour and neighbour.valid then
-                table.insert(neighbours, make_entity_ref(neighbour))
+    if success and type(belt_neighbours) == "table" then
+        local function refs(list)
+            local out = {}
+            if type(list) == "table" then
+                for _, neighbour in pairs(list) do
+                    if neighbour and neighbour.valid then
+                        table.insert(out, make_entity_ref(neighbour))
+                    end
+                end
             end
+            return out
         end
-        if next(neighbours) ~= nil then
-            data.belt_neighbours = neighbours
-        end
+        local inputs = refs(belt_neighbours.inputs)
+        local outputs = refs(belt_neighbours.outputs)
+        if next(inputs) ~= nil then data.belt_inputs = inputs end
+        if next(outputs) ~= nil then data.belt_outputs = outputs end
     end
     
     -- Linked belt (safely access - may not exist on all belt types)
@@ -548,6 +629,12 @@ local function inspect_transport_belt(entity)
         local success, belt_to_ground_type = pcall(function() return entity.belt_to_ground_type end)
         if success and belt_to_ground_type ~= nil then
             data.belt_to_ground_type = belt_to_ground_type
+        end
+        -- For underground-belt, entity.neighbours is the paired underground
+        -- belt (single entity or nil), not a table. Same key as serialize.lua.
+        local success2, pair = pcall(function() return entity.neighbours end)
+        if success2 and pair and pair.valid then
+            data.underground_neighbour = make_entity_ref(pair)
         end
     end
     
@@ -626,51 +713,40 @@ local function inspect_lab(entity)
 end
 
 --- Inspect EnergyProducer entities
---- Entities: boiler, steam-engine, steam-turbine, solar-panel, nuclear-reactor
+--- Dispatched on runtime TYPES (L2.2/L2.3 cert fix, 2026-06-11):
+---   "generator" (steam-engine, steam-turbine), "burner-generator",
+---   "boiler", "solar-panel", "reactor" (nuclear-reactor)
 --- @param entity LuaEntity
 --- @return table Category-specific data
 local function inspect_energy_producer(entity)
     local data = {}
     local entity_type = entity.type
-    
-    -- Energy generation (only on Generator types: steam-engine, steam-turbine)
+
+    -- Energy generation (Generator types only)
     -- energy_generated_last_tick: Restriction: Can only be used if this is: Generator
-    if entity_type == "steam-engine" or entity_type == "steam-turbine" then
+    if entity_type == "generator" or entity_type == "burner-generator" then
         local success, energy_generated = pcall(function() return entity.energy_generated_last_tick end)
         if success then
             -- Property exists on this entity type - include it even if nil or 0
             data.energy_generated_last_tick = energy_generated
         end
     end
-    
-    -- Power production (only on ElectricEnergyInterface types)
-    -- power_production: Restriction: Can only be used if this is: ElectricEnergyInterface
-    -- Note: solar-panel and boiler are NOT ElectricEnergyInterface, so skip this
-    if entity_type == "steam-engine" or entity_type == "steam-turbine" or entity_type == "nuclear-reactor" then
-        local success, power_prod = pcall(function() return entity.power_production end)
-        if success then
-            -- Property exists on this entity type - include it even if nil or 0
-            data.power_production = power_prod
-        end
-    end
-    
-    -- Burner (boilers only)
-    if entity_type == "boiler" then
+
+    -- Burner (boilers, burner generators)
+    if entity_type == "boiler" or entity_type == "burner-generator" then
         data.burner = inspect_burner(entity.burner, entity)
     end
-    
-    -- Temperature (reactors, heat pipes)
-    if entity_type == "nuclear-reactor" then
+
+    -- Temperature (reactors)
+    if entity_type == "reactor" then
         local success, temp = pcall(function() return entity.temperature end)
         if success and temp ~= nil then
             data.temperature = temp
         end
-    end
-    
-    -- Heat neighbours (reactors)
-    if entity_type == "nuclear-reactor" then
-        local success, heat_neighbours = pcall(function() return entity.heat_neighbours end)
-        if success and heat_neighbours then
+
+        -- Heat neighbours
+        local success2, heat_neighbours = pcall(function() return entity.heat_neighbours end)
+        if success2 and heat_neighbours then
             local neighbours = {}
             for _, neighbour in pairs(heat_neighbours) do
                 if neighbour and neighbour.valid then
@@ -681,19 +757,21 @@ local function inspect_energy_producer(entity)
                 data.heat_neighbours = neighbours
             end
         end
-    end
-    
-    -- Neighbour bonus (reactors only)
-    if entity_type == "nuclear-reactor" then
-        local success, neighbour_bonus = pcall(function() return entity.neighbour_bonus end)
-        if success and neighbour_bonus ~= nil then
+
+        -- Neighbour bonus
+        local success3, neighbour_bonus = pcall(function() return entity.neighbour_bonus end)
+        if success3 and neighbour_bonus ~= nil then
             data.neighbour_bonus = neighbour_bonus
         end
     end
-    
+
+    -- Fluidboxes (boiler water/steam, generator steam) — shared helper,
+    -- includes capacity + connected owners (L2.2: boiler/engine shipped NO fluid data)
+    data.fluidbox = inspect_fluidboxes(entity)
+
     -- Energy buffer (available on electric entities)
-    -- solar-panel, steam-engine, steam-turbine, nuclear-reactor have energy buffers
-    if entity_type == "solar-panel" or entity_type == "steam-engine" or entity_type == "steam-turbine" or entity_type == "nuclear-reactor" then
+    if entity_type == "solar-panel" or entity_type == "generator" or
+       entity_type == "burner-generator" or entity_type == "reactor" then
         local success, energy = pcall(function() return entity.energy end)
         if success and energy ~= nil then
             local success2, capacity = pcall(function() return entity.electric_buffer_size end)
@@ -703,28 +781,81 @@ local function inspect_energy_producer(entity)
             }
         end
     end
-    
+
+    -- Electric network membership (nil-safe)
+    data.electric_network_id = get_electric_network_id(entity)
+
     return data
 end
 
 --- Inspect ElectricPole entities
---- Entities: small-electric-pole, medium-electric-pole, big-electric-pole, substation
+--- Runtime TYPE "electric-pole" (covers small/medium/big poles AND substation)
 --- @param entity LuaEntity
 --- @return table Category-specific data
+local SUPPLY_AREA_ENTITY_CAP = 50
+
 local function inspect_electric_pole(entity)
     local data = {}
-    
+
     -- Network connection
-    if entity.electric_network_id then
-        data.electric_network_id = entity.electric_network_id
-    end
+    data.electric_network_id = get_electric_network_id(entity)
     data.is_connected = entity.is_connected_to_electric_network()
-    
-    -- Statistics
-    -- Note: electric_network_statistics structure may vary
-    -- We skip extracting specific fields to avoid linter errors
-    -- The statistics object can be accessed directly if needed
-    
+
+    -- Copper-wire neighbours (connected poles) as name+position refs.
+    -- Factorio 2.0: `entity.neighbours` RAISES on poles ("Neighbours can't be
+    -- used on this entity.") — must go through the wire connector API
+    -- (same pattern as fv_placement_hints/utils/entity_lookup.lua).
+    local connected_poles = {}
+    local ok_wire, copper = pcall(function()
+        return entity.get_wire_connector(defines.wire_connector_id.pole_copper, false)
+    end)
+    if ok_wire and copper then
+        local connections = copper.real_connections
+        if connections then
+            for _, conn in ipairs(connections) do
+                local target = conn.target
+                if target and target.owner and target.owner.valid then
+                    local ref = make_entity_ref(target.owner)
+                    if ref then
+                        table.insert(connected_poles, ref)
+                    end
+                end
+            end
+        end
+    end
+    data.connected_poles = connected_poles
+
+    -- Entities inside the supply area (same-force scan excludes neutral
+    -- trees/resources). Capped at SUPPLY_AREA_ENTITY_CAP refs; count is exact.
+    local ok_dist, supply_dist = pcall(function()
+        return entity.prototype.get_supply_area_distance()
+    end)
+    if ok_dist and supply_dist and supply_dist > 0 then
+        local pos = entity.position
+        local found = entity.surface.find_entities_filtered{
+            area = {
+                left_top = {x = pos.x - supply_dist, y = pos.y - supply_dist},
+                right_bottom = {x = pos.x + supply_dist, y = pos.y + supply_dist}
+            },
+            force = entity.force
+        }
+        local refs = {}
+        local count = 0
+        for _, e in pairs(found) do
+            if e.valid and e ~= entity and e.type ~= "character" then
+                count = count + 1
+                if #refs < SUPPLY_AREA_ENTITY_CAP then
+                    local ref = make_entity_ref(e)
+                    if ref then
+                        table.insert(refs, ref)
+                    end
+                end
+            end
+        end
+        data.supply_area_entity_count = count
+        data.supply_area_entities = refs
+    end
+
     -- Energy buffer
     if entity.energy then
         data.energy = {
@@ -732,7 +863,7 @@ local function inspect_electric_pole(entity)
             capacity = entity.electric_buffer_size or 0
         }
     end
-    
+
     return data
 end
 
@@ -796,24 +927,9 @@ local function inspect_pump(entity)
         end
     end
     
-    -- Fluidbox
-    if entity.fluids_count and entity.fluids_count > 0 then
-        local fluidboxes = {}
-        for i = 1, entity.fluids_count do
-            local fluid = entity.get_fluid(i)
-            if fluid and fluid.name then
-                table.insert(fluidboxes, {
-                    name = fluid.name,
-                    amount = fluid.amount or 0,
-                    temperature = fluid.temperature or 0
-                })
-            end
-        end
-        if next(fluidboxes) ~= nil then
-            data.fluidbox = fluidboxes
-        end
-    end
-    
+    -- Fluidbox (shared helper: index, capacity, connections included)
+    data.fluidbox = inspect_fluidboxes(entity)
+
     -- Offshore pump-specific
     if entity.type == "offshore-pump" then
         local source_fluid = entity.get_fluid_source_fluid()
@@ -882,24 +998,8 @@ end
 local function inspect_pipe(entity)
     local data = {}
 
-    -- Fluidbox contents
-    if entity.fluidbox and #entity.fluidbox > 0 then
-        local fluidboxes = {}
-        for i = 1, #entity.fluidbox do
-            local fluid = entity.fluidbox[i]
-            if fluid then
-                table.insert(fluidboxes, {
-                    index = i,
-                    name = fluid.name,
-                    amount = fluid.amount or 0,
-                    temperature = fluid.temperature or 15
-                })
-            end
-        end
-        if next(fluidboxes) ~= nil then
-            data.fluidbox = fluidboxes
-        end
-    end
+    -- Fluidbox contents (shared helper: index, capacity, connections included)
+    data.fluidbox = inspect_fluidboxes(entity)
 
     -- Pipe-to-ground specific: linked underground neighbour
     if entity.type == "pipe-to-ground" then
@@ -912,16 +1012,10 @@ local function inspect_pipe(entity)
         end
     end
 
-    -- Storage tank specific: capacity info
-    if entity.type == "storage-tank" then
-        -- Get fluidbox capacity
-        if entity.fluidbox and #entity.fluidbox > 0 then
-            local fb = entity.fluidbox
-            local capacity = fb.get_capacity(1)
-            if capacity then
-                data.capacity = capacity
-            end
-        end
+    -- Storage tank specific: keep top-level capacity for backwards compatibility
+    -- (per-box capacity now also comes from inspect_fluidboxes)
+    if entity.type == "storage-tank" and data.fluidbox and data.fluidbox[1] then
+        data.capacity = data.fluidbox[1].capacity
     end
 
     return data
@@ -981,59 +1075,55 @@ function M.inspect_entity(entity)
         base_data.status = entity.status  -- Keep as enum
     end
     
-    -- Dispatch to category-specific inspector
+    -- Dispatch to category-specific inspector.
+    -- IMPORTANT (L2.2/L2.3 cert fix, 2026-06-11): dispatch on runtime TYPES,
+    -- never prototype NAMES. Factorio 2.0 runtime types for the fv_filters scope:
+    --   steam-engine/steam-turbine        -> "generator"
+    --   nuclear-reactor                   -> "reactor"
+    --   small/medium/big pole, substation -> "electric-pole"
+    --   all inserters                     -> "inserter"
+    --   fast/express transport belts      -> "transport-belt"
+    --   chemical-plant/oil-refinery/centrifuge -> "assembling-machine"
+    --   all chests                        -> "container"
+    --   all mining drills + pumpjack      -> "mining-drill"
     local category_data = {}
     local entity_type = entity.type
-    
-    if entity_type == "assembling-machine" or 
-       entity_type == "furnace" or 
-       entity_type == "chemical-plant" or
-       entity_type == "oil-refinery" or
-       entity_type == "centrifuge" or
+
+    if entity_type == "assembling-machine" or
+       entity_type == "furnace" or
        entity_type == "rocket-silo" then
         category_data = inspect_crafting_machine(entity)
-        
+
     elseif entity_type == "mining-drill" then
         category_data = inspect_mining_drill(entity)
-        
-    elseif entity_type == "inserter" or
-           entity_type == "fast-inserter" or
-           entity_type == "long-handed-inserter" or
-           entity_type == "filter-inserter" or
-           entity_type == "stack-inserter" or
-           entity_type == "stack-filter-inserter" or
-           entity_type == "burner-inserter" then
+
+    elseif entity_type == "inserter" then
         category_data = inspect_inserter(entity)
-        
+
     elseif entity_type == "container" or
            entity_type == "logistic-container" or
            entity_type == "cargo-wagon" then
         category_data = inspect_container(entity)
-        
+
     elseif entity_type == "transport-belt" or
-           entity_type == "fast-transport-belt" or
-           entity_type == "express-transport-belt" or
            entity_type == "underground-belt" or
            entity_type == "splitter" or
            entity_type == "lane-splitter" then
         category_data = inspect_transport_belt(entity)
-        
+
     elseif entity_type == "lab" then
         category_data = inspect_lab(entity)
-        
+
     elseif entity_type == "boiler" or
-           entity_type == "steam-engine" or
-           entity_type == "steam-turbine" or
+           entity_type == "generator" or
+           entity_type == "burner-generator" or
            entity_type == "solar-panel" or
-           entity_type == "nuclear-reactor" then
+           entity_type == "reactor" then
         category_data = inspect_energy_producer(entity)
-        
-    elseif entity_type == "small-electric-pole" or
-           entity_type == "medium-electric-pole" or
-           entity_type == "big-electric-pole" or
-           entity_type == "substation" then
+
+    elseif entity_type == "electric-pole" then
         category_data = inspect_electric_pole(entity)
-        
+
     elseif entity_type == "beacon" then
         category_data = inspect_beacon(entity)
         

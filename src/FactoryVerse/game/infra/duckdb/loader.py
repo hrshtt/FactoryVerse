@@ -52,8 +52,16 @@ class SnapshotLoader:
             return snapshot_subdir
         return path
 
-    def load_all(self) -> LoadResult:
+    def load_all(self, current_game_tick: Optional[int] = None) -> LoadResult:
         """Load all init files and replay all updates.
+
+        Args:
+            current_game_tick: If given, init files whose chunk_meta tick is
+                GREATER than this are skipped with a loud log — such files are
+                "from the future" relative to the running game, i.e. leftovers
+                from a previous boot whose tick counter was further along
+                (CELL-2a: stale-boot contamination). None keeps the old
+                load-everything behavior.
 
         Returns:
             LoadResult with counts and last sequence
@@ -70,7 +78,7 @@ class SnapshotLoader:
 
         # Load each chunk
         for chunk in chunks:
-            chunk_result = self._load_chunk(chunk)
+            chunk_result = self._load_chunk(chunk, current_game_tick=current_game_tick)
             result.entity_count += chunk_result.get("entities", 0)
             result.resource_count += chunk_result.get("resources", 0)
             result.ghost_count += chunk_result.get("ghosts", 0)
@@ -78,7 +86,9 @@ class SnapshotLoader:
             result.chunks.append(chunk)
 
         # Replay all update files
-        result.last_sequence = self.replay_updates()
+        result.last_sequence = self.replay_updates(
+            current_game_tick=current_game_tick
+        )
 
         logger.info(f"Load complete: {result}")
         return result
@@ -111,8 +121,16 @@ class SnapshotLoader:
 
         return chunks
 
-    def _load_chunk(self, chunk: ChunkKey) -> Dict[str, int]:
+    def _load_chunk(
+        self, chunk: ChunkKey, current_game_tick: Optional[int] = None
+    ) -> Dict[str, int]:
         """Load a single chunk's init files.
+
+        Args:
+            chunk: Chunk to load
+            current_game_tick: If given, init files with chunk_meta tick >
+                this value are SKIPPED (previous-boot files are "from the
+                future"). None = load everything (old behavior).
 
         Returns dict with counts per type.
         """
@@ -125,32 +143,69 @@ class SnapshotLoader:
             "trees_rocks": 0,
         }
 
+        def _fresh(path: Path) -> bool:
+            """False if this init file is from a future tick (stale boot)."""
+            if current_game_tick is None:
+                return True
+            file_tick = self._init_file_tick(path)
+            if file_tick is not None and file_tick > current_game_tick:
+                logger.warning(
+                    f"SKIPPING stale-boot init file (tick {file_tick} > "
+                    f"current game tick {current_game_tick}): {path} — "
+                    f"this file is from a previous server boot and must not "
+                    f"be loaded (CELL-2a)"
+                )
+                return False
+            return True
+
         # Load entities-init.jsonl
         entities_file = chunk_dir / "entities-init.jsonl"
-        if entities_file.exists():
+        if entities_file.exists() and _fresh(entities_file):
             counts["entities"] = self._load_entities_file(entities_file, chunk)
 
         # Load resources-init.jsonl
         resources_file = chunk_dir / "resources-init.jsonl"
-        if resources_file.exists():
+        if resources_file.exists() and _fresh(resources_file):
             counts["resources"] = self._load_resources_file(resources_file, chunk)
 
         # Load water-init.jsonl
         water_file = chunk_dir / "water-init.jsonl"
-        if water_file.exists():
+        if water_file.exists() and _fresh(water_file):
             counts["water"] = self._load_water_file(water_file, chunk)
 
         # Load trees_rocks-init.jsonl
         trees_file = chunk_dir / "trees_rocks-init.jsonl"
-        if trees_file.exists():
+        if trees_file.exists() and _fresh(trees_file):
             counts["trees_rocks"] = self._load_trees_rocks_file(trees_file, chunk)
 
         # Load ghosts-init.jsonl (chunk-wise)
         ghosts_file = chunk_dir / "ghosts-init.jsonl"
-        if ghosts_file.exists():
+        if ghosts_file.exists() and _fresh(ghosts_file):
             counts["ghosts"] = self._load_ghosts_file(ghosts_file, chunk)
 
         return counts
+
+    def _init_file_tick(self, path: Path) -> Optional[int]:
+        """Read the chunk_meta tick from an init file's first line.
+
+        Returns None if the file has no chunk_meta first line (legacy format)
+        or is unreadable — such files keep the old load-always behavior.
+        """
+        try:
+            with open(path, "r") as f:
+                first_line = f.readline().strip()
+            if not first_line:
+                return None
+            data = json.loads(first_line)
+            if (
+                isinstance(data, dict)
+                and data.get("kind") == "chunk_meta"
+                and "tick" in data
+            ):
+                return int(data["tick"])
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+        return None
 
     def _load_entities_file(self, path: Path, chunk: ChunkKey) -> int:
         """Load entities init file into map_entity table."""
@@ -210,15 +265,55 @@ class SnapshotLoader:
                 logger.warning(f"Failed to load ghost: {e}")
         return count
 
-    def replay_updates(self, from_sequence: Optional[int] = None) -> int:
+    def replay_updates(
+        self,
+        from_sequence: Optional[int] = None,
+        current_game_tick: Optional[int] = None,
+    ) -> int:
         """Replay all update files in sequence order.
+
+        Update records that predate their chunk's init snapshot tick are
+        dropped: the init files already reflect that state, and replaying a
+        stale upsert over a fresher init resurrects old data (SNAP-5 / L2.2
+        stale-pipe_neighbours finding). The per-chunk init tick comes from the
+        kind=chunk_meta line recorded into chunk_snapshot_meta during the same
+        load pass. Records without a tick keep the old replay-always behavior.
+
+        Update records with tick GREATER than current_game_tick (if given)
+        are also dropped: they are from a previous boot whose tick counter
+        was further along (CELL-2a — replaying them resurrected destroyed
+        entities in the 2026-06-11 field run).
 
         Args:
             from_sequence: Only replay operations after this sequence
+            current_game_tick: If given, drop records with tick > this value
 
         Returns:
             Last sequence number processed
         """
+        # Per-chunk init snapshot ticks (recorded by _iter_jsonl meta lines)
+        init_ticks = self._chunk_init_ticks()
+        stale_dropped = 0
+        future_dropped = 0
+
+        def _is_future(data: Dict[str, Any]) -> bool:
+            """True if the record's tick is ahead of the running game."""
+            tick = data.get("tick")
+            return (
+                current_game_tick is not None
+                and isinstance(tick, (int, float))
+                and tick > current_game_tick
+            )
+
+        def _is_stale(data: Dict[str, Any], chunk: ChunkKey) -> bool:
+            tick = data.get("tick")
+            init_tick = init_ticks.get((chunk.x, chunk.y))
+            return (
+                isinstance(tick, (int, float))
+                and init_tick is not None
+                and tick < init_tick
+            )
+
         # Collect all operations from update files
         operations = []
 
@@ -230,6 +325,12 @@ class SnapshotLoader:
             updates_file = chunk_dir / "entities-updates.jsonl"
             if updates_file.exists():
                 for data in self._iter_jsonl(updates_file):
+                    if _is_future(data):
+                        future_dropped += 1
+                        continue
+                    if _is_stale(data, chunk):
+                        stale_dropped += 1
+                        continue
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     operations.append(data)
 
@@ -237,6 +338,12 @@ class SnapshotLoader:
             trees_updates = chunk_dir / "trees_rocks-updates.jsonl"
             if trees_updates.exists():
                 for data in self._iter_jsonl(trees_updates):
+                    if _is_future(data):
+                        future_dropped += 1
+                        continue
+                    if _is_stale(data, chunk):
+                        stale_dropped += 1
+                        continue
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     data["_type"] = "resource_entity"
                     operations.append(data)
@@ -245,9 +352,27 @@ class SnapshotLoader:
             ghost_updates = chunk_dir / "ghosts-updates.jsonl"
             if ghost_updates.exists():
                 for data in self._iter_jsonl(ghost_updates):
+                    if _is_future(data):
+                        future_dropped += 1
+                        continue
+                    if _is_stale(data, chunk):
+                        stale_dropped += 1
+                        continue
                     data["chunk"] = {"x": chunk.x, "y": chunk.y}
                     data["_type"] = "ghost"
                     operations.append(data)
+
+        if stale_dropped:
+            logger.info(
+                f"Dropped {stale_dropped} update records older than their "
+                f"chunk's init snapshot tick"
+            )
+        if future_dropped:
+            logger.warning(
+                f"SKIPPED {future_dropped} update records with tick > current "
+                f"game tick ({current_game_tick}) — previous-boot leftovers "
+                f"are 'from the future' and must not be replayed (CELL-2a)"
+            )
 
         # Sort by sequence number
         operations.sort(key=lambda x: x.get("sequence", 0))
@@ -495,15 +620,60 @@ class SnapshotLoader:
 
 
     def _iter_jsonl(self, path: Path) -> Iterator[Dict[str, Any]]:
-        """Iterate over JSONL file, yielding parsed dicts."""
+        """Iterate over JSONL file, yielding parsed dicts.
+
+        First line of mod-written init files is a kind=chunk_meta record
+        (snapshot tick); it is recorded into chunk_snapshot_meta and not
+        yielded. Detection is exact-match because resource lines also carry
+        a 'kind' field (the ore name).
+        """
         with open(path, "r") as f:
             for line in f:
                 line = line.strip()
                 if line:
                     try:
-                        yield json.loads(line)
+                        data = json.loads(line)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Invalid JSON in {path}: {e}")
+                        continue
+                    if (
+                        isinstance(data, dict)
+                        and data.get("kind") == "chunk_meta"
+                        and "tick" in data
+                    ):
+                        self._record_chunk_meta(data)
+                        continue
+                    yield data
+
+    def _chunk_init_ticks(self) -> Dict[tuple, int]:
+        """Per-chunk init snapshot ticks from chunk_snapshot_meta.
+
+        Populated during the same load pass (init files' kind=chunk_meta lines
+        via _record_chunk_meta). Empty dict if the table is missing/empty —
+        replay then keeps its old apply-everything behavior.
+        """
+        try:
+            rows = self._db.execute(
+                "SELECT chunk_x, chunk_y, tick FROM chunk_snapshot_meta"
+            ).fetchall()
+            return {(int(x), int(y)): int(t) for x, y, t in rows}
+        except Exception as e:
+            logger.warning(f"Could not read chunk_snapshot_meta: {e}")
+            return {}
+
+    def _record_chunk_meta(self, data: Dict[str, Any]) -> None:
+        """Record per-chunk snapshot tick from an init file's meta line."""
+        try:
+            self._db.execute(
+                """
+                INSERT OR REPLACE INTO chunk_snapshot_meta
+                (chunk_x, chunk_y, tick)
+                VALUES (?, ?, ?)
+                """,
+                [int(data["chunk_x"]), int(data["chunk_y"]), int(data["tick"])],
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record chunk_snapshot_meta: {e}")
 
 
 __all__ = ["SnapshotLoader"]

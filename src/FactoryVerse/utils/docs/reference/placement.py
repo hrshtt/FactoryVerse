@@ -34,7 +34,7 @@ def _register_placement():
         notes=[
             "Pure computation - never mutates game state",
             "Uses Lua mod for engine values (drop_position, fluidbox, wire_connector)",
-            "Returns GhostPlan objects ready for ghost_builder.commit()",
+            "Returns GhostPlan objects ready for ghost_builder.build_plan()",
             "Validates positions against current game state",
         ],
         related_classes=["GhostBuilderAction", "PlacementValidator"],
@@ -58,7 +58,7 @@ print(f"Valid: {plan.valid}")
 
 # Commit plan to create ghosts
 if plan.valid:
-    await ghost_builder.commit(plan)""",
+    await ghost_builder.build_plan(plan)""",
                 decision_context="Planning belt/pipe lines",
                 expected_outcome="Returns GhostPlan with validated positions",
                 validation_level=ValidationLevel.SYNTAX,
@@ -83,6 +83,35 @@ print(f"Invalid positions: {invalid_count}")""",
             "Direction is inferred from drag vector (horizontal→EAST/WEST, vertical→NORTH/SOUTH)",
             "Use validate=False to skip validation (faster but may have invalid positions)",
             "plan.validate(validator) can re-validate after state changes",
+        ],
+    )
+
+    registry.register_method(
+        cls=PlacementHints,
+        method_name="is_buildable",
+        description="Check whether an area is buildable land WITHOUT placing anything "
+        "(non-mutating engine validation). Never place/pickup entities to probe terrain.",
+        examples=[
+            Example(
+                code="""# Is this 10x10 site clear for a factory block?
+result = placement_hints.is_buildable(
+    left_top=MapPosition(x=20, y=20),
+    right_bottom=MapPosition(x=30, y=30),
+)
+if result["all_buildable"]:
+    print("Site is clear")
+else:
+    print(f"{result['buildable_count']}/{result['total']} tiles buildable")
+    print(f"Blocked at: {result['blocked_positions'][:5]}")""",
+                decision_context="Validating a build site before committing a layout",
+                expected_outcome="Dict with all_buildable, buildable_count, total, blocked_positions",
+                validation_level=ValidationLevel.SYNTAX,
+            ),
+        ],
+        decision_points=[
+            "Max 1600 tiles per call - probe sub-areas for bigger regions",
+            "Blocked tiles include water, cliffs, existing entities and out-of-map",
+            "Use find_water() to locate water; this method tells you where you CANNOT build",
         ],
     )
 
@@ -249,7 +278,7 @@ print(f"Need {len(plan.positions)} poles")
 # Poles are spaced at max wire distance (9 for medium poles)
 
 if plan.valid:
-    await ghost_builder.commit(plan)""",
+    await ghost_builder.build_plan(plan)""",
                 decision_context="Running power line across distance",
                 expected_outcome="Returns GhostPlan with optimally spaced poles",
                 validation_level=ValidationLevel.SYNTAX,
@@ -325,7 +354,7 @@ if uncovered:
     print(f"Warning: {len(uncovered)} entities cannot be covered")
 
 if plan.valid:
-    await ghost_builder.commit(plan)""",
+    await ghost_builder.build_plan(plan)""",
                 decision_context="Optimal pole placement for arbitrary layouts",
                 expected_outcome="Returns (GhostPlan, list of uncovered entities)",
                 validation_level=ValidationLevel.SYNTAX,

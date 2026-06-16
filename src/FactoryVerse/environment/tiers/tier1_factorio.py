@@ -238,6 +238,17 @@ class Tier1Factorio(TierBase):
         if not self._client_manager:
             raise RuntimeError("Client manager not initialized")
 
+        # Ownership guard: ClientManager.start() no-ops when a client is
+        # already running, so marking started_by_us after the fact would make
+        # shutdown() kill a client we never started (live-observed 2026-06-11:
+        # the L0.4 orchestrator-path harness SIGTERMed a pre-existing client
+        # on env.shutdown()).
+        if self._client_manager.is_running():
+            logger.info(
+                "Tier 1: Client already running — not ours; shutdown leaves it alone"
+            )
+            return
+
         if save_path:
             self._client_manager.start(save_file=str(save_path), **kwargs)
         elif scenario:
@@ -259,15 +270,42 @@ class Tier1Factorio(TierBase):
         self,
         scenario: str,
         num_instances: int = 1,
+        save: Optional[str] = None,
     ) -> None:
         """Start Factorio server container(s).
 
         Args:
             scenario: Scenario to load
             num_instances: Number of server instances
+            save: Save name to load instead of a fresh scenario start
+                (from the per-server saves volume, .fv-output/server_N/saves)
         """
         if not self._server_manager or not self._docker_compose_manager:
             raise RuntimeError("Server manager not initialized")
+
+        # Ownership guard (mirrors start_client): if the compose stack is
+        # already up, attach — do NOT clear the RUNNING boot's snapshot dirs
+        # (the CELL-2b clear below is for fresh boots only) and do NOT claim
+        # started_by_us (shutdown would compose-down a server we never
+        # started; live-observed 2026-06-11: the LIVE-1 #3 eval session tore
+        # down server_0 on exit and wiped its live snapshot dirs on entry).
+        if self._docker_compose_manager.is_running():
+            logger.info(
+                "Tier 1: Server already running — attaching (not ours; "
+                "snapshots untouched; shutdown leaves it alone)"
+            )
+            return
+
+        # CELL-2b: a FRESH scenario boot must not inherit a previous boot's
+        # snapshot files (host volume persists across container restarts;
+        # stale cells/destroyed rigs would load into every new session DB).
+        # Saves keep their snapshots — the on-disk state matches the save.
+        if save is None:
+            self._server_manager.clear_all_server_snapshot_dirs(num_instances)
+        else:
+            logger.info(
+                "Tier 1: Loading save '%s' — keeping existing snapshot dirs", save
+            )
 
         # Prepare mods
         self._server_manager.prepare_mods(scenario)
@@ -276,6 +314,7 @@ class Tier1Factorio(TierBase):
         services = self._server_manager.get_services(
             num_instances=num_instances,
             scenario=scenario,
+            save=save,
         )
         self._docker_compose_manager.add_services("factorio", services)
         self._docker_compose_manager.write_compose()

@@ -7,8 +7,11 @@ for how the agent should query and interact with the game.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocol(Protocol):
@@ -89,6 +92,57 @@ print(json.dumps({
         except (json.JSONDecodeError, ValueError):
             data = {"position": {"x": 0, "y": 0}, "inventory": {}}
 
+        return markdown, data
+
+    def _generate_map_bounds(self) -> tuple[str, dict[str, Any]]:
+        """Generate the agent's working-area bounds section (PROMPT-3).
+
+        Without this the agent has no way to know its cell limits and
+        probes them with blind walks (field run: x=-5, y=-100, (200,70)).
+
+        Returns:
+            Tuple of (markdown, parsed_data); empty markdown if no
+            cell-based scenario adapter is available.
+        """
+        code = """import json
+pos = walking.current_position
+cfg = scenario.config
+cell_x = int(pos.x // cfg.cell_size)
+cell_y = int(pos.y // cfg.cell_size)
+cell_index = cell_y * cfg.grid_size + cell_x
+b = scenario.get_cell_bounds(cell_index)
+print(json.dumps({
+    "cell_index": cell_index,
+    "buildable_area": {
+        "left_top": {"x": b.left_top.x, "y": b.left_top.y},
+        "right_bottom": {"x": b.right_bottom.x, "y": b.right_bottom.y},
+    },
+}))"""
+
+        markdown, output = self._execute_and_capture(
+            code, "Your Working Area (IMPORTANT: hard bounds)"
+        )
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            # Loud skip (was silent: a missing namespace name dropped this
+            # section for every eval until the LIVE-1 #3 render check)
+            logger.warning(
+                "Initial state: working-area bounds section skipped — "
+                "code output was not JSON: %r",
+                output[:200],
+            )
+            return "", {}
+
+        area = data.get("buildable_area", {})
+        lt, rb = area.get("left_top", {}), area.get("right_bottom", {})
+        markdown += (
+            f"\n**You are confined to cell {data.get('cell_index')}: "
+            f"({lt.get('x')}, {lt.get('y')}) to ({rb.get('x')}, {rb.get('y')}).** "
+            "Tiles outside these bounds are out-of-map: unwalkable, unbuildable, "
+            "and contain nothing. Do not spend actions probing beyond them.\n"
+        )
         return markdown, data
 
     def _generate_resource_aggregates(self) -> tuple[str, list[dict]]:
@@ -340,6 +394,13 @@ print(json.dumps(entities))'''
         pos_md, pos_data = self._generate_position_and_inventory()
         lines.append(pos_md)
         lines.append("\n")
+
+        # Working-area bounds (PROMPT-3): only emitted when a cell-based
+        # scenario adapter answers; harmless no-op otherwise
+        bounds_md, bounds_data = self._generate_map_bounds()
+        if bounds_data:
+            lines.append(bounds_md)
+            lines.append("\n")
 
         # Resource Aggregates
         agg_md, _ = self._generate_resource_aggregates()

@@ -48,6 +48,47 @@ local function _can_use_recipe(self, recipe_name)
     return recipe ~= nil and recipe.enabled
 end
 
+--- Valid inventory_type names accepted by put_inventory_item (ERR-1 treatment:
+--- invalid names must error with this list — the names were undocumented,
+--- field failure mode #6, 2026-06-10 retro).
+local PUT_INVENTORY_TYPE_NAMES = {
+    auto = true, fuel = true, input = true,
+    chest = true, output = true, modules = true,
+}
+local PUT_INVENTORY_TYPE_NAMES_DOC =
+    '"auto" (default — engine routes automatically: fuel to fuel slot, ingredients to input), ' ..
+    '"fuel", "input", "chest", "output", "modules"'
+
+--- Helper: list the inventory names (from the put/get name mapping) that this
+--- entity actually has, for error guidance.
+--- @param entity LuaEntity
+--- @return string Comma-separated names, or a fallback note
+local function _available_inventory_names(entity)
+    local is_crafter = entity.type == "furnace" or entity.type == "assembling-machine" or
+                       entity.type == "chemical-plant" or entity.type == "oil-refinery"
+    local candidates = {
+        { "chest", defines.inventory.chest },
+        { "fuel", defines.inventory.fuel },
+        { "input", is_crafter and defines.inventory.crafter_input or defines.inventory.assembling_machine_input },
+        { "output", is_crafter and defines.inventory.crafter_output or defines.inventory.assembling_machine_output },
+        { "modules", defines.inventory.assembling_machine_modules },
+    }
+    local names = {}
+    for _, c in ipairs(candidates) do
+        local ok, inv = pcall(function() return entity.get_inventory(c[2]) end)
+        if ok and inv then
+            table.insert(names, "'" .. c[1] .. "'")
+        end
+    end
+    if entity.type == "mining-drill" and entity.get_output_inventory() then
+        table.insert(names, "'output'")
+    end
+    if #names == 0 then
+        return "none of the named inventories (try 'auto' routing, or this entity may not accept items)"
+    end
+    return table.concat(names, ", ")
+end
+
 --- Set recipe on entity
 --- @param entity_name string Entity prototype name
 --- @param position table|nil Position {x, y} (nil to use agent position with radius search)
@@ -278,9 +319,15 @@ function EntityOpsActions.get_inventory_item(self, entity_name, position, invent
                 }
                 inv_index = inv_map[inventory_type]
             end
-            
+
             if not inv_index then
-                error("Agent: Unknown inventory type name: " .. inventory_type)
+                -- ERR-1 treatment: name the valid options instead of a raw throw
+                return {
+                    success = false,
+                    error = string.format(
+                        "Unknown inventory_type '%s' for get_inventory_item. Valid names: \"chest\", \"fuel\", \"input\", \"output\". A raw defines.inventory number is also accepted.",
+                        tostring(inventory_type)),
+                }
             end
         end
         
@@ -465,59 +512,133 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
     if not (self.character and self.character.valid) then
         error("Agent: Agent entity is invalid")
     end
-    
-    if not count or count <= 0 then
-        error("Agent: Count must be positive")
+
+    -- Agent-reachable failures return {success=false, error=<cause>} so the
+    -- agent sees a clean actionable message, never a traceback (ERR-1
+    -- treatment; same contract as placement.lua, certified L4.2). Only the
+    -- error STRING reaches the Python agent, so guidance lives in the text.
+
+    if not count or type(count) ~= "number" or count <= 0 then
+        return {
+            success = false,
+            error = string.format(
+                "Invalid count %s: must be a positive number of items to insert",
+                tostring(count)),
+        }
     end
-    
+
+    if not item_name or type(item_name) ~= "string" then
+        return {
+            success = false,
+            error = "item_name (string) is required — e.g. put_inventory_item('stone-furnace', pos, 'fuel', 'coal', 10)",
+        }
+    end
+
+    if not (prototypes and prototypes.item and prototypes.item[item_name]) then
+        return {
+            success = false,
+            error = string.format(
+                "Unknown item '%s': no such item prototype exists (check spelling — item names look like 'iron-plate', 'coal')",
+                item_name),
+        }
+    end
+
+    -- Validate inventory_type name BEFORE any lookup or mutation (field
+    -- failure mode #6: the valid names were undocumented). Numbers (raw
+    -- defines.inventory constants) pass through.
+    if inventory_type ~= nil and type(inventory_type) ~= "number" then
+        if type(inventory_type) ~= "string" or not PUT_INVENTORY_TYPE_NAMES[inventory_type] then
+            return {
+                success = false,
+                error = string.format(
+                    "Unknown inventory_type %s. Valid names: %s. A raw defines.inventory number is also accepted.",
+                    tostring(inventory_type), PUT_INVENTORY_TYPE_NAMES_DOC),
+            }
+        end
+    end
+
     -- Resolve entity position
     local pos, radius = _resolve_entity_position(self, position, 5.0)
-    
-    -- Create EntityInterface instance
-    local entity_interface = EntityInterface:new(entity_name, pos, radius, true)
+
+    -- Create EntityInterface instance (pcall: entity-not-found is an
+    -- agent-reachable failure, not an infra error)
+    local ok, entity_interface = pcall(EntityInterface.new, EntityInterface, entity_name, pos, radius, true)
+    if not ok then
+        local cause = tostring(entity_interface):gsub("^.-%.lua:%d+:%s*", "")
+        return {
+            success = false,
+            error = cause .. " — check entity_name and position (positions snap to the entity's actual center; read exact positions from the reachable view or map DB)",
+            entity_name = entity_name,
+        }
+    end
     local entity = entity_interface.entity
-    
+
     -- Validate agent can reach entity
     if not self:can_reach_entity(entity) then
-        error("Agent: Entity is out of reach")
+        local char_pos = self.character.position
+        local dx, dy = entity.position.x - char_pos.x, entity.position.y - char_pos.y
+        local distance = math.sqrt(dx * dx + dy * dy)
+        local reach = self.character.reach_distance or 10
+        return {
+            success = false,
+            error = string.format(
+                "Cannot reach %s at (%.1f, %.1f): out of reach — agent at (%.1f, %.1f), distance %.1f > reach distance %.1f. Walk closer first.",
+                entity_name, entity.position.x, entity.position.y,
+                char_pos.x, char_pos.y, distance, reach),
+            entity_name = entity_name,
+        }
     end
-    
+
     -- Get agent's main inventory
     local agent_inventory = self.character.get_main_inventory()
     if not agent_inventory then
         error("Agent: Agent inventory is invalid")
     end
-    
+
     -- Check agent has items
     local available_count = agent_inventory.get_item_count(item_name)
     if available_count < count then
-        error("Agent: Insufficient items in agent inventory (have " .. available_count .. ", need " .. count .. ")")
+        return {
+            success = false,
+            error = string.format(
+                "Insufficient items: agent has %d %s, tried to put %d. Lower the count or acquire more first.",
+                available_count, item_name, count),
+            item_name = item_name,
+            have = available_count,
+            need = count,
+        }
     end
-    
+
     -- Determine if we should use auto-routing (entity.insert()) or manual inventory selection
     local use_auto_routing = false
     local entity_inventory = nil
     local inv_index = inventory_type
-    
+
     -- Auto-routing: Use entity.insert() for fuel, input, or when inventory_type is nil/"auto"
     -- The engine automatically routes: coal -> fuel, ore -> input, etc.
-    if inventory_type == nil or inventory_type == "auto" or 
+    if inventory_type == nil or inventory_type == "auto" or
        (type(inventory_type) == "string" and (inventory_type == "fuel" or inventory_type == "input")) then
         use_auto_routing = true
     else
         -- Manual inventory selection for specific cases (chest, output, etc.)
         if type(inventory_type) == "string" then
             -- Factorio 2.0+: Use crafter_output for crafting machines
-            local is_crafter = entity.type == "furnace" or entity.type == "assembling-machine" or 
+            local is_crafter = entity.type == "furnace" or entity.type == "assembling-machine" or
                               entity.type == "chemical-plant" or entity.type == "oil-refinery"
-            
+
             if inventory_type == "output" and is_crafter then
                 inv_index = defines.inventory.crafter_output
             elseif inventory_type == "output" and entity.type == "mining-drill" then
                 -- Special handling for mining drills: use get_output_inventory() for output
                 entity_inventory = entity.get_output_inventory()
                 if not entity_inventory then
-                    error("Agent: Mining drill output inventory is invalid")
+                    return {
+                        success = false,
+                        error = string.format(
+                            "%s has no accessible output inventory. Nothing was transferred.",
+                            entity_name),
+                        entity_name = entity_name,
+                    }
                 end
             else
                 local inv_map = {
@@ -527,21 +648,36 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
                 }
                 inv_index = inv_map[inventory_type]
                 if not inv_index then
-                    error("Agent: Unknown inventory type name: " .. inventory_type)
+                    -- Unreachable after the up-front name check; kept as a guard.
+                    return {
+                        success = false,
+                        error = string.format(
+                            "Unknown inventory_type '%s'. Valid names: %s.",
+                            tostring(inventory_type), PUT_INVENTORY_TYPE_NAMES_DOC),
+                    }
                 end
             end
         end
-        
+
         -- Get entity inventory if not already set
         if not entity_inventory then
             entity_inventory = entity.get_inventory(inv_index)
             if not entity_inventory then
-                error("Agent: Entity inventory is invalid")
+                return {
+                    success = false,
+                    error = string.format(
+                        "%s (type '%s') has no '%s' inventory. Inventories this entity has: %s. Nothing was transferred.",
+                        entity_name, entity.type, tostring(inventory_type),
+                        _available_inventory_names(entity)),
+                    entity_name = entity_name,
+                }
             end
         end
     end
-    
-    -- Check if entity can accept items before removing from agent
+
+    -- Check if entity can accept items BEFORE removing from agent.
+    -- can_insert means "can at least some be inserted" -> false means ZERO capacity:
+    -- fail here, before any mutation.
     local can_insert = false
     if use_auto_routing then
         -- Use entity.can_insert() for auto-routing
@@ -550,11 +686,19 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         -- Check specific inventory for manual insertion
         can_insert = entity_inventory.can_insert({ name = item_name, count = count })
     end
-    
+
     if not can_insert then
-        error("Agent: Cannot insert item into entity inventory (insufficient space or invalid item)")
+        return {
+            success = false,
+            error = string.format(
+                "Cannot insert %s into %s ('%s' inventory): the target cannot accept ANY of it — it is full, or the item is not allowed there (e.g. only burnable fuel fits 'fuel'). Nothing was transferred. Free space with take_inventory_item() or pick a different inventory_type (valid: %s).",
+                item_name, entity_name, tostring(inventory_type or "auto"),
+                PUT_INVENTORY_TYPE_NAMES_DOC),
+            entity_name = entity_name,
+            item_name = item_name,
+        }
     end
-    
+
     -- Transfer items
     local removed = agent_inventory.remove({ name = item_name, count = count })
     local actual_transferred = 0
@@ -579,6 +723,30 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         actual_transferred = inserted
     end
 
+    if actual_transferred == 0 then
+        -- can_insert said yes but nothing fit at insert time; the rollback
+        -- above restored the agent inventory, so state is unchanged — fail
+        -- honestly instead of returning success with count=0.
+        return {
+            success = false,
+            error = string.format(
+                "Could not insert any %s into %s: the target inventory rejected the items at insert time. Nothing was lost — all items are back in the agent inventory.",
+                item_name, entity_name),
+            entity_name = entity_name,
+            item_name = item_name,
+        }
+    end
+
+    -- Partial insert is NOT an error: the mutation happened. Report success
+    -- with inserted/requested counts and a clear message instead of throwing
+    -- after mutating (field failure mode #6: partial-insert-then-raw-throw).
+    local message = nil
+    if actual_transferred < count then
+        message = string.format(
+            "Partial insert: only %d of %d %s fit into %s; the remaining %d were returned to the agent inventory (target inventory is full).",
+            actual_transferred, count, item_name, entity_name, count - actual_transferred)
+    end
+
     -- Enqueue completion message (sync action)
     self:enqueue_message({
         action = "put_inventory_item",
@@ -589,6 +757,7 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         item_name = item_name,
         count = actual_transferred,
         requested_count = count,
+        message = message,
         tick = game.tick or 0,
     }, "entity_ops")
 
@@ -599,7 +768,9 @@ function EntityOpsActions.put_inventory_item(self, entity_name, position, invent
         inventory_type = inventory_type or "auto",
         item_name = item_name,
         count = actual_transferred,
+        inserted = actual_transferred,
         requested_count = count,
+        message = message,
     }
 end
 
@@ -650,8 +821,34 @@ function EntityOpsActions.pickup_entity(self, entity_name, position)
         end
     end
 
-    -- Mine entity
-    self.character.mine_entity(entity)
+    -- Pre-check capacity BEFORE mutating: with a full inventory the engine
+    -- does NOT fail the mine — it spills products on the ground (verified
+    -- live 2026-06-11), which would read as success with extracted_items={}
+    -- while the item silently lies on the floor.
+    local products = entity.prototype.mineable_properties
+        and entity.prototype.mineable_properties.products
+    if products then
+        for _, product in pairs(products) do
+            if product.type == "item" then
+                local needed = product.amount or product.amount_max or 1
+                if not agent_inventory.can_insert({name = product.name, count = needed}) then
+                    error("Agent: Cannot pick up '" .. entity_name .. "' — your inventory " ..
+                          "cannot fit " .. needed .. "x " .. product.name .. ". " ..
+                          "Free up inventory space first; nothing was removed.")
+                end
+            end
+        end
+    end
+
+    -- Mine entity INTO the agent inventory, raising script_raised_destroy so
+    -- the snapshot pipeline sees the removal. character.mine_entity on a
+    -- non-player character raises NO event -> permanent phantom map_entity
+    -- rows that rebuild cannot recover (SNAP-4, L1.6 churn battery).
+    local mined = entity.mine{inventory = agent_inventory, raise_destroyed = true}
+    if not mined then
+        error("Agent: Failed to mine entity '" .. entity_name .. "' — nothing was removed. " ..
+              "Most likely the agent inventory cannot fit the items; free up space and retry.")
+    end
 
     -- get_contents() returns an array of {name, count, quality} objects
     -- Convert to {item_name = count} format

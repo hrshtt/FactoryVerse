@@ -333,25 +333,6 @@ You have access to a static knowledge base called 'Factoriopedia'. Use these too
 ALWAYS consult Factoriopedia before crafting complex items or researching technologies to understand dependencies.
 """
 
-    # --- LLM Helper Methods ---
-
-    def system_prompt(self) -> str:
-        """
-        [Helper] Returns a string describing how to use the Factoriopedia tools.
-        Inject this into the agent's system prompt.
-        """
-        return """
-## Factoriopedia Knowledge Tools
-You have access to a static knowledge base called 'Factoriopedia'. Use these tools to plan your actions:
-
-- `factoriopedia.lookup_item(item_name)`: Get recipes, usage, and tech requirements for an item.
-- `factoriopedia.find_crafting_machine(recipe_name)`: Find which machine crafts a recipe.
-- `factoriopedia.get_tech_tree_path(target_tech)`: Find the research path and costs for a technology.
-- `factoriopedia.get_tech_unlocks(tech_name)`: See what a technology unlocks.
-
-ALWAYS consult Factoriopedia before crafting complex items or researching technologies to understand dependencies.
-"""
-
 # Example usage for testing (will not run in final agent context unless called)
 if __name__ == "__main__":
     wiki = Factoriopedia()

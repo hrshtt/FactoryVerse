@@ -12,24 +12,42 @@ local M = {}
 -- ============================================================================
 -- RESOURCE CONFIGURATION
 -- ============================================================================
+-- Sized to support hardest throughput task (utility-science-pack @ 16/min)
+-- which requires: ~675 copper tiles, ~450 iron tiles, ~150 coal tiles
+--
+-- Play area is 128x128 tiles. Resource patches are placed in bottom-left
+-- quadrant, leaving the rest for factory construction (~41x41 needed).
+--
+-- Layout (offsets from cell origin):
+--   Top-left quadrant: Factory build area (64x64)
+--   Bottom-left: Ore patches (iron, copper, coal, stone)
+--   Right side: Water and oil
+-- ============================================================================
 
 -- Resource patch configuration (offsets from cell origin)
 M.RESOURCE_CONFIG = {
     patches = {
-        {name = "iron-ore",   offset = {x = 16, y = 16},  size = 8, amount = 50000},
-        {name = "copper-ore", offset = {x = 48, y = 16},  size = 8, amount = 50000},
-        {name = "coal",       offset = {x = 16, y = 48},  size = 8, amount = 50000},
-        {name = "stone",      offset = {x = 48, y = 48},  size = 8, amount = 50000},
+        -- Iron ore: 22x22 = 484 tiles (need 450 for hardest recipe)
+        {name = "iron-ore",   offset = {x = 15, y = 70},  size = 22, amount = 50000},
+        -- Copper ore: 26x26 = 676 tiles (need 675 for hardest recipe)
+        {name = "copper-ore", offset = {x = 42, y = 70},  size = 26, amount = 50000},
+        -- Coal: 14x14 = 196 tiles (need 150 for hardest recipe)
+        {name = "coal",       offset = {x = 74, y = 70},  size = 14, amount = 50000},
+        -- Stone: 10x10 = 100 tiles (minimal, not needed for throughput tasks)
+        {name = "stone",      offset = {x = 94, y = 70},  size = 10, amount = 50000},
     },
     water = {
-        offset = {x = 16, y = 96},
-        size = 5  -- 5x5 water tiles
+        -- 12x18 = 216 water tiles (supports offshore pumps for chemical plants)
+        offset = {x = 108, y = 70},
+        width = 12,
+        height = 18
     },
     oil = {
+        -- 3 oil wells (matches requirement for hardest recipe)
         offsets = {
-            {x = 80, y = 96},
-            {x = 88, y = 96},
-            {x = 96, y = 96}
+            {x = 108, y = 94},
+            {x = 114, y = 94},
+            {x = 120, y = 94}
         },
         amount = 300000  -- crude-oil amount per well
     }
@@ -110,11 +128,13 @@ end
 --- @param surface LuaSurface
 --- @param origin_x number
 --- @param origin_y number
---- @param size number Side length of square
-local function place_water(surface, origin_x, origin_y, size)
+--- @param width number Width of water area
+--- @param height number Height of water area (optional, defaults to width for square)
+local function place_water(surface, origin_x, origin_y, width, height)
+    height = height or width  -- Default to square if height not specified
     local tiles = {}
-    for y = origin_y, origin_y + size - 1 do
-        for x = origin_x, origin_x + size - 1 do
+    for y = origin_y, origin_y + height - 1 do
+        for x = origin_x, origin_x + width - 1 do
             table.insert(tiles, {name = "water", position = {x, y}})
         end
     end
@@ -125,8 +145,7 @@ end
 --- @param surface LuaSurface
 --- @param positions table Array of {x, y} positions
 --- @param amount number Amount per well
---- @param force LuaForce Force to assign
-local function place_oil_wells(surface, positions, amount, force)
+local function place_oil_wells(surface, positions, amount)
     for _, pos in ipairs(positions) do
         surface.create_entity{
             name = "crude-oil",
@@ -160,7 +179,8 @@ function M.spawn_resources(surface, cell_index)
         surface,
         origin.x + water.offset.x,
         origin.y + water.offset.y,
-        water.size
+        water.width or water.size,  -- Support both new (width/height) and legacy (size) format
+        water.height or water.size
     )
 
     -- Place oil wells
@@ -172,6 +192,75 @@ function M.spawn_resources(surface, cell_index)
         })
     end
     place_oil_wells(surface, oil_positions, M.RESOURCE_CONFIG.oil.amount)
+end
+
+--- Restore scenario content for an arbitrary area (chunk-scoped)
+--- Used by on_chunk_generated when the engine generates a chunk after the
+--- scenario already initialized it: engine generation must be replaced with
+--- the deterministic cell layout (water + resources included), not bare dirt.
+--- Bare-dirt wiping is what left cell_0 barren (SNAP-1a, 2026-06-10 field run).
+--- Only touches tiles/entities inside `area`, so it cannot duplicate content
+--- elsewhere in the cell.
+--- @param surface LuaSurface
+--- @param area table {left_top = {x, y}, right_bottom = {x, y}}
+function M.restore_chunk_content(surface, area)
+    local cfg = M.RESOURCE_CONFIG
+    local water = cfg.water
+    local water_w = water.width or water.size
+    local water_h = water.height or water.size
+    local tiles = {}
+
+    for y = area.left_top.y, area.right_bottom.y - 1 do
+        for x = area.left_top.x, area.right_bottom.x - 1 do
+            if x < 0 or x >= grid.MAP_SIZE or y < 0 or y >= grid.MAP_SIZE then
+                tiles[#tiles + 1] = {name = "out-of-map", position = {x, y}}
+            else
+                local local_x = x % grid.CELL_SIZE
+                local local_y = y % grid.CELL_SIZE
+                if local_x < grid.PLAY_AREA_SIZE and local_y < grid.PLAY_AREA_SIZE then
+                    local in_water = local_x >= water.offset.x and local_x < water.offset.x + water_w
+                        and local_y >= water.offset.y and local_y < water.offset.y + water_h
+                    tiles[#tiles + 1] = {name = in_water and "water" or "dirt-1", position = {x, y}}
+                else
+                    tiles[#tiles + 1] = {name = "out-of-map", position = {x, y}}
+                end
+            end
+        end
+    end
+
+    if #tiles > 0 then
+        surface.set_tiles(tiles, false)
+    end
+
+    -- Recreate resource entities whose tiles fall inside the area
+    for y = area.left_top.y, area.right_bottom.y - 1 do
+        for x = area.left_top.x, area.right_bottom.x - 1 do
+            if x >= 0 and x < grid.MAP_SIZE and y >= 0 and y < grid.MAP_SIZE then
+                local local_x = x % grid.CELL_SIZE
+                local local_y = y % grid.CELL_SIZE
+                for _, patch in ipairs(cfg.patches) do
+                    local half = math.floor(patch.size / 2)
+                    if local_x >= patch.offset.x - half and local_x < patch.offset.x + half
+                        and local_y >= patch.offset.y - half and local_y < patch.offset.y + half then
+                        surface.create_entity{
+                            name = patch.name,
+                            amount = patch.amount,
+                            position = {x + 0.5, y + 0.5}
+                        }
+                    end
+                end
+                for _, offset in ipairs(cfg.oil.offsets) do
+                    if local_x == offset.x and local_y == offset.y then
+                        surface.create_entity{
+                            name = "crude-oil",
+                            position = {x + 0.5, y + 0.5},
+                            amount = cfg.oil.amount
+                        }
+                    end
+                end
+            end
+        end
+    end
 end
 
 -- ============================================================================
@@ -237,14 +326,7 @@ function M.reset_cell(surface, cell_index, preserve_agent)
     -- Respawn resources
     M.spawn_resources(surface, cell_index)
 
-    -- Reset force production statistics if there's an assigned force
-    local force_name = "cell_" .. cell_index
-    if game.forces[force_name] then
-        -- Note: reset_item_production_statistics is the correct API
-        -- but we need to check if it exists
-        local force = game.forces[force_name]
-        -- Production stats auto-reset when we clear entities and respawn
-    end
+    -- Note: Force production statistics auto-reset when we clear entities and respawn
 end
 
 --- Reset all cells

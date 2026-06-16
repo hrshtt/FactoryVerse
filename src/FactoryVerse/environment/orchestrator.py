@@ -471,16 +471,42 @@ class Orchestrator:
             # Configure environment for this run
             self._configure_for_task(task, model, provider, effective_max_turns)
 
-            # Ensure environment is ready
-            await self._ensure_ready(up_to=Tier.INTERACTION)
+            # CELL-1 ORDERING FIX: allocate the cell BETWEEN tier4 and tier5.
+            # Tier5 bakes initial_state.md (the agent's anchor observation)
+            # and tier6's AgentOrchestrator consumes it at init — so both must
+            # come AFTER allocation + snapshot reload, or the agent starts the
+            # run oriented on pre-allocation (wrong-cell/stale) data.
+            # Tier dependencies stay sound: allocation needs tier3 RCON and
+            # tier4's scenario adapter/DB, both ready at RUNTIME.
+            tier5_was_ready = (
+                self._env.tier5 is not None and self._env.tier5.is_ready
+            )
+            await self._ensure_ready(up_to=Tier.RUNTIME)
 
-            # Allocate cell if using lab-grid (includes reset + agent creation)
+            # Allocate cell if using lab-grid (includes reset + agent creation
+            # + verified per-cell snapshot + DB reload + coherence preflight)
             allocated_cell = await self._allocate_cell(
                 cell,
                 starting_inventory=task_config.starting_inventory,
             )
             if allocated_cell is not None:
                 result.cell_index = allocated_cell
+
+            # Now bring up specification (initial_state) + interaction
+            await self._ensure_ready(up_to=Tier.INTERACTION)
+
+            # Entry paths that initialized tier5/6 BEFORE this call (e.g.
+            # prepare_for_evaluation) baked a pre-allocation initial_state —
+            # regenerate it and rebuild the interaction layer so the
+            # orchestrator re-reads it.
+            if tier5_was_ready and allocated_cell is not None:
+                logger.info(
+                    "Orchestrator: tier5 predates cell allocation — "
+                    "regenerating initial_state and resetting tier6"
+                )
+                await self._env.tier5.regenerate_initial_state()
+                if self._env.tier6 is not None:
+                    await self._env.tier6.reset()
 
             # Run interaction loop
             tier6 = self._env.tier6
@@ -531,6 +557,18 @@ class Orchestrator:
 
         finally:
             result.ended_at = datetime.now()
+
+            # Write run_end event to trajectory
+            tier4 = self._env.tier4
+            if tier4 and hasattr(tier4, 'trajectory_writer') and tier4.trajectory_writer:
+                tier4.trajectory_writer.run_end(
+                    success=result.task_success,
+                    total_turns=result.total_turns,
+                    total_tool_calls=result.total_actions,
+                    error=result.error,
+                    verification=result.verification.to_dict() if result.verification else None,
+                )
+
             if allocated_cell is not None:
                 await self._release_cell(allocated_cell, reset=True)
 
@@ -569,7 +607,13 @@ class Orchestrator:
 
         try:
             self._configure_for_freeplay(model, provider, max_turns)
-            await self._ensure_ready(up_to=Tier.INTERACTION)
+
+            # CELL-1 ORDERING FIX (same as run_task): allocate between tier4
+            # and tier5 so initial_state reflects the agent's allocated cell
+            tier5_was_ready = (
+                self._env.tier5 is not None and self._env.tier5.is_ready
+            )
+            await self._ensure_ready(up_to=Tier.RUNTIME)
 
             # Use default freeplay inventory (can be customized)
             from FactoryVerse.game.tasks.definitions.common import LAB_STARTING_INVENTORY
@@ -580,6 +624,17 @@ class Orchestrator:
             )
             if allocated_cell is not None:
                 result.cell_index = allocated_cell
+
+            await self._ensure_ready(up_to=Tier.INTERACTION)
+
+            if tier5_was_ready and allocated_cell is not None:
+                logger.info(
+                    "Orchestrator: tier5 predates cell allocation — "
+                    "regenerating initial_state and resetting tier6"
+                )
+                await self._env.tier5.regenerate_initial_state()
+                if self._env.tier6 is not None:
+                    await self._env.tier6.reset()
 
             tier6 = self._env.tier6
             if tier6 is None:
@@ -802,7 +857,107 @@ class Orchestrator:
             tier4.reload_snapshot_data()
             logger.info("Orchestrator: Snapshot data reloaded")
 
+            # PREFLIGHT GUARD (CELL-1 item 7): any body/vision desync must be
+            # a loud T0 error, not a burned eval
+            self._verify_cell_coherence(result.cell_index, agent_numeric_id)
+
         return result.cell_index
+
+    def _verify_cell_coherence(self, cell_index: int, agent_id: int) -> None:
+        """Post-allocation, post-reload coherence assertion (cheap: 3 checks).
+
+        Invariants (violation = the CELL-1 failure class):
+        1. BODY: agent character position is within its allocated cell's
+           play-area bounds
+        2. VISION: the session DB has >= 1 resource_tile row within those
+           bounds (the cell's spawned resources actually loaded)
+        3. TIME: no loaded chunk has a snapshot tick > current game tick
+           (previous-boot files are "from the future")
+
+        Raises:
+            RuntimeError: Naming the violated invariant. Loud by design.
+        """
+        tier3 = self._env.tier3
+        tier4 = self._env.tier4
+        if tier3 is None or tier4 is None or tier4.scenario is None:
+            return
+
+        scenario = tier4.scenario
+        if not hasattr(scenario, "get_cell_query_bounds"):
+            return  # non-cell scenario — nothing to assert
+
+        bounds = scenario.get_cell_query_bounds(cell_index)
+
+        def _db_rows(sql: str):
+            """Query the session DB via the unified (RemoteView) path."""
+            remote_view = tier4.remote_view
+            if remote_view is not None and remote_view.is_loaded:
+                return remote_view.execute_raw(sql)
+            if tier4.database is not None:
+                return tier4.database.execute(sql).fetchall()
+            return None
+
+        violations = []
+
+        # 1. BODY: agent inside its cell
+        agents = tier3.list_game_agents()
+        agent = next((a for a in agents if a.get("id") == agent_id), None)
+        position = (agent or {}).get("position") or {}
+        px, py = position.get("x"), position.get("y")
+        if px is None or py is None:
+            violations.append(
+                f"BODY: agent {agent_id} not found or has no position "
+                f"(agents seen: {[a.get('id') for a in agents]})"
+            )
+        elif not (
+            bounds["min_x"] <= px <= bounds["max_x"]
+            and bounds["min_y"] <= py <= bounds["max_y"]
+        ):
+            violations.append(
+                f"BODY: agent {agent_id} at ({px}, {py}) is OUTSIDE allocated "
+                f"cell {cell_index} bounds {bounds}"
+            )
+
+        # 2. VISION: the cell's resources are in the session DB
+        rows = _db_rows(
+            f"SELECT COUNT(*) FROM resource_tile "
+            f"WHERE position_x BETWEEN {bounds['min_x']} AND {bounds['max_x']} "
+            f"AND position_y BETWEEN {bounds['min_y']} AND {bounds['max_y']}"
+        )
+        if rows is not None:
+            resource_count = rows[0][0] if rows else 0
+            if resource_count < 1:
+                violations.append(
+                    f"VISION: 0 resource_tile rows within cell {cell_index} "
+                    f"bounds {bounds} in the session DB — the agent's cell "
+                    f"never loaded (DB likely holds other cells' data)"
+                )
+
+        # 3. TIME: no chunk loaded from the future (previous boot)
+        rows = _db_rows("SELECT MAX(tick) FROM chunk_snapshot_meta")
+        max_chunk_tick = rows[0][0] if rows else None
+        if max_chunk_tick is not None:
+            try:
+                game_tick = tier3.get_game_tick()
+            except Exception:
+                game_tick = None
+            if game_tick is not None and max_chunk_tick > game_tick:
+                violations.append(
+                    f"TIME: loaded chunk snapshot tick {max_chunk_tick} > "
+                    f"current game tick {game_tick} — previous-boot files "
+                    f"contaminated the session DB"
+                )
+
+        if violations:
+            raise RuntimeError(
+                "CELL COHERENCE VIOLATION (preflight guard, CELL-1): "
+                + " || ".join(violations)
+            )
+
+        logger.info(
+            f"Orchestrator: Cell {cell_index} coherence verified "
+            f"(body in bounds, resources loaded, no future-tick chunks)"
+        )
 
     async def _release_cell(self, cell: int, reset: bool = True) -> None:
         """Release a cell back to the pool."""

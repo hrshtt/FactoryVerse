@@ -476,7 +476,7 @@ class QueryExecutor:
         # If it does, we can skip loading (status is loaded fresh on each query)
         # Actually, we want to always load the latest status file to ensure freshness
         try:
-            from .db.loader.status_loader import load_latest_status
+            from .status_loader import load_latest_status
             
             with self._db_lock:
                 count = load_latest_status(self._db, status_dir)

@@ -4,8 +4,16 @@ Co-locates FluidState (Pydantic model) and FluidMixin for entities
 with fluidboxes like pipes, pumps, chemical plants, oil refineries.
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
+
+
+class FluidConnection(BaseModel):
+    """A fluid-connected entity. name+position so the agent can act on it
+    (entities are referenced by name+position, never unit_number)."""
+
+    name: str
+    position: Optional[Dict[str, float]] = None
 
 
 class FluidBox(BaseModel):
@@ -17,15 +25,21 @@ class FluidBox(BaseModel):
     temperature: float = 15  # Default temperature
     capacity: float = 0
     is_empty: bool = True
+    # Entities whose fluidboxes are connected to THIS box (engine-computed)
+    connections: List[FluidConnection] = Field(default_factory=list)
 
 
 class FluidState(BaseModel):
     """State for fluid-handling entities.
 
-    Source: runtime_inspection.jsonl fluidboxes array
+    Source: Lua inspect_entity fluidbox array (shared inspect_fluidboxes helper)
     """
 
     fluidboxes: List[FluidBox] = Field(default_factory=list)
+    # Total capacity across all fluidboxes
+    capacity: float = 0
+    # Union of fluid-connected entities across all boxes (deduped name+position refs)
+    connections: List[FluidConnection] = Field(default_factory=list)
 
     @property
     def total_fluid(self) -> float:

@@ -3,8 +3,16 @@
 Co-locates BeltState (Pydantic model) and BeltMixin.
 """
 
-from typing import Optional
-from pydantic import BaseModel
+from typing import Optional, List, Dict
+from pydantic import BaseModel, Field
+
+
+class BeltNeighbour(BaseModel):
+    """A belt connected to this one. name+position so the agent can act on it
+    (entities are referenced by name+position, never unit_number)."""
+
+    name: str
+    position: Optional[Dict[str, float]] = None
 
 
 class BeltState(BaseModel):
@@ -14,8 +22,13 @@ class BeltState(BaseModel):
     """
 
     belt_shape: Optional[str] = None  # "straight", "left-turn", "right-turn"
+    # Directional flow: inputs feed THIS belt, THIS belt feeds outputs.
+    belt_inputs: List[BeltNeighbour] = Field(default_factory=list)
+    belt_outputs: List[BeltNeighbour] = Field(default_factory=list)
     belt_to_ground_type: Optional[str] = None  # "input" or "output" for underground
-    linked_belt_neighbour: Optional[str] = None  # Entity name for underground pair
+    underground_neighbour: Optional[BeltNeighbour] = None  # other end of an underground pair
+    linked_belt_neighbour: Optional[BeltNeighbour] = None  # linked-belt entities only (NOT undergrounds)
+    linked_belt_type: Optional[str] = None  # "input" or "output"
     # Splitter-specific
     splitter_filter: Optional[str] = None
     splitter_input_priority: Optional[str] = None  # "left", "right", "none"

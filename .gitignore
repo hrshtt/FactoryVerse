@@ -39,3 +39,5 @@ script-output/
 **/.DS_Store
 # Jupyter notebooks (optional - if you want to exclude them)
 # *.ipynb
+
+**/node_modules/

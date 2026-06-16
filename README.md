@@ -102,14 +102,6 @@ uv run fv instance list
 uv run fv data refresh
 ```
 
-### MCP Server (`factoryverse-mcp`)
-
-Model Context Protocol server for LLM tool integration (Claude Desktop, etc.):
-
-```bash
-uv run factoryverse-mcp
-```
-
 ### Web Dashboard (`fv-ui`)
 
 Browser-based monitoring for agents, services, and trajectories:

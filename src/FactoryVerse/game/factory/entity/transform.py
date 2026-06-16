@@ -17,12 +17,17 @@ from FactoryVerse.game.factory.entity.capabilities import (
     HeldItem,
     FluidState,
     FluidBox,
+    FluidConnection,
     BeltState,
+    BeltNeighbour,
 )
 from FactoryVerse.game.factory.entity.implementations.container import ContainerState
 from FactoryVerse.game.factory.entity.implementations.lab import LabState
 from FactoryVerse.game.factory.entity.implementations.accumulator import AccumulatorState
-from FactoryVerse.game.factory.entity.implementations.electric_pole import ElectricPoleState
+from FactoryVerse.game.factory.entity.implementations.electric_pole import (
+    ElectricPoleState,
+    PoleNeighbour,
+)
 from FactoryVerse.game.factory.entity.implementations.generator import GeneratorState
 
 
@@ -263,19 +268,50 @@ def _transform_inserter(
             count=held_data.get("count", 0),
         )
 
+    # Relational reads: what this inserter picks from / drops into.
+    # Lua sends entity refs ({name, position, ...}); the drop/pickup positions
+    # above pin down which tile, so the name is enough to identify the target.
+    def _target_name(ref: Any) -> Optional[str]:
+        if isinstance(ref, dict):
+            return ref.get("name")
+        return None
+
+    # Filters come from Lua as {index: item_name}; flatten to a list.
+    filters_raw = raw_data.get("filters") or {}
+    filters = [v for v in filters_raw.values() if isinstance(v, str)] if isinstance(
+        filters_raw, dict
+    ) else []
+
     return InserterState(
         pickup_position=raw_data.get("pickup_position"),
         drop_position=raw_data.get("drop_position"),
+        pickup_target=_target_name(raw_data.get("pickup_target")),
+        drop_target=_target_name(raw_data.get("drop_target")),
         held_item=held_item,
-        filter_mode=raw_data.get("inserter_filter_mode"),
+        filters=filters,
     )
 
 
 def _transform_fluid(raw_data: Dict[str, Any]) -> Optional[FluidState]:
-    """Transform fluid data to FluidState."""
+    """Transform fluid data to FluidState.
+
+    Lua side (shared inspect_fluidboxes helper) emits per box:
+    {index, name?, amount, temperature?, capacity, connections=[{name, position}]}
+    Empty boxes are included (no name) so capacity/connections stay visible.
+    """
     fluidbox_data = raw_data.get("fluidbox") or raw_data.get("fluidboxes")
     if not fluidbox_data:
         return None
+
+    def _connections(items: Any) -> list:
+        refs = []
+        if isinstance(items, list):
+            for c in items:
+                if isinstance(c, dict) and c.get("name"):
+                    refs.append(
+                        FluidConnection(name=c["name"], position=c.get("position"))
+                    )
+        return refs
 
     # Parse fluidboxes
     fluidboxes = []
@@ -285,18 +321,34 @@ def _transform_fluid(raw_data: Dict[str, Any]) -> Optional[FluidState]:
                 fluidboxes.append(
                     FluidBox(
                         index=fb.get("index", idx),
-                        name=fb.get("name", ""),
+                        name=fb.get("name"),
                         amount=fb.get("amount", 0),
                         temperature=fb.get("temperature", 15),
                         capacity=fb.get("capacity", 0),
-                        is_empty=False,
+                        is_empty=fb.get("name") is None,
+                        connections=_connections(fb.get("connections")),
                     )
                 )
 
     if not fluidboxes:
         return None
 
-    return FluidState(fluidboxes=fluidboxes)
+    # State-level rollups: total capacity + deduped union of connections
+    seen = set()
+    connections = []
+    for box in fluidboxes:
+        for conn in box.connections:
+            pos = conn.position or {}
+            key = (conn.name, pos.get("x"), pos.get("y"))
+            if key not in seen:
+                seen.add(key)
+                connections.append(conn)
+
+    return FluidState(
+        fluidboxes=fluidboxes,
+        capacity=sum(box.capacity for box in fluidboxes),
+        connections=connections,
+    )
 
 
 def _transform_belt(raw_data: Dict[str, Any], entity_type: str) -> Optional[BeltState]:
@@ -305,9 +357,28 @@ def _transform_belt(raw_data: Dict[str, Any], entity_type: str) -> Optional[Belt
     if entity_type not in belt_types:
         return None
 
-    # For now, return minimal belt state
-    # Full implementation would parse belt contents
-    return BeltState()
+    def _ref(d: Any) -> Optional[BeltNeighbour]:
+        if not isinstance(d, dict):
+            return None
+        return BeltNeighbour(name=d.get("name", ""), position=d.get("position"))
+
+    def _refs(items: Any) -> list:
+        if not isinstance(items, list):
+            return []
+        return [r for r in (_ref(i) for i in items) if r is not None]
+
+    return BeltState(
+        belt_shape=raw_data.get("belt_shape"),
+        belt_inputs=_refs(raw_data.get("belt_inputs")),
+        belt_outputs=_refs(raw_data.get("belt_outputs")),
+        belt_to_ground_type=raw_data.get("belt_to_ground_type"),
+        underground_neighbour=_ref(raw_data.get("underground_neighbour")),
+        linked_belt_neighbour=_ref(raw_data.get("linked_belt_neighbour")),
+        linked_belt_type=raw_data.get("linked_belt_type"),
+        splitter_filter=raw_data.get("splitter_filter"),
+        splitter_input_priority=raw_data.get("splitter_input_priority"),
+        splitter_output_priority=raw_data.get("splitter_output_priority"),
+    )
 
 
 def _transform_container(
@@ -354,32 +425,48 @@ def _transform_accumulator(
     )
 
 
+def _pole_refs(items: Any) -> list:
+    """Parse a Lua list of {name, position} refs into PoleNeighbour models."""
+    refs = []
+    if isinstance(items, list):
+        for n in items:
+            if isinstance(n, dict) and n.get("name"):
+                refs.append(PoleNeighbour(name=n["name"], position=n.get("position")))
+    return refs
+
+
 def _transform_electric_pole(
     raw_data: Dict[str, Any], entity_type: str
 ) -> Optional[ElectricPoleState]:
-    """Transform electric pole data to ElectricPoleState."""
+    """Transform electric pole data to ElectricPoleState.
+
+    Lua inspect_electric_pole emits: electric_network_id, is_connected,
+    connected_poles (name+position refs via the 2.0 wire connector API),
+    supply_area_entities (refs, capped) + supply_area_entity_count (exact).
+    """
+    # Runtime TYPE is "electric-pole" for all poles incl. substation;
+    # names kept for compatibility with older captured payloads.
     pole_types = {
+        "electric-pole",
         "small-electric-pole",
         "medium-electric-pole",
         "big-electric-pole",
         "substation",
-        "electric-pole",  # Generic type
     }
     if entity_type not in pole_types:
         return None
 
-    # Parse connected poles
-    connected = []
-    neighbours = raw_data.get("neighbours", [])
-    if isinstance(neighbours, list):
-        for n in neighbours:
-            if n and n.get("name"):
-                connected.append(n["name"])
+    supply_refs = _pole_refs(raw_data.get("supply_area_entities"))
+    count = raw_data.get("supply_area_entity_count")
+    if not isinstance(count, int):
+        count = len(supply_refs)
 
     return ElectricPoleState(
         electric_network_id=raw_data.get("electric_network_id"),
-        connected_poles=connected,
-        supply_area_entities=0,  # Not available in raw data
+        is_connected=raw_data.get("is_connected"),
+        connected_poles=_pole_refs(raw_data.get("connected_poles")),
+        supply_area_entities=supply_refs,
+        supply_area_entity_count=count,
     )
 
 
@@ -387,19 +474,26 @@ def _transform_generator(
     raw_data: Dict[str, Any], entity_type: str
 ) -> Optional[GeneratorState]:
     """Transform generator data to GeneratorState."""
+    # Runtime TYPES (Factorio 2.0): steam-engine/steam-turbine -> "generator",
+    # nuclear-reactor -> "reactor"; names kept for older captured payloads.
     generator_types = {
+        "generator",
+        "burner-generator",
+        "reactor",
+        "solar-panel",
+        "boiler",
         "steam-engine",
         "steam-turbine",
-        "solar-panel",
         "nuclear-reactor",
-        "boiler",
     }
     if entity_type not in generator_types:
         return None
 
     return GeneratorState(
         power_output=raw_data.get("power_production", 0)
-        or raw_data.get("power_output", 0),
+        or raw_data.get("power_output", 0)
+        # Generator types report actual production via energy_generated_last_tick (J/tick)
+        or raw_data.get("energy_generated_last_tick", 0),
         max_power_output=raw_data.get("max_power_output", 0),
         effectivity=raw_data.get("effectivity", 1.0),
     )

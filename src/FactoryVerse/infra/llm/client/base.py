@@ -58,6 +58,9 @@ class ChatMessage:
 
         if self.content is not None:
             result["content"] = self.content
+        elif self.tool_calls:
+            # APIs require content field on assistant messages with tool_calls
+            result["content"] = ""
 
         if self.tool_calls:
             result["tool_calls"] = [
@@ -88,6 +91,11 @@ class ChatCompletionUsage:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    # OBS-2 observability: prompt tokens served from the provider's prompt
+    # cache (OpenAI prompt_tokens_details.cached_tokens / Anthropic
+    # cache_read_input_tokens). None = the gateway reported nothing, which
+    # is NOT evidence caching failed — only that it is unobservable.
+    cached_prompt_tokens: Optional[int] = None
 
 
 @dataclass

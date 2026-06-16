@@ -13,6 +13,7 @@ import tiktoken
 from FactoryVerse.infra.llm.client.base import LLMClient, ChatMessage
 from FactoryVerse.infra.llm.trajectory import TrajectoryManager, ActionStatus
 from FactoryVerse.infra.llm.context.validator import ToolValidator
+from FactoryVerse.infra.llm.context.progress_dedupe import ProgressDeduper
 from FactoryVerse.infra.output.console import ConsoleOutput
 from FactoryVerse.infra.session.trajectory import TrajectoryWriter
 
@@ -113,6 +114,11 @@ class AgentOrchestrator:
         self._task_config: Optional["TaskConfig"] = task_config
         self._verification_callback: Optional[VerificationCallback] = verification_callback
         self._last_verification_result: Optional["VerificationResult"] = None
+        # OBS-2: collapse verbatim-repeated Task Progress blocks before they
+        # enter (and compound in) the LLM message history. Full block is emitted
+        # on every content change and refreshed periodically; only byte-identical
+        # repeats become one-line pointers.
+        self._progress_deduper = ProgressDeduper(refresh_every=10)
 
         # Load system prompt
         try:
@@ -303,6 +309,12 @@ class AgentOrchestrator:
                     "completion_tokens": result.usage.completion_tokens,
                     "total_tokens": result.usage.total_tokens,
                 }
+                # OBS-2 observability: record cache hits when reported;
+                # absent key = gateway doesn't report, not "cache failed"
+                if result.usage.cached_prompt_tokens is not None:
+                    usage_data["cached_prompt_tokens"] = (
+                        result.usage.cached_prompt_tokens
+                    )
             else:
                 try:
                     usage_data = self._calculate_fallback_usage(
@@ -431,7 +443,11 @@ class AgentOrchestrator:
                     self._log_to_chat(f"**Result:**\n```\n{exec_result}\n```\n\n")
 
                     # Display result on console (console can truncate for readability)
-                    is_error = exec_result.startswith("❌")
+                    is_error = (
+                        exec_result.startswith("❌")
+                        or exec_result.startswith("Error:")
+                        or status == ActionStatus.FAILURE
+                    )
                     self.console.tool_result(exec_result, is_error=is_error)
                     if self.trajectory:
                         self.trajectory.tool_result(
@@ -485,12 +501,19 @@ class AgentOrchestrator:
             # This runs the verification callback and injects progress into conversation
             verification_msg = await self._check_task_verification()
             if verification_msg:
+                # OBS-2: dedupe verbatim repeats — the agent sees the full block
+                # whenever content changes (or on periodic refresh), otherwise a
+                # one-line pointer to the turn carrying the last full block.
+                rendered_progress = self._progress_deduper.render(
+                    verification_msg, turn=self.turn_number
+                )
                 # Add verification progress as user message so agent sees it
-                self.messages.append({"role": "user", "content": verification_msg})
-                self._log_to_chat(f"**Task Progress:**\n```\n{verification_msg}\n```\n\n")
+                self.messages.append({"role": "user", "content": rendered_progress})
+                # chat.md mirrors what the LLM actually saw
+                self._log_to_chat(f"**Task Progress:**\n```\n{rendered_progress}\n```\n\n")
                 self._log_to_chat("---\n\n")
 
-                # Always display verification progress on console
+                # Always display the FULL verification progress on console
                 # This gives visibility into task progress during the run
                 self.console.system_notification(verification_msg)
 
@@ -641,6 +664,19 @@ class AgentOrchestrator:
                 return None
 
             self._last_verification_result = result
+
+            # Log verification check to trajectory
+            if self.trajectory:
+                self.trajectory.verification_check(
+                    turn=self.turn_number,
+                    game_tick=result.measured_at_tick or 0,
+                    current_rate=result.current_rate or 0.0,
+                    target_rate=self._task_config.verification.quota if self._task_config.verification else 0,
+                    passed=result.current_rate is not None and self._task_config.verification is not None and result.current_rate >= self._task_config.verification.quota,
+                    consecutive_passes=result.consecutive_passes or 0,
+                    checks_required=self._task_config.verification.checks_required if self._task_config.verification else 6,
+                    automation_produced=result.automation_produced or 0,
+                )
 
             # Format progress message
             progress_msg = self._format_verification_progress(result)

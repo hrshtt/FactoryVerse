@@ -156,7 +156,15 @@ class CraftingAction:
             List of ItemStack objects crafted with placement injected
 
         Raises:
-            RuntimeError: If crafting fails to start or times out
+            RuntimeError: If crafting fails to start or times out. The error
+                message distinguishes the failure modes (ERR-1 contract):
+                - unknown recipe (no such recipe exists; check spelling)
+                - recipe locked (exists but not researched; names the
+                  unlocking technology when known — do NOT retry, research it)
+                - missing ingredients (enumerates each as name (have N, need M))
+                - recipe not hand-craftable (needs a machine)
+                - invalid count / crafting queue full
+                These are never swallowed or defaulted (ERR-3 standard).
         """
         # Build and execute RCON command
         cmd = self._rcon.build_command("craft_enqueue", recipe, count)
@@ -188,7 +196,14 @@ class CraftingAction:
             count: Number of times to craft
 
         Returns:
-            Response dict with queued status
+            Response dict with queued status. If fewer crafts were queued than
+            requested (ingredient-limited), the dict carries a 'message'
+            explaining the partial queue (count_queued < count_requested).
+
+        Raises:
+            RuntimeError: Same structured failure modes as craft() —
+                unknown recipe / locked recipe / missing ingredients
+                (name + have + need) / invalid count / queue full.
         """
         cmd = self._rcon.build_command("craft_enqueue", recipe, count)
         return self._rcon.execute_and_parse_json(cmd)
