@@ -41,3 +41,5 @@ script-output/
 # *.ipynb
 
 **/node_modules/
+# Fetched API reference data (regenerate: scripts/fetch_factorio_api.py)
+resources/factorio-api/
