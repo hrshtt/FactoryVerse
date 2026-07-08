@@ -434,9 +434,11 @@ class SyncService:
                 chunk_x,
                 chunk_y,
                 ghost_data.get("direction"),
-                ghost_data.get("placed_tick") or payload.get("tick"),
+                (ghost_data.get("builder") or {}).get("placed_tick")
+                or ghost_data.get("placed_tick")
+                or payload.get("tick"),
                 ghost_data.get("placed_by"),
-                ghost_data.get("label"),
+                (ghost_data.get("builder") or {}).get("label") or ghost_data.get("label"),
                 json.dumps(ghost_data),
             ],
         )

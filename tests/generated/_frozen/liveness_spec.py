@@ -83,17 +83,13 @@ _DEAD_COLUMNS: Dict[Tuple[str, str], Tuple[str, str]] = {
                           "but never lifted -> always NULL"),
     ("map_entity", "tile_y"): (
         "NEW-2026-07-08", "same as tile_x"),
-    # ghost builder-lift asymmetry, found by the Phase C ghost group: the mod
-    # nests provenance under raw_data["builder"] (verified live) but
-    # loader._insert_ghost reads FLAT keys — unlike _insert_entity, which is
-    # builder-aware (why the same columns are LIVE on map_entity)
-    ("ghost", "placed_tick"): (
-        "NEW-2026-07-08", "value in raw_data.builder.placed_tick; column NULL"),
-    ("ghost", "label"): (
-        "NEW-2026-07-08", "value in raw_data.builder.label; column NULL"),
+    # ghost builder-lift asymmetry (MIRAGE-4), found by the Phase C ghost group.
+    # label + placed_tick FIXED 2026-07-08 (loader/sync made builder-aware) and
+    # reclassified LIVE; placed_by remains dead pending Harshit's alias-vs-drop
+    # design call (no write path emits that key at any level).
     ("ghost", "placed_by"): (
-        "NEW-2026-07-08", "docs promise 'who placed this ghost'; no write path emits "
-                          "placed_by and the loader ignores builder.agent_id/player_id"),
+        "MIRAGE-4", "docs promise 'who placed this ghost'; no write path emits "
+                    "placed_by (builder.agent_id/player_id exist; alias-vs-drop pending)"),
 }
 
 _DEAD_TABLES: Dict[str, Tuple[str, str]] = {

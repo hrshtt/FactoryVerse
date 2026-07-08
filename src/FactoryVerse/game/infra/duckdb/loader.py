@@ -451,7 +451,9 @@ class SnapshotLoader:
             ghost_data = data.get("ghost", {})
             self._insert_ghost(ghost_data)
         elif op == "remove":
-            ghost_name = data.get("name", "")
+            # The mod emits the key as ghost_name (make_ghost_remove_operation);
+            # `name` kept as fallback for the UDP-payload shape
+            ghost_name = data.get("ghost_name") or data.get("name", "")
             position = data.get("position", {})
             pos_x = float(position.get("x", 0))
             pos_y = float(position.get("y", 0))
@@ -460,8 +462,10 @@ class SnapshotLoader:
                     "DELETE FROM ghost WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
                     [ghost_name, pos_x, pos_y],
                 )
+            else:
+                logger.warning(f"Ghost remove op without ghost_name/name — dropped: {data}")
         elif op == "rotated":
-            ghost_name = data.get("name", "")
+            ghost_name = data.get("ghost_name") or data.get("name", "")
             position = data.get("position", {})
             pos_x = float(position.get("x", 0))
             pos_y = float(position.get("y", 0))
@@ -544,6 +548,11 @@ class SnapshotLoader:
         chunk_x = math.floor(pos_x / 32)
         chunk_y = math.floor(pos_y / 32)
 
+        # The mod nests provenance under builder (serialize_ghost), same as
+        # entity payloads — mirror _insert_entity's builder-aware extraction
+        # (MIRAGE-4). placed_by stays as-emitted pending its design call.
+        builder = data.get("builder") or {}
+
         self._db.execute(
             """
             INSERT OR REPLACE INTO ghost
@@ -558,9 +567,9 @@ class SnapshotLoader:
                 chunk_x,
                 chunk_y,
                 data.get("direction"),
-                data.get("placed_tick"),
+                builder.get("placed_tick") or data.get("placed_tick"),
                 data.get("placed_by"),
-                data.get("label"),
+                builder.get("label") or data.get("label"),
                 json.dumps(data),
             ],
         )

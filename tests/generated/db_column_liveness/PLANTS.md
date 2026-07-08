@@ -15,7 +15,7 @@ the line.
 | `footprint_tiles` table | documented core table; 0 rows; queried live by remote_view (`is_tile_occupied` always False) | NEW-2026-07-08 | 0 rows while rig entities occupy tiles |
 | `entity_key` JOIN key | schema_reference worked examples join on a column that exists on NO table | NEW-2026-07-08 | the documented JOIN must fail to execute |
 | `map_entity.direction` / `ghost.direction` | MISREPRESENTED: docs promise names ("NORTH, EAST, ..."); VARCHAR holds raw defines.direction ints; mod-emitted `direction_name` dropped by loader (found by Phase B pilot run) | NEW-2026-07-08 | documented-semantics comparison must fail while int-derivability passes |
-| `ghost.placed_tick` / `ghost.label` / `ghost.placed_by` | loader `_insert_ghost` reads flat keys; mod nests provenance under `raw_data.builder` (asymmetry with builder-aware `_insert_entity`) — found by Phase C ghost group | NEW-2026-07-08 | columns NULL while raw_data.builder carries real values |
+| `ghost.placed_by` | no write path emits this key at any level; alias-vs-drop is a pending design call. (`ghost.label`/`placed_tick` were plants of the same MIRAGE-4 class until FIXED 2026-07-08 — loader/sync made builder-aware; their tests are live now) | MIRAGE-4 (residual) | column NULL while raw_data.builder has agent_id |
 | `chunk_snapshot_meta` empty-chunk rows | content-empty chunks never get an init file, hence never a meta row, even when `get_chunk_lookup` reports them freshly snapshotted (9/16 chunks in the terrain run) — per-chunk freshness undecidable from the DB for empty chunks | NEW-2026-07-08 | meta-row completeness assertion must fail |
 
 ## Synthetic plant

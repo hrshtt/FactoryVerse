@@ -292,6 +292,12 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
     if ghost then
         placement.inner_name = entity_name
         placement.name = "entity-ghost"
+        -- Carry the label engine-side: ghost tags survive until build-over,
+        -- so the plan/intent id is recoverable when the real entity replaces
+        -- this ghost (snapshot files alone can't provide that at build time)
+        if label ~= nil then
+            placement.tags = { fv_label = label }
+        end
     end
 
     -- Check if there is already a ghost at the position and destroy it BEFORE placing entity
@@ -301,6 +307,12 @@ function PlacementActions.place_entity(self, entity_name, position, direction, g
     if #(existing_ghost) > 0 then
         for _, ghost_entity in pairs(existing_ghost) do
             if ghost_entity and ghost_entity.valid then
+                -- Label inheritance at build-over: an explicit label wins,
+                -- otherwise the real entity inherits the ghost's plan label
+                -- (set as tags.fv_label at ghost placement)
+                if label == nil and not ghost and ghost_entity.tags and ghost_entity.tags.fv_label then
+                    label = ghost_entity.tags.fv_label
+                end
                 if DEBUG then
                     game.print(string.format("[placement] Destroying ghost %s at (%f,%f) before placing entity", 
                         ghost_entity.ghost_name or "unknown", ghost_entity.position.x, ghost_entity.position.y))

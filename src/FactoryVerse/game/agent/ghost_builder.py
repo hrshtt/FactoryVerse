@@ -30,6 +30,7 @@ class GhostInfo:
     name: str
     position: "MapPosition"
     direction: int | None = None
+    label: str | None = None
 
 
 class GhostBuilderAction:
@@ -77,8 +78,9 @@ class GhostBuilderAction:
         name = getattr(ghost, "ghost_name", None) or getattr(ghost, "name", "unknown")
         position = ghost.position
         direction = getattr(ghost, "direction", None)
+        label = getattr(ghost, "label", None)
 
-        return GhostInfo(name=name, position=position, direction=direction)
+        return GhostInfo(name=name, position=position, direction=direction, label=label)
 
     async def build_ghosts(
         self,
@@ -160,13 +162,14 @@ class GhostBuilderAction:
                 # Walk to ghost position
                 await self._movement.walk_to(info.position)
 
-                # Place entity at position
+                # Place entity at position, carrying the ghost's label forward
                 # Handle None direction (default to NORTH)
                 direction = Direction(info.direction) if info.direction is not None else Direction.NORTH
                 result = self._placement.place(
                     info.name,
                     info.position,
                     direction=direction,
+                    label=info.label,
                 )
 
                 if result.success:
@@ -294,13 +297,16 @@ class GhostBuilderAction:
                 # Walk to the position
                 await self._movement.walk_to(position)
 
-                # Place real entity (not ghost)
+                # Place real entity (not ghost). The plan label rides through to
+                # the committed entity — the intent chain must survive the commit
+                # (map_entity.label is the queryable plan/line tag).
                 place_direction = direction if direction is not None else Direction.NORTH
                 result = self._placement.place(
                     plan.entity_name,
                     position,
                     direction=place_direction,
                     ghost=False,  # Place real entity
+                    label=plan.label,
                 )
 
                 if result.success:

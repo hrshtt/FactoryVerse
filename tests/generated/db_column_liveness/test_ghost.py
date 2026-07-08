@@ -272,13 +272,8 @@ def _raw_placed_rows(rig):
     return rows
 
 
-@pytest.mark.xfail(strict=True, reason="RED-FINDING NEW-2026-07-08-class (not yet in "
-                   "liveness_spec registry -- flag to orchestrator): ghost.placed_tick is "
-                   "computed by the mod into raw_data['builder']['placed_tick'] for "
-                   "agent-placed ghosts (verified this run) but loader.py:_insert_ghost reads "
-                   "flat data.get('placed_tick') instead of data.get('builder', {}).get"
-                   "('placed_tick') (contrast _insert_entity, line 504-508, which IS "
-                   "builder-aware) -- always NULL regardless of path")
+# LIVE since 2026-07-08: _insert_ghost made builder-aware (MIRAGE-4 fix,
+# label+placed_tick half); was strict-xfail RED-FINDING before that
 def test_placed_tick_documented_liveness(rig, rcon):
     agent_placed, agent_db = _agent_row(rig)
     now = runtime.game_tick(rcon)
@@ -288,25 +283,18 @@ def test_placed_tick_documented_liveness(rig, rcon):
         f"placed_tick {agent_db['placed_tick']} not plausible (now={now})")
 
 
-@pytest.mark.xfail(strict=True, reason="RED-FINDING NEW-2026-07-08-class (not yet in "
-                   "liveness_spec registry -- flag to orchestrator): ghost.label is computed "
-                   "by the mod into raw_data['builder']['label'] for agent-placed ghosts "
-                   "(verified this run, label='probe-agent-ghost') but loader.py:_insert_ghost "
-                   "reads flat data.get('label') instead of data.get('builder', {}).get('label') "
-                   "(contrast _insert_entity, builder-aware) -- always NULL regardless of path")
+# LIVE since 2026-07-08: _insert_ghost made builder-aware (MIRAGE-4 fix)
 def test_label_documented_liveness(rig):
     agent_placed, agent_db = _agent_row(rig)
     assert agent_db["label"] == agent_placed["label"], (
         f"label drift/absence: sent {agent_placed['label']!r}, got {agent_db['label']!r}")
 
 
-@pytest.mark.xfail(strict=True, reason="RED-FINDING NEW-2026-07-08-class (not yet in "
-                   "liveness_spec registry -- flag to orchestrator): docs promise "
-                   "'Who placed this ghost (agent/player)'; the mod computes agent_id/player_id "
-                   "into raw_data['builder'] (same builder_info shape as map_entity) but never "
-                   "emits a key named placed_by at ANY level, and even if it did, "
-                   "loader.py:_insert_ghost never reads data.get('builder', {}) for the ghost "
-                   "path -- the documented semantic is unreachable via any known write path")
+@pytest.mark.xfail(strict=True, reason="RED-FINDING MIRAGE-4 (residual): docs promise "
+                   "'Who placed this ghost (agent/player)'; no write path emits a placed_by "
+                   "key at any level (builder.agent_id/player_id exist but the alias-vs-drop "
+                   "decision is Harshit's design call — tracker MIRAGE-4 fix direction). "
+                   "label/placed_tick halves fixed 2026-07-08; this column remains dead")
 def test_placed_by_documented_liveness(rig):
     agent_placed, agent_db = _agent_row(rig)
     assert agent_db["placed_by"] is not None, (
@@ -315,17 +303,18 @@ def test_placed_by_documented_liveness(rig):
 
 
 def test_builder_metadata_present_in_raw_data(rig):
-    """Non-xfail companion: the value the ghost column-lift drops IS present
-    inside raw_data's JSON blob for the agent-attributed ghost -- the mod
-    computes it, only the loader fails to read the nested 'builder' key
-    (confirmed by static read of loader.py:537-566 alongside the map_entity
-    path at line 504, which IS builder-aware)."""
+    """Companion: raw_data['builder'] carries the provenance AND (since the
+    2026-07-08 builder-aware lift) agrees with the now-live columns — the
+    lifted values must be consistent with their raw_data source."""
     agent_placed, agent_db = _agent_row(rig)
-    assert agent_db["placed_tick"] is None and agent_db["label"] is None, (
-        "placed_tick/label column no longer NULL for the agent-attributed ghost -- "
-        "mirage may be fixed; re-check the xfail tests above before touching this companion")
 
     raw = json.loads(agent_db["raw_data"]) if agent_db["raw_data"] else {}
+    builder_src = raw.get("builder") or {}
+    assert agent_db["label"] == builder_src.get("label"), (
+        f"lifted label {agent_db['label']!r} disagrees with raw_data source {builder_src!r}")
+    assert agent_db["placed_tick"] == builder_src.get("placed_tick"), (
+        f"lifted placed_tick {agent_db['placed_tick']!r} disagrees with raw_data source {builder_src!r}")
+
     builder = raw.get("builder") or {}
     assert builder.get("label") == agent_placed["label"], (
         f"raw_data['builder']['label'] mismatch/absent: {builder!r} vs sent "

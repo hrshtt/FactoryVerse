@@ -93,11 +93,12 @@ A living document that captures issues observed during agent eval runs. Designed
 - **Evidence:** `footprint_tiles` documented as a core table with example queries, CREATE'd, never INSERTed (0 rows while rig entities occupy tiles); `map_entity.tile_x/tile_y` declared and queried (`remote_view.py:672`), absent from the loader INSERT list. Companion tests prove the data exists: every row's `raw_data` carries a correct `footprint_tiles` array and `anchor_tile` — loader-lift gap, same class as MIRAGE-2.
 - **Fix direction:** lift both in the loader (data already in the payload), or drop table+columns and the remote_view methods that query them; reconcile schema docs either way.
 
-#### [MIRAGE-4] Ghost provenance columns dead: loader `_insert_ghost` ignores the nested `builder` object
-- **Severity:** medium (ghost `placed_tick`/`label`/`placed_by` documented, always NULL)
+#### [MIRAGE-4] Ghost provenance columns dead — PARTIALLY FIXED 2026-07-08; `placed_by` residual (design call)
+- **Severity:** medium → low-medium residual (`placed_by` only)
 - **Observed in:** ledger L1.11 ghost group 2026-07-08
-- **Evidence:** agent-placed ghost carries real `agent_id`/`label`/`placed_tick` under `raw_data["builder"]` while all three columns are NULL. Root cause is a one-line asymmetry: `_insert_ghost` reads flat `data.get("placed_tick")`; `_insert_entity` (map_entity, where the same columns are LIVE) reads `data.get("builder", {})`. `placed_by` additionally has no emitting write path under that name.
-- **Fix direction:** mirror `_insert_entity`'s builder-aware extraction in `_insert_ghost`; decide whether `placed_by` aliases `builder.agent_id`/`player_id` or gets dropped from schema+docs.
+- **Evidence:** agent-placed ghost carries real `agent_id`/`label`/`placed_tick` under `raw_data["builder"]` while the columns were NULL — a one-line asymmetry vs the builder-aware `_insert_entity`.
+- **FIXED 2026-07-08 (label + placed_tick):** `loader._insert_ghost` + `sync._apply_ghost_upsert` made builder-aware; live-verified end-to-end (labeled ghost → DB label+tick; family re-run 31 passed/15 xfailed/0 xpassed, flipped tests now live). Shipped alongside as the label-chain work: `build_plan`/`build_ghosts` forward labels at commit; ghosts carry labels engine-side as `tags.fv_label`; build-over-ghost inherits the ghost's label when no explicit label is passed (explicit wins) — smoke: unlabeled build-over produced map_entity row with the plan label + agent provenance.
+- **Residual:** `placed_by` — no write path emits that key at any level; Harshit's call: alias `builder.agent_id`/`player_id` into it, or drop from schema+docs. Strict-xfail keeps it registered.
 
 #### [REPR-1] `direction` columns hold raw ints while docs promise names — the emitted `direction_name` is dropped
 - **Severity:** high (same diagnosis-latency class as STATUS-1: schema doc says "Entity direction (NORTH, EAST, SOUTH, WEST, etc.)", the model reads `'12'`)
@@ -220,6 +221,7 @@ A living document that captures issues observed during agent eval runs. Designed
 - [PATH-1] lab-grid pathfinder dead (chunk_generated_status never set) — fixed in 339f792, live-accepted 2026-06-11 (two walk_to round-trips with UDP completions, no workaround). Was: ALL walk_to failed map-wide in ~1 tick; the control.lua "Key technique" comment promised a call that never existed.
 - [ARG-1] Per-agent action interfaces corrupted sparse named-table calls — fixed in 339f792 (ParamSpec table.pack treatment on the per-agent twin), live-accepted 2026-06-11 (named-table place_entity without direction places real chest + ghost; positional unaffected). Was: omitted optional args shifted later named args into their slots.
 - [LOOP-1] Assistant messages missing content field — fixed 2026-03-28. Was: `to_dict()` omitted `content` when None, causing 422 on APIs that require it.
+- [LOAD-1] Offline loader dropped ALL ghost-remove ops (silent no-op: mod emits `ghost_name`, `_apply_ghost_operation` remove/rotated read only `name`; UDP sync path unaffected, which is why L2.5's live check never saw it) — found by the 2026-07-08 label-chain smoke (ghost row survived build-over), fixed same day: key fallback + loud warning on missing name.
 - [DATA-1] 2.0.76 dump shifted prototype scope (89/106/99 vs certified 73/113/85) — resolved 2026-06-11, L3.2/L3.3 green. Was: `--dump-data` force-loads DLC ignoring mod-list (and persists re-enabled flags back!); 100% of scope drift attributed to Space Age recategorization, 0 to engine/filters. Runtime was never contaminated (prepare_mods disables DLC at every server start; verified via script.active_mods). Re-dump with DLC dirs removed in-container → 73/113/85 restored, 458/458 hydration exact on 2.0.76. Dead `DLC_SPACE_AGE` env removed from compose generator.
 
 ---
