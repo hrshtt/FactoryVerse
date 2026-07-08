@@ -30,16 +30,17 @@ A living document that captures issues observed during agent eval runs. Designed
 
 | Category | Critical | High | Medium | Low | Total |
 |----------|----------|------|--------|-----|-------|
-| Verification Integrity | 1 | 1 | 0 | 0 | 2 |
+| Verification Integrity (STATUS-1; VERIF-1 closed) | 0 | 1 | 0 | 0 | 1 |
 | Pending live acceptance (gated finale only) | 0 | 1 | 0 | 0 | 1 |
+| Information Surfaces (MIRAGE-1..4, REPR-1, META-1, PROV-1, RESERVE-1, ISLAND-1, REASON-1, POLE-PREVIEW-1) | 0 | 6 | 4 | 1 | 11 |
 | Walking/Pathfinding | 0 | 0 | 2 | 0 | 2 |
 | API Gaps | 0 | 0 | 1 | 0 | 1 |
 | Type System | 0 | 1 | 1 | 0 | 2 |
 | Placement/Spatial | 0 | 1 | 0 | 0 | 1 |
 | Prompt/Docs | 0 | 1 | 0 | 0 | 1 |
-| **Total** | **1** | **5** | **4** | **0** | **10** |
+| **Total** | **0** | **11** | **8** | **1** | **20** |
 
-*Last updated: 2026-06-11 (second session, post attempt-3 retro) — CELL-1/CELL-2 archived; L4.6 certified incl. field amendment; NEW from retro: VERIF-1 (frozen verification feed, CRITICAL) + STATUS-1 (raw-int statuses, formalizes TYPE-1's residual); PROMPT-2 part-done (power-chain idiom landed, followed verbatim in field), PROMPT-2b remains*
+*Last updated: 2026-07-08 — ledger L1.11 first execution (GEN-DB-1, the generated anti-mirage battery): MIRAGE-1/2 mechanically reproduced (both proven loader-lift gaps — the data is in raw_data); NEW: MIRAGE-3 (dead tile-lookup surface incl. lying remote_view affordances), MIRAGE-4 (ghost builder-lift asymmetry), REPR-1 (direction ints vs documented names; emitted direction_name dropped), META-1 (chunk_snapshot_meta blind for empty chunks), PROV-1 (re-snapshot squashes provenance). Prior: VERIF-1 CLOSED as ledger L0.6 (2026-06-11, re-certified 2026-07-04).*
 
 ---
 
@@ -60,12 +61,13 @@ A living document that captures issues observed during agent eval runs. Designed
 
 ### Verification Integrity
 
-#### [VERIF-1] Throughput meter's snapshot tick FROZE mid-run — production feedback stale for 7 turns
+#### [VERIF-1] ✅ CLOSED 2026-06-11 (ledger L0.6) — Throughput meter's snapshot tick FROZE mid-run — production feedback stale for 7 turns
 - **Severity:** CRITICAL for eval verdicts (a producing factory can read as a false FAIL; agent sees phantom "0 produced")
 - **Observed in:** engine_unit_throughput attempt 3 / claude-sonnet-4.6 / 2026-06-11_15-14-28 (found by the trace retro, independently confirmed: `Snapshot tick: 404340` repeated 63× in the throughput meter T10→T16 while observe.py probes show the game advancing 360557→554661)
 - **Evidence:** the in-run Task Progress notifications kept reporting the same snapshot tick + 0 rate for the entire back half of the run; the agent's production feedback channel was a frozen frame indistinguishable from "factory dead".
 - **Impact:** double: (a) ThroughputVerifier may judge PASS/FAIL on stale state; (b) the agent loses its only closed-loop production signal — it can't tell a broken factory from a stale meter.
-- **Fix direction:** find why the verifier's snapshot stopped advancing (chunk re-snapshot cadence for the cell? verifier reading a cached DB connection that stopped reloading?); make staleness LOUD in the meter (builds on the SNAP-1 staleness-banner TODO — `chunk_snapshot_meta` exists for exactly this); add an L-row check: meter tick must track game tick within a bound during a live run.
+- **ROOT CAUSE (confirmed against the attempt-3 trajectory):** NOT the chunk snapshot pipeline. `Agents.lua` production poll dedups unchanged stats with no heartbeat — once the factory lost power (fuel starvation @ ~tick 404340), every poll deduped, `production-statistics.jsonl` froze, and `AgentSnapshotSource` served the dead frame's tick forever. The feed froze EXACTLY when production halted — the moment a truthful signal mattered most. Same mechanism explains the run's early 8-check stretch at tick 86520 (idle start). Worse: frozen tick ⇒ `delta_ticks=0` ⇒ silent 0-rate that RESET the consecutive-pass counter — the harness failure punished the agent.
+- **FIX (4 layers, all certified L0.6):** (1) Lua heartbeat — dedup forces a full write every 5 skipped polls, ≤300 game-tick staleness, growth bound intact; (2) eval grader switched to `RCONSource` (live engine truth; its `map.get_game_tick` remote NEVER existed → silent tick=0, replaced with raw silent-command); (3) `ThroughputVerifier` runtime invariant — tick advances or the result is `feed_stale=True` with a loud reason; stale/no-data checks neither reset nor advance the consecutive counter; same-frame-within-grace holds instead of fabricating a 0-rate; (4) both meter renderers show a `⚠️ VERIFICATION FEED PROBLEM` block instead of a fake rate; `feed_stale` lands in trajectory verification_check events. Pinned by `tests/unit/test_verifier_feed_staleness.py` (6 tests incl. a regression pin for a falsy-zero walltime bug caught en route — PY-1 class strikes again).
 
 #### [STATUS-1] Entity statuses reach the agent as raw integers — diagnosis latency is the cost
 - **Severity:** high (twice load-bearing on 2026-06-11: attempt 3 lost ~3 turns chasing pole topology while `54` meant no_power and the root cause `53`/no_fuel sat one inspection upstream; the retro shows the agent reacted faster wherever the symbolic name leaked via `__repr__`)
@@ -76,13 +78,44 @@ A living document that captures issues observed during agent eval runs. Designed
 
 #### [MIRAGE-2] `electric_network_id` DB column documented but always NULL
 - **Severity:** high (measured legibility failure: battery probe V18 — model read all-null ids and correctly concluded "0 networks, nothing powered" about a powered factory)
-- **Evidence:** scripts/battery/results/v0_claude-sonnet-4.6.json V18; the long-known "electric_network_id column unlifted" residual, upgraded from cosmetic to lying-surface by measurement.
+- **Evidence:** scripts/battery/results/v0_claude-sonnet-4.6.json V18; the long-known "electric_network_id column unlifted" residual, upgraded from cosmetic to lying-surface by measurement. **Mechanically reproduced 2026-07-08 (ledger L1.11):** engine net ids non-nil AND the correct value present inside `raw_data` while the column is NULL — the mod emits it; only `loader.py:_insert_entity`'s INSERT list omits it (one-line lift).
 - **Fix direction:** lift it from raw_data in the loader, or drop the column + schema docs (MIRAGE-1's reconciliation rule applies).
 
 #### [MIRAGE-1] System prompt documents DEAD database surfaces with worked examples
 - **Severity:** high (documentation actively teaches false world-facts)
 - **Evidence:** prompt schema reference documents the `inserter`/`transport_belt`/`mining_drill`/`assembler` component tables incl. a worked JOIN example (`schema_reference.py:327-332`; in attempt-3's actual prompt at lines 3033/3163) — tables certified **0 rows always** since 2026-06-10 (ledger L1.5 ❌). `power_statistics` likely same class (mod writes jsonl, loader never ingests, schema documented). An agent following our docs gets empty results and learns "no inserters exist".
 - **Fix direction:** Harshit's L1.5 design call (populate vs views-over-raw_data vs drop) now has a forcing function — whichever way, the schema reference must reconcile; add a standing audit gate: ledger ❌ on a surface propagates to every surface documenting it.
+- **Amendment 2026-07-08 (ledger L1.11):** mechanically reproduced (all 4 tables 0 rows with their entity kinds confirmed placed), AND the worked JOIN examples are doubly dead: they join on `entity_key`, a column that exists on NO table — the documented SQL raises a DuckDB binder error verbatim. The schema-reference reconciliation must fix the join key too.
+
+#### [MIRAGE-3] Tile-lookup surface is dead: `footprint_tiles` 0 rows + `tile_x`/`tile_y` never lifted — and remote_view queries them live
+- **Severity:** high (lying affordances in production: `remote_view.is_tile_occupied` always returns False, `get_entity_at_tile` always None, `get_entities_at_anchor_tile` always empty)
+- **Observed in:** ledger L1.11 first execution 2026-07-08 (found by enumeration, confirmed by generated tests)
+- **Evidence:** `footprint_tiles` documented as a core table with example queries, CREATE'd, never INSERTed (0 rows while rig entities occupy tiles); `map_entity.tile_x/tile_y` declared and queried (`remote_view.py:672`), absent from the loader INSERT list. Companion tests prove the data exists: every row's `raw_data` carries a correct `footprint_tiles` array and `anchor_tile` — loader-lift gap, same class as MIRAGE-2.
+- **Fix direction:** lift both in the loader (data already in the payload), or drop table+columns and the remote_view methods that query them; reconcile schema docs either way.
+
+#### [MIRAGE-4] Ghost provenance columns dead: loader `_insert_ghost` ignores the nested `builder` object
+- **Severity:** medium (ghost `placed_tick`/`label`/`placed_by` documented, always NULL)
+- **Observed in:** ledger L1.11 ghost group 2026-07-08
+- **Evidence:** agent-placed ghost carries real `agent_id`/`label`/`placed_tick` under `raw_data["builder"]` while all three columns are NULL. Root cause is a one-line asymmetry: `_insert_ghost` reads flat `data.get("placed_tick")`; `_insert_entity` (map_entity, where the same columns are LIVE) reads `data.get("builder", {})`. `placed_by` additionally has no emitting write path under that name.
+- **Fix direction:** mirror `_insert_entity`'s builder-aware extraction in `_insert_ghost`; decide whether `placed_by` aliases `builder.agent_id`/`player_id` or gets dropped from schema+docs.
+
+#### [REPR-1] `direction` columns hold raw ints while docs promise names — the emitted `direction_name` is dropped
+- **Severity:** high (same diagnosis-latency class as STATUS-1: schema doc says "Entity direction (NORTH, EAST, SOUTH, WEST, etc.)", the model reads `'12'`)
+- **Observed in:** ledger L1.11 pilot row 2026-07-08 (map_entity + ghost; the drift L2.5 papered over with harness-side coercion)
+- **Evidence:** mod emits BOTH `direction: 12` and `direction_name: "west"` in every entity payload; `_insert_entity`/`_insert_ghost` lift the int into the VARCHAR column. Values are engine-true (derivable), representation contradicts the docs.
+- **Fix direction:** lift `direction_name` instead (one line per insert helper), or rewrite the column docs to state the defines.direction int encoding; pairs naturally with STATUS-1's symbolic-names work.
+
+#### [META-1] `chunk_snapshot_meta` is blind for content-empty chunks — freshness undecidable from the DB
+- **Severity:** medium (the SNAP-1c "queryable snapshot freshness" surface can't distinguish "empty and fresh" from "never snapshotted")
+- **Observed in:** ledger L1.11 terrain group 2026-07-08: 9 of cell 13's 16 chunks had zero meta rows while `map.get_chunk_lookup` reported fresh snapshot_ticks for all 16.
+- **Evidence:** init files (which carry the `kind=chunk_meta` line the loader reads) are only written for chunks with ≥1 content category; verified the 9 chunks are genuinely empty. `wait_fresh`-style rituals are unaffected (they read the RCON lookup), but any DB-side freshness consumer inherits the blind spot.
+- **Fix direction:** emit a meta-only init line for content-empty snapshotted chunks, or document the table as "content chunks only" and keep freshness authority on `get_chunk_lookup`.
+
+#### [PROV-1] Full re-snapshot squashes builder provenance to "pre-existing"
+- **Severity:** medium (DB provenance is re-snapshot-fragile: `agent_id`/`label`/`placed_tick` survive only until the next full re-gather of their chunk — which playbook §5 mandates after every mutating check's cleanup, and which cell allocation triggers)
+- **Observed in:** ledger L1.11 builder group 2026-07-08 (root-caused during rig ordering: `re_snapshot_area` stamps every entity with `pre_existing_builder_info`; the loader then drops the older, real-provenance update records as stale)
+- **Evidence:** GEN-DB-1/map_entity_builder run.log — provenance correct via the event path, wiped after a full cell re-snapshot.
+- **Fix direction:** the chunk re-gather should preserve known builder info (mod keeps a provenance map keyed by name+position, or reads back the previous init file) instead of stamping pre-existing; alternatively document builder columns as event-path-only best-effort.
 
 #### [RESERVE-1] Inserter drop/pickup cells are invisible at placement time
 - **Severity:** high — the single most damaging layout mechanic in attempt 3: poles placed onto cells an inserter's hand needs (Harshit's obs #2, class A), triggering place→pickup→replace rework loops whose residue is the smelting-row gaps and disconnected belt stubs (obs #1/#3/#4, class D).
