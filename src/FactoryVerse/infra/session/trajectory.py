@@ -187,6 +187,7 @@ class TrajectoryWriter:
         consecutive_passes: int,
         checks_required: int,
         automation_produced: int,
+        feed_stale: bool = False,
     ) -> None:
         """Write verification check event."""
         self._write(
@@ -199,6 +200,7 @@ class TrajectoryWriter:
             consecutive_passes=consecutive_passes,
             checks_required=checks_required,
             automation_produced=automation_produced,
+            feed_stale=feed_stale,
         )
 
     def run_end(

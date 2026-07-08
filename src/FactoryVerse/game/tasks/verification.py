@@ -17,7 +17,8 @@ FLE Compatibility:
 """
 
 import logging
-from typing import Tuple, Optional, List
+import time
+from typing import Callable, Tuple, Optional, List
 
 from .base import (
     TaskConfig,
@@ -58,15 +59,25 @@ class ThroughputVerifier:
         ...     print("Task complete!")
     """
 
-    def __init__(self, criteria: VerificationCriteria):
+    def __init__(
+        self,
+        criteria: VerificationCriteria,
+        stale_after_seconds: float = 10.0,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         """Initialize the verifier with task criteria.
 
         Args:
             criteria: VerificationCriteria with quota, sustained_seconds, etc.
+            stale_after_seconds: Wall-clock seconds the feed tick may stand
+                still before checks are flagged feed_stale (VERIF-1 invariant)
+            clock: Monotonic time source (injectable for tests)
         """
         self.criteria = criteria
         self.quota = criteria.quota  # Items per 60 game seconds
         self.checks_required = criteria.checks_required
+        self.stale_after_seconds = stale_after_seconds
+        self._clock = clock
 
         # State tracking
         self._checks: List[ThroughputCheck] = []
@@ -74,12 +85,18 @@ class ThroughputVerifier:
         self._last_automation: Optional[int] = None
         self._last_tick: Optional[int] = None
 
+        # Feed liveness tracking (VERIF-1)
+        self._last_seen_tick: Optional[int] = None
+        self._last_advance_walltime: Optional[float] = None
+
     def reset(self) -> None:
         """Reset verifier state (for task restart)."""
         self._checks = []
         self._consecutive_passes = 0
         self._last_automation = None
         self._last_tick = None
+        self._last_seen_tick = None
+        self._last_advance_walltime = None
 
     async def check(
         self,
@@ -101,6 +118,48 @@ class ThroughputVerifier:
         automation, manual, force_total, tick = await calculate_automation_score(
             source, agent_id, self.criteria.target_item
         )
+
+        # VERIF-1 runtime invariant: the feed tick must advance or we scream.
+        # A frozen feed is otherwise indistinguishable from "0 produced"
+        # (attempt 3: 63 checks served the same dead frame across 6 turns).
+        if tick <= 0:
+            logger.warning(
+                f"Verification feed has NO DATA for {self.criteria.target_item} "
+                f"(tick={tick}) — source returned empty/missing stats"
+            )
+            return self._feed_problem_result(
+                automation, manual, force_total, tick, task_key,
+                reason=(
+                    "VERIFICATION FEED HAS NO DATA — production statistics "
+                    "source returned nothing. Rate cannot be measured."
+                ),
+            )
+
+        now = self._clock()
+        if self._last_seen_tick is None or tick > self._last_seen_tick:
+            self._last_seen_tick = tick
+            self._last_advance_walltime = now
+        else:
+            # NOTE: explicit None check — a monotonic timestamp of 0.0 is valid
+            stalled_for = (
+                now - self._last_advance_walltime
+                if self._last_advance_walltime is not None
+                else 0.0
+            )
+            if stalled_for > self.stale_after_seconds:
+                logger.warning(
+                    f"Verification feed STALE for {self.criteria.target_item}: "
+                    f"tick {tick} has not advanced in {stalled_for:.1f}s wall-clock"
+                )
+                return self._feed_problem_result(
+                    automation, manual, force_total, tick, task_key,
+                    reason=(
+                        f"VERIFICATION FEED STALE — snapshot tick {tick} has not "
+                        f"advanced in {stalled_for:.0f}s of wall-clock time. "
+                        f"Current rate is UNKNOWN (this is a data-feed problem, "
+                        f"not a measurement of your factory)."
+                    ),
+                )
 
         # First check - establish baseline
         if self._last_automation is None:
@@ -126,12 +185,29 @@ class ThroughputVerifier:
         delta_automation = automation - self._last_automation
         delta_ticks = tick - self._last_tick
 
-        if delta_ticks > 0:
-            # Rate = (delta items / delta ticks) * 3600 ticks per 60 seconds
-            # Actually: 60 ticks = 1 second, so 3600 ticks = 60 seconds
-            rate_per_60s = (delta_automation / delta_ticks) * 3600
-        else:
-            rate_per_60s = 0.0
+        if delta_ticks <= 0:
+            # Same sample as last check (poll hasn't produced a new frame yet,
+            # but within the staleness grace window). A 0-rate "measurement"
+            # here would be fabricated and would wrongly reset the consecutive
+            # counter — hold state instead.
+            return VerificationResult(
+                success=False,
+                automation_produced=automation,
+                manual_produced=manual,
+                force_total=force_total,
+                measured_at_tick=tick,
+                task_key=task_key,
+                failure_reason=f"No new sample since tick {tick} — holding (not a rate measurement)",
+                current_rate=self._checks[-1].rate_per_60s if self._checks else 0.0,
+                target_rate=float(self.quota),
+                consecutive_passes=self._consecutive_passes,
+                checks_required=self.checks_required,
+                check_history=self._checks[-10:],
+            )
+
+        # Rate = (delta items / delta ticks) * 3600 ticks per 60 seconds
+        # Actually: 60 ticks = 1 second, so 3600 ticks = 60 seconds
+        rate_per_60s = (delta_automation / delta_ticks) * 3600
 
         # Check if rate meets quota
         passed = rate_per_60s >= self.quota
@@ -192,6 +268,33 @@ class ThroughputVerifier:
             check_history=self._checks[-10:],  # Keep last 10 checks
         )
 
+    def _feed_problem_result(
+        self,
+        automation: int,
+        manual: int,
+        force_total: int,
+        tick: int,
+        task_key: str,
+        reason: str,
+    ) -> VerificationResult:
+        """Build a feed_stale result: counters and baselines are left untouched
+        so a harness/data failure neither resets nor advances task progress."""
+        return VerificationResult(
+            success=False,
+            automation_produced=automation,
+            manual_produced=manual,
+            force_total=force_total,
+            measured_at_tick=tick,
+            task_key=task_key,
+            failure_reason=reason,
+            current_rate=0.0,
+            target_rate=float(self.quota),
+            consecutive_passes=self._consecutive_passes,
+            checks_required=self.checks_required,
+            check_history=self._checks[-10:],
+            feed_stale=True,
+        )
+
     @property
     def consecutive_passes(self) -> int:
         """Number of consecutive successful rate checks."""
@@ -230,6 +333,16 @@ class ThroughputVerifier:
             lines.append("Your factory has sustained the required throughput.")
             lines.append("The task is complete - you may stop.")
             lines.append("=" * 50)
+        elif result.feed_stale:
+            lines.append("!" * 45)
+            lines.append(f"⚠️  VERIFICATION FEED PROBLEM: {target}")
+            lines.append("!" * 45)
+            if result.failure_reason:
+                lines.append(f"  {result.failure_reason}")
+            lines.append(f"  Last data at tick: {result.measured_at_tick}")
+            lines.append(f"  Last known total: {result.automation_produced} (automation)")
+            lines.append(f"  Sustained progress held at: {result.consecutive_passes}/{result.checks_required}")
+            lines.append("!" * 45)
         else:
             lines.append("-" * 45)
             lines.append(f"📊 Throughput: {target}")

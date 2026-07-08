@@ -3,6 +3,7 @@
 Orchestrates RCON connection and UDP listeners for Python<->Factorio communication.
 """
 
+import json
 import logging
 from typing import Optional, Any, TYPE_CHECKING
 
@@ -387,29 +388,79 @@ class Tier3Python(TierBase):
     # Lua Execution Methods
     # =========================================================================
 
-    def execute_lua(self, code: str) -> str:
-        """Execute raw Lua code via RCON.
+    def run_lua(self, code: str, *, safe: bool = True, silent: bool = True) -> Any:
+        """Execute Lua over RCON as the safe, error-surfacing entry point.
+
+        This is the canonical way to send *open-ended* Lua to the server. Unlike a
+        bare ``rcon.send_command``, a runtime Lua error does not vanish into a silent
+        ``None`` (Factorio routes the error to the game log, not the RCON reply, because
+        ``rcon.print`` never runs). Here the code is wrapped in
+        ``xpcall(fn, debug.traceback)`` and a ``{success, result}`` JSON envelope, so the
+        error — with its Lua traceback — is always returned and re-raised in Python.
+
+        Contract: write a Lua statement block and use ``return`` to surface a value
+        (e.g. ``"return game.tick"`` or ``"return remote.call('agent','list_agents')"``).
+        Do NOT call ``rcon.print`` yourself in ``safe`` mode — it would corrupt the
+        envelope; use ``safe=False`` for that raw style.
 
         Args:
-            code: Lua code to execute
+            code: Lua to run. Use ``return <expr>`` to get a value back.
+            safe: If True (default), wrap in xpcall + JSON envelope and raise on error.
+                  If False, send raw and return the RCON string verbatim (may be None).
+            silent: If True (default), use ``/silent-command``; else ``/c``.
 
         Returns:
-            Result string from RCON
+            The value returned by the Lua ``return`` (JSON-decoded), or None if it
+            returned nothing. In ``safe=False`` mode, the raw RCON response string.
+
+        Raises:
+            RuntimeError: If RCON is not connected, the response is empty, cannot be
+                parsed, or the Lua raised (the message carries the Lua traceback).
         """
         if not self._rcon:
             raise RuntimeError("RCON not connected")
 
-        return self._rcon.send_command(f"/c {code}")
+        prefix = "/silent-command" if silent else "/c"
 
-    def execute_silent(self, code: str) -> str:
-        """Execute Lua code without output via RCON.
+        if not safe:
+            return self._rcon.send_command(f"{prefix} {code}")
 
-        Uses /silent-command for cleaner execution.
+        wrapped = (
+            f"local ok, res = xpcall(function() {code} end, debug.traceback); "
+            "if ok then rcon.print(helpers.table_to_json({success=true, result=res})) "
+            "else rcon.print(helpers.table_to_json({success=false, error=tostring(res)})) end"
+        )
+        response = self._rcon.send_command(f"{prefix} {wrapped}")
+
+        if response is None or not str(response).strip():
+            raise RuntimeError(f"RCON returned empty response for Lua: {code!r}")
+
+        try:
+            parsed = json.loads(response)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Could not parse RCON response for Lua {code!r}: {response!r}"
+            ) from e
+
+        if isinstance(parsed, dict) and parsed.get("success") is False:
+            raise RuntimeError(f"Lua error running {code!r}: {parsed.get('error')}")
+
+        return parsed.get("result") if isinstance(parsed, dict) else parsed
+
+    def execute_lua(self, code: str, *, safe: bool = True) -> Any:
+        """Execute Lua via ``/c``. Error-surfacing by default (see :meth:`run_lua`).
+
+        Use ``return <expr>`` to get a value back. Pass ``safe=False`` for the raw
+        ``rcon.send_command`` behaviour (returns the response string, may be None on error).
         """
-        if not self._rcon:
-            raise RuntimeError("RCON not connected")
+        return self.run_lua(code, safe=safe, silent=False)
 
-        return self._rcon.send_command(f"/silent-command {code}")
+    def execute_silent(self, code: str, *, safe: bool = True) -> Any:
+        """Execute Lua via ``/silent-command``. Error-surfacing by default.
+
+        Thin wrapper over :meth:`run_lua` with ``silent=True``.
+        """
+        return self.run_lua(code, safe=safe, silent=True)
 
     # =========================================================================
     # Lua State Query Methods (Single Source of Truth)

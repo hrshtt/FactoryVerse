@@ -1027,7 +1027,7 @@ class Orchestrator:
         """
         from FactoryVerse.game.tasks.base import TaskType
         from FactoryVerse.game.tasks.verification import verify_task, ThroughputVerifier
-        from FactoryVerse.game.tasks.sources import AgentSnapshotSource
+        from FactoryVerse.game.tasks.sources import AgentSnapshotSource, RCONSource
 
         if task_config.task_type == TaskType.FREEPLAY:
             return None
@@ -1048,8 +1048,18 @@ class Orchestrator:
         infra_config = self._env.config.infra_config
         script_output_dir = infra_config.get_script_output_dir(tier3.instance)
 
-        # Use file-based source instead of RCON polling
-        source = AgentSnapshotSource(script_output_dir)
+        # VERIF-1: the grader reads live engine truth via RCON. The file feed
+        # dedups unchanged stats, so its tick freezes exactly when production
+        # halts — the moment a truthful signal matters most. File source is
+        # the fallback when RCON is unavailable.
+        if tier3.rcon_helper is not None:
+            source = RCONSource(tier3.rcon_helper, script_output_dir)
+        else:
+            logger.warning(
+                "Orchestrator: rcon_helper unavailable — falling back to "
+                "file-based verification source (staleness-prone)"
+            )
+            source = AgentSnapshotSource(script_output_dir)
 
         agent_id = 1
         if tier4 and tier4.agent_id:

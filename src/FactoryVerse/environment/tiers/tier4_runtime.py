@@ -46,6 +46,7 @@ class Tier4Runtime(TierBase):
     def __init__(self, environment: "Environment"):
         super().__init__(environment)
         self._agent_id: Optional[str] = None
+        self._agent_numeric_id: Optional[int] = None
         self._session_dir: Optional[Path] = None
         self._session_config: Optional["SessionConfig"] = None  # Session metadata
         self._snapshot_database: Optional[Any] = None  # SnapshotDatabase wrapper
@@ -80,8 +81,19 @@ class Tier4Runtime(TierBase):
 
     @property
     def agent_id(self) -> Optional[str]:
-        """Get agent identifier."""
+        """Get agent identifier (the string interface_name, e.g. 'agent_1')."""
         return self._agent_id
+
+    @property
+    def agent_numeric_id(self) -> Optional[int]:
+        """Get the agent's numeric id (e.g. 1).
+
+        This is the key the Lua ``agent`` interface expects for agent-keyed methods
+        (``add_items``, ``clear_inventory``, ``destroy_agents``, ...), whose schema
+        declares ``agent_id`` as a number. Distinct from :attr:`agent_id`, which is
+        the string ``interface_name`` ('agent_' + this number).
+        """
+        return self._agent_numeric_id
 
     @property
     def session_dir(self) -> Optional[Path]:
@@ -556,6 +568,7 @@ class Tier4Runtime(TierBase):
                 lua_interface = existing.get("interface_name")
                 if lua_interface:
                     self._agent_id = lua_interface
+                self._agent_numeric_id = existing.get("id")
                 logger.info(
                     f"Tier 4: Binding to existing agent '{self._agent_id}' "
                     f"(port {udp_port}, entity valid)"
@@ -587,6 +600,7 @@ class Tier4Runtime(TierBase):
                 # Use Lua's assigned interface_name (agent_{numeric_id})
                 if result and result.get("interface_name"):
                     self._agent_id = result["interface_name"]
+                    self._agent_numeric_id = result.get("agent_id")
                     logger.info(f"Tier 4: Recreated agent, using interface '{self._agent_id}'")
         else:
             # Case 3: CREATE - No existing agent
@@ -600,6 +614,7 @@ class Tier4Runtime(TierBase):
             # Use Lua's assigned interface_name (agent_{numeric_id})
             if result and result.get("interface_name"):
                 self._agent_id = result["interface_name"]
+                self._agent_numeric_id = result.get("agent_id")
                 logger.info(f"Tier 4: Created agent, using interface '{self._agent_id}'")
 
         # Update Python AgentRegistry as metadata (optional)
@@ -1074,6 +1089,7 @@ class Tier4Runtime(TierBase):
         self._scenario_adapter = None
         self._event_stream = None
         self._agent_id = None
+        self._agent_numeric_id = None
 
         # Clear persistent user namespace
         self._user_namespace = {}

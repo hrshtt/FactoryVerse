@@ -172,6 +172,10 @@ class VerificationResult:
     checks_required: int = 6  # Default: 30s / 5s = 6 checks
     check_history: List[ThroughputCheck] = field(default_factory=list)
 
+    # Feed health (VERIF-1): when True, the data feed itself is frozen/absent —
+    # current_rate is UNKNOWN, not zero, and must not be displayed as a measurement
+    feed_stale: bool = False
+
     @property
     def automation_ratio(self) -> float:
         """Ratio of automation to total production."""
@@ -204,4 +208,5 @@ class VerificationResult:
             "consecutive_passes": self.consecutive_passes,
             "checks_required": self.checks_required,
             "check_history": [c.to_dict() for c in self.check_history[-10:]],  # Last 10
+            "feed_stale": self.feed_stale,
         }

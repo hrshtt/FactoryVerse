@@ -123,11 +123,18 @@ end
 -- AGENT PRODUCTION STATISTICS SNAPSHOT (POLLED)
 -- ============================================================================
 
+--- Max consecutive polls the dedup may skip before a heartbeat write is forced.
+--- The entry tick is the feed's only liveness signal: without a heartbeat,
+--- halted production freezes the file and downstream readers cannot tell
+--- "0 produced" from "feed dead" (VERIF-1). 5 polls @ 60 ticks = ≤5s staleness.
+local HEARTBEAT_MAX_SKIPS = 5
+
 --- Snapshot agent force-level production statistics every nth tick
 --- Writes to factoryverse/agent-snapshots/{agent_id}/production-statistics.jsonl
 --- This is the aggregate production from automation (assemblers, furnaces, etc.)
 --- Uses remote.call to access each agent's interface for production statistics
---- Deduplication: Only writes if stats changed from last snapshot
+--- Deduplication: Only writes if stats changed from last snapshot, with a
+--- forced heartbeat write every HEARTBEAT_MAX_SKIPS polls so the tick advances
 function M._on_nth_tick_agent_production_snapshot()
     if not has_agents() then
         return
@@ -157,14 +164,19 @@ function M._on_nth_tick_agent_production_snapshot()
         local current_input = stats.input or {}
         local current_output = stats.output or {}
 
-        -- Deduplication: Skip if unchanged from last snapshot
+        -- Deduplication: Skip if unchanged from last snapshot, but never skip
+        -- more than HEARTBEAT_MAX_SKIPS polls in a row — the heartbeat write
+        -- keeps the entry tick advancing while production is halted
         local agent_key = tostring(agent_id)
         local last = last_stats[agent_key]
         if last then
             -- Compare input and output with last snapshot
             if tables_equal(current_input, last.input) and tables_equal(current_output, last.output) then
-                -- No change, skip writing
-                goto continue
+                last.skips = (last.skips or 0) + 1
+                if last.skips < HEARTBEAT_MAX_SKIPS then
+                    -- No change, skip writing
+                    goto continue
+                end
             end
         end
 

@@ -251,21 +251,22 @@ class RCONSource:
         if "result" in result:
             result = result["result"]
 
-        # Get current game tick for staleness tracking
-        tick = self._rcon.run(
-            category="map",
-            method="get_game_tick",
-            args={},
-            safe=True,
-            verbose=False,
-        )
-        if isinstance(tick, dict) and "result" in tick:
-            tick = tick["result"]
+        # Get current game tick for staleness tracking. No remote interface
+        # exposes game.tick, so use a raw silent-command (RCON runs in the
+        # scenario runtime where `game` is available).
+        tick = 0
+        try:
+            tick_raw = self._rcon.rcon_client.send_command(
+                "/silent-command rcon.print(game.tick)"
+            )
+            tick = int(str(tick_raw).strip())
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"RCONSource: failed to read game.tick: {e}")
 
         return ProductionStats(
             output=result.get("output", {}),
             input=result.get("input", {}),
-            tick=tick if isinstance(tick, int) else 0,
+            tick=tick,
         )
 
     async def get_manual_production(self, agent_id: int) -> ManualStats:

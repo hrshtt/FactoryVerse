@@ -676,6 +676,7 @@ class AgentOrchestrator:
                     consecutive_passes=result.consecutive_passes or 0,
                     checks_required=self._task_config.verification.checks_required if self._task_config.verification else 6,
                     automation_produced=result.automation_produced or 0,
+                    feed_stale=getattr(result, "feed_stale", False),
                 )
 
             # Format progress message
@@ -737,6 +738,17 @@ class AgentOrchestrator:
             lines.append("Your factory has sustained the required throughput.")
             lines.append("The task is complete - you may stop.")
             lines.append("=" * 50)
+        elif result.feed_stale:
+            # VERIF-1: a frozen feed must never render as a normal 0-rate reading
+            lines.append("!" * 45)
+            lines.append(f"⚠️  VERIFICATION FEED PROBLEM: {target}")
+            lines.append("!" * 45)
+            if result.failure_reason:
+                lines.append(f"  {result.failure_reason}")
+            lines.append(f"  Last data at tick: {result.measured_at_tick}")
+            lines.append(f"  Last known total: {result.automation_produced} (automation)")
+            lines.append(f"  Sustained progress held at: {result.consecutive_passes}/{result.checks_required}")
+            lines.append("!" * 45)
         else:
             lines.append("-" * 45)
             lines.append(f"📊 Throughput: {target}")
