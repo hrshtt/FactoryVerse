@@ -43,3 +43,6 @@ script-output/
 **/node_modules/
 # Fetched API reference data (regenerate: scripts/fetch_factorio_api.py)
 resources/factorio-api/
+
+# Working docs (retros, session handoffs) stay untracked — deleted when their branch concludes
+docs/retros/
