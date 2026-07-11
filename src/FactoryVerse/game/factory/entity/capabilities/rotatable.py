@@ -24,6 +24,10 @@ class RotatableMixin:
     direction: Direction  # This mixin owns direction
     _entity_ops: "EntityOperationsAction"
 
+    def __init__(self, *args, direction: Optional[Direction] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.direction = direction
+
     def rotate(self, clockwise: bool = True) -> Direction:
         """Rotate entity 90 degrees.
 
@@ -41,8 +45,14 @@ class RotatableMixin:
         else:
             new_dir = self.direction.turn_left()
 
-        # TODO: When entity_ops supports rotation, call it here
-        self.direction = new_dir
+        result = self._entity_ops.rotate_entity(
+            self.name,
+            position=self.position,
+            direction=new_dir.value,
+            is_ghost=self.is_ghost,
+        )
+        # Engine truth wins: sync local state from the reported new direction
+        self.direction = Direction(result.new_direction)
         return self.direction
 
 
@@ -54,6 +64,11 @@ class Rotatable180Mixin:
     """
 
     direction: Direction  # This mixin owns direction
+    _entity_ops: "EntityOperationsAction"
+
+    def __init__(self, *args, direction: Optional[Direction] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.direction = direction
 
     def rotate_180(self) -> Direction:
         """Toggle between opposite directions (N↔S, E↔W).
@@ -64,5 +79,13 @@ class Rotatable180Mixin:
         if self.direction is None:
             raise ValueError(f"{self.__class__.__name__} has no direction to rotate")
 
-        self.direction = self.direction.flip()
+        new_dir = self.direction.flip()
+        result = self._entity_ops.rotate_entity(
+            self.name,
+            position=self.position,
+            direction=new_dir.value,
+            is_ghost=self.is_ghost,
+        )
+        # Engine truth wins: sync local state from the reported new direction
+        self.direction = Direction(result.new_direction)
         return self.direction

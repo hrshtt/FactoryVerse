@@ -41,8 +41,9 @@ the executable form of audit question 1 ("can it pass vacuously?").
 ## Sub-agent protocol
 
 1. Read this file, your family's `PLANTS.md`, and `docs/RUNTIME_PLAYBOOK.md`
-   §0/§2/§5. Do NOT read broad project docs; your spec is
-   `_frozen/liveness_spec.py::cases_for_group("<your group>")`.
+   §0/§2/§5. Do NOT read broad project docs; your spec is your family's
+   `_frozen/` spec module (`liveness_spec.py` / `accessor_spec.py`)
+   `::cases_for_group("<your group>")`.
 2. Factorio API questions: grep `resources/factorio-api/2.0.76/INDEX.md`, read
    only the per-item file you need. Never web-search what is answerable there.
 3. You are assigned a FIXED cell index. Only ever allocate that cell
@@ -65,13 +66,21 @@ its own cell — the `cell` fixture is session-scoped, so running multiple files
 in one pytest session would pile every rig into one cell and collide:
 
 ```bash
-# the family runner (cells match the per-group assignments used at generation)
+# db_column_liveness runner (cells match the per-group assignments used at generation)
 for spec in test_map_entity_core.py:7 test_map_entity_builder.py:10 \
             test_map_entity_dead.py:11 test_ghost.py:12 \
             test_terrain_and_meta.py:13 test_resource_entity.py:14 \
             test_dead_tables_and_docs.py:15; do
   FV_LIVE_TESTS=1 FV_INSTANCE=server_0 FV_CELL_INDEX=${spec##*:} \
     uv run pytest tests/generated/db_column_liveness/${spec%%:*} -q || break
+done
+
+# accessor_liveness runner
+for spec in test_rotate_direction.py:16 test_filters_and_limits.py:17 \
+            test_recipe_and_spine.py:18 test_burner_crafter_io.py:19 \
+            test_container_io.py:20; do
+  FV_LIVE_TESTS=1 FV_INSTANCE=server_0 FV_CELL_INDEX=${spec##*:} \
+    uv run pytest tests/generated/accessor_liveness/${spec%%:*} -q || break
 done
 ```
 
@@ -87,4 +96,5 @@ Requires a running lab-grid instance (`uv run fv server start --num 1
 
 | Family | Claim | Ledger row |
 |--------|-------|-----------|
-| `db_column_liveness` | every documented DB table/column is live or ledger-red | L1.11 (pending) |
+| `db_column_liveness` | every documented DB table/column is live or ledger-red | L1.11 |
+| `accessor_liveness` | every public write accessor mutates the engine state it promises (+ DB where a contract surface promises it) or is registered red | L1.12 |

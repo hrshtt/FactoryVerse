@@ -66,6 +66,20 @@ class EntityFilterSet(ActionResponse):
 
 
 @dataclass
+class EntityRotated(ActionResponse):
+    """Response when entity is rotated.
+
+    RCON Contract: RemoteInterface.lua rotate_entity.returns
+    """
+
+    entity_name: str = ""
+    position: Optional[Dict[str, float]] = None
+    old_direction: Optional[int] = None
+    new_direction: Optional[int] = None
+    is_ghost: bool = False
+
+
+@dataclass
 class InventoryLimitSet(ActionResponse):
     """Response when inventory limit is set.
 
@@ -235,6 +249,36 @@ class EntityOperationsAction:
         )
         response_dict = self._rcon.execute_and_parse_json(cmd)
         return EntityRecipeSet.from_dict(response_dict)
+
+    def rotate_entity(
+        self,
+        entity_name: str,
+        position: Optional[MapPosition] = None,
+        direction: Optional[int] = None,
+        is_ghost: bool = False,
+    ) -> EntityRotated:
+        """Rotate an entity (or ghost) to a specific direction.
+
+        The entity must be within reach. Asymmetric entities (e.g. splitters)
+        can only rotate in 180-degree increments.
+
+        Args:
+            entity_name: Entity prototype name (ghost_name for ghosts)
+            position: Entity position (None = nearest within reach)
+            direction: Target defines.direction int (None = 90 degrees clockwise)
+            is_ghost: Whether to target a ghost entity
+
+        Returns:
+            EntityRotated response with old/new engine directions
+
+        Raises:
+            RuntimeError: If RCON command fails
+        """
+        cmd = self._rcon.build_command(
+            "rotate_entity", entity_name, position, direction, is_ghost
+        )
+        response_dict = self._rcon.execute_and_parse_json(cmd)
+        return EntityRotated.from_dict(response_dict)
 
     def set_entity_filter(
         self,

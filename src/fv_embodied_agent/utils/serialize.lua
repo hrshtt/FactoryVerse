@@ -270,6 +270,23 @@ local function _serialize_inserter_data(entity, out)
     if dt and dt.valid and dt.name and dt.position then
         ins.drop_target = {name = dt.name, position = {x = dt.position.x, y = dt.position.y}}
     end
+    -- Filter contract (2.0 entity-level filters): durable config belongs in
+    -- the snapshot so the DB can serve it (boundary rule: contracts yes,
+    -- volatile state no)
+    if (entity.filter_slot_count or 0) > 0 then
+        ins.use_filters = entity.use_filters or false
+        ins.filter_mode = entity.inserter_filter_mode
+        local filters = {}
+        for i = 1, entity.filter_slot_count do
+            local f = entity.get_filter(i)
+            if f then
+                local fname = f.name
+                if type(fname) == "table" then fname = fname.name end
+                filters[#filters + 1] = { index = i, name = fname }
+            end
+        end
+        if #filters > 0 then ins.filters = filters end
+    end
     if next(ins) ~= nil then out.inserter = ins end
 end
 

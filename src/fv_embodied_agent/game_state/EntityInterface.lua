@@ -328,7 +328,40 @@ function EntityInterface:set_filter(inventory_type, filter_index, filter_item)
     if not (self.entity and self.entity.valid) then
         error("EntityInterface: Entity is invalid")
     end
-    
+
+    -- Entity-level filters (Factorio 2.0): inserters (and loaders/mining
+    -- drills) carry filter slots on the ENTITY, not on an inventory.
+    -- Filters are contracts — this path raises the same config event so the
+    -- snapshot spine records them.
+    if inventory_type == "inserter_filter" then
+        local e = self.entity
+        if (e.filter_slot_count or 0) == 0 then
+            error("EntityInterface: Entity '" .. e.name .. "' has no filter slots")
+        end
+        local idx = filter_index or 1
+        if idx < 1 or idx > e.filter_slot_count then
+            error("EntityInterface: Filter slot " .. tostring(idx) ..
+                  " out of range (1.." .. e.filter_slot_count .. ")")
+        end
+        local old_filter = e.get_filter(idx)
+        if filter_item then
+            e.use_filters = true
+            e.set_filter(idx, { name = filter_item })
+        else
+            e.set_filter(idx, nil)
+        end
+
+        script.raise_event(EntityInterface.on_entity_configuration_changed, {
+            entity = e,
+            change_type = "filter",
+            inventory_type = "inserter_filter",
+            filter_index = idx,
+            old_value = old_filter,
+            new_value = filter_item,
+        })
+        return true
+    end
+
     -- Resolve inventory type
     local inv_index = _resolve_inventory_type(inventory_type)
     
