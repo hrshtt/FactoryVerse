@@ -46,3 +46,6 @@ resources/factorio-api/
 
 # Working docs (retros, session handoffs) stay untracked — deleted when their branch concludes
 docs/retros/
+# Live-run forensics (model eval runs + the raw findings they surface) stay untracked —
+# findings graduate to EVAL_ISSUE_TRACKER/FLOOR_CERTIFICATION only after adjudication
+docs/runs/
