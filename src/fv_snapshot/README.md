@@ -163,6 +163,24 @@ The Python `SnapshotLoader` class handles:
 
 **Flush-Before-Read**: The sync service flushes pending UDP operations before any query to ensure consistency.
 
+**Single Reducer**: Both consumers of the op stream — `SnapshotLoader` (file
+replay) and `SyncService` (live UDP) — apply ops through one shared reducer
+(`FactoryVerse.game.infra.duckdb.apply_ops`). Identical logical ops must
+produce identical DB rows regardless of transport; this is certified by
+ledger L1.13 (`scripts/certification/check_replay_parity.py`).
+
+**Provenance Fold Rule (record contract)**: provenance fields (`agent_id`,
+`player_id`, `label`, `placed_tick`; ghost `placed_by`) change ONLY via ops
+that carry a non-empty `builder` block (build events, relabel, a re-gather's
+"pre-existing" stamp). Ops without one — config-change re-serializations,
+partial updates — preserve the existing row's provenance. Consequently the
+stream is NOT last-line-wins for provenance: any consumer reconstructing
+state from the raw JSONL must FOLD each entity's op history under this rule.
+Labels are write-once: set at creation, changed only by an explicit
+builder-carrying op, destroyed with the entity (a remove deletes the row, so
+a same-key re-place starts clean). Provenance completeness is conditional on
+the boot epoch: init re-gathers deliberately re-stamp (PROV-1 soft claim).
+
 ## Configuration
 
 ### Mod Settings

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
 
 from FactoryVerse.game.snapshot.types import SyncState
+from FactoryVerse.game.infra.duckdb import apply_ops
 
 logger = logging.getLogger(__name__)
 
@@ -301,58 +302,17 @@ class SyncService:
     # =========================================================================
 
     def _apply_entity_upsert(self, payload: Dict[str, Any]) -> None:
-        """Apply entity upsert to database."""
+        """Apply entity upsert to database (shared reducer — see apply_ops)."""
         entity_data = payload.get("entity", {})
         if not entity_data:
             logger.warning("Entity upsert missing entity data")
             return
 
         chunk = payload.get("chunk", {})
-        chunk_x = chunk.get("x", 0)
-        chunk_y = chunk.get("y", 0)
-
-        position = entity_data.get("position", {})
-        pos_x = float(position.get("x", 0))
-        pos_y = float(position.get("y", 0))
-
-        entity_name = entity_data.get("name", "")
-        bbox = entity_data.get("bounding_box", {})
-
-        # Extract builder metadata
-        builder = entity_data.get("builder", {})
-        agent_id = builder.get("agent_id") if builder else None
-        player_id = builder.get("player_id") if builder else None
-        label = builder.get("label") if builder else None
-        placed_tick = builder.get("placed_tick") if builder else payload.get("tick")
-
-        self._db.execute(
-            """
-            INSERT OR REPLACE INTO map_entity 
-            (entity_name, position_x, position_y, chunk_x, chunk_y,
-             direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
-             agent_id, player_id, label, placed_tick, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                entity_name,
-                pos_x,
-                pos_y,
-                chunk_x,
-                chunk_y,
-                entity_data.get("direction"),
-                bbox.get("min_x"),
-                bbox.get("min_y"),
-                bbox.get("max_x"),
-                bbox.get("max_y"),
-                agent_id,
-                player_id,
-                label,
-                placed_tick,
-                json.dumps(entity_data),
-            ],
-        )
-
-        logger.debug(f"Applied entity upsert: ({entity_name}, {pos_x}, {pos_y})")
+        apply_ops.upsert_entity(
+            self._db, entity_data, chunk.get("x", 0), chunk.get("y", 0),
+            default_tick=payload.get("tick"))
+        logger.debug(f"Applied entity upsert: {entity_data.get('name', '')}")
 
     def _apply_entity_remove(self, payload: Dict[str, Any]) -> None:
         """Apply entity remove to database."""
@@ -381,15 +341,9 @@ class SyncService:
             [entity_name, pos_x, pos_y],
         ).fetchone()[0] > 0
 
-        # Perform deletions
-        self._db.execute(
-            "DELETE FROM map_entity WHERE entity_name = ? AND position_x = ? AND position_y = ?",
-            [entity_name, pos_x, pos_y],
-        )
-        self._db.execute(
-            "DELETE FROM resource_entity WHERE name = ? AND position_x = ? AND position_y = ?",
-            [entity_name, pos_x, pos_y],
-        )
+        # Perform deletions (shared reducer)
+        apply_ops.remove_entity(self._db, entity_name, pos_x, pos_y)
+        apply_ops.remove_resource_entity(self._db, entity_name, pos_x, pos_y)
         
         # Log results
         if map_exists or resource_exists:
@@ -417,32 +371,7 @@ class SyncService:
 
         ghost_name = ghost_data.get("ghost_name") or ghost_data.get("name", "")
 
-        chunk_x = math.floor(pos_x / 32)
-        chunk_y = math.floor(pos_y / 32)
-
-        self._db.execute(
-            """
-            INSERT OR REPLACE INTO ghost
-            (ghost_name, position_x, position_y, chunk_x, chunk_y,
-             direction, placed_tick, placed_by, label, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                ghost_name,
-                pos_x,
-                pos_y,
-                chunk_x,
-                chunk_y,
-                ghost_data.get("direction"),
-                (ghost_data.get("builder") or {}).get("placed_tick")
-                or ghost_data.get("placed_tick")
-                or payload.get("tick"),
-                ghost_data.get("placed_by"),
-                (ghost_data.get("builder") or {}).get("label") or ghost_data.get("label"),
-                json.dumps(ghost_data),
-            ],
-        )
-
+        apply_ops.upsert_ghost(self._db, ghost_data, default_tick=payload.get("tick"))
         logger.debug(f"Applied ghost upsert: ({ghost_name}, {pos_x}, {pos_y})")
 
     def _apply_ghost_remove(self, payload: Dict[str, Any]) -> None:
@@ -456,10 +385,7 @@ class SyncService:
             logger.warning("Ghost remove missing ghost name")
             return
 
-        self._db.execute(
-            "DELETE FROM ghost WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
-            [ghost_name, pos_x, pos_y],
-        )
+        apply_ops.remove_ghost(self._db, ghost_name, pos_x, pos_y)
         logger.debug(f"Applied ghost remove: ({ghost_name}, {pos_x}, {pos_y})")
 
     def _apply_entity_rotation(self, payload: Dict[str, Any]) -> None:
@@ -475,11 +401,8 @@ class SyncService:
 
         direction = payload.get("direction")
 
-        # Update only the direction field
-        self._db.execute(
-            "UPDATE map_entity SET direction = ? WHERE entity_name = ? AND position_x = ? AND position_y = ?",
-            [direction, entity_name, pos_x, pos_y],
-        )
+        # Update only the direction field (shared reducer)
+        apply_ops.rotate_entity(self._db, entity_name, pos_x, pos_y, direction)
         logger.debug(
             f"Applied entity rotation: ({entity_name}, {pos_x}, {pos_y}) -> direction={direction}"
         )
@@ -497,11 +420,8 @@ class SyncService:
 
         direction = payload.get("direction")
 
-        # Update only the direction field
-        self._db.execute(
-            "UPDATE ghost SET direction = ? WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
-            [direction, ghost_name, pos_x, pos_y],
-        )
+        # Update only the direction field (shared reducer)
+        apply_ops.rotate_ghost(self._db, ghost_name, pos_x, pos_y, direction)
         logger.debug(
             f"Applied ghost rotation: ({ghost_name}, {pos_x}, {pos_y}) -> direction={direction}"
         )

@@ -15,6 +15,7 @@ from typing import Optional, Iterator, Dict, Any, List
 import duckdb
 
 from FactoryVerse.game.snapshot.types import LoadResult, ChunkKey, EntityOperation
+from FactoryVerse.game.infra.duckdb import apply_ops
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +413,8 @@ class SnapshotLoader:
             self._apply_entity_operation(data)
 
     def _apply_entity_operation(self, data: Dict[str, Any]) -> None:
-        """Apply entity operation."""
+        """Apply entity operation (normalizes the file envelope; all writes go
+        through the shared reducer — see apply_ops module docstring)."""
         op = data.get("op")
         chunk = ChunkKey(
             x=data.get("chunk", {}).get("x", 0), y=data.get("chunk", {}).get("y", 0)
@@ -420,17 +422,16 @@ class SnapshotLoader:
 
         if op == "upsert":
             entity_data = data.get("entity", {})
-            self._insert_entity(entity_data, chunk)
+            apply_ops.upsert_entity(
+                self._db, entity_data, chunk.x, chunk.y,
+                default_tick=data.get("tick"))
         elif op == "remove":
             entity_name = data.get("name", "")
             position = data.get("position", {})
             pos_x = float(position.get("x", 0))
             pos_y = float(position.get("y", 0))
             if entity_name:
-                self._db.execute(
-                    "DELETE FROM map_entity WHERE entity_name = ? AND position_x = ? AND position_y = ?",
-                    [entity_name, pos_x, pos_y],
-                )
+                apply_ops.remove_entity(self._db, entity_name, pos_x, pos_y)
         elif op == "rotated":
             entity_name = data.get("name", "")
             position = data.get("position", {})
@@ -438,10 +439,7 @@ class SnapshotLoader:
             pos_y = float(position.get("y", 0))
             direction = data.get("direction")
             if entity_name and direction is not None:
-                self._db.execute(
-                    "UPDATE map_entity SET direction = ? WHERE entity_name = ? AND position_x = ? AND position_y = ?",
-                    [direction, entity_name, pos_x, pos_y],
-                )
+                apply_ops.rotate_entity(self._db, entity_name, pos_x, pos_y, direction)
 
     def _apply_ghost_operation(self, data: Dict[str, Any]) -> None:
         """Apply ghost operation."""
@@ -449,7 +447,7 @@ class SnapshotLoader:
 
         if op == "upsert":
             ghost_data = data.get("ghost", {})
-            self._insert_ghost(ghost_data)
+            apply_ops.upsert_ghost(self._db, ghost_data, default_tick=data.get("tick"))
         elif op == "remove":
             # The mod emits the key as ghost_name (make_ghost_remove_operation);
             # `name` kept as fallback for the UDP-payload shape
@@ -458,10 +456,7 @@ class SnapshotLoader:
             pos_x = float(position.get("x", 0))
             pos_y = float(position.get("y", 0))
             if ghost_name:
-                self._db.execute(
-                    "DELETE FROM ghost WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
-                    [ghost_name, pos_x, pos_y],
-                )
+                apply_ops.remove_ghost(self._db, ghost_name, pos_x, pos_y)
             else:
                 logger.warning(f"Ghost remove op without ghost_name/name — dropped: {data}")
         elif op == "rotated":
@@ -471,10 +466,7 @@ class SnapshotLoader:
             pos_y = float(position.get("y", 0))
             direction = data.get("direction")
             if ghost_name and direction is not None:
-                self._db.execute(
-                    "UPDATE ghost SET direction = ? WHERE ghost_name = ? AND position_x = ? AND position_y = ?",
-                    [direction, ghost_name, pos_x, pos_y],
-                )
+                apply_ops.rotate_ghost(self._db, ghost_name, pos_x, pos_y, direction)
 
     def _apply_resource_entity_operation(self, data: Dict[str, Any]) -> None:
         """Apply resource entity (tree/rock) operation."""
@@ -486,93 +478,19 @@ class SnapshotLoader:
             pos_x = float(position.get("x", 0))
             pos_y = float(position.get("y", 0))
             if entity_name:
-                self._db.execute(
-                    "DELETE FROM resource_entity WHERE name = ? AND position_x = ? AND position_y = ?",
-                    [entity_name, pos_x, pos_y],
-                )
+                apply_ops.remove_resource_entity(self._db, entity_name, pos_x, pos_y)
 
     # =========================================================================
     # Insert helpers
     # =========================================================================
 
     def _insert_entity(self, data: Dict[str, Any], chunk: ChunkKey) -> None:
-        """Insert or replace entity in map_entity table."""
-        position = data.get("position", {})
-        pos_x = float(position.get("x", 0))
-        pos_y = float(position.get("y", 0))
-        entity_name = data.get("name", "")
-
-        bbox = data.get("bounding_box", {})
-
-        # Extract builder metadata
-        builder = data.get("builder", {})
-        agent_id = builder.get("agent_id") if builder else None
-        player_id = builder.get("player_id") if builder else None
-        label = builder.get("label") if builder else None
-        placed_tick = builder.get("placed_tick") if builder else None
-
-        self._db.execute(
-            """
-            INSERT OR REPLACE INTO map_entity 
-            (entity_name, position_x, position_y, chunk_x, chunk_y,
-             direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
-             agent_id, player_id, label, placed_tick, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                entity_name,
-                pos_x,
-                pos_y,
-                chunk.x,
-                chunk.y,
-                data.get("direction"),
-                bbox.get("min_x"),
-                bbox.get("min_y"),
-                bbox.get("max_x"),
-                bbox.get("max_y"),
-                agent_id,
-                player_id,
-                label,
-                placed_tick,
-                json.dumps(data),
-            ],
-        )
+        """Insert or replace entity in map_entity table (shared reducer)."""
+        apply_ops.upsert_entity(self._db, data, chunk.x, chunk.y)
 
     def _insert_ghost(self, data: Dict[str, Any]) -> None:
-        """Insert or replace ghost in ghost table."""
-        position = data.get("position", {})
-        pos_x = float(position.get("x", 0))
-        pos_y = float(position.get("y", 0))
-
-        ghost_name = data.get("ghost_name") or data.get("name", "")
-        chunk_x = math.floor(pos_x / 32)
-        chunk_y = math.floor(pos_y / 32)
-
-        # The mod nests provenance under builder (serialize_ghost), same as
-        # entity payloads — mirror _insert_entity's builder-aware extraction
-        # (MIRAGE-4). placed_by stays as-emitted pending its design call.
-        builder = data.get("builder") or {}
-
-        self._db.execute(
-            """
-            INSERT OR REPLACE INTO ghost
-            (ghost_name, position_x, position_y, chunk_x, chunk_y,
-             direction, placed_tick, placed_by, label, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                ghost_name,
-                pos_x,
-                pos_y,
-                chunk_x,
-                chunk_y,
-                data.get("direction"),
-                builder.get("placed_tick") or data.get("placed_tick"),
-                data.get("placed_by"),
-                builder.get("label") or data.get("label"),
-                json.dumps(data),
-            ],
-        )
+        """Insert or replace ghost in ghost table (shared reducer)."""
+        apply_ops.upsert_ghost(self._db, data)
 
     def _insert_resource_tile(self, data: Dict[str, Any], chunk: ChunkKey) -> None:
         """Insert resource tile into resource_tile table."""
