@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import threading
-from pathlib import Path
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -113,7 +112,6 @@ class QueryExecutor:
         mining_action: "MiningAction",
         sync_service: Optional["SyncService"] = None,
         db_lock: Optional[threading.Lock] = None,
-        status_dir: Optional["Path"] = None,
     ):
         """Initialize query executor.
 
@@ -125,7 +123,6 @@ class QueryExecutor:
             mining_action: Mining action (required for resources)
             sync_service: Sync service for flushing pending writes before reads
             db_lock: Shared lock for thread-safe database access
-            status_dir: Optional path to status directory for on-demand status loading
         """
         self._db = db
         self._entity_ops = entity_ops
@@ -134,14 +131,20 @@ class QueryExecutor:
         self._mining_action = mining_action
         self._sync_service = sync_service
         self._db_lock = db_lock if db_lock is not None else threading.Lock()
-        self._status_dir = status_dir
 
     def query(self, sql: str) -> List[Dict[str, Any]]:
         """Execute raw SQL, return list of dicts.
 
         Validates query is read-only SELECT.
         Flushes pending writes before reading to ensure consistency.
-        Automatically loads status data if query references entity_status_latest.
+
+        Note: the old on-demand ``entity_status_latest``/``temp_entity_status``
+        loading path (status_loader.py) is GONE (Task 5, power-impl-contracts
+        build) — entity status now lives in the real, persistent
+        ``entity_status`` table (see schema_definitions.ENTITY_STATUS),
+        populated via analytics_ops.apply_status_dump by both the boot loader
+        and SyncService. A query against ``entity_status`` needs no special
+        handling here; it is an ordinary table like any other.
 
         Args:
             sql: SQL query string (must be SELECT)
@@ -153,12 +156,6 @@ class QueryExecutor:
             ValueError: If query is not read-only
         """
         self._validate_query(sql)
-
-        # Check if query references entity_status_latest view
-        # If so, ensure status is loaded before executing query
-        sql_upper = sql.upper()
-        if "ENTITY_STATUS_LATEST" in sql_upper or "TEMP_ENTITY_STATUS" in sql_upper:
-            self._ensure_status_loaded()
 
         # CRITICAL: Flush pending writes before reading
         if self._sync_service:
@@ -385,11 +382,19 @@ class QueryExecutor:
 
     def _row_to_resource_data(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """Convert row to resource data dict."""
+        # ``resource_tile`` deliberately stores integer tile coordinates for
+        # aggregation and stable primary keys, while Factorio resource entities
+        # live at tile centers. Typed resources are actionable entity handles,
+        # so restore the exact center here. ``resource_entity`` rows (trees and
+        # rocks) include entity_type and already carry exact positions.
+        tile_center_offset = (
+            0.5 if row.get("entity_type") in (None, "resource") else 0.0
+        )
         return {
             "name": row.get("name"),
             "position": {
-                "x": row.get("position_x", 0),
-                "y": row.get("position_y", 0),
+                "x": row.get("position_x", 0) + tile_center_offset,
+                "y": row.get("position_y", 0) + tile_center_offset,
             },
             "amount": row.get("amount"),
             "type": row.get("entity_type", "resource"),
@@ -411,6 +416,10 @@ class QueryExecutor:
 
         # Set up ghost entity data
         ghost_name = ghost_data.get("ghost_name") or row.get("ghost_name")
+        ghost_direction = ghost_data.get("direction")
+        if ghost_direction is None:
+            ghost_direction = row.get("direction")
+        builder = ghost_data.get("builder") or {}
         entity_data = {
             "name": ghost_name,
             "position": ghost_data.get("position")
@@ -418,8 +427,20 @@ class QueryExecutor:
                 "x": row.get("position_x", 0),
                 "y": row.get("position_y", 0),
             },
-            "direction": ghost_data.get("direction") or row.get("direction"),
+            # Factorio north is 0, so truthiness fallback corrupts it into the
+            # denormalized string "north" and typed construction drops the row.
+            "direction": ghost_direction,
             "ghost_name": ghost_name,
+            "label": (
+                row.get("label")
+                or ghost_data.get("label")
+                or builder.get("label")
+            ),
+            "placed_tick": (
+                row.get("placed_tick")
+                or ghost_data.get("placed_tick")
+                or builder.get("placed_tick")
+            ),
         }
 
         try:
@@ -448,44 +469,6 @@ class QueryExecutor:
             "placed_by": row.get("placed_by"),
             "label": row.get("label"),
         }
-
-    # =========================================================================
-    # Status Loading
-    # =========================================================================
-
-    def _ensure_status_loaded(self) -> None:
-        """Ensure status data is loaded into temp_entity_status table.
-        
-        Loads the latest status file on-demand when queries reference
-        entity_status_latest or temp_entity_status. This allows queries to
-        join status with map entities without requiring a persistent service.
-        """
-        if not self._status_dir:
-            logger.warning(
-                "Query references entity_status_latest but status_dir not provided. "
-                "Status data will not be available."
-            )
-            return
-        
-        status_dir = Path(self._status_dir)
-        if not status_dir.exists():
-            logger.debug(f"Status directory does not exist: {status_dir}")
-            return
-        
-        # Check if temp_entity_status table already exists and has data
-        # If it does, we can skip loading (status is loaded fresh on each query)
-        # Actually, we want to always load the latest status file to ensure freshness
-        try:
-            from .status_loader import load_latest_status
-            
-            with self._db_lock:
-                count = load_latest_status(self._db, status_dir)
-                if count > 0:
-                    logger.debug(f"Loaded {count} status records for query")
-                else:
-                    logger.debug("No status records found to load")
-        except Exception as e:
-            logger.warning(f"Failed to load status data: {e}")
 
 
 __all__ = ["QueryExecutor"]

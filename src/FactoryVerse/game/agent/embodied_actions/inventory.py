@@ -74,7 +74,7 @@ class AgentInventory:
         self,
         item_name: str,
         count: Union[int, Literal["half", "full"]],
-        number_of_stacks: Union[int, Literal["max"]] = "max",
+        number_of_stacks: Union[int, Literal["max"]] = 1,
         strict: bool = False,
     ) -> List[ItemStack]:
         """Get item stacks for a specific item.
@@ -82,7 +82,8 @@ class AgentInventory:
         Args:
             item_name: Name of the item
             count: Count per stack (int), "half" for half stack, or "full" for full stack
-            number_of_stacks: Number of stacks to return, or "max" for all possible stacks (default: "max")
+            number_of_stacks: Number of stacks to return (default: 1), or
+                "max" to intentionally return all possible complete stacks
             strict: If True, raises exception when insufficient items. If False, returns all possible.
 
         Returns:

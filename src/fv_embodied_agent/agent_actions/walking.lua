@@ -11,6 +11,14 @@ local WalkingActions = {}
 
 DEBUG = false
 
+local function get_entity_reach_distance(agent, target_entity)
+    if target_entity.type == "resource" or target_entity.type == "tree" or
+       target_entity.type == "simple-entity" then
+        return agent.resource_reach_distance or 2.5
+    end
+    return agent.reach_distance or 6
+end
+
 -- ============================================================================
 -- TILE CANDIDATE COMPUTATION
 -- ============================================================================
@@ -76,7 +84,7 @@ end
 --- @return table Array of {x, y} tile positions
 local function compute_approach_candidates(surface, target_entity, agent)
     local candidates = {}
-    local reach_distance = agent.reach_distance or 6
+    local reach_distance = get_entity_reach_distance(agent, target_entity)
     local entity_pos = target_entity.position
     local entity_bb = target_entity.bounding_box
     
@@ -120,6 +128,16 @@ local function compute_approach_candidates(surface, target_entity, agent)
             ::continue::
         end
     end
+
+    -- Prefer the least travel from the agent's current position. The old
+    -- nested-loop order always chose the westernmost tile first, which was
+    -- arbitrary and especially brittle inside dense forests.
+    local agent_pos = agent.position
+    table.sort(candidates, function(a, b)
+        local a_dist = (a.x - agent_pos.x)^2 + (a.y - agent_pos.y)^2
+        local b_dist = (b.x - agent_pos.x)^2 + (b.y - agent_pos.y)^2
+        return a_dist < b_dist
+    end)
     
     if DEBUG then
         game.print(string.format("Found %d candidate approach tiles for %s", 
@@ -379,6 +397,31 @@ end
 
 
 -- Add to WalkingActions
+local function retry_next_approach(self)
+    local walking = self.walking
+    if not walking.approach_candidates or
+       walking.approach_index >= #walking.approach_candidates then
+        return false
+    end
+    walking.approach_index = walking.approach_index + 1
+    local next_goal = walking.approach_candidates[walking.approach_index]
+    local options = {
+        start = self.character.position,
+        goal = next_goal,
+        bounding_box = walking.path_options.bounding_box,
+        collision_mask = walking.path_options.collision_mask,
+        force = walking.path_options.force,
+        entity_to_ignore = self.character,
+    }
+    walking.goal = next_goal
+    walking.path = {}
+    walking.progress = 0
+    walking.last_distance_to_entity = nil
+    walking.path_id = self.character.surface.request_path(options)
+    self.character.walking_state = {walking = false}
+    return true
+end
+
 WalkingActions.process_walking = function(self)
     local walking = self.walking
     if walking.progress == 0 or not walking.path then return end
@@ -400,23 +443,45 @@ WalkingActions.process_walking = function(self)
             local distance = math.sqrt(dx * dx + dy * dy)
             
             -- Check if agent can reach the entity (within character's reach distance)
-            local reach_distance = self.character.reach_distance or 2.5
-            reached_goal = distance <= reach_distance
+            local reach_distance = get_entity_reach_distance(
+                self.character, walking.goal_entity)
+            reached_goal = self.character.can_reach_entity(walking.goal_entity)
             
             -- If not close enough, continue walking toward the entity
             if not reached_goal then
                 local last_distance = walking.last_distance_to_entity or math.huge
-                -- If we're not making progress AND we're reasonably close (within 2x reach distance),
-                -- consider it complete to avoid infinite stuck state
-                if distance >= last_distance and distance <= (reach_distance * 2) then
-                    reached_goal = true
-                elseif distance < last_distance then
+                if distance < last_distance then
                     walking.last_distance_to_entity = distance
                     -- Continue processing (don't mark as complete yet)
                     return
                 else
-                    -- Not making progress and still far, mark complete to avoid infinite loop
-                    reached_goal = true
+                    if retry_next_approach(self) then
+                        return
+                    end
+                    -- A walk must never report success while interaction is
+                    -- impossible; fail loudly so callers can choose another target.
+                    self:enqueue_message({
+                        action = "walk_to",
+                        agent_id = self.agent_id,
+                        action_id = walking.action_id,
+                        success = false,
+                        status = "failed",
+                        tick = game.tick or 0,
+                        failure_type = "entity_out_of_reach",
+                        distance = distance,
+                        reach_distance = reach_distance,
+                        goal = walking.original_goal,
+                        message = "Path ended outside interaction reach",
+                    }, "walking")
+                    walking.action_id = nil
+                    walking.goal = nil
+                    walking.original_goal = nil
+                    walking.goal_entity = nil
+                    walking.last_distance_to_entity = nil
+                    walking.progress = 0
+                    walking.path = {}
+                    self.character.walking_state = { walking = false }
+                    return
                 end
             end
         end
@@ -477,25 +542,45 @@ WalkingActions.process_walking = function(self)
                 local distance = math.sqrt(dx_entity * dx_entity + dy_entity * dy_entity)
                 
                 -- Check if agent can reach the entity (within character's reach distance)
-                local reach_distance = self.character.reach_distance or 2.5
-                reached_goal = distance <= reach_distance
+                local reach_distance = get_entity_reach_distance(
+                    self.character, walking.goal_entity)
+                reached_goal = self.character.can_reach_entity(walking.goal_entity)
                 
                 -- If not close enough, continue walking toward the entity
                 if not reached_goal then
                     local last_distance = walking.last_distance_to_entity or math.huge
-                    -- If we're not making progress AND we're reasonably close (within 2x reach distance),
-                    -- consider it complete to avoid infinite stuck state
-                    if distance >= last_distance and distance <= (reach_distance * 2) then
-                        reached_goal = true
-                    elseif distance < last_distance then
+                    if distance < last_distance then
                         walking.last_distance_to_entity = distance
                         -- Continue processing (don't mark as complete yet)
                         -- Reset progress to keep walking
                         walking.progress = walking.progress - 1
                         return
                     else
-                        -- Not making progress and still far, mark complete to avoid infinite loop
-                        reached_goal = true
+                        if retry_next_approach(self) then
+                            return
+                        end
+                        self:enqueue_message({
+                            action = "walk_to",
+                            agent_id = self.agent_id,
+                            action_id = walking.action_id,
+                            success = false,
+                            status = "failed",
+                            tick = game.tick or 0,
+                            failure_type = "entity_out_of_reach",
+                            distance = distance,
+                            reach_distance = reach_distance,
+                            goal = walking.original_goal,
+                            message = "Path ended outside interaction reach",
+                        }, "walking")
+                        walking.action_id = nil
+                        walking.goal = nil
+                        walking.original_goal = nil
+                        walking.goal_entity = nil
+                        walking.last_distance_to_entity = nil
+                        walking.progress = 0
+                        walking.path = {}
+                        self.character.walking_state = { walking = false }
+                        return
                     end
                 end
             end
@@ -581,4 +666,3 @@ WalkingActions.stop_walking = function(self)
 end
 
 return WalkingActions
-

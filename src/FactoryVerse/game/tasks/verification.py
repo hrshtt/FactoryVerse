@@ -403,8 +403,9 @@ async def calculate_automation_score(
 ) -> Tuple[int, int, int, int]:
     """Calculate automation-produced items for a target item.
 
-    The core calculation:
-        automation_produced = force_output - manual_crafted - manual_mined
+    The core calculation uses two independent channels:
+        automation_produced = force_input
+        manual_produced = manual_crafted + manual_mined
 
     This is pure arithmetic with no heuristics or waiting.
 
@@ -433,19 +434,11 @@ async def calculate_automation_score(
     manual_crafted = manual_stats["crafted"].get(target_item, 0)
     manual_mined = manual_stats["mined"].get(target_item, 0)
 
-    # Calculate automation-produced
+    # The surface-scoped force flow excludes character crafting/mining (the
+    # separate agent files capture those). Do not subtract independent manual
+    # counts from the already-automation-only force input.
     manual_total = manual_crafted + manual_mined
-    automation_produced = force_total - manual_total
-
-    # Handle edge case: automation can't be negative
-    # (could happen if stats are out of sync)
-    if automation_produced < 0:
-        logger.warning(
-            f"Negative automation for {target_item}: "
-            f"force={force_total}, manual={manual_total}. "
-            "Stats may be out of sync."
-        )
-        automation_produced = 0
+    automation_produced = force_total
 
     # Use tick from production stats (force-level), NOT manual stats
     # This ensures rate calculations work even when no manual crafting/mining occurs

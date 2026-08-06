@@ -198,7 +198,10 @@ class AsyncActionListener:
                 action_type = payload.get("action_type")
                 if action_type == "walk_to" and action_id in self.action_timeouts:
                     # Extend timeout by default timeout duration when progress is received
-                    self.action_timeouts[action_id] = time.time() + self.timeout
+                    self.action_timeouts[action_id] = max(
+                        self.action_timeouts[action_id],
+                        time.time() + self.timeout,
+                    )
                     logger.debug(f"Extended timeout for {action_id} due to progress")
 
                 return
@@ -286,7 +289,19 @@ class AsyncActionListener:
             self.action_timeouts[action_id] = time.time() + timeout_secs
 
         try:
-            await asyncio.wait_for(event.wait(), timeout=timeout_secs)
+            while not event.is_set():
+                deadline = self.action_timeouts[action_id]
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    # A walking progress notification may have extended the
+                    # authoritative deadline while this fixed wait was active.
+                    if time.time() < self.action_timeouts[action_id]:
+                        continue
+                    raise
             return self.action_results[action_id]
         except asyncio.TimeoutError:
             raise

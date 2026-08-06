@@ -99,6 +99,11 @@ class ResourceOrePatch:
         self._view = view if view is not None else EntityView.REACHABLE
 
     @property
+    def view(self) -> "EntityView":
+        """Whether this patch is REMOTE or REACHABLE."""
+        return self._view
+
+    @property
     def total(self) -> int:
         """Get total amount across all resource tiles in the patch."""
         total = 0
@@ -463,6 +468,11 @@ class BaseResource:
         self._entity_ops = entity_ops
         self._walking_action = walking_action
         self._view = view if view is not None else EntityView.REACHABLE
+
+    @property
+    def view(self) -> "EntityView":
+        """Whether this resource handle is REMOTE or REACHABLE."""
+        return self._view
 
     @property
     def resource_type(self) -> str:

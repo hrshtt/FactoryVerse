@@ -262,6 +262,11 @@ from FactoryVerse.game.agent.ghost_builder import GhostBuilder
 placement_hints = PlacementHints(rcon_handler, database)
 ghost_builder = GhostBuilder(rcon_handler, database)
 
+# VerifyView (live power/coverage confirmation)
+from FactoryVerse.game.agent.verify_view import VerifyView
+
+verify = VerifyView(rcon_handler)
+
 # Common types (pre-imported for convenience)
 from FactoryVerse.game.factory.types import MapPosition, Direction, BoundingBox  # noqa: F401
 from FactoryVerse.game.agent.placement_hints import ConnectionType, GhostPlan  # noqa: F401

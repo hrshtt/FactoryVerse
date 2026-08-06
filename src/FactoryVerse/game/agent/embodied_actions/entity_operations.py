@@ -231,7 +231,10 @@ class EntityOperationsAction:
         recipe_name: Optional[str] = None,
         position: Optional[MapPosition] = None,
     ) -> EntityRecipeSet:
-        """Set recipe on a machine (assembler, furnace, chemical plant).
+        """Set recipe on a recipe-selectable machine (for example, an assembler).
+
+        Furnaces do not accept an explicit recipe; insert smeltable input and
+        fuel and Factorio selects the smelting recipe automatically.
 
         Args:
             entity_name: Entity prototype name

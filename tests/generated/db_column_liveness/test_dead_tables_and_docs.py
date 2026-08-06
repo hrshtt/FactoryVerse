@@ -1,7 +1,6 @@
 """dead_tables_and_docs group: the mirage register — the 4 component tables
-(inserter/transport_belt/mining_drill/assembler), footprint_tiles, the
-phantom `entity_key` JOIN key taught in worked examples, and the 3
-declared-but-uncreated analytics tables.
+(inserter/transport_belt/mining_drill/assembler), footprint_tiles, and the
+phantom `entity_key` JOIN key taught in worked examples.
 
 Claim (frozen, liveness_spec, cases_for_group("dead_tables_and_docs")):
 schema_reference.py documents inserter/transport_belt/mining_drill/assembler
@@ -17,13 +16,9 @@ below is therefore a strict-xfail RED-FINDING: it must fail while the mirage
 persists and go red (XPASS) the moment someone fixes the underlying surface
 without reconciling spec + ledger (README failure semantics).
 
-The 3 ANALYTICS_TABLES (power_statistics, agent_production_statistics,
-agent_manual_production_statistics) are declared in schema_definitions.py but
-excluded from database.py's CREATE set (`all_tables = CORE_TABLES +
-COMPONENT_TABLES`) and never documented to the model — DEAD_DECLARED, not a
-mirage (nobody is taught they exist), so those assertions are plain GREEN:
-they pin the declared-vs-created gap as an executable fact that would break
-loudly if someone CREATEd them without wiring a loader.
+The agent analytics tables are now created, documented, and fed through the
+same boot/live reducer path. This family pins their catalog presence; the
+free-play domain contract verifies non-empty file/DB parity after crafting.
 
 Each xfail test establishes its engine-truth/rig precondition as a floor
 (runtime.require_floor) BEFORE the failing assertion, so a broken rig ERRORs
@@ -39,7 +34,7 @@ import pytest
 
 from _frozen import runtime
 from _frozen.liveness_spec import (
-    DECLARED_UNCREATED_TABLES,
+    INGESTED_ANALYTICS_TABLES,
     DOCUMENTED_PHANTOM_JOIN_KEY,
     cases_for_group,
 )
@@ -232,24 +227,18 @@ def test_documented_join_executes(rig):
 
 
 # ---------------------------------------------------------------------------
-# D. Analytics tables (DEAD_DECLARED, not a mirage — plain GREEN): declared
-#    in schema_definitions.py, excluded from database.py's CREATE set, never
-#    documented to the model. Pins the declared-vs-created gap as a fact.
+# D. Analytics tables: created and backed by the agent-statistics reducers.
 # ---------------------------------------------------------------------------
 
 
-def test_declared_uncreated_tables_do_not_exist(rig):
-    runtime.require_floor(len(DECLARED_UNCREATED_TABLES), 1, "DECLARED_UNCREATED_TABLES entries")
+def test_ingested_analytics_tables_exist(rig):
+    runtime.require_floor(len(INGESTED_ANALYTICS_TABLES), 1, "INGESTED_ANALYTICS_TABLES entries")
     con = rig["con"]
-    present = []
-    for table in DECLARED_UNCREATED_TABLES:
+    missing = []
+    for table in INGESTED_ANALYTICS_TABLES:
         n = con.execute(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
             [table]).fetchone()[0]
-        if n > 0:
-            present.append(table)
-    assert not present, (
-        f"declared-but-uncreated analytics tables now exist in the DB "
-        f"catalog: {present} — someone CREATEd them; reconcile "
-        "schema_definitions/database.py + the ledger before this test can "
-        "stay green")
+        if n == 0:
+            missing.append(table)
+    assert not missing, f"ingested analytics tables missing from DB catalog: {missing}"

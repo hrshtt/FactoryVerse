@@ -38,6 +38,16 @@ class SessionRuntimeAdapter:
     def __init__(self, session: FactoryVerseSession):
         self._session = session
 
+    @property
+    def remote_view(self):
+        """Expose the underlying tier4 RemoteView (DIGEST-1: the orchestrator's
+        power digest reads runtime.remote_view; adapters must pass it through
+        or the digest silently disappears). Best-effort — None if the session
+        has no tier4 runtime."""
+        env = getattr(self._session, "_env", None)
+        tier4 = getattr(env, "tier4", None) if env else None
+        return getattr(tier4, "remote_view", None)
+
     def execute_dsl(self, code: str, metadata=None) -> str:
         result = self._session.execute_dsl(code)
         if result.is_error:

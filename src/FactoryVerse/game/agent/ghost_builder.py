@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from FactoryVerse.game.factory.entity.base_entity import BaseEntity
     from FactoryVerse.game.factory.types import MapPosition
     from FactoryVerse.game.agent.placement_hints import GhostPlan
+    from FactoryVerse.game.agent.placement_hints import PlacementValidator
 
 
 @dataclass
@@ -54,6 +55,7 @@ class GhostBuilderAction:
         placement: "PlacementAction",
         inventory: "AgentInventory",
         reachable_view: "ReachableView | None" = None,
+        validator: "PlacementValidator | None" = None,
     ):
         """Initialize ghost builder.
 
@@ -62,11 +64,13 @@ class GhostBuilderAction:
             placement: Placement action for placing entities
             inventory: Agent inventory for checking available items
             reachable_view: ReachableView for querying placed ghosts (needed for build_plan)
+            validator: Engine-backed validator used again at plan commit time
         """
         self._movement = movement
         self._placement = placement
         self._inventory = inventory
         self._reachable_view = reachable_view
+        self._validator = validator
 
     def _extract_ghost_info(self, ghost: "BaseEntity") -> GhostInfo:
         """Extract name and position from a ghost entity.
@@ -233,7 +237,7 @@ class GhostBuilderAction:
             >>> plan = placement_hints.get_placement_line("transport-belt", start, end)
             >>> result = await ghost_builder.build_plan(plan)
         """
-        if not plan.valid:
+        if not plan.valid and self._validator is None:
             return {
                 "built_count": 0,
                 "failed_count": 0,
@@ -254,6 +258,18 @@ class GhostBuilderAction:
                     "placed_count": 0,
                     "error": f"Strict mode: insufficient {plan.entity_name} (have {available}, need {required_count})",
                 }
+
+        # A plan is a cached observation, not a reservation. Revalidate at the
+        # commit boundary before placing the first ghost so an obstruction that
+        # appeared after planning cannot cause a partial stale-plan mutation.
+        if self._validator is not None and not plan.validate(self._validator):
+            return {
+                "built_count": 0,
+                "failed_count": 0,
+                "total_processed": 0,
+                "placed_count": 0,
+                "error": "GhostPlan failed commit-time revalidation",
+            }
 
         # Place all ghosts from the plan
         print(f"Placing {len(plan.positions)} ghosts for plan: {plan.description}")

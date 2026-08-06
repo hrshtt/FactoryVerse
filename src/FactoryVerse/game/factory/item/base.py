@@ -361,7 +361,7 @@ class PlaceableItem(Item):
             position,
             direction,
             ghost=True,
-            ghost_label=label,
+            label=label,
         )
 
         return result.success
@@ -454,5 +454,4 @@ class ItemStack:
     def __len__(self) -> int:
         """Get the count of items in the stack."""
         return self.count
-
 

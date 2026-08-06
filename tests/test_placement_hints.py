@@ -7,7 +7,7 @@ Tests cover:
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock
 from FactoryVerse.game.agent.placement_hints import (
     PlacementValidator,
     PlacementHints,
@@ -34,7 +34,7 @@ class TestPlacementValidator:
 
     def test_validate_placement_success(self, validator, mock_rcon):
         """Test single position validation (success case)."""
-        mock_rcon.execute.return_value = "true"
+        mock_rcon.execute.return_value = '{"valid": true}'
 
         result = validator.validate_placement(
             "transport-belt",
@@ -46,16 +46,18 @@ class TestPlacementValidator:
         assert result is True
         assert mock_rcon.execute.called
 
-        # Check Lua command was generated correctly
+        # Validation delegates to the engine-backed remote interface.
         lua_code = mock_rcon.execute.call_args[0][0]
+        assert 'remote.call("placement_hints", "validate_placement"' in lua_code
         assert "transport-belt" in lua_code
         assert "10.5" in lua_code
         assert "20.5" in lua_code
-        assert "manual_ghost" in lua_code
+        assert "helpers.table_to_json" in lua_code
+        assert ", true)" in lua_code
 
     def test_validate_placement_failure(self, validator, mock_rcon):
         """Test single position validation (failure case)."""
-        mock_rcon.execute.return_value = "false"
+        mock_rcon.execute.return_value = '{"valid": false}'
 
         result = validator.validate_placement(
             "assembling-machine-1", MapPosition(x=5.0, y=5.0), ghost=False
@@ -63,14 +65,15 @@ class TestPlacementValidator:
 
         assert result is False
 
-        # Check correct build_check_type
+        # The concrete build-check type is owned by the Lua service; Python
+        # forwards the real-vs-ghost intent without duplicating that ontology.
         lua_code = mock_rcon.execute.call_args[0][0]
-        assert "manual" in lua_code
-        assert "manual_ghost" not in lua_code
+        assert 'remote.call("placement_hints", "validate_placement"' in lua_code
+        assert ", false)" in lua_code
 
     def test_validate_batch_single_batch(self, validator, mock_rcon):
         """Test batch validation (single batch, all valid)."""
-        mock_rcon.execute.return_value = "{true, true, true}"
+        mock_rcon.execute.return_value = "[true, true, true]"
 
         positions = [
             MapPosition(x=10.0, y=10.0),
@@ -87,7 +90,7 @@ class TestPlacementValidator:
 
     def test_validate_batch_mixed_results(self, validator, mock_rcon):
         """Test batch validation with mixed valid/invalid positions."""
-        mock_rcon.execute.return_value = "{true, false, true, false}"
+        mock_rcon.execute.return_value = "[true, false, true, false]"
 
         positions = [MapPosition(x=i, y=10.0) for i in range(4)]
 
@@ -102,8 +105,8 @@ class TestPlacementValidator:
 
         # Mock returns for multiple batches
         mock_rcon.execute.side_effect = [
-            "{true, true, true, true, true}",
-            "{true, true, true}",
+            "[true, true, true, true, true]",
+            "[true, true, true]",
         ]
 
         positions = [MapPosition(x=float(i), y=10.0) for i in range(8)]
@@ -136,9 +139,31 @@ class TestPlacementValidator:
         assert positions[0].y == 0.0
         assert positions[-1].y == 5.0
 
+    @pytest.mark.parametrize(
+        ("start", "end", "expected"),
+        [
+            (
+                MapPosition(x=-5.5, y=2.5),
+                MapPosition(x=-3.5, y=2.5),
+                [(-5.5, 2.5), (-4.5, 2.5), (-3.5, 2.5)],
+            ),
+            (
+                MapPosition(x=2.5, y=-5.5),
+                MapPosition(x=2.5, y=-3.5),
+                [(2.5, -5.5), (2.5, -4.5), (2.5, -3.5)],
+            ),
+        ],
+    )
+    def test_calculate_line_preserves_half_tile_centers(
+        self, validator, start, end, expected
+    ):
+        positions = validator._calculate_line_positions(start, end)
+
+        assert [(position.x, position.y) for position in positions] == expected
+
     def test_validate_line(self, validator, mock_rcon):
         """Test line validation."""
-        mock_rcon.execute.return_value = "{true, true, true}"
+        mock_rcon.execute.return_value = "[true, true, true]"
 
         results = validator.validate_line(
             "transport-belt",
@@ -160,7 +185,7 @@ class TestPlacementHints:
         """Create a mock RCON handler."""
         rcon = Mock()
         rcon.agent_id = "agent_1"
-        rcon.execute.return_value = "true"  # Default: all positions valid
+        rcon.execute.return_value = "[]"
         return rcon
 
     @pytest.fixture
@@ -170,7 +195,7 @@ class TestPlacementHints:
 
     def test_get_placement_line_horizontal_belt(self, hints, mock_rcon):
         """Test generating a horizontal belt line."""
-        mock_rcon.execute.return_value = "{true, true, true, true, true}"
+        mock_rcon.execute.return_value = "[true, true, true, true, true]"
 
         plan = hints.get_placement_line(
             "transport-belt",
@@ -194,7 +219,7 @@ class TestPlacementHints:
 
     def test_get_placement_line_vertical_pipe(self, hints, mock_rcon):
         """Test generating a vertical pipe line."""
-        mock_rcon.execute.return_value = "{true, true, true}"
+        mock_rcon.execute.return_value = "[true, true, true]"
 
         plan = hints.get_placement_line(
             "pipe", MapPosition(x=5.0, y=0.0), MapPosition(x=5.0, y=2.0), validate=True
@@ -224,7 +249,7 @@ class TestPlacementHints:
     def test_get_placement_line_invalid_positions(self, hints, mock_rcon):
         """Test line generation with some invalid positions."""
         # Return mixed results
-        mock_rcon.execute.return_value = "{true, false, true}"
+        mock_rcon.execute.return_value = "[true, false, true]"
 
         plan = hints.get_placement_line(
             "transport-belt",
@@ -295,7 +320,7 @@ class TestGhostPlan:
 
         # Mock validator that returns all False
         mock_rcon = Mock()
-        mock_rcon.execute.return_value = "{false, false}"
+        mock_rcon.execute.return_value = "[false, false]"
         validator = PlacementValidator(mock_rcon)
 
         result = plan.validate(validator)
@@ -312,7 +337,7 @@ class TestConnectionSolving:
         """Create a mock RCON handler."""
         rcon = Mock()
         rcon.agent_id = "agent_1"
-        rcon.execute.return_value = "true"
+        rcon.execute.return_value = '{"positions": [], "count": 0}'
         return rcon
 
     @pytest.fixture
@@ -334,7 +359,7 @@ class TestConnectionSolving:
         source.prototype = {"vector_to_place_result": [0, -1.85]}
 
         # Mock validation to return True for all positions
-        mock_rcon.execute.return_value = "true"
+        mock_rcon.execute.return_value = '{"positions": [], "count": 0}'
 
         # Test it returns a list
         positions = hints.get_connection_positions(
@@ -353,13 +378,13 @@ class TestIntegration:
         """Create a mock RCON handler."""
         rcon = Mock()
         rcon.agent_id = "agent_1"
-        rcon.execute.return_value = "true"
+        rcon.execute.return_value = "[]"
         return rcon
 
     def test_full_workflow_belt_line(self, mock_rcon):
         """Test full workflow: create plan, validate, use with ghost builder."""
         # Mock batch validation response
-        mock_rcon.execute.return_value = "{true, true, true, true, true}"
+        mock_rcon.execute.return_value = "[true, true, true, true, true]"
 
         hints = PlacementHints(mock_rcon)
 
@@ -383,7 +408,7 @@ class TestIntegration:
         assert plan.label.startswith("plan:transport-belt:line:")
 
         # Simulate map change - re-validate
-        mock_rcon.execute.return_value = "{true, false, true, true, true}"
+        mock_rcon.execute.return_value = "[true, false, true, true, true]"
         result = plan.validate(PlacementValidator(mock_rcon))
 
         assert result is False  # One position is now invalid

@@ -158,6 +158,12 @@ class BaseEntity:
         self._ghost_name = ghost_name
         self._view = view
         self._prototype_cache: Optional[Dict[str, Any]] = None
+        # Common snapshot identity carried by both generic entities and
+        # specialized subclasses. GhostBuilder uses these fields to preserve
+        # plan direction and label through ghost -> real commitment.
+        self.direction = kwargs.get("direction")
+        self.label = kwargs.get("label")
+        self.placed_tick = kwargs.get("placed_tick")
 
         # Action dependencies (always required)
         self._entity_ops: "EntityOperationsAction" = entity_ops
@@ -447,6 +453,11 @@ class BaseEntity:
     # =========================================================================
     # Actions
     # =========================================================================
+
+    @property
+    def view(self) -> EntityView:
+        """Whether this entity handle is REMOTE or REACHABLE."""
+        return self._view
 
     def __getattribute__(self, name: str):
         """Filter method access based on view and ghost status."""

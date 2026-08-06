@@ -14,7 +14,13 @@ import time
 from pathlib import Path
 from typing import Optional, Any, List, TYPE_CHECKING
 
-from ..config import RuntimeConfig, RuntimeVariant, ExecutionMode, SessionMode
+from ..config import (
+    RuntimeConfig,
+    RuntimeVariant,
+    RuntimeAccessProfile,
+    ExecutionMode,
+    SessionMode,
+)
 from ..status import Tier4Status, TierState, PrerequisiteResult
 from .base import TierBase, Tier, TierInitializationError
 
@@ -55,6 +61,7 @@ class Tier4Runtime(TierBase):
         self._reachable_view: Optional[Any] = None
         self._embodied_actions: Optional[Any] = None
         self._placement_hints: Optional[Any] = None
+        self._verify: Optional[Any] = None
         self._ghost_builder: Optional[Any] = None
         self._modules_loaded: List[str] = []
 
@@ -162,6 +169,11 @@ class Tier4Runtime(TierBase):
         return self._placement_hints
 
     @property
+    def verify(self) -> Optional[Any]:
+        """Get VerifyView for live power/coverage confirmation."""
+        return self._verify
+
+    @property
     def ghost_builder(self) -> Optional[Any]:
         """Get GhostBuilder for building ghost entities."""
         return self._ghost_builder
@@ -251,12 +263,22 @@ class Tier4Runtime(TierBase):
             # Create agent in Factorio
             await self._reconcile_and_create_agent()
 
+            # A headless freeplay agent charts its starting area only after the
+            # snapshot system's initial bootstrap may already have entered
+            # MAINTENANCE.  Reconcile every tracked chunk now and wait for the
+            # writer to be fully idle before either DuckDB loader can admit the
+            # actor.  This also makes native-save resume independent of stale
+            # or missing host-side snapshot files.
+            await self._prepare_freeplay_snapshot()
+
             # Load modules based on variant
-            # Order matters: embodied_actions -> reachable_view -> ghost_builder (needs reachable_view)
+            # Order matters: ghost_builder needs reachable_view and the
+            # engine-backed placement validator for commit-time revalidation.
             await self._load_embodied_actions()
             await self._load_reachable_view()
-            await self._load_ghost_builder()
             await self._load_placement_hints()
+            await self._load_ghost_builder()
+            await self._load_verify()
 
             # Load EventStream for temporal perception (game events)
             await self._load_event_stream()
@@ -649,6 +671,76 @@ class Tier4Runtime(TierBase):
         self._modules_loaded.append("agent")
         logger.info(f"Tier 4: Agent '{self._agent_id}' ready on UDP port {udp_port}")
 
+    async def _prepare_freeplay_snapshot(self, timeout: float = 300.0) -> None:
+        """Re-snapshot all tracked freeplay chunks before loading DuckDB."""
+        if self._env.config.tier2.scenario != "freeplay":
+            return
+
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.map_api is None:
+            raise RuntimeError("Tier 3 map interface is required for freeplay snapshotting")
+
+        map_api = tier3.map_api
+        lookup = map_api.get_chunk_lookup()
+        chunks: list[dict[str, int]] = []
+        for key in lookup:
+            try:
+                chunk_x, chunk_y = str(key).split(",", 1)
+                chunks.append({"x": int(chunk_x), "y": int(chunk_y)})
+            except (TypeError, ValueError):
+                logger.warning("Ignoring malformed snapshot chunk key: %r", key)
+
+        # A brand-new headless game can still have an empty tracker for a few
+        # ticks.  The embodied agent is at the origin and must at minimum see
+        # the same 7x7 starting window chart_spawn_area() promises.
+        if not chunks:
+            chunks = [
+                {"x": chunk_x, "y": chunk_y}
+                for chunk_x in range(-3, 4)
+                for chunk_y in range(-3, 4)
+            ]
+
+        trigger_tick = tier3.get_game_tick()
+        result = map_api.re_snapshot_chunks(chunks)
+        if not result.success or result.chunks_queued != len(chunks):
+            raise RuntimeError(
+                "Failed to queue complete freeplay snapshot: "
+                f"queued={result.chunks_queued}, expected={len(chunks)}, "
+                f"error={result.error}"
+            )
+
+        expected = {(chunk["x"], chunk["y"]) for chunk in chunks}
+        deadline = time.monotonic() + timeout
+        last_status: Any = None
+        stale_count = len(expected)
+        while time.monotonic() < deadline:
+            last_status = map_api.get_snapshot_status()
+            current_lookup = map_api.get_chunk_lookup()
+            stale_count = 0
+            for chunk_x, chunk_y in expected:
+                entry = current_lookup.get(f"{chunk_x},{chunk_y}") or {}
+                snapshot_tick = entry.get("snapshot_tick")
+                if snapshot_tick is None or int(snapshot_tick) < trigger_tick:
+                    stale_count += 1
+
+            writer_idle = (
+                last_status.chunks_processing == 0
+                and last_status.chunks_pending == 0
+            )
+            if writer_idle and stale_count == 0:
+                logger.info(
+                    "Tier 4: Freeplay snapshot reconciled at tick %s (%s chunks)",
+                    trigger_tick,
+                    len(expected),
+                )
+                return
+            await asyncio.sleep(0.5)
+
+        raise asyncio.TimeoutError(
+            "Freeplay snapshot reconciliation did not quiesce within "
+            f"{timeout}s (stale_chunks={stale_count}, status={last_status})"
+        )
+
     async def _load_embodied_actions(self) -> None:
         """Load EmbodiedActions modules.
 
@@ -712,6 +804,7 @@ class Tier4Runtime(TierBase):
             placement=self._placement,
             inventory=self._inventory,
             reachable_view=self._reachable_view,
+            validator=self._placement_hints.validator,
         )
         self._modules_loaded.append("ghost_builder")
 
@@ -757,6 +850,23 @@ class Tier4Runtime(TierBase):
         self._modules_loaded.append("placement_hints")
 
         logger.info("Tier 4: PlacementHints loaded")
+
+    async def _load_verify(self) -> None:
+        """Load VerifyView module (live power/coverage confirmation via RCON)."""
+        from FactoryVerse.game.agent.verify_view import VerifyView
+        from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
+
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.rcon_helper is None:
+            raise RuntimeError("Tier 3 must be initialized with RCON")
+
+        # VerifyView issues raw /sc Lua over the agent's RconHandler (same route
+        # PlacementHintsClient uses); geometry comes from the prototype pipeline.
+        rcon_handler = RconHandler(tier3.rcon_helper.rcon_client, self.agent_id)
+        self._verify = VerifyView(rcon_handler)
+        self._modules_loaded.append("verify")
+
+        logger.info("Tier 4: VerifyView loaded")
 
     async def _load_event_stream(self) -> None:
         """Load EventStream for temporal perception of game events.
@@ -984,7 +1094,7 @@ class Tier4Runtime(TierBase):
         - Snapshot port (34500 for client, 34400+N for servers): Entity state updates
         """
         from FactoryVerse.game.agent.remote_view import RemoteView
-        from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
+        from FactoryVerse.infra.udp_dispatcher import UDPDispatcher, get_udp_dispatcher
 
         tier3 = self._env.tier3
         if tier3 is None:
@@ -994,14 +1104,28 @@ class Tier4Runtime(TierBase):
             raise RuntimeError("Tier 3 must be initialized with instance")
         snapshot_dir = infra_config.get_snapshot_dir(tier3.instance)
 
-        # RemoteView uses the global UDP dispatcher (get_udp_dispatcher) internally
-        # for snapshot sync. That dispatcher binds to the snapshot port (34500 for client).
-        # We don't create a separate one here to avoid port conflicts.
-        #
-        # The global dispatcher is started by RemoteView._wait_for_bootstrap_complete()
-        # during load(), so we just pass None and let it use the global one.
+        # DB-VISION-1: RemoteView treats udp_dispatcher=None as "sync disabled" —
+        # there is NO global-dispatcher fallback inside it (load() sets _sync=None,
+        # start() returns early). Passing None here froze the eval DB at its
+        # boot-time load for the entire 2026-07-11 terra-pro run. We must hand it
+        # a dispatcher bound to the instance's SNAPSHOT port (34400+N for servers —
+        # the only snapshot port socat forwards; 34500 for client). Pin the global
+        # singleton to that port BEFORE RemoteView's bootstrap wait creates it on
+        # the client default, so the phase-change UDP leg listens correctly too.
         snapshot_udp_port = infra_config.get_snapshot_port(tier3.instance)
-        logger.info(f"Tier 4: RemoteView will use snapshot port {snapshot_udp_port}")
+        udp_dispatcher = get_udp_dispatcher(port=snapshot_udp_port)
+        if udp_dispatcher.port != snapshot_udp_port:
+            logger.warning(
+                f"Tier 4: global UDP dispatcher already bound to port "
+                f"{udp_dispatcher.port}, need snapshot port {snapshot_udp_port} — "
+                f"creating a dedicated dispatcher for RemoteView sync"
+            )
+            udp_dispatcher = UDPDispatcher(port=snapshot_udp_port)
+        if not udp_dispatcher.is_running():
+            await udp_dispatcher.start()
+        logger.info(
+            f"Tier 4: RemoteView sync dispatcher on snapshot port {udp_dispatcher.port}"
+        )
 
         self._remote_view = RemoteView(
             snapshot_dir=snapshot_dir,
@@ -1009,7 +1133,8 @@ class Tier4Runtime(TierBase):
             place_ops=self._placement,
             walking_action=self._movement,
             mining_action=self._mining,
-            udp_dispatcher=None,  # Let RemoteView use global dispatcher
+            db_path=self.config.database_path,
+            udp_dispatcher=udp_dispatcher,
             rcon_client=tier3._rcon,
         )
 
@@ -1018,6 +1143,10 @@ class Tier4Runtime(TierBase):
         logger.info("Tier 4: Loading RemoteView data...")
         await self._remote_view.load(wait_for_bootstrap=True, bootstrap_timeout=120.0)
         await self._remote_view.start()  # Start real-time sync via UDP
+        self._mining.set_resource_depletion_barrier(
+            self._remote_view.wait_for_resource_depletion
+        )
+        self._placement.set_state_barrier(self._remote_view.wait_for_placement)
         logger.info("Tier 4: RemoteView sync started")
 
         self._modules_loaded.append("remote_view")
@@ -1085,6 +1214,7 @@ class Tier4Runtime(TierBase):
         self._reachable_view = None
         self._embodied_actions = None
         self._placement_hints = None
+        self._verify = None
         self._ghost_builder = None
         self._scenario_adapter = None
         self._event_stream = None
@@ -1243,11 +1373,6 @@ class Tier4Runtime(TierBase):
             "WalkingEntityNotFoundError": WalkingEntityNotFoundError,
             "WalkingNoStandableTilesError": WalkingNoStandableTilesError,
             # =================================================================
-            # Tier 3 components
-            # =================================================================
-            "rcon_client": tier3.rcon if tier3 else None,
-            "runtime": runtime_proxy,  # For notification access
-            # =================================================================
             # Tier 4 components (action modules and views)
             # =================================================================
             "agent_id": self._agent_id,
@@ -1263,15 +1388,23 @@ class Tier4Runtime(TierBase):
             "remote_view": self._remote_view,
             "ghost_builder": self._ghost_builder,
             "placement_hints": self._placement_hints,
-            # =================================================================
-            # Scenario adapter (if detected)
-            # =================================================================
-            "scenario": self._scenario_adapter,
-            # =================================================================
+            "verify": self._verify,
             # EventStream (temporal perception of game events)
             # =================================================================
             "events": self._event_stream,
         }
+
+        # Raw transport and runtime internals are development capabilities, not
+        # part of the production actor API. This narrows the cooperative actor
+        # surface; an adversarial Python sandbox remains an outer-layer concern.
+        if self.config.access_profile == RuntimeAccessProfile.DEBUG:
+            builtin_names.update(
+                {
+                    "rcon_client": tier3.rcon if tier3 else None,
+                    "runtime": runtime_proxy,
+                    "scenario": self._scenario_adapter,
+                }
+            )
         namespace.update(builtin_names)
 
         # Capture stdout

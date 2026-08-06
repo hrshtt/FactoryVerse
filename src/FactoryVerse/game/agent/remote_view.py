@@ -20,10 +20,12 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+import shutil
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
@@ -43,6 +45,92 @@ from FactoryVerse.game.snapshot.types import LoadResult, SyncState
 from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Power UX typed results (WS4)
+# =============================================================================
+
+
+@dataclass
+class PowerNetworkCensus:
+    """One live electric network from the latest power sample.
+
+    Returned inside :class:`PowerNetworksReport` by
+    :meth:`RemoteView.get_power_networks`. The durable per-network reference is
+    the anchor pole (``anchor_pole_name`` + ``anchor_pole_position``); the
+    engine ``network_id`` is a per-sample handle only (it renumbers on
+    merge/split — see the power_networks table notes).
+
+    ``low_power_count`` / ``no_power_count`` are computed by joining
+    entity_status to map_entity on (name, position) to recover each entity's
+    ``electric_network_id``. That id is AS-OF the last entity write, not the
+    sample instant, so on a network that just merged/split the counts can lag
+    the wattages by up to one entity-write cycle.
+    """
+
+    network_id: Optional[int]
+    anchor_pole_name: Optional[str]
+    anchor_pole_position: Optional[Dict[str, float]]
+    pole_count: int
+    member_count: int
+    production_w: float
+    consumption_w: float
+    storage_j: float
+    headroom_ratio: Optional[float]
+    production_by_prototype: Dict[str, float]
+    consumption_by_prototype: Dict[str, float]
+    low_power_count: int
+    no_power_count: int
+    sample_tick: int
+
+
+@dataclass
+class PowerNetworksReport:
+    """Census of every live electric network at one power sample.
+
+    ``networks`` is ordered by anchor-pole position (stable across samples of
+    an unchanged network). ``sample_tick`` is None only when no power sample
+    has been ingested yet. ``freshness_note`` documents the sample's age and
+    the as-of-write staleness of the entity_status join.
+    """
+
+    networks: List[PowerNetworkCensus]
+    sample_tick: Optional[int]
+    freshness_note: str
+    # DIGEST-2: no_power entities that attribute to NO network (their
+    # electric_network_id is nil — e.g. not covered by any pole, the sickest
+    # case). They appear in entity_status/diagnose_power but in no network's
+    # per-net counts, so without this field the report (and the Task Progress
+    # digest built from it) under-reports exactly the machines that are worst
+    # off. Network-independent count, straight from entity_status.
+    unattributed_no_power: int = 0
+
+
+@dataclass
+class PowerDiagnosis:
+    """Result of :meth:`RemoteView.diagnose_power` — a one-shot power triage.
+
+    ``verdict`` is one of: 'working', 'not_covered_by_any_pole',
+    'network_has_no_generation', 'network_undersupplied',
+    'upstream_generator_starved', 'no_status_data', 'entity_not_found',
+    'non_electric_or_no_issue'. ``explanation`` is human-readable and encodes
+    the live-learned caveats (poles report nil status; a starved producer
+    still reports 'working'; Factorio's single status can mask low_power
+    behind a logistics status) where they apply.
+    """
+
+    verdict: str
+    explanation: str
+    entity_name: str
+    position: Dict[str, float]
+    status_name: Optional[str] = None
+    network_id: Optional[int] = None
+    production_w: Optional[float] = None
+    consumption_w: Optional[float] = None
+    covering_pole_name: Optional[str] = None
+    covering_pole_position: Optional[Dict[str, float]] = None
+    sample_tick: Optional[int] = None
 
 
 class RemoteView:
@@ -159,6 +247,10 @@ class RemoteView:
                 on_rebuild=self._handle_rebuild_needed,
                 initial_sequence=0,  # Will be updated after load
                 db_lock=self._db_lock,
+                # Lets SyncService resolve the container-relative file_path
+                # carried by power_networks/entity_status file_io UDP
+                # payloads (power-impl-contracts.md Task 4).
+                snapshot_dir=self._snapshot_dir,
             )
         else:
             self._sync = None
@@ -168,10 +260,13 @@ class RemoteView:
             self._database.connection,
             self._snapshot_dir,
         )
-        
-        # Status directory is at snapshot_dir/factoryverse/status
-        status_dir = self._snapshot_dir / "factoryverse" / "status"
-        
+
+        # NOTE: entity_status is now a real persistent table (see
+        # schema_definitions.ENTITY_STATUS), populated via
+        # analytics_ops.apply_status_dump by both SnapshotLoader.load_all()
+        # (boot) and SyncService (live). The old on-demand status_dir/
+        # status_loader.py path is gone (Task 5) — QueryExecutor no longer
+        # takes a status_dir argument.
         self._query = QueryExecutor(
             self._database.connection,
             entity_ops=self._entity_ops,
@@ -180,7 +275,6 @@ class RemoteView:
             mining_action=self._mining_action,
             sync_service=self._sync,
             db_lock=self._db_lock,
-            status_dir=status_dir,
         )
 
         # Load data (with lock to prevent concurrent access)
@@ -228,9 +322,8 @@ class RemoteView:
                     self._snapshot_dir,
                 )
             
-            # Re-initialize query executor if needed (with status_dir)
+            # Re-initialize query executor if needed
             if self._query is None:
-                status_dir = self._snapshot_dir / "factoryverse" / "status"
                 self._query = QueryExecutor(
                     self._database.connection,
                     entity_ops=self._entity_ops,
@@ -239,7 +332,6 @@ class RemoteView:
                     mining_action=self._mining_action,
                     sync_service=self._sync,
                     db_lock=self._db_lock,
-                    status_dir=status_dir,
                 )
 
             # Load data synchronously (already holding lock)
@@ -333,6 +425,123 @@ class RemoteView:
         self._ensure_query_ready()
         return self._query.query(sql)
 
+    async def wait_for_resource_depletion(
+        self,
+        entity_name: str,
+        position_x: float,
+        position_y: float,
+        timeout: float = 5.0,
+    ) -> None:
+        """Wait until an awaited depletion is visible in the owned database.
+
+        Action completion and snapshot mutations use separate UDP transports,
+        so draining only the mutations already queued at query time is not a
+        causal barrier. This method hides that transport race below the actor
+        API: once ``mine()`` returns, the next query cannot observe the exact
+        depleted tree or rock.
+        """
+        if not self._loaded:
+            raise RuntimeError("RemoteView not loaded. Call load() first.")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            if self._sync:
+                self._sync.flush_pending()
+            with self._db_lock:
+                remaining = self._database.connection.execute(
+                    """
+                    SELECT count(*) FROM resource_entity
+                    WHERE name = ? AND position_x = ? AND position_y = ?
+                    """,
+                    [entity_name, float(position_x), float(position_y)],
+                ).fetchone()[0]
+            if remaining == 0:
+                return
+            if loop.time() >= deadline:
+                raise TimeoutError(
+                    "Depleted resource did not become visible in DuckDB: "
+                    f"{entity_name} at ({position_x}, {position_y})"
+                )
+            await asyncio.sleep(0.01)
+
+    def wait_for_placement(
+        self,
+        entity_name: str,
+        position_x: float,
+        position_y: float,
+        ghost: bool,
+        label: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> None:
+        """Wait until a completed placement is atomically visible to reads.
+
+        The placement RCON call and snapshot mutation use separate transports.
+        The UDP dispatcher runs on its own thread, so this synchronous barrier
+        can drain those mutations before returning from the synchronous actor
+        placement API. A real placement is complete only when its exact entity
+        row exists and any ghost at that identity is absent.
+        """
+        if not self._loaded:
+            raise RuntimeError("RemoteView not loaded. Call load() first.")
+
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._sync:
+                self._sync.flush_pending()
+            with self._db_lock:
+                if ghost:
+                    visible = self._database.connection.execute(
+                        """
+                        SELECT count(*) FROM ghost
+                        WHERE ghost_name = ?
+                          AND position_x = ? AND position_y = ?
+                          AND (? IS NULL OR label = ?)
+                        """,
+                        [
+                            entity_name,
+                            float(position_x),
+                            float(position_y),
+                            label,
+                            label,
+                        ],
+                    ).fetchone()[0]
+                    complete = visible == 1
+                else:
+                    visible = self._database.connection.execute(
+                        """
+                        SELECT count(*) FROM map_entity
+                        WHERE entity_name = ?
+                          AND position_x = ? AND position_y = ?
+                          AND (? IS NULL OR label = ?)
+                        """,
+                        [
+                            entity_name,
+                            float(position_x),
+                            float(position_y),
+                            label,
+                            label,
+                        ],
+                    ).fetchone()[0]
+                    remaining_ghosts = self._database.connection.execute(
+                        """
+                        SELECT count(*) FROM ghost
+                        WHERE ghost_name = ?
+                          AND position_x = ? AND position_y = ?
+                        """,
+                        [entity_name, float(position_x), float(position_y)],
+                    ).fetchone()[0]
+                    complete = visible == 1 and remaining_ghosts == 0
+            if complete:
+                return
+            if time.monotonic() >= deadline:
+                state = "ghost" if ghost else "real entity with no remaining ghost"
+                raise TimeoutError(
+                    f"Placed {state} did not become visible in DuckDB: "
+                    f"{entity_name} at ({position_x}, {position_y}), label={label!r}"
+                )
+            time.sleep(0.01)
+
     def get_entities(self, sql: str) -> List["BaseEntity"]:
         """Execute SQL, return entity instances with REMOTE view.
 
@@ -396,7 +605,7 @@ class RemoteView:
         radius: Optional[float] = None,
         limit: int = 500,
     ) -> List[Dict[str, Any]]:
-        """Find water tiles on the map (e.g. offshore-pump sites).
+        """Find water tiles on the map (not validated offshore-pump anchors).
 
         Terrain affordance: answers "where is water?" from the snapshot DB
         without probing placements (AFFORD-1 — never use place/pickup as a
@@ -414,6 +623,9 @@ class RemoteView:
             map unexpectedly returns [], check snapshot freshness via
             `query("SELECT MAX(tick) FROM chunk_snapshot_meta")` before
             concluding water does not exist.
+
+        Use ``placement_hints.find_offshore_pump_sites`` around one of these
+        tiles to obtain engine-validated pump positions and directions.
         """
         self._ensure_query_ready()
         limit = int(limit)
@@ -455,6 +667,509 @@ class RemoteView:
         """
         self._ensure_query_ready()
         return self._query.get_ghosts(sql)
+
+    # =========================================================================
+    # Power UX (WS4)
+    # =========================================================================
+
+    @staticmethod
+    def _parse_json_dict(raw: Any) -> Dict[str, float]:
+        """Parse a JSON-column value (DuckDB returns JSON as a str) to a dict."""
+        if raw is None:
+            return {}
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return {}
+        else:
+            parsed = raw
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _pos_xy(position: Any) -> Tuple[float, float]:
+        """Normalize a position argument to (x, y).
+
+        Accepts a MapPosition (``.x``/``.y``), a dict ``{'x','y'}``, or a
+        ``(x, y)`` tuple/list.
+        """
+        if hasattr(position, "x") and hasattr(position, "y"):
+            return float(position.x), float(position.y)
+        if isinstance(position, dict):
+            return float(position["x"]), float(position["y"])
+        if isinstance(position, (tuple, list)) and len(position) >= 2:
+            return float(position[0]), float(position[1])
+        raise TypeError(
+            f"Unsupported position {position!r}; expected MapPosition, "
+            f"{{'x','y'}} dict, or (x, y) tuple"
+        )
+
+    def _latest_power_tick(self, as_of_tick: Optional[int]) -> Optional[int]:
+        """Sample tick to read: as_of_tick if given, else max(power_samples.tick)."""
+        if as_of_tick is not None:
+            return int(as_of_tick)
+        rows = self.execute_raw("SELECT max(tick) FROM power_samples")
+        if rows and rows[0][0] is not None:
+            return int(rows[0][0])
+        return None
+
+    def _power_freshness_note(self, sample_tick: int) -> str:
+        """Describe the sample's age and the entity_status join staleness.
+
+        Cheap DB-only reads: newest power sample tick and the entity_status
+        freshness marker (sync_state key 'entity_status_last_tick'). No RCON.
+        """
+        newest = self.execute_raw("SELECT max(tick) FROM power_samples")
+        newest_tick = newest[0][0] if newest and newest[0][0] is not None else sample_tick
+        parts = [f"power sample at tick {sample_tick}"]
+        if newest_tick is not None and int(newest_tick) != int(sample_tick):
+            parts.append(f"newest sample is tick {int(newest_tick)} (Δ{int(newest_tick) - int(sample_tick)} ticks)")
+        status_rows = self.execute_raw(
+            "SELECT value FROM sync_state WHERE key = 'entity_status_last_tick'"
+        )
+        if status_rows and status_rows[0][0] is not None:
+            status_tick = int(status_rows[0][0])
+            parts.append(
+                f"low_power/no_power counts joined via entity_status dump at tick "
+                f"{status_tick} (Δ{status_tick - int(sample_tick)} vs sample) using "
+                f"map_entity.electric_network_id which is as-of last entity write — "
+                f"membership can lag on a just-merged/split network"
+            )
+        else:
+            parts.append("no entity_status dump ingested yet — low_power/no_power counts are 0")
+        return "; ".join(parts)
+
+    def get_power_networks(
+        self, as_of_tick: Optional[int] = None
+    ) -> PowerNetworksReport:
+        """Per-network power census from the latest power sample.
+
+        Reads the latest power_networks sample (or the sample at ``as_of_tick``)
+        and, for each live electric network, returns its anchor pole, pole /
+        member counts, production / consumption / storage, a headroom ratio
+        (production / consumption; None when consumption is 0), the per-prototype
+        production and consumption breakdowns (parsed dicts, not raw JSON), and
+        the count of low_power / no_power entities on that network.
+
+        The low_power/no_power counts come from joining entity_status to
+        map_entity on (entity_name, position) to recover each entity's
+        electric_network_id, then matching the sample's ``network_id``. That id
+        is AS OF the last entity write, not the sample instant, so on a network
+        that just merged/split the counts can lag the wattages by one
+        entity-write cycle (see ``freshness_note`` on the returned report).
+
+        Args:
+            as_of_tick: Read this sample tick instead of the latest.
+
+        Returns:
+            PowerNetworksReport. ``sample_tick`` is None (and ``networks`` empty)
+            only when no power sample has been ingested yet.
+
+        Example:
+            >>> report = remote_view.get_power_networks()
+            >>> for net in report.networks:
+            ...     print(net.anchor_pole_name, net.production_w, net.consumption_w)
+        """
+        self._ensure_query_ready()
+
+        sample_tick = self._latest_power_tick(as_of_tick)
+        if sample_tick is None:
+            return PowerNetworksReport(
+                networks=[],
+                sample_tick=None,
+                freshness_note=(
+                    "no power sample ingested yet (power_samples is empty) — the "
+                    "sampler has not run, which is different from 'no networks'"
+                ),
+            )
+
+        # Per-network low_power/no_power counts, one grouped pass.
+        counts: Dict[int, Tuple[int, int]] = {}
+        for r in self.query(
+            """
+            SELECT me.electric_network_id AS nid,
+                   SUM(CASE WHEN es.status_name = 'low_power' THEN 1 ELSE 0 END) AS lp,
+                   SUM(CASE WHEN es.status_name = 'no_power' THEN 1 ELSE 0 END) AS np
+            FROM entity_status es
+            JOIN map_entity me
+              ON es.entity_name = me.entity_name
+             AND es.position_x = me.position_x
+             AND es.position_y = me.position_y
+            WHERE me.electric_network_id IS NOT NULL
+            GROUP BY me.electric_network_id
+            """
+        ):
+            counts[r["nid"]] = (int(r["lp"] or 0), int(r["np"] or 0))
+
+        net_rows = self.query(
+            f"""
+            SELECT network_id, anchor_pole_name, anchor_pole_x, anchor_pole_y,
+                   pole_count, member_count, production_w, consumption_w, storage_j,
+                   production_by_prototype, consumption_by_prototype
+            FROM power_networks
+            WHERE tick = {int(sample_tick)}
+            ORDER BY anchor_pole_x, anchor_pole_y, network_id
+            """
+        )
+
+        networks: List[PowerNetworkCensus] = []
+        for r in net_rows:
+            prod = float(r["production_w"] or 0.0)
+            cons = float(r["consumption_w"] or 0.0)
+            headroom = (prod / cons) if cons > 0 else None
+            low, no = counts.get(r["network_id"], (0, 0))
+            anchor_pos = (
+                {"x": r["anchor_pole_x"], "y": r["anchor_pole_y"]}
+                if r["anchor_pole_x"] is not None
+                else None
+            )
+            networks.append(
+                PowerNetworkCensus(
+                    network_id=r["network_id"],
+                    anchor_pole_name=r["anchor_pole_name"],
+                    anchor_pole_position=anchor_pos,
+                    pole_count=int(r["pole_count"] or 0),
+                    member_count=int(r["member_count"] or 0),
+                    production_w=prod,
+                    consumption_w=cons,
+                    storage_j=float(r["storage_j"] or 0.0),
+                    headroom_ratio=headroom,
+                    production_by_prototype=self._parse_json_dict(r["production_by_prototype"]),
+                    consumption_by_prototype=self._parse_json_dict(r["consumption_by_prototype"]),
+                    low_power_count=low,
+                    no_power_count=no,
+                    sample_tick=int(sample_tick),
+                )
+            )
+
+        # DIGEST-2: no_power entities with no network attribution (nil
+        # electric_network_id, or no map_entity row at all). These are the
+        # not-covered-by-any-pole cases — they must not vanish from the report
+        # just because the per-network join has no bucket for them.
+        orphan_rows = self.query(
+            """
+            SELECT COUNT(*) AS n
+            FROM entity_status es
+            LEFT JOIN map_entity me
+              ON es.entity_name = me.entity_name
+             AND es.position_x = me.position_x
+             AND es.position_y = me.position_y
+            WHERE es.status_name = 'no_power'
+              AND me.electric_network_id IS NULL
+            """
+        )
+        unattributed = int(orphan_rows[0]["n"] or 0) if orphan_rows else 0
+
+        return PowerNetworksReport(
+            networks=networks,
+            sample_tick=int(sample_tick),
+            freshness_note=self._power_freshness_note(int(sample_tick)),
+            unattributed_no_power=unattributed,
+        )
+
+    def _find_covering_pole(self, x: float, y: float) -> Optional[Dict[str, Any]]:
+        """Nearest electric pole whose (square) supply area covers (x, y).
+
+        Poles are read from map_entity (there is no type column, so we filter
+        by the known pole prototype names); each pole's supply_area_distance
+        comes from the offline prototype pipeline (same source ElectricPole
+        uses). Returns the covering pole with the smallest center distance, or
+        None if no pole covers the point.
+        """
+        from FactoryVerse.game.agent.placement_hints import (
+            ELECTRIC_POLE_ENTITIES,
+            _pole_prototype_distances,
+        )
+
+        names = "', '".join(sorted(ELECTRIC_POLE_ENTITIES))
+        poles = self.query(
+            f"""
+            SELECT entity_name, position_x, position_y, electric_network_id
+            FROM map_entity
+            WHERE entity_name IN ('{names}')
+            """
+        )
+        best: Optional[Dict[str, Any]] = None
+        best_d2 = None
+        for p in poles:
+            try:
+                _wire, supply = _pole_prototype_distances(p["entity_name"])
+            except ValueError:
+                continue
+            px, py = p["position_x"], p["position_y"]
+            # get_supply_area() is a square box of ±supply_area_distance.
+            if abs(x - px) <= supply and abs(y - py) <= supply:
+                d2 = (x - px) ** 2 + (y - py) ** 2
+                if best_d2 is None or d2 < best_d2:
+                    best_d2 = d2
+                    best = p
+        return best
+
+    def _network_at_tick(
+        self, network_id: Optional[int], tick: int
+    ) -> Optional[Dict[str, Any]]:
+        """The power_networks row for network_id at a sample tick, or None."""
+        if network_id is None:
+            return None
+        rows = self.query(
+            f"""
+            SELECT network_id, anchor_pole_name, anchor_pole_x, anchor_pole_y,
+                   production_w, consumption_w
+            FROM power_networks
+            WHERE tick = {int(tick)} AND network_id = {int(network_id)}
+            LIMIT 1
+            """
+        )
+        return rows[0] if rows else None
+
+    def _upstream_starved(self, network_id: Optional[int]) -> List[Dict[str, Any]]:
+        """no_fuel entities on the same network (generator starvation)."""
+        if network_id is None:
+            return []
+        return self.query(
+            f"""
+            SELECT es.entity_name, es.position_x AS x, es.position_y AS y
+            FROM entity_status es
+            JOIN map_entity me
+              ON es.entity_name = me.entity_name
+             AND es.position_x = me.position_x
+             AND es.position_y = me.position_y
+            WHERE me.electric_network_id = {int(network_id)}
+              AND es.status_name = 'no_fuel'
+            LIMIT 5
+            """
+        )
+
+    def diagnose_power(
+        self,
+        entity_name: str,
+        position: Any,
+        as_of_tick: Optional[int] = None,
+    ) -> PowerDiagnosis:
+        """Diagnose why an entity is unpowered (or confirm it is fine).
+
+        Encodes the manual power-diagnosis walk (status → pole coverage →
+        network generation → undersupply → upstream starvation) as one call.
+        Map-wide reads only (entity_status, map_entity, power_networks) — lives
+        on RemoteView because that is exactly the data it needs.
+
+        Walk:
+          1. Locate the entity in map_entity (name + position). Absent →
+             'entity_not_found'.
+          2. Read its status from entity_status. No status row → 'no_status_data'
+             (or 'non_electric_or_no_issue' for a pole, which reports nil status).
+          3. status 'working' → 'working' (with the caveat that a starved
+             producer also reports 'working').
+          4. status 'no_power': is any pole's supply area covering it? No →
+             'not_covered_by_any_pole'. Covered but the network has no
+             generation → 'network_has_no_generation'; a no_fuel member on the
+             network → 'upstream_generator_starved'.
+          5. status 'low_power' → 'network_undersupplied' (production vs
+             consumption), or 'upstream_generator_starved' if a generator is
+             starved.
+
+        Caveat (documented in the explanation where it applies): Factorio
+        reports a single status per entity, so a low_power condition can be
+        masked behind a logistics status; the network wattages are the ground
+        truth. The entity_status × map_entity join uses map_entity's as-of-write
+        electric_network_id.
+
+        Args:
+            entity_name: Factorio entity name.
+            position: MapPosition, {'x','y'} dict, or (x, y) tuple.
+            as_of_tick: Read this power sample instead of the latest.
+
+        Returns:
+            PowerDiagnosis with a ``verdict``, human-readable ``explanation``,
+            and the supporting numbers.
+
+        Example:
+            >>> diag = remote_view.diagnose_power("assembling-machine-1", pos)
+            >>> print(diag.verdict, diag.explanation)
+        """
+        from FactoryVerse.game.agent.placement_hints import ELECTRIC_POLE_ENTITIES
+
+        self._ensure_query_ready()
+        x, y = self._pos_xy(position)
+        pos_dict = {"x": x, "y": y}
+        sample_tick = self._latest_power_tick(as_of_tick)
+
+        def _mk(verdict: str, explanation: str, **kw: Any) -> PowerDiagnosis:
+            return PowerDiagnosis(
+                verdict=verdict,
+                explanation=explanation,
+                entity_name=entity_name,
+                position=pos_dict,
+                sample_tick=sample_tick,
+                **kw,
+            )
+
+        me_rows = self.query(
+            f"""
+            SELECT entity_name, position_x, position_y, electric_network_id
+            FROM map_entity
+            WHERE entity_name = '{entity_name}'
+              AND position_x BETWEEN {x - 0.6} AND {x + 0.6}
+              AND position_y BETWEEN {y - 0.6} AND {y + 0.6}
+            LIMIT 1
+            """
+        )
+        if not me_rows:
+            return _mk(
+                "entity_not_found",
+                f"No entity '{entity_name}' near ({x}, {y}) in map_entity. It may "
+                f"never have been placed, or the map view is stale.",
+            )
+        entity_nid = me_rows[0]["electric_network_id"]
+
+        st_rows = self.query(
+            f"""
+            SELECT status_name FROM entity_status
+            WHERE entity_name = '{entity_name}'
+              AND position_x BETWEEN {x - 0.6} AND {x + 0.6}
+              AND position_y BETWEEN {y - 0.6} AND {y + 0.6}
+            LIMIT 1
+            """
+        )
+        status = st_rows[0]["status_name"] if st_rows else None
+
+        net = self._network_at_tick(entity_nid, sample_tick) if sample_tick is not None else None
+        prod = float(net["production_w"] or 0.0) if net else None
+        cons = float(net["consumption_w"] or 0.0) if net else None
+        starved = self._upstream_starved(entity_nid)
+
+        def _net_fields() -> Dict[str, Any]:
+            return {"network_id": entity_nid, "production_w": prod, "consumption_w": cons}
+
+        # -- no status row -----------------------------------------------------
+        if status is None:
+            if entity_name in ELECTRIC_POLE_ENTITIES:
+                return _mk(
+                    "non_electric_or_no_issue",
+                    f"'{entity_name}' is an electric pole, which reports no Factorio "
+                    f"status (nil-status); poles are never in entity_status. Read the "
+                    f"network's power flow in power_networks / get_power_networks().",
+                    **_net_fields(),
+                )
+            return _mk(
+                "no_status_data",
+                f"No status row for '{entity_name}' at ({x}, {y}) in the latest "
+                f"status dump — the status feed may be stale or the entity is not in "
+                f"the tracked set. Cannot diagnose power without a status.",
+                **_net_fields(),
+            )
+
+        # -- working -----------------------------------------------------------
+        if status == "working":
+            return _mk(
+                "working",
+                f"'{entity_name}' reports 'working'. Caveat: a starved producer "
+                f"(e.g. a boiler/generator out of fuel) also reports 'working', and "
+                f"Factorio's single-valued status can mask a low_power condition — if "
+                f"output looks low, cross-check the network wattages.",
+                status_name=status,
+                **_net_fields(),
+            )
+
+        # -- no_power ----------------------------------------------------------
+        if status == "no_power":
+            covering = self._find_covering_pole(x, y)
+            if covering is None:
+                return _mk(
+                    "not_covered_by_any_pole",
+                    f"'{entity_name}' is no_power and no electric pole's supply area "
+                    f"covers ({x}, {y}). Place a pole within supply range.",
+                    status_name=status,
+                    **_net_fields(),
+                )
+            cov_nid = covering["electric_network_id"]
+            cov_pos = {"x": covering["position_x"], "y": covering["position_y"]}
+            cov_net = self._network_at_tick(cov_nid, sample_tick) if sample_tick is not None else None
+            cov_prod = float(cov_net["production_w"] or 0.0) if cov_net else 0.0
+            cov_cons = float(cov_net["consumption_w"] or 0.0) if cov_net else 0.0
+            cov_starved = self._upstream_starved(cov_nid)
+            common = dict(
+                status_name=status,
+                network_id=cov_nid,
+                production_w=cov_prod,
+                consumption_w=cov_cons,
+                covering_pole_name=covering["entity_name"],
+                covering_pole_position=cov_pos,
+            )
+            if cov_starved:
+                names = ", ".join(sorted({s["entity_name"] for s in cov_starved}))
+                return _mk(
+                    "upstream_generator_starved",
+                    f"'{entity_name}' is no_power. It is covered by "
+                    f"{covering['entity_name']} at ({cov_pos['x']}, {cov_pos['y']}), but "
+                    f"a producer on that network is out of fuel ({names}), so the "
+                    f"network produces {cov_prod:.0f}W. Note: a fuel-starved generator "
+                    f"still reports 'working' — check its fuel inventory, not its status.",
+                    **common,
+                )
+            if cov_prod <= 0.0:
+                return _mk(
+                    "network_has_no_generation",
+                    f"'{entity_name}' is no_power. It is covered by "
+                    f"{covering['entity_name']} at ({cov_pos['x']}, {cov_pos['y']}), but "
+                    f"that pole's network produces {cov_prod:.0f}W — there is no "
+                    f"generator feeding it (or the generator is off/disconnected).",
+                    **common,
+                )
+            # Covered, network has generation, not starved — likely a just-merged
+            # network whose as-of-write membership still lags, or a transient.
+            return _mk(
+                "network_undersupplied",
+                f"'{entity_name}' is no_power despite being covered by "
+                f"{covering['entity_name']} whose network produces {cov_prod:.0f}W for "
+                f"{cov_cons:.0f}W of load. The pole membership (electric_network_id) is "
+                f"as-of last entity write and may lag a recent merge/split; re-check "
+                f"after the next sample.",
+                **common,
+            )
+
+        # -- low_power ---------------------------------------------------------
+        if status == "low_power":
+            if starved:
+                names = ", ".join(sorted({s["entity_name"] for s in starved}))
+                return _mk(
+                    "upstream_generator_starved",
+                    f"'{entity_name}' is low_power and a producer on its network is out "
+                    f"of fuel ({names}). A fuel-starved generator still reports "
+                    f"'working' — check its fuel inventory.",
+                    status_name=status,
+                    **_net_fields(),
+                )
+            p = prod if prod is not None else 0.0
+            c = cons if cons is not None else 0.0
+            ratio = f"{(p / c):.2f}" if c > 0 else "n/a"
+            return _mk(
+                "network_undersupplied",
+                f"'{entity_name}' is low_power: its network produces {p:.0f}W for "
+                f"{c:.0f}W of demand (headroom {ratio}). Add generation or reduce load.",
+                status_name=status,
+                **_net_fields(),
+            )
+
+        # -- any other status --------------------------------------------------
+        if prod is not None and cons is not None and cons > 0 and prod < cons:
+            return _mk(
+                "network_undersupplied",
+                f"'{entity_name}' reports '{status}', but its network is undersupplied "
+                f"({prod:.0f}W produced for {cons:.0f}W demand). Factorio reports a "
+                f"single status per entity, so a low_power condition can be masked "
+                f"behind this logistics status — the network wattages are the ground "
+                f"truth.",
+                status_name=status,
+                **_net_fields(),
+            )
+        return _mk(
+            "non_electric_or_no_issue",
+            f"'{entity_name}' reports '{status}' and its network shows no power "
+            f"shortfall; any problem is not power-related.",
+            status_name=status,
+            **_net_fields(),
+        )
 
     # =========================================================================
     # Convenience Methods
@@ -705,6 +1420,140 @@ class RemoteView:
             return self._sync.flush_pending()
         return 0
 
+    def state_fingerprint(self) -> Dict[str, Any]:
+        """Return a compact, deterministic identity digest for restore checks.
+
+        The digest intentionally covers entity identity and placement rather
+        than volatile inventories or resource amounts, which may legitimately
+        change while a continuously-running freeplay server resumes.
+        """
+        if not self._loaded:
+            raise RuntimeError("RemoteView not loaded. Call load() first.")
+
+        if self._sync:
+            self._sync.flush_pending()
+
+        with self._db_lock:
+            row = self._database.connection.execute(
+                """
+                SELECT
+                    count(*) AS entity_count,
+                    coalesce(
+                        bit_xor(hash(
+                            entity_name,
+                            position_x,
+                            position_y,
+                            coalesce(direction, ''),
+                            coalesce(force, '')
+                        )),
+                        0
+                    ) AS entity_digest
+                FROM map_entity
+                """
+            ).fetchone()
+            sequence = self._database.get_last_sequence()
+
+        return {
+            "entity_count": int(row[0] if row else 0),
+            "entity_digest": str(row[1] if row else 0),
+            "last_sequence": int(sequence),
+        }
+
+    def checkpoint_database(self, destination: Path) -> Path:
+        """Create a consistent DuckDB evidence copy at ``destination``.
+
+        The live database may be in-memory. DuckDB's database-to-database copy
+        runs while the RemoteView write lock is held, so checkpoint evidence
+        cannot interleave with pending UDP updates.
+        """
+        if not self._loaded:
+            raise RuntimeError("RemoteView not loaded. Call load() first.")
+
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise FileExistsError(f"Checkpoint database already exists: {destination}")
+
+        if self._sync:
+            self._sync.flush_pending()
+
+        escaped_path = str(destination).replace("'", "''")
+        with self._db_lock:
+            connection = self._database.connection
+            source_name = str(connection.execute("SELECT current_database()").fetchone()[0])
+            quoted_source = '"' + source_name.replace('"', '""') + '"'
+            source_tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT table_name FROM duckdb_tables() "
+                    "WHERE database_name = ? AND schema_name = 'main'",
+                    [source_name],
+                ).fetchall()
+            }
+            if not source_tables:
+                raise RuntimeError("Live RemoteView database has no tables to checkpoint")
+            database_paths = {
+                str(row[1]): str(row[2] or "")
+                for row in connection.execute("PRAGMA database_list").fetchall()
+            }
+            source_path = database_paths.get(source_name, "")
+
+            if source_path:
+                # Production eval databases are file-backed.  While the
+                # RemoteView lock excludes writers, checkpoint the live WAL
+                # into its main file and copy that immutable image.  This is
+                # more reliable than attaching a second file to a connection
+                # that is simultaneously serving live-sync queries.
+                connection.execute(f"CHECKPOINT {quoted_source}").fetchall()
+                shutil.copy2(source_path, destination)
+            else:
+                # Unit/in-memory runtimes have no source file, so use DuckDB's
+                # database-to-database copy and fully consume DETACH.
+                connection.execute(f"ATTACH '{escaped_path}' AS fv_checkpoint").fetchall()
+                try:
+                    connection.execute(
+                        f"COPY FROM DATABASE {quoted_source} TO fv_checkpoint"
+                    ).fetchall()
+                    copied_tables = {
+                        str(row[0])
+                        for row in connection.execute(
+                            "SELECT table_name FROM duckdb_tables() "
+                            "WHERE database_name = 'fv_checkpoint' "
+                            "AND schema_name = 'main'"
+                        ).fetchall()
+                    }
+                    if copied_tables != source_tables:
+                        missing = sorted(source_tables - copied_tables)
+                        extra = sorted(copied_tables - source_tables)
+                        raise RuntimeError(
+                            "DuckDB checkpoint schema verification failed "
+                            f"(missing={missing}, extra={extra})"
+                        )
+                    connection.execute("CHECKPOINT fv_checkpoint").fetchall()
+                finally:
+                    connection.execute("DETACH fv_checkpoint").fetchall()
+
+        # Verify the detached file using a fresh connection.  This catches a
+        # superficially non-empty 12 KiB DuckDB catalog with no copied schema,
+        # which is not valid checkpoint evidence.
+        import duckdb
+
+        with duckdb.connect(str(destination), read_only=True) as verification:
+            detached_tables = {
+                str(row[0])
+                for row in verification.execute(
+                    "SELECT table_name FROM duckdb_tables() "
+                    "WHERE schema_name = 'main'"
+                ).fetchall()
+            }
+        if detached_tables != source_tables:
+            raise RuntimeError(
+                "Detached DuckDB checkpoint failed verification: "
+                f"expected {len(source_tables)} tables, found {len(detached_tables)}"
+            )
+
+        return destination
+
     def debug_info(self) -> Dict[str, Any]:
         """Get diagnostic information about RemoteView state.
 
@@ -879,4 +1728,9 @@ class RemoteView:
             raise RuntimeError("RemoteView not loaded. Call load() first.")
 
 
-__all__ = ["RemoteView"]
+__all__ = [
+    "RemoteView",
+    "PowerNetworkCensus",
+    "PowerNetworksReport",
+    "PowerDiagnosis",
+]

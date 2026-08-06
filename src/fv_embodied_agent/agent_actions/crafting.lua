@@ -82,6 +82,34 @@ local function calculate_crafting_time_ticks(entity, recipe_proto, count)
     return math.ceil(ticks_for_batch)
 end
 
+--- Restore vanilla trigger parity for the one trigger item an embodied agent
+--- can hand-craft in base-game freeplay.  A script-owned character's
+--- begin_crafting() output is not attributed to the force's native item
+--- production statistics, so Factorio does not satisfy the otherwise-normal
+--- craft-item trigger for automation-science-pack.
+--- @param agent Agent
+--- @param actual_products table<string, number>
+local function unlock_automation_science_for_agent_lab(agent, actual_products)
+    if (actual_products["lab"] or 0) < 1 then
+        return
+    end
+
+    local force = agent.character and agent.character.valid and agent.character.force
+    local technology = force and force.technologies["automation-science-pack"]
+    if not technology or technology.researched then
+        return
+    end
+
+    -- Do not let the compatibility shim bypass the prototype's prerequisites.
+    for _, prerequisite in pairs(technology.prerequisites or {}) do
+        if not prerequisite.researched then
+            return
+        end
+    end
+
+    technology.researched = true
+end
+
 --- Enqueue crafting recipe (async)
 --- @param recipe_name string Recipe name
 --- @param count number|nil Count to craft (default: 1)
@@ -445,6 +473,8 @@ CraftingActions.process_crafting = function(self)
             end
         end
 
+        unlock_automation_science_for_agent_lab(self, actual_products)
+
         -- Raise crafting completed event for fv_snapshot to log
         script.raise_event(custom_events.on_agent_crafting_completed, {
             agent_id = self.agent_id,
@@ -530,4 +560,3 @@ function CraftingActions.get_crafting_queue(self)
 end
 
 return CraftingActions
-

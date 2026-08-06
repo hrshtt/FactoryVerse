@@ -80,13 +80,15 @@ Source: pydantic models and dataclasses discovered by importing `FactoryVerse.ga
 | `crafter_output` | `Dict[str, int]` | yes | ⬜ |
 | `crafter_modules` | `Dict[str, int]` | yes | ⬜ |
 
-### ElectricPoleState (pydantic, `electric_pole.py`) — **KNOWN-STUB** (docstring marks this class as a stub)
+### ElectricPoleState (pydantic, `electric_pole.py`)
 
 | Field | Type | Optional | STATUS |
 |---|---|---|---|
-| `electric_network_id` | `Optional[int]` | yes | `KNOWN-STUB` |
-| `connected_poles` | `List[str]` | yes | `KNOWN-STUB` |
-| `supply_area_entities` | `int` | yes | `KNOWN-STUB` |
+| `electric_network_id` | `Optional[int]` | yes | ⬜ |
+| `wired_to_other_pole` | `Optional[bool]` | yes | ⬜ (was `is_connected`; deprecated alias property retained — PWR-CONN-REPR-1) |
+| `connected_poles` | `List[PoleNeighbour]` | yes | ⬜ |
+| `supply_area_entities` | `List[PoleNeighbour]` | yes | ⬜ |
+| `supply_area_entity_count` | `int` | no | ⬜ |
 
 ### ElectricState (pydantic, `electric.py`)
 
@@ -440,7 +442,7 @@ Regex extraction of table keys set in `src/fv_embodied_agent/agent_actions/inspe
 | `current` | ⬜ |
 | `electric_network_id` | ⬜ |
 | `energy` | ⬜ |
-| `is_connected` | ⬜ |
+| `wired_to_other_pole` | ⬜ (renamed from `is_connected` — PWR-CONN-REPR-1) |
 
 ### `inspect_energy_producer`
 

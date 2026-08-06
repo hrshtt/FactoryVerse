@@ -16,8 +16,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from FactoryVerse.game.agent.placement_hints import PlacementHints
+from FactoryVerse.game.agent.placement_hints import (
+    PlacementHints,
+    ConnectionPositionList,
+    _pole_prototype_distances,
+)
 from FactoryVerse.game.factory.factorio_types import Direction
+from FactoryVerse.game.factory.prototypes import get_entity_prototypes
 
 
 def _hints_with_fluid_result(positions):
@@ -72,6 +77,101 @@ class TestFluidCueDirectionParsing:
         cues = hints._get_fluid_pipe_positions(_source(), "pipe")
         assert len(cues) == 1
         assert cues[0].direction == Direction.SOUTH
+
+
+class TestPolePrototypeDistancesNotHardcoded:
+    """PWR-HARDCODE-1: pole wire/supply distances must come from the
+    prototype pipeline, not hardcoded per-pole-name dicts that can drift
+    from the engine (big-electric-pole's wire distance was hardcoded 30.0;
+    the real prototype value is 32 — asserted against the dump, not the
+    literal, so this test would have failed against the old hardcoded
+    value while still passing if the dump itself changes)."""
+
+    def test_big_electric_pole_wire_distance_matches_dump(self):
+        expected_wire, expected_supply = (
+            get_entity_prototypes().get_prototype("big-electric-pole")["maximum_wire_distance"],
+            get_entity_prototypes().get_prototype("big-electric-pole")["supply_area_distance"],
+        )
+        wire, supply = _pole_prototype_distances("big-electric-pole")
+        assert wire == expected_wire
+        assert supply == expected_supply
+        # Documented real-world value at time of writing (L3.3-scoped dump)
+        assert wire == 32
+
+    def test_small_electric_pole_supply_matches_dump(self):
+        expected_supply = get_entity_prototypes().get_prototype(
+            "small-electric-pole")["supply_area_distance"]
+        _wire, supply = _pole_prototype_distances("small-electric-pole")
+        assert supply == expected_supply
+        assert supply == 2.5
+
+    def test_unknown_pole_name_raises_loudly(self):
+        with pytest.raises(ValueError, match="not-a-real-pole"):
+            _pole_prototype_distances("not-a-real-pole")
+
+
+class TestConnectionPositionListReason:
+    """REASON-1: a zero-cue connection query must carry WHY, not just [].
+
+    _get_electric_wire_positions previously discarded everything from the
+    Lua result but `positions` — count, max_wire_distance, and (for fluid)
+    reason were all thrown away. get_pole_connections never emits `reason`
+    at all, so the electric-wire wrapper must synthesize one from what it
+    DOES get back (max_wire_distance + search extent + count).
+    """
+
+    def _hints_with_pole_result(self, result):
+        hints = PlacementHints.__new__(PlacementHints)
+        hints._client = MagicMock()
+        hints._client.get_pole_connections.return_value = result
+        return hints
+
+    def test_empty_electric_result_carries_synthesized_reason(self):
+        hints = self._hints_with_pole_result(
+            {"positions": {}, "count": 0, "max_wire_distance": 7.5,
+             "source_name": "small-electric-pole"}
+        )
+        cues = hints._get_electric_wire_positions(_source(), "small-electric-pole")
+
+        assert isinstance(cues, ConnectionPositionList)
+        # Still list-compatible: empty-list truthiness unchanged
+        assert len(cues) == 0
+        assert not cues
+        assert cues == []
+
+        # But the "why" is no longer thrown away
+        assert cues.reason is not None
+        assert cues.max_wire_distance == 7.5
+        assert "max_wire_distance" in repr(cues)
+
+    def test_non_empty_result_has_no_reason(self):
+        hints = self._hints_with_pole_result({
+            "positions": [
+                {"position": {"x": 1.0, "y": 1.0}, "wire_distance": 5.0,
+                 "wire_distance_utilization": 0.5, "valid": True},
+            ],
+            "count": 1,
+            "max_wire_distance": 7.5,
+            "source_name": "small-electric-pole",
+        })
+        cues = hints._get_electric_wire_positions(_source(), "small-electric-pole")
+        assert len(cues) == 1
+        assert cues.reason is None
+
+    def test_fluid_reason_surfaces_luas_own_reason(self):
+        """Fluid's Lua reason (connections/init.lua) must pass through
+        unmodified rather than being discarded."""
+        hints = PlacementHints.__new__(PlacementHints)
+        hints._client = MagicMock()
+        hints._client.get_fluid_connections.return_value = {
+            "positions": [],
+            "count": 0,
+            "reason": "source entity exposes no live pipe connections",
+            "source_name": "boiler",
+        }
+        cues = hints._get_fluid_pipe_positions(_source(), "pipe")
+        assert len(cues) == 0
+        assert cues.reason == "source entity exposes no live pipe connections"
 
 
 class TestItemDropCueParsing:

@@ -9,6 +9,7 @@ Walking Modes:
 
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING, Dict, Union
+import asyncio
 import logging
 
 from FactoryVerse.game.factory.types import MapPosition
@@ -97,6 +98,18 @@ class WalkingNoStandableTilesError(WalkingError):
     def __init__(self, entity_name: str):
         super().__init__(f"No standable tiles within reach of '{entity_name}'")
         self.entity_name = entity_name
+
+
+class WalkingTimeoutError(WalkingError):
+    """Walking exceeded its deadline and was cancelled in Factorio."""
+
+    def __init__(self, action_id: Optional[str], target: MapPosition):
+        super().__init__(
+            f"Walking action {action_id or '<unknown>'} timed out while moving "
+            f"toward {target}; stop_walking was issued before returning control"
+        )
+        self.action_id = action_id
+        self.target = target
 
 
 # =============================================================================
@@ -313,7 +326,20 @@ class MovementAction:
             raise RuntimeError(f"Failed to start walking: {reason}")
 
         # Wait for completion via UDP
-        completion_dict = await self._listener.await_action(response, timeout=timeout)
+        try:
+            completion_dict = await self._listener.await_action(
+                response, timeout=timeout
+            )
+        except asyncio.TimeoutError as exc:
+            try:
+                self.stop()
+            except Exception as stop_exc:
+                logger.error(
+                    "Failed to cancel timed-out walking action %s: %s",
+                    response.action_id,
+                    stop_exc,
+                )
+            raise WalkingTimeoutError(response.action_id, goal) from exc
         logger.debug(f"Walking completion_dict: {completion_dict}")
 
         # Check for failure status

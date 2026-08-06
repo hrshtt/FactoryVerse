@@ -9,7 +9,7 @@ Ghost Tracking:
 """
 
 from dataclasses import dataclass
-from typing import Optional, Union, Dict, Any, TYPE_CHECKING
+from typing import Optional, Union, Dict, Any, TYPE_CHECKING, Callable
 import logging
 
 from FactoryVerse.game.factory.types import MapPosition, Direction
@@ -121,6 +121,22 @@ class PlacementAction:
         self._rcon = rcon_handler
         self._entity_ops = entity_ops
         self._walking_action = walking_action
+        self._state_barrier: Optional[
+            Callable[[str, float, float, bool, Optional[str]], None]
+        ] = None
+
+    def set_state_barrier(
+        self,
+        barrier: Callable[[str, float, float, bool, Optional[str]], None],
+    ) -> None:
+        """Install the owned-view causal barrier for successful placements.
+
+        Placement completes synchronously over RCON, while its snapshot insert
+        or ghost conversion arrives independently over UDP. Tier 4 installs a
+        bounded barrier so actor code can query the resulting state as soon as
+        ``place()`` returns, without polling for its own mutation.
+        """
+        self._state_barrier = barrier
 
     def place(
         self,
@@ -160,6 +176,18 @@ class PlacementAction:
         )
         response_dict = self._rcon.execute_and_parse_json(cmd)
         result = EntityPlaced.from_dict(response_dict)
+
+        if result.success and self._state_barrier is not None:
+            placed_pos = result.placed_position
+            if placed_pos is None:
+                raise RuntimeError("Placement succeeded but position is missing")
+            self._state_barrier(
+                str(result.entity_name or entity_name),
+                float(placed_pos.x),
+                float(placed_pos.y),
+                bool(ghost),
+                label,
+            )
 
         # If requested, return BaseEntity instead
         if return_entity and not ghost:

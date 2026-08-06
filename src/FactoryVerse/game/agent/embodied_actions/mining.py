@@ -4,7 +4,7 @@ Handles all mining-related operations: mine resources, cancel mining.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, TYPE_CHECKING, Dict
+from typing import Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
 import logging
 
 from FactoryVerse.game.factory.types import MapPosition
@@ -186,6 +186,21 @@ class MiningAction:
         self._rcon = rcon_handler
         self._listener = async_listener
         self._placement = placement
+        self._resource_depletion_barrier: Optional[
+            Callable[[str, float, float], Awaitable[None]]
+        ] = None
+
+    def set_resource_depletion_barrier(
+        self,
+        barrier: Callable[[str, float, float], Awaitable[None]],
+    ) -> None:
+        """Make depleted-resource completion causally fresh for later reads.
+
+        The game action and snapshot mutation arrive on different UDP ports.
+        Tier 4 installs a barrier which waits for the exact removal to become
+        visible in its owned database before ``mine()`` returns to actor code.
+        """
+        self._resource_depletion_barrier = barrier
 
     async def mine(
         self,
@@ -242,6 +257,26 @@ class MiningAction:
                 completion_dict = flattened
 
         completion = MiningCompleted.from_dict(completion_dict)
+
+        if (
+            completion.success
+            and completion.reason == "depleted"
+            and self._resource_depletion_barrier is not None
+        ):
+            completion_position = completion_dict.get("position") or position
+            if isinstance(completion_position, MapPosition):
+                position_x = completion_position.x
+                position_y = completion_position.y
+            elif isinstance(completion_position, dict):
+                position_x = completion_position.get("x")
+                position_y = completion_position.get("y")
+            else:
+                position_x = position_y = None
+            if position_x is not None and position_y is not None:
+                entity_name = completion_dict.get("entity_name") or resource_name
+                await self._resource_depletion_barrier(
+                    str(entity_name), float(position_x), float(position_y)
+                )
 
         # Log actual_products for debugging
         if completion.actual_products:

@@ -26,12 +26,28 @@ class ElectricPoleState(BaseModel):
     """
 
     electric_network_id: Optional[int] = None
-    is_connected: Optional[bool] = None
+    # True iff this pole has at least one copper wire to another pole. This is
+    # a wiring/topology fact, NOT a power fact: a pole actively powering a
+    # working network can have wired_to_other_pole=False (it is the sole pole),
+    # and a wired pole can be unpowered. For power flow read power_networks /
+    # entity status. Renamed from the old `is_connected`, which read as
+    # "powered" and misled a human at runtime (PWR-CONN-REPR-1).
+    wired_to_other_pole: Optional[bool] = None
     # Poles wired to this one via copper wire (name+position refs)
     connected_poles: List[PoleNeighbour] = Field(default_factory=list)
     # Entities inside the supply area (refs capped at ~50 Lua-side; count is exact)
     supply_area_entities: List[PoleNeighbour] = Field(default_factory=list)
     supply_area_entity_count: int = 0
+
+    @property
+    def is_connected(self) -> Optional[bool]:
+        """Deprecated alias for `wired_to_other_pole`.
+
+        The name `is_connected` was misleading — it means "wired to another
+        pole", not "powered". Kept as a non-breaking, greppable shim; prefer
+        `wired_to_other_pole`. (PWR-CONN-REPR-1)
+        """
+        return self.wired_to_other_pole
 
 
 class ElectricPoleMixin:

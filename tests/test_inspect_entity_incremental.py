@@ -296,7 +296,7 @@ class InspectEntityTester:
                     "category": "Electric Pole",
                     "expected_fields": [
                         "electric_network_id",
-                        "is_connected",
+                        "wired_to_other_pole",
                         "energy",
                     ],
                 },
@@ -305,7 +305,7 @@ class InspectEntityTester:
                     "category": "Electric Pole",
                     "expected_fields": [
                         "electric_network_id",
-                        "is_connected",
+                        "wired_to_other_pole",
                         "energy",
                     ],
                 },

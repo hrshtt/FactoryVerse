@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import queue
 import threading
+from pathlib import Path
 from typing import Callable, Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from FactoryVerse.game.snapshot.types import SyncState
 from FactoryVerse.game.infra.duckdb import apply_ops
+from FactoryVerse.game.infra.duckdb import analytics_ops
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class SyncService:
         on_rebuild: Callable[[], None],
         initial_sequence: int = 0,
         db_lock: Optional[threading.Lock] = None,
+        snapshot_dir: Optional["Path"] = None,
     ):
         """Initialize sync service.
 
@@ -64,6 +66,17 @@ class SyncService:
             on_rebuild: Called when full rebuild is needed (sequence gap)
             initial_sequence: Starting sequence number (from initial load)
             db_lock: Shared lock for database access (creates new if None)
+            snapshot_dir: Script-output ROOT (the same path RemoteView passes
+                to SnapshotLoader, NOT the loader's normalized
+                .../factoryverse/snapshots dir) — needed to resolve the
+                container-relative ``file_path`` carried by power_networks/
+                entity_status file_io UDP payloads (Task 4). Optional and
+                None by default so existing callers that construct
+                SyncService without it keep working; live sync of the
+                power/status "state" tables degrades to a logged no-op
+                (files simply never get resolved/applied) until a caller
+                passes this in. See analytics build final report for the
+                one-line change RemoteView needs to wire this end-to-end.
         """
         self._db = db
         self._udp = udp_dispatcher
@@ -71,6 +84,7 @@ class SyncService:
         self._last_sequence = initial_sequence
         self._running = False
         self._needs_rebuild = False
+        self._snapshot_dir = Path(snapshot_dir) if snapshot_dir is not None else None
 
         # Thread-safe write buffer
         self._pending_operations = queue.Queue(maxsize=10000)
@@ -101,6 +115,10 @@ class SyncService:
         self._udp.subscribe("entity_operation", self._handle_entity_operation)
         self._udp.subscribe("ghost_operation", self._handle_ghost_operation)
         self._udp.subscribe("chunk_init_complete", self._handle_chunk_init)
+        # power_networks/entity_status file writes both notify under
+        # event_type="file_io" (udp_payloads.file_appended), differentiated
+        # by the payload's file_type field — see _handle_file_io.
+        self._udp.subscribe("file_io", self._handle_file_io)
 
         self._running = True
         logger.info(f"SyncService started, last_sequence={self._last_sequence}")
@@ -113,6 +131,7 @@ class SyncService:
         self._udp.unsubscribe("entity_operation", self._handle_entity_operation)
         self._udp.unsubscribe("ghost_operation", self._handle_ghost_operation)
         self._udp.unsubscribe("chunk_init_complete", self._handle_chunk_init)
+        self._udp.unsubscribe("file_io", self._handle_file_io)
 
         self._running = False
         logger.info("SyncService stopped")
@@ -176,6 +195,50 @@ class SyncService:
 
         except Exception as e:
             logger.error(f"Error enqueueing ghost operation: {e}", exc_info=True)
+
+    def _handle_file_io(self, payload: Dict[str, Any]) -> None:
+        """Handle a file_io UDP notification (Task 4).
+
+        State and agent-statistics writes notify under
+        event_type="file_io" (udp_payloads.file_appended), differentiated by
+        payload["file_type"]. These are INDEPENDENT feeds from the entity-op
+        sequence log by design (judgment call, per spec): they carry no
+        payload data of their own to replay — the reducer re-reads the file
+        at flush time — so a "gap" here just means "re-read the file", which
+        analytics_ops' reducers already handle idempotently (power) or
+        latest-wins (status). Routing them through _check_sequence would
+        wrongly couple two unrelated sequence spaces and could trigger
+        spurious full entity-rebuilds. The per-agent feeds use the same
+        independent rule: flush re-reads a complete snapshot or cumulative
+        event history, making replay idempotent.
+
+        Enqueues for flush-time processing (flush_pending, called before
+        every read) — the UDP thread itself never touches the DB or
+        filesystem, mirroring _handle_entity_operation.
+        """
+        file_type = payload.get("file_type")
+        if file_type not in (
+            "power_networks",
+            "entity_status",
+            "trees_rocks",
+            "agent_production_statistics",
+            "agent_crafting_statistics",
+            "agent_mining_statistics",
+        ):
+            return
+
+        try:
+            self._pending_operations.put_nowait(payload)
+            logger.debug(
+                f"Enqueued file_io: file_type={file_type}, "
+                f"path={payload.get('file_path')}"
+            )
+        except queue.Full:
+            logger.error(
+                "Write buffer full while enqueueing file_io! Triggering rebuild."
+            )
+            self._needs_rebuild = True
+            self._on_rebuild()
 
     def _handle_chunk_init(self, payload: Dict[str, Any]) -> None:
         """Handle chunk init complete notification.
@@ -271,6 +334,10 @@ class SyncService:
 
         MUST be called with _db_lock held.
         """
+        if payload.get("event_type") == "file_io":
+            self._apply_file_io(payload)
+            return
+
         op = payload.get("op")
         is_ghost = payload.get("is_ghost", False)
 
@@ -455,6 +522,167 @@ class SyncService:
         # Re-use ghost upsert since config change sends full ghost data
         self._apply_ghost_upsert(payload)
         logger.debug(f"Applied ghost config change: {ghost_data.get('key')}")
+
+    # =========================================================================
+    # power_networks / entity_status file_io (Task 4)
+    # =========================================================================
+
+    def _resolve_file_io_path(self, file_path: str) -> Optional[Path]:
+        """Map a container-relative file_io path (e.g.
+        "factoryverse/snapshots/power_networks.jsonl" or
+        "factoryverse/status/status-12345.jsonl") to the host-side path
+        under this instance's snapshot base dir.
+
+        Returns None if this SyncService was constructed without
+        snapshot_dir — callers must treat that as "cannot apply, log and
+        skip", not crash.
+        """
+        if self._snapshot_dir is None or not file_path:
+            return None
+        # snapshot_dir may be either the script-output root or the
+        # "<root>/factoryverse/snapshots" dir (tier4 passes the latter via
+        # get_snapshot_dir()). The mod's file_path already carries the
+        # "factoryverse/..." prefix, so derive the root before joining —
+        # otherwise the segment duplicates and live sync silently no-ops.
+        root = self._snapshot_dir
+        if root.name == "snapshots" and root.parent.name == "factoryverse":
+            root = root.parent.parent
+        elif root.name == "factoryverse":
+            root = root.parent
+        return root / str(file_path).lstrip("/")
+
+    def _apply_file_io(self, payload: Dict[str, Any]) -> None:
+        """Dispatch a buffered file_io payload to the right file reader."""
+        file_type = payload.get("file_type")
+        file_path = payload.get("file_path")
+
+        path = self._resolve_file_io_path(file_path)
+        if path is None:
+            logger.warning(
+                f"Cannot resolve file_io path (file_type={file_type}, "
+                f"file_path={file_path!r}) — SyncService has no "
+                "snapshot_dir; live sync of this table is a no-op until "
+                "the caller passes snapshot_dir="
+            )
+            return
+
+        if file_type == "power_networks":
+            self._apply_power_networks_file(path)
+        elif file_type == "entity_status":
+            self._apply_entity_status_file(path)
+        elif file_type == "trees_rocks":
+            self._apply_trees_rocks_file(path, payload.get("chunk") or {})
+        elif file_type == "agent_production_statistics":
+            self._apply_agent_production_file(path)
+        elif file_type in ("agent_crafting_statistics", "agent_mining_statistics"):
+            self._apply_agent_manual_files(path.parent, payload.get("agent_id"))
+        else:
+            logger.debug(f"Ignoring file_io of unhandled file_type={file_type}")
+
+    def _apply_agent_production_file(self, path: Path) -> None:
+        """Apply the newest complete cumulative production sample."""
+        if not path.exists():
+            logger.warning(f"agent production file not found for live sync: {path}")
+            return
+        last_line = self._read_last_nonblank_line(path)
+        if not last_line:
+            return
+        try:
+            analytics_ops.apply_agent_production_sample(self._db, json.loads(last_line))
+        except Exception as exc:
+            logger.error(
+                f"Failed to apply live agent production sample: {exc}", exc_info=True
+            )
+
+    def _apply_trees_rocks_file(self, path: Path, chunk: Dict[str, Any]) -> None:
+        """Apply an authoritative full-chunk tree/rock rewrite."""
+        if not path.exists():
+            logger.warning(f"trees/rocks file not found for live sync: {path}")
+            return
+        if chunk.get("x") is None or chunk.get("y") is None:
+            logger.warning(f"trees/rocks file_io missing chunk coordinates: {path}")
+            return
+        try:
+            resources = []
+            with open(path, "r", encoding="utf-8") as handle:
+                for raw in handle:
+                    raw = raw.strip()
+                    if raw:
+                        resources.append(json.loads(raw))
+            apply_ops.replace_resource_entity_chunk(
+                self._db, resources, int(chunk["x"]), int(chunk["y"])
+            )
+        except Exception as exc:
+            logger.error(
+                f"Failed to apply live trees/rocks snapshot: {exc}", exc_info=True
+            )
+
+    def _apply_agent_manual_files(self, agent_dir: Path, agent_id: Any) -> None:
+        """Rebuild cumulative crafting/mining counts after either append."""
+        try:
+            analytics_ops.apply_agent_manual_files(
+                self._db,
+                agent_dir,
+                agent_id=int(agent_id) if agent_id is not None else None,
+            )
+        except Exception as exc:
+            logger.error(
+                f"Failed to apply live agent manual statistics: {exc}", exc_info=True
+            )
+
+    def _apply_power_networks_file(self, path: Path) -> None:
+        """Read the LAST line of power_networks.jsonl and apply it.
+
+        Heartbeats (one line per 300-tick window, ALWAYS written — even with
+        zero networks) make last-line-only replay safe: any samples skipped
+        between two UDP notifications are lost, but the next notification's
+        last line is still a complete, self-contained, idempotent-to-apply
+        state for its own tick (per C1/C4).
+        """
+        if not path.exists():
+            logger.warning(f"power_networks file not found for live sync: {path}")
+            return
+        last_line = self._read_last_nonblank_line(path)
+        if not last_line:
+            return
+        try:
+            data = json.loads(last_line)
+            analytics_ops.apply_power_sample(self._db, data)
+            logger.debug(f"Applied live power_networks sample (tick={data.get('tick')})")
+        except Exception as e:
+            logger.error(f"Failed to apply live power_networks sample: {e}", exc_info=True)
+
+    def _apply_entity_status_file(self, path: Path) -> None:
+        """Read the full status dump at the notified path and apply it
+        (FULL REPLACE — see analytics_ops.apply_status_dump)."""
+        if not path.exists():
+            logger.warning(f"entity_status file not found for live sync: {path}")
+            return
+        try:
+            lines = []
+            with open(path, "r") as f:
+                for raw in f:
+                    raw = raw.strip()
+                    if raw:
+                        lines.append(json.loads(raw))
+            if lines:
+                count = analytics_ops.apply_status_dump(self._db, lines)
+                logger.debug(f"Applied live entity_status dump: {count} rows")
+        except Exception as e:
+            logger.error(f"Failed to apply live entity_status dump: {e}", exc_info=True)
+
+    @staticmethod
+    def _read_last_nonblank_line(path: Path) -> Optional[str]:
+        """Last non-blank line of a file. power_networks.jsonl is bounded
+        (~12 lines/min of uptime), so a simple full read is fine — no need
+        for seek-from-end tricks."""
+        last = None
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    last = line
+        return last
 
 
 __all__ = ["SyncService"]

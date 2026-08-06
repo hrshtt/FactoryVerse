@@ -133,11 +133,39 @@ cues = placement_hints.get_connection_positions(
 )
 engine = inventory.get_item("steam-engine").place(cues[0].position, cues[0].direction)
 
-# 4. Fuel the boiler, then power the area with a pole near the engine
-boiler.add_fuel(inventory.create_item_stacks("coal", 50))
+# 4. Close the fuel LOOP — power is a consumable, not a one-time top-up.
+#    The boiler holds a tiny fuel buffer (~11 coal per insert observed), so a
+#    single add_fuel() burns off in minutes. Automate coal INTO the boiler:
+#    coal drill → inserter → boiler.
+boiler.add_fuel(inventory.create_item_stacks("coal", 11))   # priming charge only
+coal_drill = inventory.get_item("burner-mining-drill").place(coal_tile, Direction.SOUTH)
+cues = placement_hints.get_connection_positions(
+    source_entity=coal_drill, target_entity_name="burner-inserter",
+    connection_type=ConnectionType.ITEM_DROP,
+)   # inserter carries coal drill → boiler fuel slot; without this the loop starves silently
+
+# 5. Distribute power with poles — then VERIFY coverage BEFORE moving on
+#    (do NOT place a run of poles and walk away; check every machine is lit).
+report = verify.supply_coverage(entities=[(name, (x, y)), ...])  # your consumers
+print(report.summary)     # per-entity covered/margin, e.g. "0.15 short on Y toward pole line"
+print(report.ascii_map)   # #=covered tile, P=pole, ?=proposed, UPPERCASE=covered
+                          #   machine, lowercase=NOT covered — chase every lowercase letter
+# `covered` is a box-intersection fact, not a distance guess: a machine 5 tiles
+# from a 3.5-reach pole is dark by 0.15. To vet a pole position BEFORE placing it,
+# pass proposed_pole=(name, (x, y)) and read the ? tile / margins it would add.
 ```
 
 If a cue list is empty, the space is blocked — clear it or re-site; do NOT fall back to hand-placing. If `cues[0].direction` is set, you MUST pass it to place(): the right position with the wrong rotation does not connect.
+
+**Diagnosing `no_power` — classify the cause before you touch anything.** `no_power` has two distinct causes — the entity isn't covered by any powered pole's supply area, or the generator chain upstream starved. Don't guess which: `remote_view.diagnose_power(name, position)` classifies it in one call:
+```python
+d = remote_view.diagnose_power("assembling-machine-1", pos)   # -> PowerDiagnosis
+# d.verdict ∈ {working, not_covered_by_any_pole, network_has_no_generation,
+#   network_undersupplied, upstream_generator_starved, no_status_data, ...}
+```
+`not_covered_by_any_pole` → fix coverage with `verify.supply_coverage` (see the worked pattern below). Upstream verdicts (`upstream_generator_starved` / `network_has_no_generation`) point you up the fuel loop — walk the generator statuses (engine idle → boiler `no_fuel` → coal supply empty), not the wires. Caveat: a starved producer still reads `working` — only consumers show `low_power`, and undersupply shows as `low_power` status, not a wattage gap.
+
+**Read the per-turn power digest.** Task Progress carries a line like `power: 2 nets | net@(352.5,1000.5) 41.9kW/41.9kW gen/load | net@(382.5,1000.5) 1.1kW/1.1kW 1 low_power` (gen/load watts per network, anchored by pole position, with any `low_power` consumer count). When a network's consumption climbs toward its production, that is the signal to expand generation (add boiler+engine) BEFORE consumers start reading `low_power`. If the digest shows `no_power`/`low_power` counts, `verify.supply_coverage` + `diagnose_power` are the follow-ups.
 
 ### Connection idioms (same principle, other links)
 
@@ -220,6 +248,7 @@ All action and query interfaces are pre-loaded as global variables:
 - **`ghost_builder`** - Build ghost entities into real ones
 - **`placement_hints`** - Plan entity placements with spatial validation
 - **`remote_view`** - Query the entire map via SQL (read-only, for planning)
+- **`verify`** - Confirm live engine truth: `powered()`, `connected()`, `supply_coverage()` with per-machine margins + an ASCII coverage map (the DB tells you WHICH; `verify` tells you IS-IT-TRUE-NOW)
 
 **Everything is ready to use immediately** - no imports, no initialization, no setup code needed.
 

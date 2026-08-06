@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Optional, Iterator, Dict, Any, List
 
 import duckdb
 
-from FactoryVerse.game.snapshot.types import LoadResult, ChunkKey, EntityOperation
+from FactoryVerse.game.snapshot.types import LoadResult, ChunkKey
 from FactoryVerse.game.infra.duckdb import apply_ops
+from FactoryVerse.game.infra.duckdb import analytics_ops
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ class SnapshotLoader:
             snapshot_dir: Path to snapshot directory (or script-output root)
         """
         self._db = db
+        self._base_dir = Path(snapshot_dir)
         self._snapshot_dir = self._normalize_path(snapshot_dir)
 
     def _normalize_path(self, path: Path) -> Path:
@@ -85,6 +86,23 @@ class SnapshotLoader:
             result.ghost_count += chunk_result.get("ghosts", 0)
             result.water_count += chunk_result.get("water", 0)
             result.chunks.append(chunk)
+
+        # Boot-load the power/status "state" feeds (power-impl-contracts.md
+        # C3/Task 3). Both are outside the per-chunk layout: power_networks
+        # is a single top-level file, entity_status is a rolling set of
+        # top-level dump files. Neither participates in the stale/future-tick
+        # guards above — analytics_ops' reducers are idempotent (power) or
+        # already latest-wins by construction (status), so replaying them is
+        # always safe regardless of current_game_tick.
+        power_count = self._load_power_networks()
+        status_count = self._load_latest_status_dump()
+        production_count, manual_count = self._load_agent_statistics()
+        logger.info(
+            f"Loaded {power_count} power_networks sample line(s), "
+            f"{status_count} entity_status row(s), "
+            f"{production_count} agent production sample(s), and "
+            f"{manual_count} agent manual snapshot(s)"
+        )
 
         # Replay all update files
         result.last_sequence = self.replay_updates(
@@ -266,6 +284,116 @@ class SnapshotLoader:
                 logger.warning(f"Failed to load ghost: {e}")
         return count
 
+    # =========================================================================
+    # Power / status "state" feeds (power-impl-contracts.md C3, Task 3)
+    # =========================================================================
+
+    def _status_dir(self) -> Path:
+        """Resolve the status dump directory (factoryverse/status), mirroring
+        RemoteView's own convention (``self._snapshot_dir / "factoryverse" /
+        "status"`` there, where its ``_snapshot_dir`` is the raw script-output
+        root — the same root this loader receives as ``snapshot_dir`` before
+        normalization). Falls back to deriving it as a sibling of the
+        normalized chunk-snapshots dir, for callers/tests that already point
+        directly at the .../factoryverse/snapshots directory.
+        """
+        candidate = self._base_dir / "factoryverse" / "status"
+        if candidate.exists():
+            return candidate
+        return self._snapshot_dir.parent / "status"
+
+    def _agent_snapshots_dir(self) -> Path:
+        """Resolve ``factoryverse/agent-snapshots`` for either input shape."""
+        candidate = self._base_dir / "factoryverse" / "agent-snapshots"
+        if candidate.exists():
+            return candidate
+        return self._snapshot_dir.parent / "agent-snapshots"
+
+    def _load_agent_statistics(self) -> tuple[int, int]:
+        """Boot-replay cumulative force and manual agent statistics."""
+        root = self._agent_snapshots_dir()
+        if not root.exists():
+            return 0, 0
+
+        production_count = 0
+        manual_count = 0
+        for agent_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+            try:
+                agent_id = int(agent_dir.name)
+            except ValueError:
+                continue
+
+            production_path = agent_dir / "production-statistics.jsonl"
+            if production_path.exists():
+                for data in self._iter_jsonl(production_path):
+                    try:
+                        analytics_ops.apply_agent_production_sample(self._db, data)
+                        production_count += 1
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to apply agent production line from {production_path}: {exc}"
+                        )
+
+            try:
+                if analytics_ops.apply_agent_manual_files(
+                    self._db, agent_dir, agent_id=agent_id
+                ):
+                    manual_count += 1
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to apply manual production files from {agent_dir}: {exc}"
+                )
+        return production_count, manual_count
+
+    def _load_power_networks(self) -> int:
+        """Boot-load factoryverse/snapshots/power_networks.jsonl (C1) via the
+        shared reducer (analytics_ops.apply_power_sample). The file is
+        bounded (~12 lines/min of uptime, one heartbeat line per 300-tick
+        window) so a full read-and-replay is cheap; each line is idempotent
+        to re-apply.
+        """
+        path = self._snapshot_dir / "power_networks.jsonl"
+        if not path.exists():
+            return 0
+        count = 0
+        for data in self._iter_jsonl(path):
+            try:
+                analytics_ops.apply_power_sample(self._db, data)
+                count += 1
+            except Exception as e:
+                logger.warning(f"Failed to apply power_networks line: {e}")
+        return count
+
+    def _load_latest_status_dump(self) -> int:
+        """Boot-load the NEWEST factoryverse/status/status-<tick>.jsonl (C2)
+        via the shared reducer (analytics_ops.apply_status_dump). Only the
+        newest dump matters — it is a FULL latest-wins snapshot, older
+        rolling-50 files are superseded by construction.
+        """
+        status_dir = self._status_dir()
+        if not status_dir.exists():
+            return 0
+
+        status_files = list(status_dir.glob("status-*.jsonl"))
+        if not status_files:
+            return 0
+
+        def _tick_of(p: Path) -> int:
+            try:
+                return int(p.stem.split("-")[-1])
+            except (ValueError, IndexError):
+                return -1
+
+        latest = max(status_files, key=_tick_of)
+        lines = list(self._iter_jsonl(latest))
+        if not lines:
+            return 0
+        try:
+            return analytics_ops.apply_status_dump(self._db, lines)
+        except Exception as e:
+            logger.warning(f"Failed to apply status dump {latest}: {e}")
+            return 0
+
     def replay_updates(
         self,
         from_sequence: Optional[int] = None,
@@ -402,7 +530,6 @@ class SnapshotLoader:
 
     def _apply_operation(self, data: Dict[str, Any]) -> None:
         """Apply a single operation (upsert or remove)."""
-        op = data.get("op")
         op_type = data.get("_type", "entity")
 
         if op_type == "ghost":
@@ -523,27 +650,7 @@ class SnapshotLoader:
 
     def _insert_resource_entity(self, data: Dict[str, Any], chunk: ChunkKey) -> None:
         """Insert tree/rock into resource_entity table."""
-        position = data.get("position", {})
-        pos_x = float(position.get("x", 0))
-        pos_y = float(position.get("y", 0))
-        name = data.get("name", "")
-
-        self._db.execute(
-            """
-            INSERT OR REPLACE INTO resource_entity
-            (name, entity_type, position_x, position_y, chunk_x, chunk_y, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                name,
-                data.get("type", "unknown"),
-                pos_x,
-                pos_y,
-                chunk.x,
-                chunk.y,
-                json.dumps(data),
-            ],
-        )
+        apply_ops.upsert_resource_entity(self._db, data, chunk.x, chunk.y)
 
 
     def _iter_jsonl(self, path: Path) -> Iterator[Dict[str, Any]]:

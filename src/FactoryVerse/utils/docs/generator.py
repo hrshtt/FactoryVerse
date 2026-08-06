@@ -82,8 +82,12 @@ class MarkdownGenerator:
         | `crafting` | CraftingAction | Hand-craft recipes |
         | `research` | ResearchAction | Queue and track research |
         | `inventory` | AgentInventory | Query and shape inventory |
+        | `mining` | MiningAction | Mine reachable resources |
+        | `placement` | PlacementAction | Place carried entities |
+        | `entity_ops` | EntityOperationsAction | Inspect and operate entities |
         | `reachable_view` | ReachableView | Query nearby entities |
         | `remote_view` | RemoteView | Map-wide SQL queries |
+        | `verify` | Verification | Verify live game state |
         | `ghost_builder` | GhostBuilderAction | Commit placement plans |
         | `placement_hints` | PlacementHints | Spatial reasoning for placement |
         """).strip()
@@ -135,7 +139,10 @@ class MarkdownGenerator:
         classes = self._registry.get_all_classes()
         action_classes = [
             c for c in classes
-            if c.accessor_name in ("walking", "crafting", "research", "inventory")
+            if c.accessor_name in (
+                "walking", "crafting", "research", "inventory", "mining",
+                "placement", "entity_ops",
+            )
         ]
 
         if not action_classes:
@@ -154,7 +161,7 @@ class MarkdownGenerator:
         classes = self._registry.get_all_classes()
         view_classes = [
             c for c in classes
-            if c.accessor_name in ("reachable_view", "remote_view")
+            if c.accessor_name in ("reachable_view", "remote_view", "verify")
         ]
 
         if not view_classes:

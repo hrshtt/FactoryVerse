@@ -117,6 +117,37 @@ else:
 
     registry.register_method(
         cls=PlacementHints,
+        method_name="find_offshore_pump_sites",
+        description="Find live engine-validated offshore-pump anchors. Each result "
+        "contains both the placement position and required direction; these are "
+        "not merely nearby water tiles.",
+        examples=[
+            Example(
+                code="""water = remote_view.find_water(near=MapPosition(x=0, y=0), radius=80)
+sites = placement_hints.find_offshore_pump_sites(
+    near=MapPosition(x=water[0]["x"], y=water[0]["y"]),
+    radius=20,
+    max_results=20,
+)
+if not sites:
+    raise RuntimeError("No validated offshore-pump site in the searched area")
+site = sites[0]
+pump = inventory.get_item("offshore-pump")
+await pump.place(site.position, site.direction)""",
+                decision_context="Placing an offshore pump without guessing shoreline anchors",
+                expected_outcome="Returns validated position-and-direction candidates",
+                validation_level=ValidationLevel.SYNTAX,
+            )
+        ],
+        decision_points=[
+            "remote_view.find_water() returns water tiles, not pump anchors",
+            "Search around a known water tile and use the returned direction unchanged",
+            "Increase radius or choose another water cluster only when the result is empty",
+        ],
+    )
+
+    registry.register_method(
+        cls=PlacementHints,
         method_name="get_connection_positions",
         description="Find valid positions where target entity can connect to source entity.",
         examples=[
@@ -210,6 +241,11 @@ if optimal:
             "ELECTRIC_WIRE: electric poles → electric poles → Returns WireConnectionPosition",
             "Lower perpendicular_offset = better alignment with source entity",
             "For ELECTRIC_WIRE, use wire_distance_utilization to optimize pole spacing",
+            "The returned list is a ConnectionPositionList: still indexable/"
+            "iterable like a plain list, but an empty result also carries "
+            "`.reason` (why zero candidates), and for ELECTRIC_WIRE "
+            "`.max_wire_distance` — check these instead of treating [] as "
+            "an unexplained dead end (REASON-1)",
         ],
     )
 

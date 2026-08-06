@@ -19,8 +19,10 @@ from datetime import datetime
 
 # Import schema definitions (single source of truth)
 from FactoryVerse.game.infra.duckdb.schema_definitions import (
+    ANALYTICS_TABLES,
     CORE_TABLES,
     COMPONENT_TABLES,
+    STATE_TABLES,
 )
 
 # Forbidden SQL keywords
@@ -146,7 +148,7 @@ class BaseEntity:
 # Preferred pattern:
 drill = remote_view.get_entity("SELECT * FROM map_entity WHERE entity_name = 'burner-mining-drill' LIMIT 1")
 await drill.walk_to()  # Automatically converts to REACHABLE
-drill.add_fuel(inventory.create_item_stacks("coal", 5))  # Use directly
+drill.add_fuel(inventory.create_item_stacks("coal", 5, number_of_stacks=1))
 ```
 
 ### `BaseResource` (from `get_resources`)
@@ -176,6 +178,30 @@ iron_ore = remote_view.get_resources("SELECT * FROM resource_tile WHERE name = '
 await iron_ore.walk_to()  # Automatically converts to REACHABLE
 items = await iron_ore.mine(max_count=25)  # Use directly
 ```
+
+### `ResourceOrePatch` (from `reachable_view.get_resources`)
+
+Nearby ore tiles are consolidated into a REACHABLE patch. This is deliberately
+different from one remote `BaseResource` tile: use `.total`, not `.amount`.
+
+```python
+class ResourceOrePatch:
+    name: str
+    position: MapPosition        # Average position of its nearby tiles
+    total: int                   # Total remaining amount across the patch
+    count: int                   # Number of tiles in the patch
+    view: EntityView             # REACHABLE
+
+    async def mine(max_count: int = 25) -> List[ItemStack]
+
+patches = reachable_view.get_resources()
+if patches:
+    print(patches[0].total)
+```
+
+`reachable_view.get_resource(name)` returns one reachable `BaseResource`;
+`reachable_view.get_resources()` returns consolidated `ResourceOrePatch`
+objects.
 
 ### `Dict[str, Any]` (from `query`)
 
@@ -234,6 +260,71 @@ def _generate_table_reference() -> str:
         for col in table.columns:
             doc += f"| `{col.name}` | `{col.type}` | {col.description} |\n"
         doc += "\n"
+
+    doc += "### Agent Analytics Tables\n\n"
+    doc += (
+        "Cumulative production statistics synchronized from the game. "
+        "`statistics`, `crafted`, and `mined` are JSON objects stored as "
+        "VARCHAR and can be inspected with DuckDB JSON functions.\n\n"
+    )
+    for table in ANALYTICS_TABLES:
+        doc += f"#### `{table.name}`\n\n{table.purpose}\n\n"
+        doc += "| Column | Type | Description |\n"
+        doc += "|--------|------|-------------|\n"
+        for col in table.columns:
+            doc += f"| `{col.name}` | `{col.type}` | {col.description} |\n"
+        if table.notes:
+            doc += f"\n{table.notes}\n"
+        if table.example_queries:
+            doc += "\n**Examples:**\n```sql\n"
+            doc += "\n".join(table.example_queries)
+            doc += "\n```\n"
+        elif table.example_query:
+            doc += f"\n**Example:**\n```sql\n{table.example_query}\n```\n"
+        doc += "\n"
+
+    # State tables (live/replayed power + status feeds)
+    doc += "### State Tables\n\n"
+    doc += (
+        "Live power and entity-status feeds. Cadence: `power_samples`/"
+        "`power_networks` are sampled every **300 ticks (~5s)**; `entity_status` "
+        "is a **full snapshot every 60 ticks (~1s)**. "
+        "The engine `network_id` is **EPHEMERAL** — it renumbers on network "
+        "merge/split, exactly like `unit_number`; reference a network by its "
+        "**anchor pole** and an entity by **name + position**, never by a raw "
+        "id. `map_entity.electric_network_id` is **as-of-write** (the id at the "
+        "last entity snapshot); fresh network membership lives in "
+        "`power_networks`.\n\n"
+    )
+    for table in STATE_TABLES:
+        doc += f"#### `{table.name}`\n\n"
+        doc += f"{table.purpose}\n\n"
+        doc += "| Column | Type | Description |\n"
+        doc += "|--------|------|-------------|\n"
+        for col in table.columns:
+            doc += f"| `{col.name}` | `{col.type}` | {col.description} |\n"
+
+        if table.notes:
+            doc += f"\n{table.notes}\n"
+
+        if table.example_queries:
+            doc += "\n**Examples:**\n```sql\n"
+            doc += "\n".join(table.example_queries)
+            doc += "\n```\n"
+        elif table.example_query:
+            doc += f"\n**Example:**\n```sql\n{table.example_query}\n```\n"
+        doc += "\n"
+
+    doc += (
+        "> **Status caveats (live-learned):** poles carry no status (absent "
+        "from every dump). A starved producer — including an electric-energy "
+        "interface — still reads `working`; only consumers show `low_power`. "
+        "Status is single-valued, so a logistics status "
+        "(`full_output`, `item_ingredient_shortage`) can mask power distress. "
+        "In the flow numbers a starved network reads `production_w ≈ "
+        "consumption_w` (delivered energy), so undersupply is detected by the "
+        "`low_power` status, NOT by a wattage gap.\n\n"
+    )
 
     doc += "---\n\n"
     return doc
@@ -367,7 +458,7 @@ drills = remote_view.get_entities('''
 # 5. NAVIGATE & INTERACT: Fuel the drills
 for drill in drills:
     await drill.walk_to()  # Automatically becomes REACHABLE
-    drill.add_fuel(inventory.create_item_stacks("coal", 5))  # Use directly
+    drill.add_fuel(inventory.create_item_stacks("coal", 5, number_of_stacks=1))
 ```
 
 """

@@ -127,6 +127,36 @@ def _ghost_row(db, name="transport-belt", x=5.5, y=6.5):
     ).fetchone()
 
 
+# --- MIRAGE-2 lift: electric_network_id + force round-trip ---------------
+
+
+def test_entity_electric_network_id_and_force_round_trip(db):
+    """apply_ops.upsert_entity must lift electric_network_id and force from
+    entity_data into their map_entity columns (MIRAGE-2: the INSERT column
+    list previously omitted electric_network_id though the payload carried
+    it; force is a new column populated the same way)."""
+    apply_ops.upsert_entity(
+        db, _entity(extra={"electric_network_id": 42, "force": "player"}), 0, 0)
+    row = db.execute(
+        "SELECT electric_network_id, force FROM map_entity "
+        "WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+        ["iron-chest", 10.5, 20.5],
+    ).fetchone()
+    assert row == (42, "player")
+
+
+def test_entity_electric_network_id_and_force_absent_stay_null(db):
+    """Entities with no network membership (unpowered) or no force key in
+    the payload must not error and must store NULL, not crash on .get()."""
+    apply_ops.upsert_entity(db, _entity(), 0, 0)
+    row = db.execute(
+        "SELECT electric_network_id, force FROM map_entity "
+        "WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+        ["iron-chest", 10.5, 20.5],
+    ).fetchone()
+    assert row == (None, None)
+
+
 def test_ghost_fold_preserve_and_remove(db):
     apply_ops.upsert_ghost(db, _ghost(builder={"label": "g-plan", "placed_tick": 7}))
     assert _ghost_row(db) == (7, None, "g-plan")

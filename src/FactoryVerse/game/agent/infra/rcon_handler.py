@@ -132,8 +132,15 @@ class RconHandler:
         # Check if the response indicates an error
         if isinstance(parsed, dict):
             if parsed.get("success") is False:
-                error_msg = parsed.get("error", "Unknown error")
-                raise RuntimeError(f"RCON command failed: {error_msg}")
+                # xpcall failures use ``error`` and are transport/execution
+                # failures. Remote methods may instead return a structured
+                # domain failure (failure_type/message), which the typed
+                # action layer must receive in order to classify it.
+                if "error" in parsed:
+                    raise RuntimeError(f"RCON command failed: {parsed['error']}")
+                if "failure_type" in parsed or "message" in parsed:
+                    return parsed
+                raise RuntimeError("RCON command failed: Unknown error")
             # If success is True or not present, return the parsed result
             return parsed
 

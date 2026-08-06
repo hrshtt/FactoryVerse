@@ -152,7 +152,7 @@ def _pole_payload(x, neighbour_x, supply_entity):
         "health": 100,
         "max_health": 100,
         "electric_network_id": 67,
-        "is_connected": True,
+        "wired_to_other_pole": True,
         "connected_poles": [
             {"name": "small-electric-pole", "position": {"x": neighbour_x, "y": 63.5}},
         ],
@@ -351,6 +351,26 @@ class TestElectricPoleTransform:
         payload.pop("supply_area_entity_count")
         state = transform_inspection_data(payload).electric_pole
         assert state.supply_area_entity_count == 1
+
+    def test_wired_to_other_pole_present_and_repr(self):
+        """PWR-CONN-REPR-1: honest field name replaces the misleading
+        `is_connected` (which read as 'powered')."""
+        state = transform_inspection_data(POLE_1_PAYLOAD).electric_pole
+        assert state.wired_to_other_pole is True
+        # Deprecated alias property mirrors the renamed field exactly.
+        assert state.is_connected == state.wired_to_other_pole
+        # The honest name must surface in the repr an agent/human reads.
+        assert "wired_to_other_pole" in repr(state)
+
+    def test_legacy_is_connected_key_still_ingests(self):
+        """Older deployed mods emit the legacy `is_connected` key; the
+        transform must accept it as a fallback during the rename transition."""
+        payload = dict(POLE_1_PAYLOAD)
+        payload.pop("wired_to_other_pole")
+        payload["is_connected"] = True
+        state = transform_inspection_data(payload).electric_pole
+        assert state.wired_to_other_pole is True
+        assert state.is_connected is True
 
     def test_mixin_delegates_to_transform(self):
         """The mixin previously duplicated (and drifted from) the transform."""

@@ -244,9 +244,9 @@ class TestCalculateAutomationScore:
     @pytest.mark.asyncio
     async def test_pure_manual(self):
         """Test scoring when all production is manual."""
-        # input = items produced by automation (force-level total)
+        # Surface-scoped force input excludes character production.
         source = MockVerificationSource(
-            force_input={"iron-plate": 50},
+            force_input={},
             manual_crafted={"iron-plate": 50},
         )
 
@@ -256,14 +256,14 @@ class TestCalculateAutomationScore:
 
         assert automation == 0
         assert manual == 50
-        assert force_total == 50
+        assert force_total == 0
 
     @pytest.mark.asyncio
     async def test_mixed_production(self):
         """Test scoring with mixed automation and manual."""
         # input = items produced by automation (force-level total)
         source = MockVerificationSource(
-            force_input={"iron-plate": 100},
+            force_input={"iron-plate": 60},
             manual_crafted={"iron-plate": 30},
             manual_mined={"iron-plate": 10},  # Can mine iron plates from debris
         )
@@ -272,9 +272,9 @@ class TestCalculateAutomationScore:
             source, agent_id=1, target_item="iron-plate"
         )
 
-        assert automation == 60  # 100 - 30 - 10
+        assert automation == 60
         assert manual == 40  # 30 + 10
-        assert force_total == 100
+        assert force_total == 60
 
     @pytest.mark.asyncio
     async def test_item_not_produced(self):
@@ -293,10 +293,8 @@ class TestCalculateAutomationScore:
         assert force_total == 0
 
     @pytest.mark.asyncio
-    async def test_negative_automation_clamped(self):
-        """Test that negative automation is clamped to 0."""
-        # Edge case: manual > force (shouldn't happen but handle gracefully)
-        # input = items produced by automation (force-level total)
+    async def test_manual_channel_does_not_reduce_force_automation(self):
+        """Independent manual counts are never subtracted from force input."""
         source = MockVerificationSource(
             force_input={"iron-plate": 10},
             manual_crafted={"iron-plate": 15},
@@ -306,7 +304,7 @@ class TestCalculateAutomationScore:
             source, agent_id=1, target_item="iron-plate"
         )
 
-        assert automation == 0  # Clamped, not -5
+        assert automation == 10
         assert manual == 15
         assert force_total == 10
 
@@ -383,7 +381,7 @@ class TestVerifyTask:
         # 20 automation, 30 manual = 60% manual ratio > 20%
         # input = items produced by automation (force-level total)
         source = MockVerificationSource(
-            force_input={"iron-plate": 50},
+            force_input={"iron-plate": 20},
             manual_crafted={"iron-plate": 30},
         )
 
@@ -440,9 +438,9 @@ class TestVerifyMultipleItems:
         # input = items produced by automation (force-level total)
         source = MockVerificationSource(
             force_input={
-                "iron-plate": 100,
+                "iron-plate": 90,
                 "copper-plate": 50,
-                "electronic-circuit": 25,
+                "electronic-circuit": 20,
             },
             manual_crafted={
                 "iron-plate": 10,
@@ -456,9 +454,9 @@ class TestVerifyMultipleItems:
             target_items=["iron-plate", "copper-plate", "electronic-circuit"],
         )
 
-        assert results["iron-plate"] == (90, 10, 100)  # 90 auto, 10 manual
+        assert results["iron-plate"] == (90, 10, 90)  # independent channels
         assert results["copper-plate"] == (50, 0, 50)  # 50 auto, 0 manual
-        assert results["electronic-circuit"] == (20, 5, 25)  # 20 auto, 5 manual
+        assert results["electronic-circuit"] == (20, 5, 20)
 
 
 # =============================================================================
@@ -555,7 +553,7 @@ class TestVerificationWorkflow:
         # Create mock source simulating successful automation
         # input = items produced by automation (force-level total)
         source = MockVerificationSource(
-            force_input={"iron-plate": 50},
+            force_input={"iron-plate": 45},
             manual_crafted={"iron-plate": 5},
         )
 
@@ -575,7 +573,7 @@ class TestVerificationWorkflow:
         # Source simulating only manual production
         # input = items produced by automation (force-level total)
         source = MockVerificationSource(
-            force_input={"iron-plate": 16},
+            force_input={},
             manual_crafted={"iron-plate": 16},  # All manual!
         )
 

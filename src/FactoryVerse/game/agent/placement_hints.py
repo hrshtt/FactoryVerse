@@ -27,6 +27,7 @@ import time
 import json
 
 from FactoryVerse.game.factory.types import MapPosition, Direction
+from FactoryVerse.game.factory.prototypes import get_entity_prototypes
 
 if TYPE_CHECKING:
     from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
@@ -177,6 +178,70 @@ class WireConnectionPosition(ConnectionPosition):
         super().__post_init__()
         if self.wire_distance < 0:
             raise ValueError("wire_distance must be non-negative")
+
+
+class ConnectionPositionList(list):
+    """A `List[ConnectionPosition]`-compatible result that also carries the
+    connection query's raw metadata (REASON-1 fix).
+
+    The Lua connection solvers (`fv_placement_hints/connections/init.lua`)
+    return a rich dict — ``positions``, ``count``, and (for fluid) a
+    zero-cue ``reason`` — but the Python wrappers used to keep only the
+    ``positions`` list and throw the rest away. A zero-cue answer with no
+    reason is a "no candidates" dead end the agent can't act on (compare
+    ``ConnectionQueryError``, which exists precisely because "empty" and
+    "failed" must never look the same to the caller — this is the analogous
+    problem for "empty, but WHY").
+
+    Still just a list: truthiness, ``len()``, iteration, and indexing behave
+    exactly as before, so `if positions:` / `for p in positions` callers are
+    unaffected. The extra fields are attributes, not list elements.
+
+    Attributes:
+        reason: Human-readable explanation for why the result is empty (or
+            None if non-empty, or if the solver didn't supply one and none
+            could be synthesized).
+        max_wire_distance: The engine-derived max wire distance used to
+            bound the search (ELECTRIC_WIRE queries only; None otherwise).
+        source_name: The Lua result's ``source_name`` — the source entity's
+            prototype name the query was solved against.
+        search_metadata: Any other raw Lua result fields worth keeping
+            (e.g. ``count``, ``target_name``, ``blocked_candidates``).
+    """
+
+    def __init__(
+        self,
+        iterable=(),
+        *,
+        reason: Optional[str] = None,
+        max_wire_distance: Optional[float] = None,
+        source_name: Optional[str] = None,
+        search_metadata: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(iterable)
+        self.reason = reason
+        self.max_wire_distance = max_wire_distance
+        self.source_name = source_name
+        self.search_metadata = search_metadata or {}
+
+    def __repr__(self) -> str:
+        base = super().__repr__()
+        if len(self) > 0:
+            return base
+
+        bits = []
+        if self.reason:
+            bits.append(self.reason)
+        if self.max_wire_distance is not None:
+            bits.append(f"max_wire_distance={self.max_wire_distance}")
+        if self.source_name:
+            bits.append(f"source={self.source_name}")
+        for key, value in self.search_metadata.items():
+            bits.append(f"{key}={value}")
+
+        if not bits:
+            return f"{base} (no valid positions; no metadata surfaced)"
+        return f"{base} (no valid positions: {', '.join(bits)})"
 
 
 @dataclass
@@ -345,6 +410,20 @@ class PlacementHintsClient:
             entity_name,
             {"x": position.x, "y": position.y},
             direction.value if direction else None,
+        )
+
+    def get_water_placements(
+        self,
+        entity_name: str,
+        area: Dict[str, Dict[str, float]],
+        max_results: int = 20,
+    ) -> Dict[str, Any]:
+        """Return engine-validated water-edge positions and directions."""
+        return self._call(
+            "get_water_placements",
+            entity_name,
+            area,
+            {"max_results": max_results},
         )
 
     # =========================================================================
@@ -581,12 +660,18 @@ class PlacementValidator:
 
         if abs_dx == 0:
             step = 1 if dy > 0 else -1
-            for y in range(int(start.y), int(end.y) + step, step):
-                positions.append(MapPosition(x=start.x, y=float(y)))
+            steps = int(round(abs_dy))
+            for index in range(steps + 1):
+                positions.append(
+                    MapPosition(x=start.x, y=start.y + index * step)
+                )
         elif abs_dy == 0:
             step = 1 if dx > 0 else -1
-            for x in range(int(start.x), int(end.x) + step, step):
-                positions.append(MapPosition(x=float(x), y=start.y))
+            steps = int(round(abs_dx))
+            for index in range(steps + 1):
+                positions.append(
+                    MapPosition(x=start.x + index * step, y=start.y)
+                )
         else:
             max_steps = max(abs_dx, abs_dy)
             steps = int(max_steps) + 1
@@ -597,6 +682,36 @@ class PlacementValidator:
                 positions.append(MapPosition(x=x, y=y))
 
         return positions
+
+
+def _pole_prototype_distances(pole_name: str) -> Tuple[float, float]:
+    """Return (maximum_wire_distance, supply_area_distance) for a pole,
+    read from the prototype pipeline (PWR-HARDCODE-1 fix).
+
+    These were previously hardcoded per-pole-name dicts scattered across
+    get_pole_line/get_pole_coverage_position/get_pole_coverage_plan/
+    evaluate_pole_placement, and had drifted from the engine:
+    big-electric-pole's wire distance was hardcoded 30.0 while the real
+    prototype value is 32. EntityPrototypes.get_prototype() reads the
+    filtered factorio-data-dump.json (offline, no live-server dependency —
+    the same source ElectricPole.maximum_wire_distance/supply_area_distance
+    already use for these exact fields; see
+    game/factory/entity/implementations/electric_pole.py).
+
+    Raises:
+        ValueError: if the entity isn't a recognized, filtered electric-pole
+            prototype (fv_filters.yaml scope) — loud failure instead of a
+            silently wrong hardcoded default.
+    """
+    proto = get_entity_prototypes().get_prototype(pole_name)
+    if not proto or "maximum_wire_distance" not in proto or "supply_area_distance" not in proto:
+        raise ValueError(
+            f"No prototype data for pole {pole_name!r} (maximum_wire_distance/"
+            f"supply_area_distance missing). Is it a recognized, filtered "
+            f"electric-pole entity? (fv_filters.yaml scope, see L3.3 ledger "
+            f"row in docs/FLOOR_CERTIFICATION.md)"
+        )
+    return proto["maximum_wire_distance"], proto["supply_area_distance"]
 
 
 # =============================================================================
@@ -678,6 +793,40 @@ class PlacementHints:
             "blocked_positions": [{"x": p.x, "y": p.y} for p in blocked[:25]],
         }
 
+    def find_offshore_pump_sites(
+        self,
+        near: MapPosition,
+        radius: int = 20,
+        max_results: int = 20,
+    ) -> List[ConnectionPosition]:
+        """Find valid offshore-pump anchors with required orientations.
+
+        Unlike ``remote_view.find_water()``, every returned pair has already
+        passed Factorio's live ``surface.can_place_entity`` check.
+        """
+        if radius < 1:
+            raise ValueError("radius must be at least 1")
+        if max_results < 1:
+            raise ValueError("max_results must be at least 1")
+        area = {
+            "left_top": {"x": near.x - radius, "y": near.y - radius},
+            "right_bottom": {"x": near.x + radius, "y": near.y + radius},
+        }
+        result = self._client.get_water_placements(
+            "offshore-pump", area, max_results=max_results
+        )
+        return [
+            ConnectionPosition(
+                position=MapPosition(
+                    x=float(candidate["position"]["x"]),
+                    y=float(candidate["position"]["y"]),
+                ),
+                direction=Direction(candidate["direction"]),
+            )
+            for candidate in result.get("positions", [])
+            if candidate.get("valid", True)
+        ]
+
     # =========================================================================
     # LINE PLANNING
     # =========================================================================
@@ -745,7 +894,7 @@ class PlacementHints:
         source_entity: "BaseEntity",
         target_entity_name: str,
         connection_type: ConnectionType,
-    ) -> List[ConnectionPosition]:
+    ) -> ConnectionPositionList:
         """Return all valid positions where target can connect to source.
 
         Uses the fv_placement_hints Lua mod which accesses engine values
@@ -769,7 +918,7 @@ class PlacementHints:
 
     def _get_item_drop_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
-    ) -> List[ConnectionPosition]:
+    ) -> ConnectionPositionList:
         """Get positions where target can receive items from source.
 
         Uses Lua mod's get_item_drop_connections which uses engine drop_position.
@@ -783,7 +932,7 @@ class PlacementHints:
             )
 
             positions = result.get("positions", [])
-            return [
+            cues = [
                 ConnectionPosition(
                     position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
                     direction=None,
@@ -792,6 +941,28 @@ class PlacementHints:
                 for p in positions
                 if p.get("valid", True)
             ]
+            # Lua's get_item_drop_connections never emits a `reason` (unlike
+            # fluid); synthesize one from `error` (entity-not-found /
+            # unknown-prototype cases) or count so an empty result still
+            # carries WHY (REASON-1).
+            reason = result.get("error")
+            if reason is None and not cues:
+                reason = (
+                    f"no valid item-drop position for {target_entity_name} "
+                    f"near {source_entity.name}'s drop_position "
+                    f"(count={result.get('count', 0)}; every geometric "
+                    f"candidate was blocked or none existed)"
+                )
+            return ConnectionPositionList(
+                cues,
+                reason=reason,
+                source_name=result.get("source_name"),
+                search_metadata={
+                    "count": result.get("count"),
+                    "target_name": result.get("target_name"),
+                    "drop_position": result.get("drop_position"),
+                },
+            )
         except Exception as e:
             logger.error(f"get_item_drop_positions failed: {e}")
             raise ConnectionQueryError(
@@ -800,7 +971,7 @@ class PlacementHints:
 
     def _get_fluid_pipe_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
-    ) -> List[ConnectionPosition]:
+    ) -> ConnectionPositionList:
         """Get positions where pipes can connect to source fluidbox.
 
         Uses Lua mod's get_fluid_connections which uses engine fluidbox.
@@ -814,7 +985,7 @@ class PlacementHints:
             )
 
             positions = result.get("positions", [])
-            return [
+            cues = [
                 ConnectionPosition(
                     position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
                     # `is not None`: defines.direction.north == 0 is falsy —
@@ -828,6 +999,19 @@ class PlacementHints:
                 for p in positions
                 if p.get("valid", True)
             ]
+            # Fluid already carries a structured `reason` on zero cues
+            # (connections/init.lua:443-457) — surface it instead of
+            # discarding it.
+            return ConnectionPositionList(
+                cues,
+                reason=result.get("error") or result.get("reason"),
+                source_name=result.get("source_name"),
+                search_metadata={
+                    "count": result.get("count"),
+                    "target_name": result.get("target_name"),
+                    "blocked_candidates": result.get("blocked_candidates"),
+                },
+            )
         except Exception as e:
             logger.error(f"get_fluid_pipe_positions failed: {e}")
             raise ConnectionQueryError(
@@ -836,21 +1020,22 @@ class PlacementHints:
 
     def _get_electric_wire_positions(
         self, source_entity: "BaseEntity", target_entity_name: str
-    ) -> List[WireConnectionPosition]:
+    ) -> ConnectionPositionList:
         """Get positions where a pole can connect to source pole.
 
         Uses Lua mod's get_pole_connections which uses engine wire_connector.
         """
         try:
             # Define search area around source pole
+            search_radius = 20
             search_area = {
                 "left_top": {
-                    "x": source_entity.position.x - 20,
-                    "y": source_entity.position.y - 20,
+                    "x": source_entity.position.x - search_radius,
+                    "y": source_entity.position.y - search_radius,
                 },
                 "right_bottom": {
-                    "x": source_entity.position.x + 20,
-                    "y": source_entity.position.y + 20,
+                    "x": source_entity.position.x + search_radius,
+                    "y": source_entity.position.y + search_radius,
                 },
             }
 
@@ -865,7 +1050,7 @@ class PlacementHints:
             positions = result.get("positions", [])
             max_wire_distance = result.get("max_wire_distance", 9.0)
 
-            return [
+            cues = [
                 WireConnectionPosition(
                     position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
                     direction=None,
@@ -876,6 +1061,29 @@ class PlacementHints:
                 for p in positions
                 if p.get("valid", True)
             ]
+            # get_pole_connections never emits a `reason` field at all
+            # (unlike fluid) — synthesize one from what it DOES return
+            # (max_wire_distance + search extent + count) so a zero-cue
+            # electric-wire answer isn't a silent dead end (REASON-1).
+            reason = result.get("error")
+            if reason is None and not cues:
+                reason = (
+                    f"no valid electric-wire positions for {target_entity_name} "
+                    f"within max_wire_distance={max_wire_distance} of "
+                    f"{source_entity.name} (searched ±{search_radius} "
+                    f"tiles around source; count={result.get('count', 0)} "
+                    f"candidates passed placement check)"
+                )
+            return ConnectionPositionList(
+                cues,
+                reason=reason,
+                max_wire_distance=max_wire_distance,
+                source_name=result.get("source_name"),
+                search_metadata={
+                    "count": result.get("count"),
+                    "search_radius": search_radius,
+                },
+            )
         except Exception as e:
             logger.error(f"get_electric_wire_positions failed: {e}")
             raise ConnectionQueryError(
@@ -933,20 +1141,9 @@ class PlacementHints:
     ) -> GhostPlan:
         """Plan a line of poles at maximum wire distance intervals.
 
-        Uses Lua mod to get pole prototype info (wire distance).
+        Wire distance comes from the prototype pipeline (PWR-HARDCODE-1).
         """
-        # Get pole info from Lua mod
-        try:
-            cue = self._client.get_placement_cue(pole_name, start)
-            # Wire distance not directly in cue, use default based on pole type
-            max_wire_distance = {
-                "small-electric-pole": 7.5,
-                "medium-electric-pole": 9.0,
-                "big-electric-pole": 30.0,
-                "substation": 18.0,
-            }.get(pole_name, 9.0)
-        except Exception:
-            max_wire_distance = 9.0
+        max_wire_distance, _supply_area_distance = _pole_prototype_distances(pole_name)
 
         dx = end.x - start.x
         dy = end.y - start.y
@@ -989,12 +1186,7 @@ class PlacementHints:
         if not entities_to_power:
             return None
 
-        supply_distance = {
-            "small-electric-pole": 2.5,
-            "medium-electric-pole": 3.5,
-            "big-electric-pole": 2.0,
-            "substation": 9.0,
-        }.get(pole_name, 3.5)
+        _max_wire_distance, supply_distance = _pole_prototype_distances(pole_name)
 
         min_x = min(e.position.x for e in entities_to_power)
         max_x = max(e.position.x for e in entities_to_power)
@@ -1038,12 +1230,7 @@ class PlacementHints:
                 valid=True,
             ), []
 
-        supply_distance = {
-            "small-electric-pole": 2.5,
-            "medium-electric-pole": 3.5,
-            "big-electric-pole": 2.0,
-            "substation": 9.0,
-        }.get(pole_name, 3.5)
+        _max_wire_distance, supply_distance = _pole_prototype_distances(pole_name)
 
         uncovered = set(range(len(entities_to_power)))
         pole_positions: List[Tuple[MapPosition, Optional[Direction]]] = []
@@ -1143,19 +1330,7 @@ class PlacementHints:
         reachable_view: Optional[Any] = None,
     ) -> PolePlacementResult:
         """Evaluate a pole placement position without placing anything (dry run)."""
-        supply_area_distance = {
-            "small-electric-pole": 2.5,
-            "medium-electric-pole": 3.5,
-            "big-electric-pole": 2.0,
-            "substation": 9.0,
-        }.get(pole_name, 3.5)
-
-        maximum_wire_distance = {
-            "small-electric-pole": 7.5,
-            "medium-electric-pole": 9.0,
-            "big-electric-pole": 30.0,
-            "substation": 18.0,
-        }.get(pole_name, 9.0)
+        maximum_wire_distance, supply_area_distance = _pole_prototype_distances(pole_name)
 
         is_valid = self._validator.validate_placement(pole_name, position, None, ghost=True)
         placement_error = None if is_valid else "Cannot place pole at this position"

@@ -1101,6 +1101,50 @@ function M.re_snapshot_area(bounds, priority)
     return { success = true, chunks_queued = #chunks, chunks = chunks }
 end
 
+--- Force re-snapshot an explicit list of chunks.
+--- This is the freeplay-safe counterpart to re_snapshot_area: long-running
+--- maps may contain distant outposts, so covering their min/max bounds would
+--- also snapshot every uncharted chunk in the empty rectangle between them.
+--- @param chunks table Array of {x=number, y=number}
+--- @param priority number|nil Priority for queue (default 10)
+--- @return table {success:boolean, chunks_queued:number, chunks:table}
+function M.re_snapshot_chunks(chunks, priority)
+    if type(chunks) ~= "table" then
+        return { success = false, error = "Invalid chunks: expected an array" }
+    end
+
+    priority = priority or 10
+    local tracker = M.get_chunk_tracker()
+    local sys_state = get_system_state()
+    local queued = {}
+    local seen = {}
+
+    for _, chunk in pairs(chunks) do
+        local chunk_x = chunk and tonumber(chunk.x)
+        local chunk_y = chunk and tonumber(chunk.y)
+        if chunk_x and chunk_y then
+            chunk_x = math.floor(chunk_x)
+            chunk_y = math.floor(chunk_y)
+            local key = chunk_x .. "," .. chunk_y
+            if not seen[key] then
+                seen[key] = true
+                local entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
+                entry.snapshot_tick = nil
+                enqueue_chunk_for_snapshot(chunk_x, chunk_y, priority)
+                table.insert(queued, { x = chunk_x, y = chunk_y })
+            end
+        end
+    end
+
+    if #queued > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+        sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
+        sys_state.stats.phase_start_tick = game.tick
+        sys_state.current_wait_tick = sys_state.bootstrap_wait_ticks
+    end
+
+    return { success = true, chunks_queued = #queued, chunks = queued }
+end
+
 M.admin_api = {
     get_charted_chunks = M.get_charted_chunks,
     get_map_area_state = M.get_map_area_state,
@@ -1117,6 +1161,7 @@ M.admin_api = {
     trigger_initial_snapshot = M.trigger_initial_snapshot,
     snapshot_area = M.snapshot_area,
     re_snapshot_area = M.re_snapshot_area,
+    re_snapshot_chunks = M.re_snapshot_chunks,
 }
 
 M.event_based_snapshot = {}

@@ -799,7 +799,77 @@ class AgentOrchestrator:
 
             lines.append("-" * 45)
 
+        # ISLAND-1: Task Progress showed throughput only. Add ONE compact power
+        # line so the agent sees its networks' gen/load and unpowered members.
+        # NEVER throws — a crashing digest kills the run, so any error omits the
+        # line (a lying digest is worse than none).
+        power_line = self._render_power_digest_line()
+        if power_line:
+            lines.append(power_line)
+
         return "\n".join(lines)
+
+    def _render_power_digest_line(self) -> Optional[str]:
+        """One compact power line for Task Progress, or None to omit it.
+
+        Format (ISLAND-1):
+            power: 2 nets | net@(971.5,971.5) 77.5kW/77.5kW gen/load | net@(1051.5,971.5) 30.0kW/30.0kW 2 low_power
+
+        Never raises: any error (no remote_view, query failure, malformed
+        report) returns None and the line is simply omitted.
+        """
+        try:
+            rv = getattr(self.runtime, "remote_view", None)
+            if rv is None or not getattr(rv, "is_loaded", False):
+                # DIGEST-1: this exact branch silently ate the digest for a full
+                # eval run (the runtime adapter didn't expose remote_view).
+                # Never-throw stays, but the omission must be observable.
+                if not getattr(self, "_power_digest_warned", False):
+                    self._power_digest_warned = True
+                    logger.warning(
+                        "power digest disabled: runtime has no loaded remote_view "
+                        f"(runtime={type(self.runtime).__name__}) — "
+                        "Task Progress will carry NO power line this session"
+                    )
+                return None
+            report = rv.get_power_networks()
+            if report is None or report.sample_tick is None:
+                return None  # sampler never ran — omit rather than lie
+            # DIGEST-2: no_power machines attached to NO network (not covered
+            # by any pole) have no per-net bucket — surface them independently
+            # or the digest under-reports exactly the sickest machines.
+            orphans = getattr(report, "unattributed_no_power", 0) or 0
+            orphan_seg = f" | {orphans} unpowered (no net)" if orphans else ""
+
+            nets = report.networks
+            if not nets:
+                return "power: no networks" + orphan_seg
+
+            segs = []
+            for i, net in enumerate(nets[:3]):
+                pos = net.anchor_pole_position or {}
+                ax, ay = pos.get("x"), pos.get("y")
+                loc = f"({ax:.1f},{ay:.1f})" if ax is not None else "(?)"
+                seg = (
+                    f"net@{loc} {net.production_w / 1000:.1f}kW/"
+                    f"{net.consumption_w / 1000:.1f}kW"
+                )
+                if i == 0:
+                    seg += " gen/load"
+                if net.no_power_count:
+                    seg += f" {net.no_power_count} no_power"
+                if net.low_power_count:
+                    seg += f" {net.low_power_count} low_power"
+                segs.append(seg)
+
+            line = f"power: {len(nets)} nets | " + " | ".join(segs)
+            more = len(nets) - 3
+            if more > 0:
+                line += f" | +{more} more"
+            return line + orphan_seg
+        except Exception as e:  # noqa: BLE001 — digest must never kill the run
+            logger.debug(f"power digest line skipped: {e}")
+            return None
 
     async def _drain_events(self) -> list:
         """Drain pending game events from the EventStream.

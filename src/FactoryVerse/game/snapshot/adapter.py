@@ -47,13 +47,25 @@ class SnapshotStatus:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SnapshotStatus":
+        # The Lua map interface uses ``completed_chunks``/``pending_chunks``
+        # and exposes the active writer as ``phase``.  Older callers and the
+        # Python dataclass use the names below.  Accept both contracts so a
+        # MAINTENANCE phase cannot be mistaken for a quiescent writer while
+        # chunks queued after agent creation are still being serialized.
+        completed = data.get("chunks_snapshotted", data.get("completed_chunks", 0))
+        pending = data.get("chunks_pending", data.get("pending_chunks", 0))
+        writer_phase = data.get("phase", "IDLE")
         return cls(
             system_phase=data.get("system_phase", ""),
             orchestration_mode=data.get("orchestration_mode", ""),
-            total_chunks_tracked=data.get("total_chunks_tracked", 0),
-            chunks_snapshotted=data.get("chunks_snapshotted", 0),
-            chunks_pending=data.get("chunks_pending", 0),
-            chunks_processing=data.get("chunks_processing", 0),
+            total_chunks_tracked=data.get(
+                "total_chunks_tracked", int(completed) + int(pending)
+            ),
+            chunks_snapshotted=int(completed),
+            chunks_pending=int(pending),
+            chunks_processing=data.get(
+                "chunks_processing", 0 if writer_phase == "IDLE" else 1
+            ),
             last_snapshot_tick=data.get("last_snapshot_tick", 0),
             game_tick=data.get("game_tick", 0),
         )
@@ -195,6 +207,20 @@ class MapSnapshotInterface(RemoteInterfaceAdapter):
         """
         bounds = {"left_top": left_top, "right_bottom": right_bottom}
         result = self._call("re_snapshot_area", bounds)
+        if result:
+            return SnapshotAreaResult.from_dict(result)
+        return SnapshotAreaResult(success=False, error="Empty response")
+
+    def re_snapshot_chunks(
+        self,
+        chunks: List[Dict[str, int]],
+    ) -> SnapshotAreaResult:
+        """Force a fresh snapshot for an explicit set of tracked chunks.
+
+        Unlike a bounding-box resnapshot, this remains proportional to the
+        explored map when distant outposts leave large uncharted gaps.
+        """
+        result = self._call("re_snapshot_chunks", chunks)
         if result:
             return SnapshotAreaResult.from_dict(result)
         return SnapshotAreaResult(success=False, error="Empty response")

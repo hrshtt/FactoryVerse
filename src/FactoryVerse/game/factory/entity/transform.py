@@ -440,9 +440,13 @@ def _transform_electric_pole(
 ) -> Optional[ElectricPoleState]:
     """Transform electric pole data to ElectricPoleState.
 
-    Lua inspect_electric_pole emits: electric_network_id, is_connected,
+    Lua inspect_electric_pole emits: electric_network_id, wired_to_other_pole,
     connected_poles (name+position refs via the 2.0 wire connector API),
     supply_area_entities (refs, capped) + supply_area_entity_count (exact).
+
+    Accepts the legacy `is_connected` key from older deployed mods as a
+    fallback for `wired_to_other_pole` during the rename transition
+    (PWR-CONN-REPR-1).
     """
     # Runtime TYPE is "electric-pole" for all poles incl. substation;
     # names kept for compatibility with older captured payloads.
@@ -461,9 +465,15 @@ def _transform_electric_pole(
     if not isinstance(count, int):
         count = len(supply_refs)
 
+    # Prefer the honest new key; fall back to the legacy `is_connected` key
+    # emitted by older deployed mods (PWR-CONN-REPR-1).
+    wired = raw_data.get("wired_to_other_pole")
+    if wired is None:
+        wired = raw_data.get("is_connected")
+
     return ElectricPoleState(
         electric_network_id=raw_data.get("electric_network_id"),
-        is_connected=raw_data.get("is_connected"),
+        wired_to_other_pole=wired,
         connected_poles=_pole_refs(raw_data.get("connected_poles")),
         supply_area_entities=supply_refs,
         supply_area_entity_count=count,

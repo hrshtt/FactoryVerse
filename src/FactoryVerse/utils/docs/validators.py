@@ -397,6 +397,13 @@ class StaticAttributeValidator:
         "remote_view.find_water": "List[Dict]",
         "remote_view.count_entities": "int",
         "remote_view.count_ghosts": "int",
+        "remote_view.get_power_networks": "PowerNetworksReport",
+        "remote_view.diagnose_power": "PowerDiagnosis",
+
+        # VerifyView (live power/coverage confirmation)
+        "verify.powered": "Dict",
+        "verify.connected": "ConnectedCheck",
+        "verify.supply_coverage": "SupplyCoverageReport",
 
         # Inventory
         "inventory.get_item": "PlaceableItem",
@@ -408,6 +415,7 @@ class StaticAttributeValidator:
         # NOTE: get_connection_positions has polymorphic return type based on connection_type
         # Default to ConnectionPosition, but refined by POLYMORPHIC_RETURN_TYPES below
         "placement_hints.get_connection_positions": "List[ConnectionPosition]",
+        "placement_hints.find_offshore_pump_sites": "List[ConnectionPosition]",
         "placement_hints.is_buildable": "Dict",
         "placement_hints.get_placement_line": "GhostPlan",
         "placement_hints.get_underground_segment": "GhostPlan",
@@ -479,6 +487,12 @@ class StaticAttributeValidator:
         ".remove": "None",
         ".walk_to": "MapPosition",
         ".mine": "List[ItemStack]",
+
+        # ElectricPole accessors (DOC-GAP-1: exist in electric_pole.py,
+        # previously unregistered — supply-area / wire-reach reasoning)
+        ".get_supply_area": "BoundingBox",
+        ".supply_area_distance": "float",
+        ".maximum_wire_distance": "float",
     }
 
     # List element types (when iterating over a list)
@@ -548,9 +562,15 @@ class StaticAttributeValidator:
             from FactoryVerse.game.factory.entity.base_entity import BaseEntity
             from FactoryVerse.game.factory.item.base import Item, PlaceableItem, ItemStack
             from FactoryVerse.game.factory.entity.inspection import EntityInspection
-            from FactoryVerse.game.factory.types import MapPosition, TilePosition
+            from FactoryVerse.game.factory.types import MapPosition, TilePosition, BoundingBox
             from FactoryVerse.game.agent.placement_hints import (
                 ConnectionPosition, WireConnectionPosition, GhostPlan, PolePlacementResult
+            )
+            from FactoryVerse.game.agent.remote_view import (
+                PowerNetworksReport, PowerNetworkCensus, PowerDiagnosis,
+            )
+            from FactoryVerse.game.agent.verify_view import (
+                SupplyCoverageReport, EntityCoverage, ConnectedCheck, PoweredCheck,
             )
             from FactoryVerse.game.agent.embodied_actions.research import ResearchStatus, QueuedTechnology
             from FactoryVerse.game.agent.embodied_actions.mining import MiningCancelled
@@ -573,6 +593,14 @@ class StaticAttributeValidator:
                 "EntityInspection": EntityInspection,
                 "MapPosition": MapPosition,
                 "TilePosition": TilePosition,
+                "BoundingBox": BoundingBox,
+                "PowerNetworksReport": PowerNetworksReport,
+                "PowerNetworkCensus": PowerNetworkCensus,
+                "PowerDiagnosis": PowerDiagnosis,
+                "SupplyCoverageReport": SupplyCoverageReport,
+                "EntityCoverage": EntityCoverage,
+                "ConnectedCheck": ConnectedCheck,
+                "PoweredCheck": PoweredCheck,
                 "ConnectionPosition": ConnectionPosition,
                 "WireConnectionPosition": WireConnectionPosition,
                 "GhostPlan": GhostPlan,

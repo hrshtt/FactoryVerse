@@ -362,6 +362,19 @@ class _RuntimeAdapter:
         self._tier4 = tier4
 
     @property
+    def remote_view(self):
+        """Expose tier4's RemoteView through the adapter.
+
+        DIGEST-1 (2026-07-12): the orchestrator's power digest reads
+        `runtime.remote_view`; this adapter didn't expose it, so the digest
+        silently omitted itself on every eval turn (same adapter-missing-
+        attribute class as the PROMPT-3 `scenario` skip). Any orchestrator
+        surface that reads runtime state must be reachable THROUGH this
+        adapter, not only on tier4 directly.
+        """
+        return self._tier4.remote_view if self._tier4 else None
+
+    @property
     def events(self):
         """Get EventStream for temporal perception of game events.
 

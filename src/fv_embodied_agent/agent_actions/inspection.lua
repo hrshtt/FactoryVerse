@@ -797,9 +797,8 @@ local SUPPLY_AREA_ENTITY_CAP = 50
 local function inspect_electric_pole(entity)
     local data = {}
 
-    -- Network connection
+    -- Network membership id (ephemeral; renumbers on split/merge).
     data.electric_network_id = get_electric_network_id(entity)
-    data.is_connected = entity.is_connected_to_electric_network()
 
     -- Copper-wire neighbours (connected poles) as name+position refs.
     -- Factorio 2.0: `entity.neighbours` RAISES on poles ("Neighbours can't be
@@ -824,6 +823,14 @@ local function inspect_electric_pole(entity)
         end
     end
     data.connected_poles = connected_poles
+
+    -- Honest wire-connectivity flag. Renamed from the old `is_connected`
+    -- (which used entity.is_connected_to_electric_network() and misleadingly
+    -- read as "powered" — it was False on poles actively powering a working
+    -- network). This is strictly "has a copper wire to another pole", derived
+    -- from the copper wire connector count above. It says NOTHING about power
+    -- flow; use power_networks / entity status for that. (PWR-CONN-REPR-1)
+    data.wired_to_other_pole = #connected_poles > 0
 
     -- Entities inside the supply area (same-force scan excludes neutral
     -- trees/resources). Capped at SUPPLY_AREA_ENTITY_CAP refs; count is exact.

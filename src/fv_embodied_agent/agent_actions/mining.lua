@@ -222,6 +222,22 @@ function MiningActions.mine_resource(self, resource_name, max_count, position)
     end
     
     local entities = surface.find_entities_filtered(search_args)
+    if position ~= nil and entities and #entities > 0 then
+        -- A Factorio position filter matches collision boxes, not exact
+        -- entity anchors. Dense/overlapping trees can therefore return a
+        -- neighbouring tree first. The DB route supplies the anchor identity;
+        -- preserve it exactly so the selected row is the entity we mine.
+        local exact_entity = nil
+        for _, candidate in pairs(entities) do
+            if candidate and candidate.valid and
+               math.abs(candidate.position.x - position.x) < 0.01 and
+               math.abs(candidate.position.y - position.y) < 0.01 then
+                exact_entity = candidate
+                break
+            end
+        end
+        entities = exact_entity and {exact_entity} or {}
+    end
     if not entities or #entities == 0 then
         if position ~= nil then
             error("Agent: Resource not found at position " .. position.x .. ", " .. position.y)

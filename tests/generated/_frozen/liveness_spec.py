@@ -20,8 +20,8 @@ Expectations encode today's KNOWN state, verified by exploration 2026-07-08
   liveness and are expected to FAIL — marked strict-xfail so the suite is
   green only while the mirage persists AND red the moment someone fixes it
   without reconciling this spec + the ledger (the forcing function).
-- DEAD_DECLARED: declared in schema_definitions but never CREATE'd and not
-  documented (analytics tables). Cleanup candidates, not mirages.
+- Agent analytics are outside this per-column map; their file/DB parity is
+  covered by the dedicated production-statistics contract.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ GROUPS: Dict[str, FrozenSet[Tuple[str, str]]] = {
     }),
     "map_entity_builder": frozenset({
         ("map_entity", c) for c in
-        ("agent_id", "player_id", "label", "placed_tick", "raw_data")
+        ("agent_id", "player_id", "force", "label", "placed_tick", "raw_data")
     }),
     "map_entity_dead": frozenset({
         ("map_entity", c) for c in ("electric_network_id", "tile_x", "tile_y")
@@ -187,10 +187,10 @@ def _build_matrix() -> Dict[Tuple[str, str], ColumnCase]:
 
 MATRIX: Dict[Tuple[str, str], ColumnCase] = _build_matrix()
 
-# Analytics tables: declared, never CREATE'd, not documented. Not part of the
-# per-column matrix (there is no table to probe); the family asserts their
-# status once — see dead_tables_and_docs group.
-DECLARED_UNCREATED_TABLES = tuple(t.name for t in ANALYTICS_TABLES)
+# Analytics tables are not part of the spatial per-column matrix. They are
+# created and ingested from agent snapshot feeds; this family pins catalog
+# presence while the domain live suite proves actual file/DB parity.
+INGESTED_ANALYTICS_TABLES = tuple(t.name for t in ANALYTICS_TABLES)
 
 # Documented-surface probes with no column of their own:
 # - the schema_reference JOIN examples use m.entity_key / d.entity_key /

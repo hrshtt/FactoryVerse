@@ -87,6 +87,16 @@ class GameEvent:
             "crafting_finished",   # Items now available in inventory
         }
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Return the stable wire representation used by coding harnesses."""
+        return {
+            "notification_type": self.notification_type,
+            "agent_id": self.agent_id,
+            "tick": self.tick,
+            "data": self.data,
+            "critical": self.is_critical,
+        }
+
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "GameEvent":
         """Create appropriate event type from UDP payload.
@@ -166,6 +176,11 @@ class ResearchFinishedEvent(GameEvent):
     def unlocked_recipes(self) -> List[str]:
         """Recipes unlocked by this technology."""
         return self.data.get("unlocked_recipes", [])
+
+    @property
+    def effects(self) -> List[Dict[str, Any]]:
+        """Normalized technology effects applied at completion."""
+        return self.data.get("effects", [])
 
     @property
     def level(self) -> Optional[int]:

@@ -60,8 +60,17 @@ smart fallback if the primary path is blocked.]],
                 candidates_tried = { type = "number", doc = "Number of approach candidates tried" },
             },
         },
-        func = function(self, goal, strict_goal, options)
-            return self:walk_to(goal, strict_goal, options)
+        func = function(self, goal, strict_goal, options, entity_ref)
+            -- ARG-2: WalkingActions.walk_to reads entity_ref as its 4th
+            -- positional param. The Python walk_to_entity path already sends
+            -- it as a 4th positional RCON arg, and the documented named form
+            -- carries it as options.entity_ref. This dispatcher previously
+            -- declared only 3 params and DROPPED the 4th, making entity-aware
+            -- walking unreachable. Accept it either way, preferring the
+            -- explicit positional arg and falling back to options.entity_ref.
+            options = options or {}
+            entity_ref = entity_ref or options.entity_ref
+            return self:walk_to(goal, strict_goal, options, entity_ref)
         end,
     },
     stop_walking = {
@@ -91,7 +100,7 @@ The agent will mine the nearest resource of the given type. Mining is incrementa
 if max_count is specified, or depletes the resource if max_count is nil.
 Returns immediately; completion signaled via UDP with items gained.]],
         paramspec = {
-            _param_order = { "resource_name", "max_count" },
+            _param_order = { "resource_name", "max_count", "position" },
             resource_name = { type = "string", required = true, doc = "Resource prototype name (e.g., 'iron-ore', 'coal', 'stone')" },
             max_count = { type = "number", default = nil, doc = "Max items to mine (nil = deplete resource)" },
             position = { type = "position", default = nil, doc = "Exact Position to mine (nil = nearest)" },
@@ -110,8 +119,8 @@ Returns immediately; completion signaled via UDP with items gained.]],
                 reason = { type = "string", doc = "Completion reason (completed, interrupted, etc.)" },
             },
         },
-        func = function(self, resource_name, max_count)
-            return self:mine_resource(resource_name, max_count)
+        func = function(self, resource_name, max_count, position)
+            return self:mine_resource(resource_name, max_count, position)
         end,
     },
     stop_mining = {
@@ -822,8 +831,8 @@ These are aggregate stats that include both automation and manual production.]],
         returns = {
             type = "production_stats",
             schema = {
-                input = { type = "table", doc = "Items consumed: {item_name: count}" },
-                output = { type = "table", doc = "Items produced: {item_name: count}" },
+                input = { type = "table", doc = "Items produced (entering the flow): {item_name: count}" },
+                output = { type = "table", doc = "Items consumed (leaving the flow): {item_name: count}" },
             },
         },
         func = function(self)
@@ -984,18 +993,42 @@ function M:register_remote_interface()
             local args = ...
             -- Check if called with a single table argument (RCON pattern)
             if type(args) == "table" and select("#", ...) == 1 and meta.paramspec and meta.paramspec._param_order then
-                -- Explicit index + bounded unpack, NOT table.insert + plain
-                -- unpack: those skip/truncate at nil values, shifting later
-                -- named params into earlier slots (ARG-1 — e.g. omitting
-                -- `direction` shifted ghost=true into the direction slot).
-                -- Same bug as the admin-path ParamSpec fix; this was its
-                -- unfixed twin.
                 local order = meta.paramspec._param_order
-                local ordered_args = {}
-                for i, key in ipairs(order) do
-                    ordered_args[i] = args[key]
+
+                -- ARG-4: a single table arg is AMBIGUOUS — it is either the
+                -- named-args wrapper ({position={x,y}}) OR a single positional
+                -- table VALUE for a table-typed first param ({x,y} for
+                -- teleport/walk_to). Treat it as named UNLESS it is non-empty
+                -- and carries NONE of the declared param names — in which case
+                -- its keys (e.g. x/y) are the value's own fields, not params.
+                -- Empty {} stays named (all params default), preserving the
+                -- prior behaviour for no-arg / all-optional named calls.
+                -- Old code always assumed named → looked up args["position"],
+                -- found nil, and errored "required parameter 1 is missing".
+                local is_named = true
+                local has_any_key = false
+                for _ in pairs(args) do has_any_key = true; break end
+                if has_any_key then
+                    is_named = false
+                    for _, key in ipairs(order) do
+                        if args[key] ~= nil then is_named = true; break end
+                    end
                 end
-                return meta.func(self, table.unpack(ordered_args, 1, #order))
+
+                if is_named then
+                    -- Explicit index + bounded unpack, NOT table.insert + plain
+                    -- unpack: those skip/truncate at nil values, shifting later
+                    -- named params into earlier slots (ARG-1 — e.g. omitting
+                    -- `direction` shifted ghost=true into the direction slot).
+                    -- Same bug as the admin-path ParamSpec fix; this was its
+                    -- unfixed twin.
+                    local ordered_args = {}
+                    for i, key in ipairs(order) do
+                        ordered_args[i] = args[key]
+                    end
+                    return meta.func(self, table.unpack(ordered_args, 1, #order))
+                end
+                -- Fall through: single positional table value (e.g. a position).
             end
             -- Fallback to positional arguments
             return meta.func(self, ...)

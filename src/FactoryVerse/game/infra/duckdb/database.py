@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 import duckdb
 
-from .schema_definitions import CORE_TABLES, COMPONENT_TABLES, TABLE_BY_NAME
+from .schema_definitions import (
+    ANALYTICS_TABLES,
+    COMPONENT_TABLES,
+    CORE_TABLES,
+    STATE_TABLES,
+    TABLE_BY_NAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +110,7 @@ class SnapshotDatabase:
 
     def _create_tables(self, con: duckdb.DuckDBPyConnection) -> None:
         """Create all tables from schema definitions."""
-        from .schema_definitions import TableDefinition, ColumnDefinition
+        from .schema_definitions import TableDefinition
 
         def _generate_create_table_sql(table: TableDefinition) -> str:
             """Generate CREATE TABLE SQL from a TableDefinition."""
@@ -152,8 +158,9 @@ class SnapshotDatabase:
                 {columns_sql}
             );"""
 
-        # Create all core and component tables
-        all_tables = CORE_TABLES + COMPONENT_TABLES
+        # Every created group has a boot/live writer. Agent analytics are
+        # replayed by SnapshotLoader and reduced live by SyncService.
+        all_tables = CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES + STATE_TABLES
 
         # Also create sync_state table (not in schema_definitions, but needed)
         con.execute("""
@@ -220,7 +227,10 @@ class SnapshotDatabase:
         """
         con = self.connection
         # Get table names from schema definitions
-        tables = [table.name for table in CORE_TABLES + COMPONENT_TABLES] + ["sync_state"]
+        tables = [
+            table.name
+            for table in CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES + STATE_TABLES
+        ] + ["sync_state"]
         for table in tables:
             try:
                 con.execute(f"DELETE FROM {table};")

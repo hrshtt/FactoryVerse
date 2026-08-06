@@ -11,11 +11,61 @@ from __future__ import annotations
 
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 
-from FactoryVerse.game.factory.types import MapPosition
+from FactoryVerse.game.factory.types import MapPosition, EntityStatus
 
 if TYPE_CHECKING:
     from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
     from FactoryVerse.game.factory.entity.base_entity import BaseEntity
+
+
+def _status_matches(payload: Dict[str, Any], wanted: Any) -> bool:
+    """Compare an entity payload's status against a caller-supplied filter.
+
+    ``wanted`` may be:
+    - an int: compared directly against the payload's raw ``status`` code
+      (backward compat with pre-C5 callers).
+    - a str: engine names are lower_snake (e.g. ``no_power``); ``-`` is
+      normalized to ``_`` so both ``no-power`` and ``no_power`` match. The
+      normalized name is resolved to its int code via
+      ``EntityStatus.from_lua_name`` and compared against the payload's
+      ``status``; it is ALSO compared directly against the payload's
+      ``status_name`` (if present) so payloads carrying only the symbolic
+      name still match (C5: Lua reachability payloads emit ``status_name``
+      alongside int ``status``).
+
+    Raises:
+        ValueError: if ``wanted`` is a string that names no known
+            EntityStatus member (names the valid options).
+    """
+    status_val = payload.get("status")
+    status_name_val = payload.get("status_name")
+
+    if isinstance(wanted, bool):
+        # bool is an int subclass in Python; status codes are never bool-typed
+        # filters in practice, but avoid accidentally matching 0/1.
+        return status_val == wanted
+
+    if isinstance(wanted, int):
+        return status_val == wanted
+
+    if isinstance(wanted, str):
+        normalized = wanted.replace("-", "_")
+        try:
+            wanted_status = EntityStatus.from_lua_name(normalized)
+        except KeyError:
+            valid = ", ".join(sorted(s.to_lua_name() for s in EntityStatus))
+            raise ValueError(
+                f"Unknown status name {wanted!r}. Valid options: {valid}"
+            )
+        if status_val == wanted_status.value:
+            return True
+        if status_name_val is not None and status_name_val == normalized:
+            return True
+        return False
+
+    raise ValueError(
+        f"status filter must be an int or str, got {type(wanted).__name__}"
+    )
 
 
 class ReachableView:
@@ -135,7 +185,9 @@ class ReachableView:
                 - recipe: str - filter by recipe name
                 - direction: Direction - filter by direction
                 - entity_type: str - filter by Factorio entity type
-                - status: str - filter by status (e.g., "working", "no-power")
+                - status: str|int - filter by status; accepts engine lower_snake
+                  names (e.g. "no_power"), "-" normalized to "_" ("no-power" also
+                  works), or the raw int status code
                 - include_ghosts: bool - whether to include ghost entities (default: True)
                 - ghosts_only: bool - only return ghost entities (default: False)
 
@@ -194,7 +246,7 @@ class ReachableView:
         if "status" in options:
             status = options["status"]
             matches = [
-                (inst, data) for inst, data in matches if data.get("status") == status
+                (inst, data) for inst, data in matches if _status_matches(data, status)
             ]
 
         return matches[0][0] if matches else None
@@ -215,7 +267,9 @@ class ReachableView:
                 - recipe: str - filter by recipe name
                 - direction: Direction - filter by direction
                 - entity_type: str - filter by Factorio entity type
-                - status: str - filter by status (e.g., "working", "no-power")
+                - status: str|int - filter by status; accepts engine lower_snake
+                  names (e.g. "no_power"), "-" normalized to "_" ("no-power" also
+                  works), or the raw int status code
                 - include_ghosts: bool - whether to include ghost entities (default: True)
                 - ghosts_only: bool - only return ghost entities (default: False)
 
@@ -272,7 +326,7 @@ class ReachableView:
         if "status" in options:
             status = options["status"]
             matches = [
-                (inst, data) for inst, data in matches if data.get("status") == status
+                (inst, data) for inst, data in matches if _status_matches(data, status)
             ]
 
         return [inst for inst, _ in matches]

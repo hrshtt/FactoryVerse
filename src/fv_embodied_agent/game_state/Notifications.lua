@@ -71,9 +71,20 @@ function M.on_research_finished(event)
     
     local force = tech.force
     
-    -- Collect unlocked recipes
+    -- Collect both the convenience recipe list and the complete normalized
+    -- capability delta. Prototype effects are structs; copy their scalar
+    -- fields into plain tables so UDP JSON serialization is deterministic.
     local unlocked_recipes = {}
+    local effects = {}
     for _, effect in ipairs(tech.prototype.effects or {}) do
+        local normalized = {type = effect.type}
+        for key, value in pairs(effect) do
+            local value_type = type(value)
+            if value_type == "string" or value_type == "number" or value_type == "boolean" then
+                normalized[key] = value
+            end
+        end
+        table.insert(effects, normalized)
         if effect.type == "unlock-recipe" then
             table.insert(unlocked_recipes, effect.recipe)
         end
@@ -83,6 +94,7 @@ function M.on_research_finished(event)
         technology = tech.name,
         researched_by_script = event.by_script,
         unlocked_recipes = unlocked_recipes,
+        effects = effects,
         level = tech.level
     }
     

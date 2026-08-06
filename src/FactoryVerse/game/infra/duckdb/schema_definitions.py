@@ -122,7 +122,17 @@ MAP_ENTITY = TableDefinition(
             name="electric_network_id",
             type="INTEGER",
             nullable=True,
-            description="Electric network this entity belongs to",
+            description=(
+                "Electric network this entity belonged to as of last entity "
+                "write; fresh network membership lives in power_networks "
+                "(engine network ids renumber on merge/split)"
+            ),
+        ),
+        ColumnDefinition(
+            name="force",
+            type="VARCHAR",
+            nullable=True,
+            description="Force name owning this entity (player, cell_N)",
         ),
         ColumnDefinition(
             name="agent_id",
@@ -168,6 +178,11 @@ MAP_ENTITY = TableDefinition(
         ),
     ],
     example_query="SELECT * FROM map_entity WHERE entity_name = 'burner-mining-drill'",
+    notes=(
+        "electric_network_id: as of last entity write; fresh network "
+        "membership lives in power_networks (engine network ids renumber "
+        "on merge/split)."
+    ),
 )
 
 GHOST = TableDefinition(
@@ -667,44 +682,21 @@ ASSEMBLER = TableDefinition(
 # =============================================================================
 # ANALYTICS TABLES
 # =============================================================================
-
-POWER_STATISTICS = TableDefinition(
-    name="power_statistics",
-    purpose="Global power grid statistics over time (input/output/storage per tick)",
-    primary_key=["tick"],
-    columns=[
-        ColumnDefinition(
-            name="tick",
-            type="INTEGER",
-            nullable=False,
-            description="Game tick when statistics were recorded",
-        ),
-        ColumnDefinition(
-            name="input",
-            type="VARCHAR",
-            nullable=False,
-            description="JSON: Power input by source {entity_name: joules}",
-        ),
-        ColumnDefinition(
-            name="output",
-            type="VARCHAR",
-            nullable=False,
-            description="JSON: Power output by consumer {entity_name: joules}",
-        ),
-        ColumnDefinition(
-            name="storage",
-            type="VARCHAR",
-            nullable=False,
-            description="JSON: Power in storage {entity_name: joules}",
-        ),
-    ],
-    example_query="SELECT tick, json(input) as power_input FROM power_statistics ORDER BY tick DESC LIMIT 10",
-    notes="Statistics are deduplicated - only recorded when values change from previous tick.",
-)
+#
+# NOTE (power-impl-contracts.md C3, 2026-07-12): `power_statistics` (the old
+# global-network table) was DELETED here — superseded by the per-network
+# power_samples/power_networks tables below (STATE_TABLES). Its source jsonl
+# (`global_power_statistics.jsonl`, written by Power.lua's
+# `_on_nth_tick_global_power_snapshot`) is left un-ingested BY DESIGN: a
+# global electric network never exists on lab-grid (GLOBAL-NET-1 reader-
+# passivity law — creating one to read it would mutate physics), so the file
+# is honestly-empty forever there. Do not resurrect a `power_statistics`
+# TableDefinition without an ingestion path (see test_state_tables_wired.py's
+# regression guard).
 
 AGENT_PRODUCTION_STATISTICS = TableDefinition(
     name="agent_production_statistics",
-    purpose="Per-agent force-level production statistics over time (includes automation)",
+    purpose="Per-agent surface-scoped force production statistics over time (machine flow)",
     primary_key=["agent_id", "tick"],
     columns=[
         ColumnDefinition(
@@ -723,11 +715,18 @@ AGENT_PRODUCTION_STATISTICS = TableDefinition(
             name="statistics",
             type="VARCHAR",
             nullable=False,
-            description="JSON: {input: {item: count}, output: {item: count}}",
+            description=(
+                "JSON: {input: produced item counts entering the flow, "
+                "output: consumed item counts leaving the flow}"
+            ),
         ),
     ],
     example_query="SELECT agent_id, tick, json(statistics) FROM agent_production_statistics WHERE agent_id = 1 ORDER BY tick DESC LIMIT 10",
-    notes="Force-level stats include ALL production (automation + manual). Use with agent_manual_production_statistics to isolate automation.",
+    notes=(
+        "Force input/output is the surface-scoped machine flow. Character "
+        "crafting and mining are recorded separately in "
+        "agent_manual_production_statistics; do not subtract them from input."
+    ),
 )
 
 AGENT_MANUAL_PRODUCTION_STATISTICS = TableDefinition(
@@ -763,14 +762,222 @@ AGENT_MANUAL_PRODUCTION_STATISTICS = TableDefinition(
     example_queries=[
         "-- Get latest manual production for agent 1",
         "SELECT tick, json(crafted), json(mined) FROM agent_manual_production_statistics WHERE agent_id = 1 ORDER BY tick DESC LIMIT 1",
-        "-- Calculate automation-produced items (pseudocode):",
-        "-- automation[item] = force_output[item] - manual_crafted[item] - manual_mined[item]",
+        "-- Machine production is the force input count; manual counts are independent:",
+        "-- machine_produced[item] = statistics.input[item]",
     ],
     notes=(
         "Tracks ONLY items produced by the agent character directly (crafting queue, mining). "
         "Does NOT include items produced by machines/automation. "
-        "Use with agent_production_statistics to calculate automation output: "
-        "automation = force_output - manual_crafted - manual_mined"
+        "Use with agent_production_statistics to report machine and character "
+        "production as separate channels."
+    ),
+)
+
+# =============================================================================
+# STATE TABLES (power-impl-contracts.md C3) — live/replayed game-state feeds,
+# distinct from the per-agent cumulative statistics in ANALYTICS_TABLES.
+# =============================================================================
+
+POWER_SAMPLES = TableDefinition(
+    name="power_samples",
+    purpose=(
+        "One row per ingested power-network sample window — heartbeat "
+        "visibility for power_networks history (includes windows with zero "
+        "live networks, so 'no rows at all' means the sampler never ran, "
+        "not that there are no networks)"
+    ),
+    primary_key=["tick"],
+    columns=[
+        ColumnDefinition(
+            name="tick",
+            type="INTEGER",
+            nullable=False,
+            description=(
+                "Game tick this sample window was taken (Power.lua "
+                "nth_tick(300), MAINTENANCE phase only)"
+            ),
+        ),
+        ColumnDefinition(
+            name="network_count",
+            type="INTEGER",
+            nullable=True,
+            description=(
+                "Number of live electric networks observed in this window "
+                "(0 is a valid heartbeat value, not a missing-data marker)"
+            ),
+        ),
+    ],
+    example_query="SELECT * FROM power_samples ORDER BY tick DESC LIMIT 10",
+    notes=(
+        "Written exclusively by analytics_ops.apply_power_sample, one row "
+        "per ingested power_networks.jsonl line (including zero-network "
+        "heartbeats). Distinguishes 'sampler running, zero networks right "
+        "now' from 'sampler never ran' — the latter has no rows here at all."
+    ),
+)
+
+POWER_NETWORKS = TableDefinition(
+    name="power_networks",
+    purpose=(
+        "History of per-electric-network power stats, sampled every 300 "
+        "ticks (5s) during MAINTENANCE. Engine network_id is EPHEMERAL "
+        "(renumbers on network split/merge) — anchor_pole is the durable "
+        "reference for a given network across samples"
+    ),
+    columns=[
+        ColumnDefinition(
+            name="tick",
+            type="INTEGER",
+            nullable=False,
+            description="Sample tick this row belongs to (see power_samples)",
+        ),
+        ColumnDefinition(
+            name="network_id",
+            type="INTEGER",
+            nullable=False,
+            description=(
+                "Engine electric_network_id AT THIS SAMPLE ONLY — renumbers "
+                "arbitrarily on network split/merge; do not treat as a "
+                "durable network identity across ticks"
+            ),
+        ),
+        ColumnDefinition(
+            name="anchor_pole_name",
+            type="VARCHAR",
+            nullable=True,
+            description=(
+                "Entity name of this network's anchor pole (the pole with "
+                "lexicographically smallest (x, y) in the network) — the "
+                "durable per-network reference"
+            ),
+        ),
+        ColumnDefinition(
+            name="anchor_pole_x",
+            type="DOUBLE",
+            nullable=True,
+            description="Anchor pole X position",
+        ),
+        ColumnDefinition(
+            name="anchor_pole_y",
+            type="DOUBLE",
+            nullable=True,
+            description="Anchor pole Y position",
+        ),
+        ColumnDefinition(
+            name="pole_count",
+            type="INTEGER",
+            nullable=True,
+            description="Number of poles in this network",
+        ),
+        ColumnDefinition(
+            name="member_count",
+            type="INTEGER",
+            nullable=True,
+            description=(
+                "Number of tracked-force entities whose electric_network_id "
+                "matched this network at sample time"
+            ),
+        ),
+        ColumnDefinition(
+            name="production_w",
+            type="DOUBLE",
+            nullable=True,
+            description="Total production, watts (summed across producer prototypes)",
+        ),
+        ColumnDefinition(
+            name="consumption_w",
+            type="DOUBLE",
+            nullable=True,
+            description="Total consumption, watts (summed across consumer prototypes)",
+        ),
+        ColumnDefinition(
+            name="storage_j",
+            type="DOUBLE",
+            nullable=True,
+            description=(
+                "Best-effort stored energy, joules (sum of accumulator "
+                "`energy` among this network's members; 0.0 when none)"
+            ),
+        ),
+        ColumnDefinition(
+            name="production_by_prototype",
+            type="JSON",
+            nullable=True,
+            description="JSON: {prototype_name: watts} production breakdown",
+        ),
+        ColumnDefinition(
+            name="consumption_by_prototype",
+            type="JSON",
+            nullable=True,
+            description="JSON: {prototype_name: watts} consumption breakdown",
+        ),
+    ],
+    example_query=(
+        "SELECT * FROM power_networks WHERE tick = "
+        "(SELECT max(tick) FROM power_samples)"
+    ),
+    notes=(
+        "This is a HISTORY table (no primary key — every sample's rows are "
+        "kept); 'current' state is the set of rows at max(tick). network_id "
+        "is a per-sample handle only (ephemeral) — to track one physical "
+        "network across samples, join on "
+        "(anchor_pole_name, anchor_pole_x, anchor_pole_y) instead."
+    ),
+)
+
+ENTITY_STATUS = TableDefinition(
+    name="entity_status",
+    purpose=(
+        "Latest-wins snapshot of every tracked entity's Factorio status "
+        "(e.g. no_power, working, low_power) from the most recently "
+        "ingested full status dump"
+    ),
+    primary_key=["entity_name", "position_x", "position_y"],
+    columns=[
+        ColumnDefinition(
+            name="entity_name",
+            type="VARCHAR",
+            nullable=False,
+            description="Factorio internal entity name",
+        ),
+        ColumnDefinition(
+            name="position_x",
+            type="DOUBLE",
+            nullable=False,
+            description="X coordinate",
+        ),
+        ColumnDefinition(
+            name="position_y",
+            type="DOUBLE",
+            nullable=False,
+            description="Y coordinate",
+        ),
+        ColumnDefinition(
+            name="status_name",
+            type="VARCHAR",
+            nullable=True,
+            description=(
+                "Symbolic status name (defines.entity_status reverse "
+                "lookup, e.g. 'no_power', 'working', 'low_power')"
+            ),
+        ),
+        ColumnDefinition(
+            name="tick",
+            type="INTEGER",
+            nullable=True,
+            description="Game tick of the status dump this row came from",
+        ),
+    ],
+    example_query="SELECT * FROM entity_status WHERE status_name IN ('no_power', 'low_power')",
+    notes=(
+        "FULL REPLACE semantics: every ingested dump is a complete "
+        "statement of current statuses, so ingestion deletes all rows then "
+        "inserts the dump's rows (analytics_ops.apply_status_dump). "
+        "Entities with no status (e.g. poles) are naturally absent from "
+        "every dump — absence here does not mean 'destroyed', see map_entity "
+        "for that. Freshness marker: sync_state key "
+        "'entity_status_last_tick' records the tick of the last applied dump "
+        "(observable even for an all-meta, zero-entity dump)."
     ),
 )
 
@@ -797,15 +1004,27 @@ COMPONENT_TABLES: List[TableDefinition] = [
     ASSEMBLER,
 ]
 
-# Analytics tables (time-series data)
+# Analytics tables (time-series data). SnapshotLoader boot-replays these
+# files and SyncService applies their file_io notifications through the
+# reducers in analytics_ops.py.
 ANALYTICS_TABLES: List[TableDefinition] = [
-    POWER_STATISTICS,
     AGENT_PRODUCTION_STATISTICS,
     AGENT_MANUAL_PRODUCTION_STATISTICS,
 ]
 
+# State tables (power-impl-contracts.md C3) — live/replayed feeds with a
+# real single-reducer ingestion path (analytics_ops.py); database.py DOES
+# create these.
+STATE_TABLES: List[TableDefinition] = [
+    POWER_SAMPLES,
+    POWER_NETWORKS,
+    ENTITY_STATUS,
+]
+
 # All tables
-ALL_TABLES: List[TableDefinition] = CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES
+ALL_TABLES: List[TableDefinition] = (
+    CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES + STATE_TABLES
+)
 
 # Table lookup by name
 TABLE_BY_NAME: dict[str, TableDefinition] = {table.name: table for table in ALL_TABLES}
@@ -827,13 +1046,17 @@ __all__ = [
     "MINING_DRILL",
     "ASSEMBLER",
     # Analytics tables
-    "POWER_STATISTICS",
     "AGENT_PRODUCTION_STATISTICS",
     "AGENT_MANUAL_PRODUCTION_STATISTICS",
+    # State tables
+    "POWER_SAMPLES",
+    "POWER_NETWORKS",
+    "ENTITY_STATUS",
     # Collections
     "CORE_TABLES",
     "COMPONENT_TABLES",
     "ANALYTICS_TABLES",
+    "STATE_TABLES",
     "ALL_TABLES",
     "TABLE_BY_NAME",
 ]

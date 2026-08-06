@@ -11,7 +11,6 @@
 local pairs = pairs
 local ipairs = ipairs
 local table_insert = table.insert
-local math_floor = math.floor
 local string_format = string.format
 -- Cache helpers functions for performance
 local table_to_json = helpers.table_to_json
@@ -40,29 +39,14 @@ M.DEBUG = false
 -- ENTITY STATUS TRACKING (for UDP snapshots)
 -- ============================================================================
 
--- Entity name enum mapping (for status dumps only)
--- Default empty - will be populated via remote call from Python during setup
-local ENTITY_NAME_ENUM = {}
-
---- Set the entity name enum from Python
---- @param entity_list table Array of entity names
-function M.set_entity_filter(entity_list)
-    -- Rebuild enum from list
-    ENTITY_NAME_ENUM = {}
-    for i, entity_name in ipairs(entity_list) do
-        ENTITY_NAME_ENUM[entity_name] = i - 1  -- 0-indexed
-    end
-    
-    if M.DEBUG then
-        game.print(string.format("[Entities.set_entity_filter] Updated entity filter with %d entities", #entity_list))
-    end
-end
-
---- Check if entity name is in the status tracking enum
---- @param entity_name string
---- @return boolean
-local function is_trackable_entity(entity_name)
-    return ENTITY_NAME_ENUM[entity_name] ~= nil
+-- Reverse lookup of defines.entity_status: int status code -> symbolic name.
+-- Built ONCE at require time. `defines` is available in the control stage, and
+-- module-level state being immutable after load is exactly what we want for a
+-- static lookup table. Used by the status dump to emit human/agent-readable
+-- symbolic status names (e.g. "no_power") instead of raw ints.
+local ENTITY_STATUS_NAMES = {}
+for status_name, status_code in pairs(defines.entity_status) do
+    ENTITY_STATUS_NAMES[status_code] = status_name
 end
 
 --- Track entity status change
@@ -166,127 +150,110 @@ function M.track_all_charted_chunk_entity_status(charted_chunks)
 end
 
 -- ============================================================================
--- STATUS DUMP TO DISK (compressed format)
+-- STATUS DUMP TO DISK (full symbolic snapshot)
 -- ============================================================================
 
---- Collect all entity statuses from charted chunks
---- Returns array of [status_enum, entity_enum, pos_x_int, pos_y_int] tuples
---- @param charted_chunks table List of chunks to process
---- @return table Array of status records
+--- Collect all entity statuses from charted chunks.
+--- Scope: entities of tracked forces (player + agent forces) with non-nil
+--- status. Emits {name, status(symbolic), x, y} records.
+---
+--- Why no explicit resource/tree/character exclusion is needed:
+---   find_entities_filtered{force = <tracked forces>} returns ONLY entities
+---   whose .force is one of the tracked forces. Resources ("resource"), trees
+---   ("tree") and rocks are on the neutral force, so they never enter this
+---   scan. Characters DO belong to a force, but a LuaEntity character carries
+---   nil .status, so the `if status` guard below drops them. Poles and other
+---   status-less entities are likewise excluded by the same guard. => the
+---   force filter + nil-status guard together are a sufficient, self-documenting
+---   filter; no ENTITY_NAME_ENUM allow-list is used.
+--- SCOPE NOTE (L1.17 finding, 2026-07-12): this deliberately does NOT scope
+--- to charted chunks. lab-grid runs the snapshot system in SELECTIVE
+--- orchestration mode, where chunk-charted events never fire, so
+--- Map.get_charted_chunks() is empty for the whole boot and a charted-chunk
+--- walk emits count=0 forever (structurally empty feed). A single
+--- force-filtered surface scan is what the power sampler already does and is
+--- one engine call; tracked-force entity counts are bounded (resources/trees
+--- are neutral-force and never enter the scan).
+--- @param charted_chunks table|nil Ignored (kept for call-site compatibility)
+--- @return table Array of {name, status, x, y} records
 function M.collect_all_statuses_for_dump(charted_chunks)
-    if not charted_chunks then return {} end
-    
     local surface = game.surfaces[1]
     local status_records = {}
-    
-    -- Cache ENTITY_NAME_ENUM locally for hot loop
-    local entity_name_enum = ENTITY_NAME_ENUM
-    local chunks_count = #charted_chunks
-    
-    for i = 1, chunks_count do
-        local chunk = charted_chunks[i]
-        local chunk_x = chunk.x
-        local chunk_y = chunk.y
-        local chunk_area = {
-            left_top = {
-                x = chunk_x * 32,
-                y = chunk_y * 32
-            },
-            right_bottom = {
-                x = (chunk_x + 1) * 32,
-                y = (chunk_y + 1) * 32
-            }
-        }
-        
-        -- Check count first for early exit
-        -- Use dynamic forces to include player + all agent forces
-        local tracked_forces = forces.get_tracked_forces()
-        local entity_count = surface.count_entities_filtered {
-            area = chunk_area,
-            force = tracked_forces,
-        }
-        if entity_count == 0 then goto continue end
 
-        local entities = surface.find_entities_filtered {
-            area = chunk_area,
-            force = tracked_forces,
-        }
-        
-        -- Use numeric for loop for hot path
-        local entities_count = #entities
-        for j = 1, entities_count do
-            local entity = entities[j]
-            if entity and entity.valid and entity.status then
-                -- Only track entities in our enum
-                local entity_name = entity.name
-                local entity_enum = entity_name_enum[entity_name]
-                if entity_enum then
-                local status_enum = entity.status  -- Already a number from defines.entity_status
-                    local position = entity.position
-                    local pos_x = position.x
-                    local pos_y = position.y
-                
-                -- Convert position to integer (multiply by 2 since x%0.5 == 0 and y%0.5 == 0)
-                    local pos_x_int = math_floor(pos_x * 2)
-                    local pos_y_int = math_floor(pos_y * 2)
-                
-                -- Format: [entity_enum, status_enum, x, y]
-                    -- Use direct array indexing for performance
-                    status_records[#status_records + 1] = {
-                    entity_enum,
-                    status_enum,
-                    pos_x_int,
-                    pos_y_int
-                    }
-            end
+    -- Hoist invariants out of the hot loop.
+    local status_names = ENTITY_STATUS_NAMES
+    local tracked_forces = forces.get_tracked_forces()
+
+    local entities = surface.find_entities_filtered {
+        force = tracked_forces,
+    }
+
+    -- Numeric for loop for the hot path.
+    local entities_count = #entities
+    for j = 1, entities_count do
+        local entity = entities[j]
+        if entity and entity.valid then
+            local status = entity.status
+            if status then
+                local position = entity.position
+                status_records[#status_records + 1] = {
+                    name = entity.name,
+                    -- Symbolic name via reverse lookup; fall back to the raw
+                    -- int (stringified) only if the engine ever hands us an
+                    -- unknown code.
+                    status = status_names[status] or tostring(status),
+                    x = position.x,
+                    y = position.y,
+                }
             end
         end
-        ::continue::
     end
-    
+
     return status_records
 end
 
---- Dump status data to disk as JSONL
+--- Dump a FULL status snapshot to disk as JSONL and notify via UDP.
+--- Line 1 (always): {"meta": true, "tick": T, "count": N}
+--- Then one line per record: {"name":..,"status":<symbolic>,"x":..,"y":..}
+---
+--- HEARTBEAT: the file is written EVEN when count == 0 (meta line only). A file
+--- appearing every window with count 0 means "no tracked entities have a
+--- status"; the ABSENCE of a file means "sampler dead". This distinction is the
+--- whole point of the meta heartbeat — do not early-return on empty.
+---
+--- This is a full snapshot, so we overwrite (append = false); the reader treats
+--- each file as a complete, latest-wins statement of current statuses.
 --- @param charted_chunks table List of chunks to process
 function M.dump_status_to_disk(charted_chunks)
     local status_records = M.collect_all_statuses_for_dump(charted_chunks)
-    
     local records_count = #status_records
-    if records_count == 0 then
-        return
-    end
-    
-    -- Build JSONL content: one JSON array per line [entity_enum, status_enum, x, y]
-    local jsonl_lines = {}
-    -- Use numeric for loop for hot path
+    local tick = game.tick
+
+    -- Meta heartbeat line first, then one JSON object per record.
+    local jsonl_lines = { table_to_json({ meta = true, tick = tick, count = records_count }) }
     for i = 1, records_count do
-        local record = status_records[i]
-        local json_str = table_to_json(record)
+        local json_str = table_to_json(status_records[i])
         if json_str then
             jsonl_lines[#jsonl_lines + 1] = json_str
         end
     end
-    
-    local lines_count = #jsonl_lines
-    if lines_count == 0 then
-        return
-    end
-    
-    -- Write JSONL to disk
-    local file_path = snapshot.status_dump_path(game.tick)
+
+    local file_path = snapshot.status_dump_path(tick)
     local content = table.concat(jsonl_lines, "\n") .. "\n"
-    
-    -- Write to disk (return value ignored for determinism)
+
+    -- Full snapshot: overwrite (append = false), never append.
     helpers.write_file(file_path, content, false)
-    
-    -- Track file and cleanup old ones
-    snapshot.track_status_dump_file(game.tick)
+
+    -- Track file and cleanup old ones (rolling buffer of MAX_STATUS_DUMP_FILES).
+    snapshot.track_status_dump_file(tick)
     snapshot.cleanup_old_status_dumps()
-    
-    -- NO UDP notification for status dumps - disk-only design
-    -- External systems are responsible for reading and managing their own memory
-    
+
+    -- UDP notification ONLY (payload carries no data). Deliberate break from the
+    -- old disk-only design: the consumer is told a new full dump exists and then
+    -- pulls the file from disk itself.
+    local payload = udp_payloads.file_appended("entity_status", nil, file_path, tick, 1)
+    udp_payloads.send_file_io(payload)
+
     if M.DEBUG and game and game.print then
         game.print(string_format("[status_dump] Wrote status dump: %s (%d entities)", file_path, records_count))
     end
@@ -1194,13 +1161,6 @@ function M.register_remote_interface()
             local entity_interface = EntityInterface:new(entity_name, position, radius, false)
             return entity_interface:rotate(direction)
         end,
-        
-        -- Configuration
-        set_entity_filter = function(entity_list)
-            M.set_entity_filter(entity_list)
-            return true
-        end,
-        
     }
 end
 

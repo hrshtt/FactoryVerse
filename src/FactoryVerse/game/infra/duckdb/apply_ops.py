@@ -105,8 +105,9 @@ def upsert_entity(
         INSERT OR REPLACE INTO map_entity
         (entity_name, position_x, position_y, chunk_x, chunk_y,
          direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
+         electric_network_id, force,
          agent_id, player_id, label, placed_tick, raw_data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             entity_name,
@@ -119,6 +120,8 @@ def upsert_entity(
             bbox.get("min_y"),
             bbox.get("max_x"),
             bbox.get("max_y"),
+            entity_data.get("electric_network_id"),
+            entity_data.get("force"),
             agent_id,
             player_id,
             label,
@@ -163,6 +166,46 @@ def remove_resource_entity(db, name: str, pos_x: float, pos_y: float) -> int:
     return int(before)
 
 
+def upsert_resource_entity(
+    db, resource_data: Dict[str, Any], chunk_x: int, chunk_y: int
+) -> None:
+    """Insert or replace one tree/rock snapshot row."""
+    position = resource_data.get("position", {})
+    db.execute(
+        """
+        INSERT OR REPLACE INTO resource_entity
+        (name, entity_type, position_x, position_y, chunk_x, chunk_y, raw_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            resource_data.get("name", ""),
+            resource_data.get("type", "unknown"),
+            float(position.get("x", 0)),
+            float(position.get("y", 0)),
+            int(chunk_x),
+            int(chunk_y),
+            json.dumps(resource_data),
+        ],
+    )
+
+
+def replace_resource_entity_chunk(
+    db, resources: list[Dict[str, Any]], chunk_x: int, chunk_y: int
+) -> int:
+    """Replace one chunk from an authoritative trees/rocks rewrite file."""
+    db.execute(
+        "DELETE FROM resource_entity WHERE chunk_x = ? AND chunk_y = ?",
+        [int(chunk_x), int(chunk_y)],
+    )
+    count = 0
+    for resource in resources:
+        if resource.get("kind") == "chunk_meta":
+            continue
+        upsert_resource_entity(db, resource, chunk_x, chunk_y)
+        count += 1
+    return count
+
+
 def upsert_ghost(
     db,
     ghost_data: Dict[str, Any],
@@ -199,6 +242,17 @@ def upsert_ghost(
         else:
             placed_tick = placed_by = label = None
 
+    # NOTE (Task 1 gap check): serialize_ghost (src/fv_embodied_agent/utils/
+    # serialize.lua:444-446) DOES emit `force` on ghost payloads, but ghosts
+    # never carry `electric_network_id` (ghosts aren't networked — engine
+    # doesn't expose it). The GHOST table has no `force` column and adding
+    # one is out of this agent's file-ownership scope (schema_definitions.py
+    # ownership here is scoped to the MAP_ENTITY definition only — see
+    # power-impl-contracts.md file-ownership list and C3, which only
+    # mandates the map_entity.force column). `force` is NOT lost: it's still
+    # captured in ghost.raw_data (json_extract(raw_data, '$.force') works
+    # today). Flagging for the schema owner / cert stage rather than adding
+    # a column to a table this agent doesn't own.
     db.execute(
         """
         INSERT OR REPLACE INTO ghost

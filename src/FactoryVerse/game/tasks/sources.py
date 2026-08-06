@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 class ProductionStats(TypedDict):
     """Force-level production statistics."""
 
-    output: dict[str, int]  # Items produced: {item_name: count}
-    input: dict[str, int]  # Items consumed: {item_name: count}
+    input: dict[str, int]  # Items produced (entering the flow): {item_name: count}
+    output: dict[str, int]  # Items consumed (leaving the flow): {item_name: count}
     tick: int  # Game tick when these stats were recorded
 
 
@@ -423,9 +423,8 @@ class DuckDBSource:
     Requires a DuckDB connection with loaded snapshot data.
 
     Expected tables:
-    - agent_production_statistics: Latest production stats per agent/item
-    - agent_crafting_statistics: Crafting events
-    - agent_mining_statistics: Mining events
+    - agent_production_statistics: Cumulative force snapshots
+    - agent_manual_production_statistics: Cumulative crafting/mining snapshot
     """
 
     def __init__(self, connection: "duckdb.DuckDBPyConnection"):
@@ -447,34 +446,28 @@ class DuckDBSource:
         Returns:
             ProductionStats with output, input item counts, and tick
         """
-        output: dict[str, int] = {}
-        input_items: dict[str, int] = {}
-        tick: int = 0
+        result = self._conn.execute(
+            """
+            SELECT statistics, tick
+            FROM agent_production_statistics
+            WHERE agent_id = ?
+            ORDER BY tick DESC
+            LIMIT 1
+            """,
+            [agent_id],
+        ).fetchone()
+        if not result:
+            return ProductionStats(output={}, input={}, tick=0)
 
-        try:
-            # Get latest production snapshot for this agent
-            result = self._conn.execute(
-                """
-                SELECT output, input, tick
-                FROM agent_production_statistics
-                WHERE agent_id = ?
-                ORDER BY tick DESC
-                LIMIT 1
-                """,
-                [agent_id],
-            ).fetchone()
-
-            if result:
-                output = result[0] if result[0] else {}
-                input_items = result[1] if result[1] else {}
-                tick = result[2] if result[2] else 0
-        except Exception as e:
-            logger.warning(f"Failed to query production stats: {e}")
+        statistics = result[0]
+        if isinstance(statistics, str):
+            statistics = json.loads(statistics)
+        statistics = statistics or {}
 
         return ProductionStats(
-            output=output,
-            input=input_items,
-            tick=tick,
+            output=statistics.get("output", {}),
+            input=statistics.get("input", {}),
+            tick=int(result[1] or 0),
         )
 
     async def get_manual_production(self, agent_id: int) -> ManualStats:
@@ -488,53 +481,25 @@ class DuckDBSource:
         Returns:
             ManualStats with crafted and mined item counts
         """
-        crafted: dict[str, int] = {}
-        mined: dict[str, int] = {}
-        tick = 0
+        result = self._conn.execute(
+            """
+            SELECT crafted, mined, tick
+            FROM agent_manual_production_statistics
+            WHERE agent_id = ?
+            ORDER BY tick DESC
+            LIMIT 1
+            """,
+            [agent_id],
+        ).fetchone()
+        if not result:
+            return ManualStats(crafted={}, mined={}, agent_id=agent_id, tick=0)
 
-        try:
-            # Aggregate crafting products
-            crafted_result = self._conn.execute(
-                """
-                SELECT products, tick
-                FROM agent_crafting_statistics
-                WHERE agent_id = ?
-                """,
-                [agent_id],
-            ).fetchall()
-
-            for row in crafted_result:
-                products = row[0] if row[0] else {}
-                for item_name, count in products.items():
-                    crafted[item_name] = crafted.get(item_name, 0) + count
-                if row[1] and row[1] > tick:
-                    tick = row[1]
-        except Exception as e:
-            logger.warning(f"Failed to query crafting stats: {e}")
-
-        try:
-            # Aggregate mining products
-            mined_result = self._conn.execute(
-                """
-                SELECT products, tick
-                FROM agent_mining_statistics
-                WHERE agent_id = ?
-                """,
-                [agent_id],
-            ).fetchall()
-
-            for row in mined_result:
-                products = row[0] if row[0] else {}
-                for item_name, count in products.items():
-                    mined[item_name] = mined.get(item_name, 0) + count
-                if row[1] and row[1] > tick:
-                    tick = row[1]
-        except Exception as e:
-            logger.warning(f"Failed to query mining stats: {e}")
+        crafted = json.loads(result[0]) if isinstance(result[0], str) else (result[0] or {})
+        mined = json.loads(result[1]) if isinstance(result[1], str) else (result[1] or {})
 
         return ManualStats(
             crafted=crafted,
             mined=mined,
             agent_id=agent_id,
-            tick=tick,
+            tick=int(result[2] or 0),
         )

@@ -496,6 +496,20 @@ class TestDocumentationIntegration:
         assert "## Quick Reference" in markdown
         assert len(markdown) > 1000
 
+    def test_every_registered_accessor_has_one_detailed_section(self):
+        """Do not silently reduce registered APIs to quick signatures."""
+        from FactoryVerse.utils.docs.generator import generate_api_reference
+        from FactoryVerse.utils.docs.reference import register_all_documentation
+        from FactoryVerse.utils.docs.registry import get_registry, reset_registry
+
+        reset_registry()
+        register_all_documentation()
+        markdown = generate_api_reference(get_registry())
+
+        for class_doc in get_registry().get_all_classes():
+            marker = f"**Accessor:** `{class_doc.accessor_name}`"
+            assert markdown.count(marker) == 1, class_doc.accessor_name
+
     def test_coverage_report(self):
         """Test that coverage report can be generated."""
         from FactoryVerse.utils.docs.reference import register_all_documentation

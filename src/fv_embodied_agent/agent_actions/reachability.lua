@@ -10,6 +10,18 @@ local utils = require("utils.utils")
 
 local ReachabilityActions = {}
 
+-- Module-local reverse lookup: defines.entity_status value -> lower_snake
+-- name (e.g. NO_POWER -> "no_power"). Built once at require time (defines
+-- is available at require time in control stage) — mirrors the existing
+-- direction/direction_name pattern. Deliberately lower_snake (NOT hyphenated
+-- like utils.status_to_name/direction_to_name) so it round-trips through
+-- EntityStatus.to_lua_name()/from_lua_name() in factorio_types.py (C5:
+-- engine names are lower_snake).
+local ENTITY_STATUS_NAMES = {}
+for status_name, status_value in pairs(defines.entity_status or {}) do
+    ENTITY_STATUS_NAMES[status_value] = string.lower(status_name)
+end
+
 -- ============================================================================
 -- HELPERS
 -- ============================================================================
@@ -79,9 +91,10 @@ local function serialize_entity_full(entity)
         data.direction_name = utils.direction_to_name(entity.direction)
     end
     
-    -- Add status if available
-    if entity.status then
+    -- Add status if available (status_name mirrors direction/direction_name)
+    if entity.status ~= nil then
         data.status = entity.status
+        data.status_name = ENTITY_STATUS_NAMES[entity.status]
     end
     
     -- Add recipe if applicable (assemblers, furnaces, rocket silos)
