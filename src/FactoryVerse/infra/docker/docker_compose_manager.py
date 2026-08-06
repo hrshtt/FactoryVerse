@@ -26,9 +26,13 @@ def setup_compose_cmd():
 class DockerComposeManager:
     """Orchestrates Docker Compose file generation and lifecycle."""
 
-    def __init__(self, work_dir: Path):
+    def __init__(self, work_dir: Path, compose_path: Path | None = None):
         self.work_dir = work_dir.resolve()
-        self.compose_path = self.work_dir / "docker-compose.yml"
+        self.compose_path = (
+            Path(compose_path).resolve()
+            if compose_path is not None
+            else self.work_dir / "docker-compose.yml"
+        )
         self.services: Dict[str, dict] = {}
         self.compose_cmd = setup_compose_cmd()
 
@@ -42,10 +46,9 @@ class DockerComposeManager:
         if not self.services:
             raise RuntimeError("No services to write to compose file")
 
-        compose_data = {
-            "version": "3.8",
-            "services": self.services,
-        }
+        # Compose Specification no longer uses the legacy top-level version
+        # field; current Docker Compose warns and ignores it.
+        compose_data = {"services": self.services}
 
         self.compose_path.write_text(yaml.dump(compose_data, sort_keys=False))
         print(f"✓ Generated docker-compose.yml ({len(self.services)} services)")
@@ -125,6 +128,23 @@ class DockerComposeManager:
             cmd.append("-f")
         cmd.append(service)
         subprocess.run(cmd, check=True)
+
+    def capture_logs(self, service: str | None = None) -> str:
+        """Return non-streaming Compose logs for durable failure evidence."""
+        if not self.compose_path.exists():
+            return ""
+
+        cmd = self.compose_cmd + [
+            "-f",
+            str(self.compose_path),
+            "logs",
+            "--no-color",
+            "--timestamps",
+        ]
+        if service:
+            cmd.append(service)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return result.stdout + result.stderr
 
     def exec(self, service: str, command: str) -> str:
         """Execute command in a service."""

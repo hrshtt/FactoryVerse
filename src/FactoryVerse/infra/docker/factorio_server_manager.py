@@ -48,6 +48,21 @@ def _update_mod_list(mod_path: Path, mod_name: str, enabled: bool) -> None:
     _save_mod_list(mod_path, mod_list)
 
 
+def factoryverse_server_mod_list() -> dict:
+    """Return the exact allowlisted mod-list for owned Factorio servers."""
+    return {
+        "mods": [
+            {"name": "base", "enabled": True},
+            {"name": "fv_embodied_agent", "enabled": True},
+            {"name": "fv_snapshot", "enabled": True},
+            {"name": "fv_placement_hints", "enabled": True},
+            {"name": "space-age", "enabled": False},
+            {"name": "quality", "enabled": False},
+            {"name": "elevated-rails", "enabled": False},
+        ]
+    }
+
+
 class FactorioServerManager:
     """Manages Factorio server configuration and lifecycle.
 
@@ -78,6 +93,9 @@ class FactorioServerManager:
         self.scenarios_dir = self.config.scenarios_dir
         self.config_dir = self.config.server_config_dir
         self.mod_path = self.config.mods_dir
+        # Evaluation supervisors opt into a campaign-private mod directory.
+        # The ordinary server flow retains the user's existing mod behavior.
+        self.isolated_mods = False
 
         # Instance state
         self.num_instances = 1
@@ -158,6 +176,8 @@ class FactorioServerManager:
         Args:
             scenario: Scenario name to use
         """
+        self.mod_path.mkdir(parents=True, exist_ok=True)
+
         # Check mod directories exist
         if not self.embodied_agent_mod_dir.exists():
             raise RuntimeError(
@@ -197,6 +217,18 @@ class FactorioServerManager:
         for dlc_mod in ["space-age", "quality", "elevated-rails"]:
             _update_mod_list(self.mod_path, dlc_mod, False)
         print("✓ DLC mods disabled in mod-list")
+
+        if self.isolated_mods:
+            # A campaign bundle is an allowlist, not a copy of the desktop
+            # client's current choices. Explicit false DLC entries prevent
+            # Factorio from enabling installed expansion mods by default.
+            _save_mod_list(self.mod_path, factoryverse_server_mod_list())
+            # The container restores this trusted copy before both phases of
+            # freeplay startup. That closes the create -> start mutation gap.
+            shutil.copy2(
+                self.mod_path / "mod-list.json",
+                self.config_dir / "server-mod-list.json",
+            )
 
     def _calculate_directory_hash(self, directory: Path) -> str:
         """Calculate SHA256 hash of all files in a directory."""
@@ -341,9 +373,38 @@ class FactorioServerManager:
         emulator = cfg.factorio_emulator
         factorio_bin = f"{emulator} /opt/factorio/bin/x64/factorio".strip()
 
+        entrypoint: list[str] = []
+        create_command: Optional[str] = None
+        restore_mod_list: Optional[str] = None
+        if self.isolated_mods:
+            restore_mod_list = (
+                "cp /factorio/config/server-mod-list.json "
+                "/opt/factorio/mods/mod-list.json"
+            )
+            entrypoint = ["/bin/sh", "-c"]
+
         if save:
             save_file = save if save.endswith(".zip") else f"{save}.zip"
             start_arg = f"--start-server /factorio/saves/{save_file}"
+        elif scenario == "freeplay":
+            # The Docker image's built-in freeplay scenario is not present
+            # below write-data (/factorio/scenarios), and Factorio rejects an
+            # absolute scenario path as an invalid level name. Create a seeded
+            # native save first, then serve it. The campaign saves mount makes
+            # this idempotent across container restarts.
+            initial_save = "/factorio/saves/factoryverse-initial.zip"
+            start_arg = f"--start-server {initial_save}"
+            create_command = " ".join(
+                [
+                    factorio_bin,
+                    f"--create {initial_save}",
+                    "--map-gen-settings /factorio/config/map-gen-settings.json",
+                    "--map-settings /factorio/config/map-settings.json",
+                    "--mod-directory /opt/factorio/mods",
+                    f"--map-gen-seed {cfg.map_gen_seed}",
+                ]
+            )
+            entrypoint = ["/bin/sh", "-c"]
         else:
             start_arg = f"--start-server-load-scenario {scenario}"
 
@@ -366,6 +427,20 @@ class FactorioServerManager:
         ]
 
         command = " ".join(command_parts)
+        if create_command is not None:
+            restore_before_create = (
+                f"{restore_mod_list}; " if restore_mod_list is not None else ""
+            )
+            restore_before_start = (
+                f"{restore_mod_list}; " if restore_mod_list is not None else ""
+            )
+            command = (
+                f"{restore_before_create}"
+                "if [ ! -s /factorio/saves/factoryverse-initial.zip ]; then "
+                f"{create_command}; fi; {restore_before_start}exec {command}"
+            )
+        elif restore_mod_list is not None:
+            command = f"{restore_mod_list}; exec {command}"
 
         # Build port mappings - only game and RCON
         # Agent/snapshot UDP ports are handled by the sidecar forwarder
@@ -381,15 +456,15 @@ class FactorioServerManager:
         return {
             "image": cfg.docker_image,
             "platform": cfg.docker_platform,
-            "entrypoint": [],
-            "command": command,
+            "entrypoint": entrypoint,
+            "command": [command] if entrypoint else command,
             # No DLC_SPACE_AGE env: it is only honored by the image's
             # docker-entrypoint.sh, which entrypoint: [] bypasses (box64
             # wrapper). DLC is disabled via mod-list by prepare_mods instead.
             "deploy": {"resources": {"limits": {"cpus": "1", "memory": "1024m"}}},
             "ports": ports,
             "volumes": [
-                f"{self.scenarios_dir.resolve()}:/opt/factorio/scenarios",
+                f"{self.scenarios_dir.resolve()}:/factorio/scenarios",
                 f"{self.mod_path.resolve()}:/opt/factorio/mods",
                 f"{self.config_dir.resolve()}:/factorio/config",
                 f"{output_dir.resolve()}:/opt/factorio/script-output",
@@ -397,7 +472,9 @@ class FactorioServerManager:
             ],
             # extra_hosts needed here since sidecar shares network namespace
             "extra_hosts": ["host.docker.internal:host-gateway"],
-            "restart": "unless-stopped",
+            # A campaign supervisor owns process lifecycle. An automatic
+            # container restart can bypass preparation and conceal a crash.
+            "restart": "no" if self.isolated_mods else "unless-stopped",
         }
 
     def _build_udp_forwarder_config(self, instance_id: int) -> dict:
@@ -444,7 +521,7 @@ class FactorioServerManager:
             "entrypoint": ["/bin/sh", "-c"],
             "command": [command],
             "depends_on": [f"factorio_{instance_id}"],
-            "restart": "unless-stopped",
+            "restart": "no" if self.isolated_mods else "unless-stopped",
         }
 
     # =========================================================================

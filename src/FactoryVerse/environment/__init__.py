@@ -19,6 +19,7 @@ from .config import (
     InteractionConfig,
     InfraMode,
     RuntimeVariant,
+    RuntimeAccessProfile,
     ExecutionMode,
     InteractionMode,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "InteractionConfig",
     "InfraMode",
     "RuntimeVariant",
+    "RuntimeAccessProfile",
     "ExecutionMode",
     "InteractionMode",
     # Status

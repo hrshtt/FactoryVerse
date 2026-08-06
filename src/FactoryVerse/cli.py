@@ -8,6 +8,7 @@ initialization and verification.
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -714,6 +715,236 @@ def cmd_freeplay(args):
     asyncio.run(_run())
 
 
+def _freeplay_campaign_store(campaign_id: str):
+    """Build the durable store used by the external-harness freeplay path."""
+    from FactoryVerse.evals.freeplay import FreeplayCampaignStore
+
+    return FreeplayCampaignStore(get_config().fv_output_dir / "freeplay", campaign_id)
+
+
+def cmd_freeplay_eval_create(args):
+    """Create an immutable freeplay campaign manifest without launching it."""
+    from FactoryVerse.evals.freeplay.supervisor import FreeplaySupervisor
+
+    store = _freeplay_campaign_store(args.campaign)
+    manifest = FreeplaySupervisor.create_campaign(
+        store,
+        repo_root=get_config().project_root,
+        infra_config=get_config(),
+        seed=args.seed,
+        agent_id=args.agent_id,
+        harness=args.harness,
+        model=args.model,
+    )
+    print(json.dumps(manifest, indent=2, sort_keys=True))
+    print(f"\nCampaign created: {store.paths.root}")
+
+
+def cmd_freeplay_eval_status(args):
+    """Print campaign lifecycle, checkpoint, and runtime-session state."""
+    store = _freeplay_campaign_store(args.campaign)
+    payload = {
+        "manifest": store.manifest(),
+        "state": store.state(),
+        "checkpoints": store.checkpoint_records(),
+        "runtime_sessions": list(store.iter_sessions()),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def cmd_freeplay_eval_launch(args):
+    """Launch/resume a campaign and serve its single-owner actor protocol."""
+    from FactoryVerse.evals.freeplay.runtime_host import (
+        FreeplayRuntimeHost,
+        PROTOCOL_PREFIX,
+    )
+    from FactoryVerse.evals.freeplay.supervisor import FreeplaySupervisor
+
+    async def _run():
+        store = _freeplay_campaign_store(args.campaign)
+        if not store.exists:
+            FreeplaySupervisor.create_campaign(
+                store,
+                repo_root=get_config().project_root,
+                infra_config=get_config(),
+                seed=args.seed,
+                agent_id=args.agent_id,
+                harness=args.harness,
+                model=args.model,
+            )
+            print(f"Created campaign: {store.paths.root}", file=sys.stderr)
+
+        supervisor = FreeplaySupervisor(
+            store,
+            repo_root=get_config().project_root,
+            harness=args.harness,
+            model=args.model,
+        )
+        try:
+            preflight = await supervisor.start(resume=args.resume)
+            host = FreeplayRuntimeHost(
+                supervisor,
+                default_timeout=args.execution_timeout,
+                maximum_timeout=args.maximum_execution_timeout,
+            )
+            print(
+                "Freeplay runtime ready. Actor operations are status/execute; "
+                "closing stdin asks the supervisor to finalize. "
+                "Send one JSON object per stdin line; "
+                f"machine responses begin with {PROTOCOL_PREFIX!r}.",
+                file=sys.stderr,
+                flush=True,
+            )
+            result = await host.serve_stdio(preflight)
+            host._emit({"event": "closed", "result": result})
+        except KeyboardInterrupt:
+            if supervisor.environment is not None:
+                result = await supervisor.finish(
+                    reason="operator_interrupt",
+                    checkpoint=True,
+                )
+                FreeplayRuntimeHost._emit({"event": "closed", "result": result})
+        except Exception as exc:
+            FreeplayRuntimeHost._emit(
+                {
+                    "event": "launch_failed",
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "campaign_id": args.campaign,
+                }
+            )
+            raise
+
+    asyncio.run(_run())
+
+
+def cmd_freeplay_eval_codex(args):
+    """Run a supervised freeplay campaign with a persistent Codex CLI thread."""
+    from FactoryVerse.evals.freeplay.codex_runner import (
+        CodexCliClient,
+        CodexFreeplayRunner,
+        codex_harness_configuration,
+    )
+    from FactoryVerse.evals.freeplay.supervisor import (
+        FREEPLAY_STARTING_INVENTORY,
+        NOTIFICATION_DEBUG_RAW_INVENTORY,
+        FreeplaySupervisor,
+    )
+
+    async def _run():
+        store = _freeplay_campaign_store(args.campaign)
+        workspace = store.paths.root / "harness-workspace"
+        control_dir = store.paths.root / "harness-control"
+        client = CodexCliClient(
+            executable=args.codex_bin,
+            model=args.model,
+            workspace=workspace,
+            control_dir=control_dir,
+            timeout_seconds=args.codex_timeout,
+        )
+        codex_version = await client.version()
+        version_suffix = codex_version.rsplit(" ", 1)[-1]
+        harness = f"codex-cli/{version_suffix}"
+        harness_configuration = codex_harness_configuration(
+            codex_version=codex_version,
+            max_turns=args.max_turns,
+            checkpoint_every=args.checkpoint_every,
+            codex_timeout=args.codex_timeout,
+            execution_timeout=args.execution_timeout,
+            maximum_execution_timeout=args.maximum_execution_timeout,
+            notification_debug=args.notification_debug,
+            factory_debug=args.factory_debug,
+        )
+
+        if not store.exists:
+            initial_inventory = dict(FREEPLAY_STARTING_INVENTORY)
+            if args.notification_debug:
+                initial_inventory.update(NOTIFICATION_DEBUG_RAW_INVENTORY)
+            FreeplaySupervisor.create_campaign(
+                store,
+                repo_root=get_config().project_root,
+                infra_config=get_config(),
+                seed=args.seed,
+                agent_id=args.agent_id,
+                harness=harness,
+                model=args.model,
+                harness_configuration=harness_configuration,
+                initial_inventory=initial_inventory,
+            )
+            print(f"Created campaign: {store.paths.root}", file=sys.stderr)
+        else:
+            manifest = store.manifest()
+            if manifest.get("harness_configuration") != harness_configuration:
+                raise RuntimeError(
+                    "Codex runner arguments differ from the immutable campaign "
+                    "harness_configuration"
+                )
+
+        supervisor = FreeplaySupervisor(
+            store,
+            repo_root=get_config().project_root,
+            harness=harness,
+            model=args.model,
+        )
+        runner = None
+        try:
+            preflight = await supervisor.start(resume=args.resume)
+            runner = CodexFreeplayRunner(
+                supervisor,
+                client,
+                max_turns=args.max_turns,
+                checkpoint_every=args.checkpoint_every,
+                execution_timeout=args.execution_timeout,
+                maximum_execution_timeout=args.maximum_execution_timeout,
+                notification_debug=args.notification_debug,
+                factory_debug=args.factory_debug,
+            )
+            runner_result = await runner.run(preflight)
+            campaign_result = await supervisor.finish(
+                reason=runner_result["reason"],
+                checkpoint=True,
+                execution_count=runner_result["session_executions"],
+            )
+            print(
+                json.dumps(
+                    {
+                        "campaign": campaign_result,
+                        "codex": runner_result,
+                        "workspace": str(workspace),
+                        "control_artifacts": str(control_dir),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        except asyncio.CancelledError:
+            if supervisor.environment is not None:
+                await supervisor.finish(
+                    reason="operator_interrupt",
+                    checkpoint=True,
+                    execution_count=(runner.actor.execution_count if runner else 0),
+                )
+            raise
+        except Exception as exc:
+            if supervisor.environment is not None:
+                try:
+                    await supervisor.finish(
+                        reason=f"codex_harness_error: {type(exc).__name__}: {exc}",
+                        checkpoint=True,
+                        execution_count=(
+                            runner.actor.execution_count if runner else 0
+                        ),
+                    )
+                except Exception:
+                    pass
+            raise
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        print("Codex freeplay run interrupted and finalized.", file=sys.stderr)
+
+
 def cmd_agent(args):
     """Run LLM agent in assisted (interactive) mode.
 
@@ -1138,6 +1369,115 @@ def main():
     freeplay_parser.add_argument("--max-turns", type=int, default=200, help="Max turns")
     freeplay_parser.add_argument("--cell", type=int, help="Lab-grid cell index")
     freeplay_parser.set_defaults(func=cmd_freeplay)
+
+    # ========== FREEPLAY EVALUATION (External Coding Harness) ==========
+    freeplay_eval_parser = subparsers.add_parser(
+        "freeplay-eval",
+        help="Create, launch, resume, and inspect external-harness freeplay campaigns",
+    )
+    freeplay_eval_sub = freeplay_eval_parser.add_subparsers(
+        dest="freeplay_eval_action", required=True
+    )
+
+    freeplay_eval_create = freeplay_eval_sub.add_parser(
+        "create", help="Create an immutable freeplay campaign"
+    )
+    freeplay_eval_create.add_argument("--campaign", required=True)
+    freeplay_eval_create.add_argument("--seed", type=int, default=44340)
+    freeplay_eval_create.add_argument("--agent-id", default="agent_1")
+    freeplay_eval_create.add_argument("--harness", default="unspecified")
+    freeplay_eval_create.add_argument("--model", default="unspecified")
+    freeplay_eval_create.set_defaults(func=cmd_freeplay_eval_create)
+
+    freeplay_eval_status = freeplay_eval_sub.add_parser(
+        "status", help="Show campaign state and checkpoint lineage"
+    )
+    freeplay_eval_status.add_argument("--campaign", required=True)
+    freeplay_eval_status.set_defaults(func=cmd_freeplay_eval_status)
+
+    freeplay_eval_launch = freeplay_eval_sub.add_parser(
+        "launch", help="Launch or resume a campaign and open the JSONL runtime"
+    )
+    freeplay_eval_launch.add_argument("--campaign", required=True)
+    freeplay_eval_launch.add_argument("--seed", type=int, default=44340)
+    freeplay_eval_launch.add_argument("--agent-id", default="agent_1")
+    freeplay_eval_launch.add_argument("--harness", default="unspecified")
+    freeplay_eval_launch.add_argument("--model", default="unspecified")
+    freeplay_eval_launch.add_argument(
+        "--resume",
+        default=None,
+        help="Checkpoint ID to resume (default: latest when checkpoints exist)",
+    )
+    freeplay_eval_launch.add_argument(
+        "--execution-timeout",
+        type=float,
+        default=300.0,
+        help="Default timeout for each submitted Python block",
+    )
+    freeplay_eval_launch.add_argument(
+        "--maximum-execution-timeout",
+        type=float,
+        default=1800.0,
+        help="Hard upper bound for a harness-requested Python timeout",
+    )
+    freeplay_eval_launch.set_defaults(func=cmd_freeplay_eval_launch)
+
+    freeplay_eval_codex = freeplay_eval_sub.add_parser(
+        "codex", help="Run or resume freeplay through the Codex CLI harness"
+    )
+    freeplay_eval_codex.add_argument("--campaign", required=True)
+    freeplay_eval_codex.add_argument("--model", required=True)
+    freeplay_eval_codex.add_argument("--seed", type=int, default=44340)
+    freeplay_eval_codex.add_argument("--agent-id", default="agent_1")
+    freeplay_eval_codex.add_argument("--codex-bin", default="codex")
+    freeplay_eval_codex.add_argument("--max-turns", type=int, default=200)
+    freeplay_eval_codex.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=10,
+        help="Supervisor checkpoint cadence in executed Python blocks (0 disables)",
+    )
+    freeplay_eval_codex.add_argument(
+        "--codex-timeout",
+        type=float,
+        default=900.0,
+        help="Wall-clock timeout for each Codex turn",
+    )
+    freeplay_eval_codex.add_argument(
+        "--execution-timeout",
+        type=float,
+        default=300.0,
+        help="Default timeout for each submitted Python block",
+    )
+    freeplay_eval_codex.add_argument(
+        "--maximum-execution-timeout",
+        type=float,
+        default=1800.0,
+        help="Hard upper bound for a Python execution",
+    )
+    freeplay_eval_codex.add_argument(
+        "--resume",
+        default=None,
+        help="Checkpoint ID to resume (default: latest when checkpoints exist)",
+    )
+    freeplay_debug_profiles = freeplay_eval_codex.add_mutually_exclusive_group()
+    freeplay_debug_profiles.add_argument(
+        "--notification-debug",
+        action="store_true",
+        help=(
+            "Run the bounded initial-research notification mission with only "
+            "raw-resource provisioning and an agent-owned bug ledger"
+        ),
+    )
+    freeplay_debug_profiles.add_argument(
+        "--factory-debug",
+        action="store_true",
+        help=(
+            "Run an open-ended factory bootstrap/scaling mission with durable "
+            "planning, progress, and bug-tracking files"
+        ),
+    )
+    freeplay_eval_codex.set_defaults(func=cmd_freeplay_eval_codex)
 
     # ========== AGENT COMMAND (Assisted/Interactive) ==========
     agent_parser = subparsers.add_parser(

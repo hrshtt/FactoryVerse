@@ -794,6 +794,13 @@ class RuntimeVariant(str, Enum):
     FULL = "full"  # All agent modules including remote_view
 
 
+class RuntimeAccessProfile(str, Enum):
+    """Actor-visible capabilities exposed by Tier 4 code execution."""
+
+    PRODUCTION = "production"  # Embodied interfaces and DuckDB; no raw RCON/admin
+    DEBUG = "debug"  # Development profile with low-level control objects
+
+
 class ExecutionMode(str, Enum):
     """Code execution mode for the runtime."""
 
@@ -904,6 +911,20 @@ class RuntimeConfig(BaseModel):
     initial_inventory: Optional[Dict[str, int]] = Field(
         default=None,
         description="Initial inventory items to give agent on creation: {item_name: count, ...}",
+    )
+    access_profile: RuntimeAccessProfile = Field(
+        default=RuntimeAccessProfile.DEBUG,
+        description=(
+            "Actor capability profile. Production omits raw RCON and admin "
+            "objects from the execution namespace."
+        ),
+    )
+    database_path: Optional[Path] = Field(
+        default=None,
+        description=(
+            "Persistent DuckDB path used by RemoteView. None keeps the "
+            "historical in-memory behavior."
+        ),
     )
     session_dir: Optional[Path] = Field(
         default=None, description="Session directory (auto-created if None)"

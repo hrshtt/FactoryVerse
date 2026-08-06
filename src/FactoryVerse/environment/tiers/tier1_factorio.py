@@ -271,6 +271,7 @@ class Tier1Factorio(TierBase):
         scenario: str,
         num_instances: int = 1,
         save: Optional[str] = None,
+        prepare_mods: bool = True,
     ) -> None:
         """Start Factorio server container(s).
 
@@ -307,8 +308,10 @@ class Tier1Factorio(TierBase):
                 "Tier 1: Loading save '%s' — keeping existing snapshot dirs", save
             )
 
-        # Prepare mods
-        self._server_manager.prepare_mods(scenario)
+        # Prepare mods. Evaluation supervisors can prepare and verify an
+        # immutable campaign bundle before allowing Docker to start.
+        if prepare_mods:
+            self._server_manager.prepare_mods(scenario)
 
         # Generate and write Docker Compose config
         services = self._server_manager.get_services(

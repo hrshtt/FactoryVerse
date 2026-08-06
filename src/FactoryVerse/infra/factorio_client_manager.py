@@ -369,6 +369,13 @@ class FactorioClientManager:
         state = {k: v for k, v in state.items() if v is not None}
         self.state_file.write_text(json.dumps(state, indent=2))
 
+    def record_checkpoint(self, save_file: Path) -> None:
+        """Select a verified client save as the checkpoint used by restart()."""
+        state = self._load_state()
+        state["save_file"] = str(save_file.resolve())
+        state["new_map"] = False
+        self.state_file.write_text(json.dumps(state, indent=2))
+
     def _load_state(self) -> dict:
         """Load client state."""
         if not self.state_file.exists():

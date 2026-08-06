@@ -226,6 +226,15 @@ class RconHelper:
             interfaces_cmd = "/c rcon.print(helpers.table_to_json(remote.interfaces))"
             interfaces_json = self.rcon_client.send_command(interfaces_cmd)
 
+            # A fresh freeplay save has achievements enabled. Factorio rejects
+            # the first Lua console command with "repeat the command to
+            # proceed" and returns no RCON payload. Repeating the *identical*
+            # discovery command confirms that one-time transition; later
+            # commands then behave normally. A second empty response remains a
+            # real connection/interface failure.
+            if interfaces_json is None:
+                interfaces_json = self.rcon_client.send_command(interfaces_cmd)
+
             if interfaces_json is None:
                 raise ValueError(
                     "RCON command returned None - check RCON connection and server status"
