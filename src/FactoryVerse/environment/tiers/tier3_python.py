@@ -112,6 +112,13 @@ class Tier3Python(TierBase):
             # Initialize RCON client
             await self._init_rcon(rcon_host, rcon_port, rcon_password)
 
+            # The snapshot mod is already loaded by the time RCON becomes
+            # available, but its runtime-global UDP setting still contains the
+            # mod default.  Configure the instance-specific destination before
+            # any actor/runtime tier can emit mutations that Python expects to
+            # observe on the allocated snapshot listener.
+            self._configure_snapshot_udp_port()
+
             # Initialize UDP dispatcher if enabled
             if self.config.udp_enabled:
                 await self._init_udp()
@@ -217,6 +224,38 @@ class Tier3Python(TierBase):
                     await asyncio.sleep(1.0)
                 else:
                     raise
+
+    def _configure_snapshot_udp_port(self) -> None:
+        """Pin the Lua snapshot sender to this instance's allocated port."""
+        if self._map_api is None or self._instance is None:
+            raise RuntimeError("RCON snapshot interface is not initialized")
+
+        snapshot_port = self._env.config.infra_config.get_snapshot_port(
+            self._instance
+        )
+        result = self._map_api.set_udp_port(snapshot_port)
+        observed = self._map_api.get_udp_port()
+        if observed != snapshot_port:
+            # On a fresh Factorio save the first console mutation can be
+            # consumed by the one-time achievements warning. The adapter's
+            # legacy fallback cannot distinguish that empty response from a
+            # successful call, so verify and retry exactly once.
+            logger.info(
+                "Tier 3: Snapshot port remained %s after first request; "
+                "retrying once after Factorio's console confirmation",
+                observed,
+            )
+            result = self._map_api.set_udp_port(snapshot_port)
+            observed = self._map_api.get_udp_port()
+        if observed != snapshot_port:
+            raise RuntimeError(
+                "Snapshot UDP port configuration did not stick: "
+                f"requested {snapshot_port}, observed {observed}, result={result!r}"
+            )
+        logger.info(
+            "Tier 3: Snapshot UDP destination configured on port %d",
+            snapshot_port,
+        )
 
     async def _init_udp(self) -> None:
         """Initialize UDP dispatcher for agent action notifications.
