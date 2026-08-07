@@ -143,6 +143,9 @@ class SyncService:
         """Update last sequence (e.g., after rebuild)."""
         self._last_sequence = sequence
         self._needs_rebuild = False
+        # A rebuild replaces the authoritative entity state. Old per-identity
+        # removal evidence cannot be related to actions begun afterward.
+        self._applied_resource_removals.clear()
 
     # =========================================================================
     # UDP Handlers
@@ -382,6 +385,16 @@ class SyncService:
         apply_ops.upsert_entity(
             self._db, entity_data, chunk.get("x", 0), chunk.get("y", 0),
             default_tick=payload.get("tick"))
+        position = entity_data.get("position") or {}
+        if entity_data.get("name") and position.get("x") is not None and position.get("y") is not None:
+            self._applied_resource_removals.pop(
+                (
+                    str(entity_data["name"]),
+                    float(position["x"]),
+                    float(position["y"]),
+                ),
+                None,
+            )
         logger.debug(f"Applied entity upsert: {entity_data.get('name', '')}")
 
     def _apply_entity_remove(self, payload: Dict[str, Any]) -> None:
@@ -416,17 +429,21 @@ class SyncService:
         resource_rows_removed = apply_ops.remove_resource_entity(
             self._db, entity_name, pos_x, pos_y
         )
-        if resource_exists:
-            source_tick = payload.get("tick")
-            self._applied_resource_removals[(entity_name, pos_x, pos_y)] = {
-                "destroy_event_tick": source_tick,
-                # DuckDB applies this exact destroy payload synchronously. Its
-                # Factorio tick is therefore the causal deletion tick; wall
-                # clock receipt time would not be comparable to game facts.
-                "duckdb_delete_tick": source_tick,
-                "destroy_event_sequence": payload.get("sequence"),
-                "duckdb_rows_removed": resource_rows_removed,
-            }
+        source_tick = payload.get("tick")
+        # Keep evidence for the exact remove payload even when an authoritative
+        # chunk rewrite reached DuckDB first.  The actor-side barrier separately
+        # proves that this exact resource row existed before the action and that
+        # this payload is newer than that baseline; recording a zero-row reducer
+        # application here therefore preserves transport causality without
+        # pretending the remove operation itself deleted the row.
+        self._applied_resource_removals[(entity_name, pos_x, pos_y)] = {
+            "snapshot_destroy_event_tick": source_tick,
+            "duckdb_delete_tick": source_tick,
+            "destroy_event_sequence": payload.get("sequence"),
+            "destroy_action_id": payload.get("action_id"),
+            "remove_payload_rows_removed": resource_rows_removed,
+            "resource_row_existed_at_remove_apply": resource_exists,
+        }
         
         # Log results
         if map_exists or resource_exists:
@@ -448,6 +465,11 @@ class SyncService:
             (entity_name, float(pos_x), float(pos_y))
         )
         return dict(fact) if fact is not None else None
+
+    def get_entity_sequence(self) -> int:
+        """Return the latest accepted entity-operation sequence."""
+        with self._sequence_lock:
+            return self._last_sequence
 
     def _apply_ghost_upsert(self, payload: Dict[str, Any]) -> None:
         """Apply ghost upsert to database."""
@@ -637,6 +659,24 @@ class SyncService:
             apply_ops.replace_resource_entity_chunk(
                 self._db, resources, int(chunk["x"]), int(chunk["y"])
             )
+            # A resource present in an authoritative rewrite is a new live
+            # incarnation at that identity.  Evidence for an older removal at
+            # the same name/position must never satisfy a later action barrier.
+            for resource in resources:
+                position = resource.get("position") or {}
+                if (
+                    resource.get("name")
+                    and position.get("x") is not None
+                    and position.get("y") is not None
+                ):
+                    self._applied_resource_removals.pop(
+                        (
+                            str(resource["name"]),
+                            float(position["x"]),
+                            float(position["y"]),
+                        ),
+                        None,
+                    )
         except Exception as exc:
             logger.error(
                 f"Failed to apply live trees/rocks snapshot: {exc}", exc_info=True

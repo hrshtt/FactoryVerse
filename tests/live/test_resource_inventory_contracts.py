@@ -91,6 +91,7 @@ async def resource_inventory_game(tmp_path_factory):
             "crafting": tier4.embodied_actions["crafting"],
             "walking": tier4.embodied_actions["movement"],
             "mining": tier4.embodied_actions["mining"],
+            "mined_tree_identities": set(),
             "boot_snapshot_port": boot_snapshot_port,
             "expected_snapshot_port": expected_snapshot_port,
         }
@@ -264,6 +265,15 @@ async def test_tree_resource_row_matches_engine_and_mining_inventory_causality(
             engine_before = observed
             break
     assert selected is not None, "no sampled resource_entity tree matched engine truth"
+    selected_identity = (
+        selected.name,
+        float(selected.position.x),
+        float(selected.position.y),
+    )
+    assert selected_identity not in resource_inventory_game["mined_tree_identities"], (
+        "five-sample contract selected a previously mined tree identity"
+    )
+    resource_inventory_game["mined_tree_identities"].add(selected_identity)
     assert engine_before["exists"] is True
     assert engine_before["name"] == selected.name
     assert engine_before["type"] == "tree"
@@ -352,8 +362,13 @@ async def test_tree_resource_row_matches_engine_and_mining_inventory_causality(
     assert causal_facts["engine_exists"] is False
     assert causal_facts["inventory_delta"] == dict(returned)
     assert causal_facts["destroy_event_tick"] is not None
+    assert causal_facts["engine_destroy_event_tick"] == causal_facts["destroy_event_tick"]
+    assert causal_facts["snapshot_destroy_event_tick"] == causal_facts["destroy_event_tick"]
     assert causal_facts["duckdb_delete_tick"] == causal_facts["destroy_event_tick"]
     assert causal_facts["duckdb_rows_removed"] == 1
+    assert causal_facts["resource_present_at_action_start"] is True
+    assert causal_facts["destroy_event_sequence"] > causal_facts["entity_sequence_floor"]
+    assert causal_facts["destroy_action_id"]
     assert causal_facts["duckdb_depleted"] is True
 
 

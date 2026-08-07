@@ -211,15 +211,19 @@ class MiningAction:
         self._listener = async_listener
         self._placement = placement
         self._resource_depletion_barrier: Optional[
-            Callable[[str, float, float], Awaitable[Optional[Dict[str, Any]]]]
+            Callable[..., Awaitable[Optional[Dict[str, Any]]]]
+        ] = None
+        self._resource_depletion_prepare: Optional[
+            Callable[[str, float, float], Dict[str, Any]]
         ] = None
         self.last_causal_facts: Dict[str, Any] = {}
 
     def set_resource_depletion_barrier(
         self,
         barrier: Callable[
-            [str, float, float], Awaitable[Optional[Dict[str, Any]]]
+            ..., Awaitable[Optional[Dict[str, Any]]]
         ],
+        prepare: Optional[Callable[[str, float, float], Dict[str, Any]]] = None,
     ) -> None:
         """Make depleted-resource completion causally fresh for later reads.
 
@@ -228,6 +232,7 @@ class MiningAction:
         visible in its owned database before ``mine()`` returns to actor code.
         """
         self._resource_depletion_barrier = barrier
+        self._resource_depletion_prepare = prepare
 
     async def mine(
         self,
@@ -254,6 +259,12 @@ class MiningAction:
         if max_count and max_count > 25:
             logger.warning(f"Capping mining count from {max_count} to 25")
             max_count = 25
+
+        depletion_baseline: Optional[Dict[str, Any]] = None
+        if position is not None and self._resource_depletion_prepare is not None:
+            depletion_baseline = self._resource_depletion_prepare(
+                resource_name, float(position.x), float(position.y)
+            )
 
         # Build and execute RCON command
         cmd = self._rcon.build_command(
@@ -304,7 +315,11 @@ class MiningAction:
         else:
             structured_position = None
 
-        causal_facts = completion_dict.get("causal_facts") or {}
+        raw_causal_facts = completion_dict.get("causal_facts") or {}
+        causal_facts = dict(raw_causal_facts)
+        engine_destroy_event_tick = causal_facts.get("destroy_event_tick")
+        if engine_destroy_event_tick is not None:
+            causal_facts["engine_destroy_event_tick"] = engine_destroy_event_tick
         self.last_causal_facts = dict(causal_facts)
         if not completion.success or completion.reason == "reconciliation_failed":
             raise MiningReconciliationError(
@@ -334,11 +349,81 @@ class MiningAction:
             if position_x is not None and position_y is not None:
                 entity_name = completion_dict.get("entity_name") or resource_name
                 try:
-                    barrier_facts = await self._resource_depletion_barrier(
-                        str(entity_name), float(position_x), float(position_y)
-                    )
+                    if self._resource_depletion_prepare is not None:
+                        if engine_destroy_event_tick is None:
+                            raise MiningReconciliationError(
+                                "Mining completion omitted its engine destroy tick",
+                                action_id=completion.action_id
+                                or response.action_id
+                                or "",
+                                resource_name=str(entity_name),
+                                position=structured_position,
+                                facts=causal_facts,
+                            )
+                        barrier_facts = await self._resource_depletion_barrier(
+                            str(entity_name),
+                            float(position_x),
+                            float(position_y),
+                            expected_destroy_tick=engine_destroy_event_tick,
+                            expected_action_id=(
+                                completion.action_id or response.action_id or None
+                            ),
+                            baseline=depletion_baseline,
+                        )
+                    else:
+                        barrier_facts = await self._resource_depletion_barrier(
+                            str(entity_name), float(position_x), float(position_y)
+                        )
                     if barrier_facts:
-                        causal_facts.update(barrier_facts)
+                        snapshot_tick = barrier_facts.get(
+                            "snapshot_destroy_event_tick",
+                            barrier_facts.get("destroy_event_tick"),
+                        )
+                        expected_action_id = (
+                            completion.action_id or response.action_id or None
+                        )
+                        barrier_action_id = barrier_facts.get("destroy_action_id")
+                        sequence = barrier_facts.get("destroy_event_sequence")
+                        sequence_floor = (depletion_baseline or {}).get(
+                            "entity_sequence_floor"
+                        )
+                        strict_barrier = self._resource_depletion_prepare is not None
+                        barrier_matches = (
+                            not strict_barrier
+                            or (
+                                snapshot_tick == engine_destroy_event_tick
+                                and barrier_action_id == expected_action_id
+                                and isinstance(sequence, int)
+                                and isinstance(sequence_floor, int)
+                                and sequence > sequence_floor
+                                and barrier_facts.get(
+                                    "resource_present_at_action_start"
+                                )
+                                is True
+                            )
+                        )
+                        if not barrier_matches:
+                            failed_facts = dict(causal_facts)
+                            failed_facts["barrier_facts"] = dict(barrier_facts)
+                            failed_facts["duckdb_depleted"] = False
+                            self.last_causal_facts = failed_facts
+                            raise MiningReconciliationError(
+                                "DuckDB removal evidence does not belong to "
+                                "this mining action",
+                                action_id=completion.action_id
+                                or response.action_id
+                                or "",
+                                resource_name=str(entity_name),
+                                position=structured_position,
+                                facts=failed_facts,
+                            )
+                        causal_facts.update(
+                            {
+                                key: value
+                                for key, value in barrier_facts.items()
+                                if key != "destroy_event_tick"
+                            }
+                        )
                     causal_facts["duckdb_depleted"] = True
                     self.last_causal_facts = dict(causal_facts)
                 except TimeoutError as exc:

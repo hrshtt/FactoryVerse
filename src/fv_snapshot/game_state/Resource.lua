@@ -226,7 +226,8 @@ end
 --- @param entity LuaEntity - The mined entity (tree or rock)
 --- @param chunk_x number
 --- @param chunk_y number
-function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
+--- @param action_id string|nil Mining action which caused the removal
+function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y, action_id)
     -- Accept either a real entity or a fake entity with position table
     if not entity then
         if M.DEBUG then
@@ -307,6 +308,7 @@ function M.create_trees_rocks_update_entry(entity, chunk_x, chunk_y)
     local chunk = { x = chunk_x, y = chunk_y }
     local payload = udp_payloads.entity_destroyed(chunk, entity_name, position)
     payload.sequence = operation.sequence  -- Use sequence from file write
+    payload.action_id = action_id
     udp_payloads.send_entity_operation(payload)
     
     return true
@@ -530,4 +532,3 @@ function M.register_remote_interface()
 end
 
 return M
-

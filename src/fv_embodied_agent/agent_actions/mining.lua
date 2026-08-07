@@ -626,6 +626,7 @@ function MiningActions.finalize_mining(self, reason)
             script.raise_event(custom_events.on_agent_resource_mined, {
                 entity = nil,  -- Entity is already destroyed by Factorio engine
                 agent_id = self.agent_id,
+                action_id = mining_state.action_id,
                 entity_name = mining_state.entity_name,
                 entity_type = mining_state.entity_type,
                 position = mining_state.entity_position,

@@ -41,6 +41,26 @@ class _Listener:
         }
 
 
+class _CausalListener:
+    async def await_action(self, _response, timeout=None):
+        return {
+            "success": True,
+            "action_id": "mine-1",
+            "tick": 42,
+            "result": {
+                "reason": "depleted",
+                "entity_name": "tree-01",
+                "position": {"x": 3.25, "y": -7.5},
+                "actual_products": {"wood": 4},
+                "causal_facts": {
+                    "destroy_event_tick": 42,
+                    "engine_exists": False,
+                    "inventory_delta": {"wood": 4},
+                },
+            },
+        }
+
+
 @pytest.mark.asyncio
 async def test_mine_waits_for_resource_depletion_barrier():
     mining = MiningAction(_Rcon(), _Listener())
@@ -124,6 +144,34 @@ async def test_mine_wraps_duckdb_depletion_timeout_as_reconciliation_failure():
     assert raised.value.facts["duckdb_depleted"] is False
 
 
+@pytest.mark.asyncio
+async def test_mine_rejects_mismatched_barrier_without_overwriting_engine_tick():
+    mining = MiningAction(_Rcon(), _CausalListener())
+
+    def prepare(_name, _x, _y):
+        return {"resource_rows_at_start": 1, "entity_sequence_floor": 7}
+
+    async def barrier(_name, _x, _y, **_kwargs):
+        return {
+            "snapshot_destroy_event_tick": 41,
+            "duckdb_delete_tick": 41,
+            "destroy_event_sequence": 8,
+            "destroy_action_id": "mine-1",
+            "resource_present_at_action_start": True,
+            "duckdb_rows_removed": 1,
+        }
+
+    mining.set_resource_depletion_barrier(barrier, prepare)
+
+    with pytest.raises(MiningReconciliationError) as raised:
+        await mining.mine("tree-01", position=MapPosition(x=3.25, y=-7.5))
+
+    assert raised.value.facts["destroy_event_tick"] == 42
+    assert raised.value.facts["engine_destroy_event_tick"] == 42
+    assert raised.value.facts["barrier_facts"]["snapshot_destroy_event_tick"] == 41
+    assert mining.last_causal_facts["destroy_event_tick"] == 42
+
+
 class _DelayedRemovalSync:
     def __init__(self, connection):
         self.connection = connection
@@ -150,6 +198,19 @@ class _DelayedRemovalSync:
         }
 
 
+class _StaleRemovalSync:
+    def flush_pending(self):
+        return 0
+
+    def get_applied_resource_removal(self, _name, _x, _y):
+        return {
+            "snapshot_destroy_event_tick": 42,
+            "destroy_event_sequence": 7,
+            "destroy_action_id": "mine-1",
+            "remove_payload_rows_removed": 1,
+        }
+
+
 @pytest.mark.asyncio
 async def test_remote_view_depletion_barrier_waits_for_late_snapshot_mutation():
     database = SnapshotDatabase()
@@ -169,7 +230,7 @@ async def test_remote_view_depletion_barrier_waits_for_late_snapshot_mutation():
     view._sync = _DelayedRemovalSync(database.connection)
 
     facts = await view.wait_for_resource_depletion(
-        "tree-01", 3.25, -7.5, timeout=0.2
+        "tree-01", 3.25, -7.5, timeout=2.0
     )
 
     assert view._sync.flushes == 2
@@ -178,4 +239,100 @@ async def test_remote_view_depletion_barrier_waits_for_late_snapshot_mutation():
         "duckdb_delete_tick": 42,
         "duckdb_rows_removed": 1,
     }
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_view_rejects_stale_same_position_removal_fact():
+    database = SnapshotDatabase()
+    database.ensure_schema()
+    view = object.__new__(RemoteView)
+    view._loaded = True
+    view._database = database
+    view._db_lock = threading.Lock()
+    view._sync = _StaleRemovalSync()
+
+    with pytest.raises(TimeoutError):
+        await view.wait_for_resource_depletion(
+            "tree-01",
+            3.25,
+            -7.5,
+            timeout=0.0,
+            expected_destroy_tick=42,
+            expected_action_id="mine-1",
+            baseline={"resource_rows_at_start": 1, "entity_sequence_floor": 7},
+        )
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_rewrite_before_exact_remove_still_proves_action_depletion(tmp_path):
+    from FactoryVerse.game.infra.duckdb import apply_ops
+    from FactoryVerse.game.infra.duckdb.sync import SyncService
+
+    database = SnapshotDatabase()
+    database.ensure_schema()
+    apply_ops.upsert_resource_entity(
+        database.connection,
+        {
+            "name": "tree-01",
+            "type": "tree",
+            "position": {"x": 3.25, "y": -7.5},
+        },
+        0,
+        -1,
+    )
+    apply_ops.upsert_resource_entity(
+        database.connection,
+        {
+            "name": "tree-02",
+            "type": "tree",
+            "position": {"x": 4.25, "y": -7.5},
+        },
+        0,
+        -1,
+    )
+    sync = SyncService(
+        database.connection,
+        udp_dispatcher=object(),
+        on_rebuild=lambda: None,
+        initial_sequence=7,
+        snapshot_dir=tmp_path,
+    )
+    view = object.__new__(RemoteView)
+    view._loaded = True
+    view._database = database
+    view._db_lock = sync._db_lock
+    view._sync = sync
+    baseline = view.capture_resource_depletion_baseline("tree-01", 3.25, -7.5)
+
+    path = tmp_path / "trees.jsonl"
+    path.write_text(
+        '{"name":"tree-02","type":"tree","position":{"x":4.25,"y":-7.5}}\n',
+        encoding="utf-8",
+    )
+    sync._apply_trees_rocks_file(path, {"x": 0, "y": -1})
+    sync._apply_entity_remove(
+        {
+            "name": "tree-01",
+            "position": {"x": 3.25, "y": -7.5},
+            "tick": 42,
+            "sequence": 8,
+            "action_id": "mine-1",
+        }
+    )
+
+    facts = await view.wait_for_resource_depletion(
+        "tree-01",
+        3.25,
+        -7.5,
+        timeout=0.0,
+        expected_destroy_tick=42,
+        expected_action_id="mine-1",
+        baseline=baseline,
+    )
+    assert facts["resource_present_at_action_start"] is True
+    assert facts["remove_payload_rows_removed"] == 0
+    assert facts["duckdb_rows_removed"] == 1
+    assert facts["destroy_event_sequence"] == 8
     database.close()

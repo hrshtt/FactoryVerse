@@ -80,8 +80,51 @@ def test_exact_destroy_records_tick_indexed_duckdb_removal():
     )
 
     assert sync.get_applied_resource_removal("tree-07", -9.25, 47) == {
-        "destroy_event_tick": 3914,
+        "snapshot_destroy_event_tick": 3914,
         "duckdb_delete_tick": 3914,
         "destroy_event_sequence": 7,
-        "duckdb_rows_removed": 1,
+        "destroy_action_id": None,
+        "remove_payload_rows_removed": 1,
+        "resource_row_existed_at_remove_apply": True,
     }
+
+
+def test_resource_reappearance_invalidates_cached_removal(tmp_path):
+    database = SnapshotDatabase()
+    database.ensure_schema()
+    sync = SyncService(
+        database.connection,
+        udp_dispatcher=object(),
+        on_rebuild=lambda: None,
+        snapshot_dir=tmp_path,
+    )
+    key = ("tree-07", -9.25, 47.0)
+    sync._applied_resource_removals[key] = {"snapshot_destroy_event_tick": 10}
+
+    sync._apply_entity_upsert(
+        {
+            "entity": {
+                "name": "tree-07",
+                "type": "tree",
+                "position": {"x": -9.25, "y": 47},
+            },
+            "chunk": {"x": -1, "y": 1},
+        }
+    )
+    assert sync.get_applied_resource_removal(*key) is None
+
+    sync._applied_resource_removals[key] = {"snapshot_destroy_event_tick": 11}
+    path = tmp_path / "trees.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "tree-07",
+                "type": "tree",
+                "position": {"x": -9.25, "y": 47},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    sync._apply_trees_rocks_file(path, {"x": -1, "y": 1})
+    assert sync.get_applied_resource_removal(*key) is None

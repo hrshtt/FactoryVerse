@@ -8,7 +8,6 @@ Supports two execution modes:
 """
 
 import asyncio
-import json
 import logging
 import time
 from pathlib import Path
@@ -1144,7 +1143,8 @@ class Tier4Runtime(TierBase):
         await self._remote_view.load(wait_for_bootstrap=True, bootstrap_timeout=120.0)
         await self._remote_view.start()  # Start real-time sync via UDP
         self._mining.set_resource_depletion_barrier(
-            self._remote_view.wait_for_resource_depletion
+            self._remote_view.wait_for_resource_depletion,
+            self._remote_view.capture_resource_depletion_baseline,
         )
         self._placement.set_state_barrier(self._remote_view.wait_for_placement)
         logger.info("Tier 4: RemoteView sync started")

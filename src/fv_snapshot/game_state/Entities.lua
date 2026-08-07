@@ -865,7 +865,9 @@ local function _on_agent_resource_mined(event)
                 end
                 -- 2. Create trees/rocks update entry (trees_rocks-updates.jsonl)
                 if Resource and Resource.create_trees_rocks_update_entry then
-                    Resource.create_trees_rocks_update_entry(fake_entity, chunk_coords.x, chunk_coords.y)
+                    Resource.create_trees_rocks_update_entry(
+                        fake_entity, chunk_coords.x, chunk_coords.y, event.action_id
+                    )
                 end
             else
                 if M.DEBUG then
