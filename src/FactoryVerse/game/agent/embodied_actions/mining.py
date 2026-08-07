@@ -234,6 +234,37 @@ class MiningAction:
         self._resource_depletion_barrier = barrier
         self._resource_depletion_prepare = prepare
 
+    def _cancel_unproven_queued_mining(self, facts: Dict[str, Any]) -> None:
+        """Best-effort cleanup after RCON queued an action we cannot await safely."""
+        cleanup: Dict[str, Any] = {"attempted": True}
+        try:
+            response = self.cancel()
+            # Returning from stop_mining means Lua finalized and cleared its
+            # mining state. Its legacy direct response reports success=False
+            # for the semantic reason "cancelled", so preserve that separately
+            # rather than treating it as a failed cleanup command.
+            cleanup.update(
+                {
+                    "succeeded": True,
+                    "reported_success": response.success,
+                    "reason": response.reason,
+                    "action_id": response.action_id,
+                }
+            )
+        except Exception as exc:
+            cleanup.update(
+                {
+                    "succeeded": False,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            logger.warning(
+                "Failed to cancel queued mining after baseline rejection",
+                exc_info=True,
+            )
+        facts["queued_action_cleanup"] = cleanup
+
     async def mine(
         self,
         resource_name: str,
@@ -311,6 +342,7 @@ class MiningAction:
                     if response_position is not None
                     else None
                 )
+                self._cancel_unproven_queued_mining(failed_facts)
                 self.last_causal_facts = failed_facts
                 raise MiningReconciliationError(
                     "Cannot prove the selected resource existed in DuckDB "

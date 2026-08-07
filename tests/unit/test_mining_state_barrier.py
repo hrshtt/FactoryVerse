@@ -73,6 +73,38 @@ class _NearestRcon(_Rcon):
         }
 
 
+class _CleanupRcon(_NearestRcon):
+    def __init__(self, order, *, fail_stop=False):
+        self.order = order
+        self.fail_stop = fail_stop
+        self.active = False
+
+    def execute_and_parse_json(self, command):
+        action = command[0]
+        self.order.append(("rcon", action))
+        if action == "mine_resource":
+            self.active = True
+            return super().execute_and_parse_json(command)
+        assert action == "stop_mining"
+        if self.fail_stop:
+            raise RuntimeError("stop transport failed")
+        self.active = False
+        return {
+            "success": False,
+            "reason": "cancelled",
+            "action_id": "mine-1",
+        }
+
+
+class _NeverAwaitListener:
+    def __init__(self):
+        self.awaited = False
+
+    async def await_action(self, _response, timeout=None):
+        self.awaited = True
+        raise AssertionError("baseline failure must not await completion")
+
+
 @pytest.mark.asyncio
 async def test_mine_waits_for_resource_depletion_barrier():
     mining = MiningAction(_Rcon(), _Listener())
@@ -232,6 +264,64 @@ async def test_positionless_mine_captures_exact_baseline_before_awaiting_complet
     ]
     assert mining.last_causal_facts["destroy_event_tick"] == 42
     assert mining.last_causal_facts["snapshot_destroy_event_tick"] == 42
+
+
+@pytest.mark.asyncio
+async def test_unproven_positionless_mine_cancels_queue_before_raising():
+    order = []
+    rcon = _CleanupRcon(order)
+    listener = _NeverAwaitListener()
+    mining = MiningAction(rcon, listener)
+
+    def prepare(name, x, y):
+        order.append(("prepare", name, x, y))
+        return {"resource_rows_at_start": 0, "entity_sequence_floor": 7}
+
+    async def barrier(*_args, **_kwargs):
+        raise AssertionError("unproven action must not enter the barrier")
+
+    mining.set_resource_depletion_barrier(barrier, prepare)
+    with pytest.raises(MiningReconciliationError) as raised:
+        await mining.mine("tree", position=None)
+
+    assert order == [
+        ("rcon", "mine_resource"),
+        ("prepare", "tree-01", 3.25, -7.5),
+        ("rcon", "stop_mining"),
+    ]
+    assert listener.awaited is False
+    assert rcon.active is False
+    assert raised.value.facts["queued_action_cleanup"] == {
+        "attempted": True,
+        "succeeded": True,
+        "reported_success": False,
+        "reason": "cancelled",
+        "action_id": "mine-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_error_never_masks_baseline_reconciliation_error():
+    order = []
+    rcon = _CleanupRcon(order, fail_stop=True)
+    listener = _NeverAwaitListener()
+    mining = MiningAction(rcon, listener)
+
+    def prepare(_name, _x, _y):
+        return {"resource_rows_at_start": 0, "entity_sequence_floor": 7}
+
+    async def barrier(*_args, **_kwargs):
+        raise AssertionError("unproven action must not enter the barrier")
+
+    mining.set_resource_depletion_barrier(barrier, prepare)
+    with pytest.raises(MiningReconciliationError) as raised:
+        await mining.mine("tree", position=None)
+
+    assert listener.awaited is False
+    assert raised.value.facts["queued_action_cleanup"]["succeeded"] is False
+    assert raised.value.facts["queued_action_cleanup"]["error"] == (
+        "stop transport failed"
+    )
 
 
 class _DelayedRemovalSync:
