@@ -96,10 +96,14 @@ function M.get_item_drop_connections(source_name, source_position, target_name, 
             -- Check if candidate footprint overlaps with source entity footprint
             local candidate_bbox = geometry.bbox_from_center(candidate_pos, target_half_w, target_half_h)
             if not geometry.bbox_overlap(candidate_bbox, source_bbox) then
-                -- Calculate perpendicular offset for alignment quality
-                -- Use drop_pos so offset=0 means perfect alignment with item output
+                -- Rank by target/source footprint alignment, not by the exact
+                -- drop point. Mining-drill drop points can be deliberately
+                -- offset half a tile to one side (for example the burner
+                -- mining drill). Using that point as the alignment origin
+                -- makes the two placements of an even-width receiver tie,
+                -- even though only one is aligned with the source footprint.
                 local perp_offset = geometry.perpendicular_offset(
-                    drop_pos,
+                    source_info.position,
                     source_direction,
                     candidate_pos
                 )

@@ -793,6 +793,76 @@ class TestItemDropConnections:
             offsets = [p["perpendicular_offset"] for p in result["positions"]]
             assert offsets == sorted(offsets), "Positions not sorted by alignment"
 
+    @pytest.mark.parametrize(
+        ("direction", "perpendicular_axis"),
+        [
+            pytest.param(0, "x", id="north"),
+            pytest.param(4, "y", id="east"),
+            pytest.param(8, "x", id="south"),
+            pytest.param(12, "y", id="west"),
+        ],
+    )
+    def test_burner_drill_to_furnace_prefers_footprint_alignment(
+        self,
+        rcon: RCONClient,
+        placement_hints,
+        test_area,
+        direction,
+        perpendicular_axis,
+    ):
+        """The compact 2x2 drill→2x2 furnace solution must be index zero.
+
+        A burner drill's engine drop point is offset half a tile sideways.
+        Both furnace footprints that cover the drop tile are valid receivers,
+        but only one shares the drill's perpendicular centerline. The public
+        contract says lower ``perpendicular_offset`` is better and callers use
+        ``positions[0]``, so the centerline-aligned furnace must sort first.
+        """
+        drill_x = test_area["x"] + 10.5  # integer center for a 2x2 entity
+        drill_y = test_area["y"] + 10.5
+
+        setup_cmd = f"""
+        /sc local surface = game.surfaces[1]
+        for x = {drill_x - 1}, {drill_x + 1} do
+            for y = {drill_y - 1}, {drill_y + 1} do
+                surface.create_entity{{
+                    name = "iron-ore",
+                    position = {{x = x, y = y}},
+                    amount = 1000
+                }}
+            end
+        end
+        local drill = surface.create_entity{{
+            name = "burner-mining-drill",
+            position = {{x = {drill_x}, y = {drill_y}}},
+            direction = {direction},
+            force = "player"
+        }}
+        rcon.print(drill and "placed" or "failed")
+        """
+        assert "placed" in rcon.send_command(setup_cmd)
+
+        result = placement_hints.call(
+            "get_item_drop_connections",
+            "burner-mining-drill",
+            {"x": drill_x, "y": drill_y},
+            "stone-furnace",
+            {"max_results": 10},
+        )
+
+        positions = result["positions"]
+        assert result["count"] == 2
+        assert len(positions) == 2
+
+        source_axis = drill_x if perpendicular_axis == "x" else drill_y
+        drop_axis = result["drop_position"][perpendicular_axis]
+        assert abs(drop_axis - source_axis) == pytest.approx(0.5)
+
+        offsets = [position["perpendicular_offset"] for position in positions]
+        assert offsets == pytest.approx([0.0, 1.0])
+        assert positions[0]["position"][perpendicular_axis] == pytest.approx(source_axis)
+        assert positions[1]["position"][perpendicular_axis] != pytest.approx(source_axis)
+
     def test_item_drop_entity_not_found(self, placement_hints, test_area):
         """Test error when source entity doesn't exist."""
         result = placement_hints.call(
