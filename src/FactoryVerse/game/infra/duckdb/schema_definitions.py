@@ -493,29 +493,28 @@ INSERTER = TableDefinition(
     name="inserter",
     purpose="Inserter-specific data",
     primary_key=["entity_name", "position_x", "position_y"],
-    foreign_keys=[
-        ("entity_name", "map_entity", "entity_name"),
-        ("position_x", "map_entity", "position_x"),
-        ("position_y", "map_entity", "position_y"),
-    ],
+    # This is a transactionally maintained projection of map_entity. DuckDB's
+    # FK index does not observe child deletion before parent deletion inside
+    # one transaction, which makes atomic live removal impossible. Integrity
+    # is therefore owned by the single apply_ops reducer, not an FK constraint.
     columns=[
         ColumnDefinition(
             name="entity_name",
             type="VARCHAR",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity name matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_x",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity X matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_y",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity Y matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="direction",
@@ -554,29 +553,24 @@ TRANSPORT_BELT = TableDefinition(
     name="transport_belt",
     purpose="Transport belt data",
     primary_key=["entity_name", "position_x", "position_y"],
-    foreign_keys=[
-        ("entity_name", "map_entity", "entity_name"),
-        ("position_x", "map_entity", "position_x"),
-        ("position_y", "map_entity", "position_y"),
-    ],
     columns=[
         ColumnDefinition(
             name="entity_name",
             type="VARCHAR",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity name matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_x",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity X matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_y",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity Y matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="direction",
@@ -597,29 +591,24 @@ MINING_DRILL = TableDefinition(
     name="mining_drill",
     purpose="Mining drill data",
     primary_key=["entity_name", "position_x", "position_y"],
-    foreign_keys=[
-        ("entity_name", "map_entity", "entity_name"),
-        ("position_x", "map_entity", "position_x"),
-        ("position_y", "map_entity", "position_y"),
-    ],
     columns=[
         ColumnDefinition(
             name="entity_name",
             type="VARCHAR",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity name matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_x",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity X matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_y",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity Y matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="direction",
@@ -640,29 +629,24 @@ ASSEMBLER = TableDefinition(
     name="assembler",
     purpose="Assembling machine data",
     primary_key=["entity_name", "position_x", "position_y"],
-    foreign_keys=[
-        ("entity_name", "map_entity", "entity_name"),
-        ("position_x", "map_entity", "position_x"),
-        ("position_y", "map_entity", "position_y"),
-    ],
     columns=[
         ColumnDefinition(
             name="entity_name",
             type="VARCHAR",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity name matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_x",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity X matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="position_y",
             type="DOUBLE",
             nullable=False,
-            description="FK to map_entity",
+            description="Entity Y matching map_entity's composite key",
         ),
         ColumnDefinition(
             name="recipe",

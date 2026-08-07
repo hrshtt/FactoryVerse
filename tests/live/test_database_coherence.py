@@ -388,6 +388,18 @@ async def test_live_entity_updates_all_derived_tables(
             component_table: len(component_rows),
         }
         assert all(count > 0 for count in observed.values()), observed
+        serialized = json.loads(map_rows[0]["raw_data"])
+        assert len(footprint_rows) == len(serialized["footprint_tiles"])
+        component = component_rows[0]
+        if component_table == "inserter":
+            assert component["pickup_position_x"] is not None
+            assert component["drop_position_x"] is not None
+        elif component_table == "transport_belt":
+            assert component["belt_speed"] > 0
+        elif component_table == "mining_drill":
+            assert component["mining_target"] is not None
+        elif component_table == "assembler":
+            assert component["crafting_speed"] > 0
     finally:
         _destroy_at(tier3, entity_name, position)
 

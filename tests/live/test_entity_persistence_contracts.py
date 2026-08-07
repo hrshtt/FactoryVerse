@@ -416,13 +416,6 @@ async def test_fueled_drill_persists_in_engine_and_database_while_actor_is_idle(
         _destroy_cell(tier3, rig)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "RED-FINDING: live map_entity upserts do not currently populate the "
-        "mining_drill component table"
-    ),
-)
 async def test_live_created_drill_reaches_mining_drill_component_table(
     persistence_game,
 ):
