@@ -233,6 +233,10 @@ plan.validate(placement_hints.validator)""",
             fields={
                 "position": "MapPosition where target can be placed",
                 "direction": "Required direction for target (or None)",
+                "approach_position": (
+                    "Optional standable MapPosition within build reach; always set "
+                    "for offshore-pump sites"
+                ),
                 "perpendicular_offset": "Alignment metric (0.0 = perfect alignment)",
             },
             examples=[

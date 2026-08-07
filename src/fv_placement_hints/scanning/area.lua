@@ -286,7 +286,7 @@ end
 --- @param entity_name string Entity prototype name
 --- @param area table {left_top: {x,y}, right_bottom: {x,y}}
 --- @param options table|nil {max_results: number}
---- @return table Array of {position, direction}
+--- @return table Array of {position, direction, approach_position}
 function M.get_water_placements(entity_name, area, options)
     options = options or {}
     local max_results = options.max_results or nil
@@ -303,6 +303,12 @@ function M.get_water_placements(entity_name, area, options)
 
     local positions = {}
     local count = 0
+    local approach_offsets = {
+        {x = 0, y = -4}, {x = 4, y = 0},
+        {x = -4, y = 0}, {x = 0, y = 4},
+        {x = 3, y = -3}, {x = -3, y = -3},
+        {x = 3, y = 3}, {x = -3, y = 3},
+    }
 
     -- Iterate over all tiles in area
     for pos in geometry.iter_area_tiles(area) do
@@ -310,25 +316,57 @@ function M.get_water_placements(entity_name, area, options)
             break
         end
 
+        -- Return the entity center Factorio will persist after placement,
+        -- rather than the integer tile coordinate used by this area scan.
+        local placement_position = geometry.snap_to_tile_center(pos)
+
         -- Test all cardinal directions for offshore pump
         for _, direction in ipairs(geometry.CARDINAL_DIRECTIONS) do
             local params = {
                 name = entity_name,
-                position = pos,
+                position = placement_position,
                 direction = direction,
                 force = "player",
                 build_check_type = build_check,
             }
 
             if surface.can_place_entity(params) then
-                count = count + 1
-                table.insert(positions, {
-                    position = {x = pos.x, y = pos.y},
-                    direction = direction,
-                    direction_name = geometry.DIRECTION_NAMES[direction],
-                    valid = true,
-                })
-                break  -- Only add once per position (first valid direction)
+                -- The pump anchor can overlap water and is not a walking target.
+                -- Find a standable character position close enough to build from,
+                -- preferring points outside the pump footprint on every side.
+                local approach_position = nil
+                for _, offset in ipairs(approach_offsets) do
+                    local search_start = {
+                        x = placement_position.x + offset.x,
+                        y = placement_position.y + offset.y,
+                    }
+                    approach_position = surface.find_non_colliding_position(
+                        "character", search_start, 2, 0.5
+                    )
+                    if approach_position then
+                        break
+                    end
+                end
+
+                -- Only expose sites that the embodied actor can sensibly
+                -- approach; a valid-but-inaccessible anchor is not actionable.
+                if approach_position then
+                    count = count + 1
+                    table.insert(positions, {
+                        position = {
+                            x = placement_position.x,
+                            y = placement_position.y,
+                        },
+                        direction = direction,
+                        direction_name = geometry.DIRECTION_NAMES[direction],
+                        approach_position = {
+                            x = approach_position.x,
+                            y = approach_position.y,
+                        },
+                        valid = true,
+                    })
+                    break  -- Only add once per position (first valid direction)
+                end
             end
         end
     end

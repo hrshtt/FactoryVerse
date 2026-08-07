@@ -242,6 +242,9 @@ function M.dump_status_to_disk(charted_chunks)
     local content = table.concat(jsonl_lines, "\n") .. "\n"
 
     -- Full snapshot: overwrite (append = false), never append.
+    -- Factorio's helpers.write_file is synchronous but returns nil even on a
+    -- successful write, so publication order (write, then notify) is the only
+    -- available contract; the consumer provides bounded visibility recovery.
     helpers.write_file(file_path, content, false)
 
     -- Track file and cleanup old ones (rolling buffer of MAX_STATUS_DUMP_FILES).

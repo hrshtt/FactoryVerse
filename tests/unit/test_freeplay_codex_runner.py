@@ -13,6 +13,8 @@ from FactoryVerse.evals.freeplay.codex_runner import (
     CodexFreeplayRunner,
     CodexInvocation,
     CodexRunnerError,
+    FOLLOWUP_PROMPT,
+    RUN_BRIEF,
     _validate_action,
     codex_harness_configuration,
     supervisor_owned_codex_configuration,
@@ -219,7 +221,7 @@ class _FakeStore:
             "documentation": {
                 "api_reference": str(api),
                 "schema_reference": str(schema),
-            }
+            },
         }
         self._checkpoints = []
 
@@ -396,17 +398,60 @@ def test_codex_runner_keeps_lifecycle_in_supervisor(monkeypatch, tmp_path):
     assert "Producing 50 iron plates" in mechanics
     assert "Producing 10 copper plates" in mechanics
     assert "research_finished" in mechanics
+    assert "an unlock is an option, not an" in mechanics
+    assert "water-tile search hints only" in mechanics
+    assert "Never pass a\nwater-tile position to `walking.walk_to()`" in mechanics
+    assert "Walk to `site.approach_position`" in mechanics
+    assert "Never walk directly to `site.position`" in mechanics
     assert (client.workspace / "references" / "INDEX.md").exists()
-    campaign_start = json.loads(
-        (client.workspace / "CAMPAIGN_START.json").read_text()
-    )
+    campaign_start = json.loads((client.workspace / "CAMPAIGN_START.json").read_text())
     assert campaign_start["captured_game_tick"] == 10
     assert "Immutable campaign-start snapshot" in campaign_start["warning"]
+    assert "unwalkable search hint" in campaign_start["warning"]
     bug_ledger = client.workspace / "BUGS.md"
     assert "FactoryVerse Bug Ledger" in bug_ledger.read_text()
     bug_ledger.write_text("agent-owned evidence\n")
     runner.prepare_workspace()
     assert bug_ledger.read_text() == "agent-owned evidence\n"
+
+
+def test_offshore_pump_debug_workspace_is_bounded_and_no_guessing(
+    monkeypatch, tmp_path
+):
+    api = tmp_path / "api.md"
+    schema = tmp_path / "schema.md"
+    api.write_text("api")
+    schema.write_text("schema")
+    campaign_root = tmp_path / "campaign"
+    store = _FakeStore(campaign_root, api, schema)
+    supervisor = _FakeSupervisor(store)
+    client = _FakeClient(campaign_root / "harness-workspace", campaign_root / "control")
+    monkeypatch.setattr(
+        "FactoryVerse.evals.freeplay.codex_runner.ActorRuntimeSession", _FakeActor
+    )
+    runner = CodexFreeplayRunner(
+        supervisor,
+        client,
+        max_turns=20,
+        checkpoint_every=5,
+        execution_timeout=5,
+        maximum_execution_timeout=10,
+        offshore_pump_debug=True,
+    )
+
+    runner.prepare_workspace()
+
+    mission = (client.workspace / "MISSION.md").read_text()
+    assert "Offshore Pump and Water Affordance Debug Mission" in mission
+    assert "search hint—not a walking target" in mission
+    assert "find_offshore_pump_sites" in mission
+    assert "approach_position" in mission
+    assert "never the water hint" in mission
+    assert "persisted entity position matches" in mission
+    assert "attach at least one supplied pipe" in mission
+    assert "Do not hand-compute the connection" in mission
+    assert "offshore-pump-report.md" in mission
+    assert "factory progression run" in mission
 
 
 def test_factory_debug_workspace_seeds_durable_scaling_artifacts(monkeypatch, tmp_path):
@@ -441,10 +486,34 @@ def test_factory_debug_workspace_seeds_durable_scaling_artifacts(monkeypatch, tm
     assert "single highest-leverage bottleneck" not in mission
     assert "Start with reconnaissance" not in mission
     assert "smallest coherent expansion" not in mission
+    assert "self-fueling loops" in mission
+    assert "seed the loop with a small amount of" in mission
+    assert "not yet a useful passive fuel supply" in mission
+    assert "an escape path" in mission
+    assert "Maintain forward pressure" in mission
+    assert "construction hand-crafting" in mission
+    assert "portfolio of simultaneous productive flows" in mission
+    assert "autonomy horizon" in mission
+    assert "factory balance sheet" in mission
+    assert "Replicate working cells" in mission
+    assert "Industrial stages and transitions" in mission
+    assert "research activity is not a substitute for economic growth" in mission
+    assert "choose the next bottleneck" not in mission
+    assert "keep research active" not in mission
     assert "Only use `report_complete` after a rocket" in mission
-    assert (client.workspace / "FACTORY_PLAN.md").exists()
+    assert "Do not abandon a sound" in RUN_BRIEF
+    assert "technology unlocks as options, not automatic pivots" in FOLLOWUP_PROMPT
+    plan = (client.workspace / "FACTORY_PLAN.md").read_text()
+    assert "Current industrial stage and readiness" in plan
+    assert "Productive flows to preserve" in plan
+    assert "Next capacity investment" in plan
     progress = client.workspace / "PROGRESS.md"
-    assert "Update this durable log" in progress.read_text()
+    progress_text = progress.read_text()
+    assert "Update this durable log" in progress_text
+    assert "Factory balance sheet" in progress_text
+    assert "Fuel flow and autonomy horizon" in progress_text
+    assert "Construction reserves and replenishment" in progress_text
+    assert "Latest verified capacity delta" in progress_text
     progress.write_text("agent progress\n")
     runner.prepare_workspace()
     assert progress.read_text() == "agent progress\n"

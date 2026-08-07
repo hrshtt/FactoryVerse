@@ -38,6 +38,9 @@ factoryverse-agent = "FactoryVerse.cli:cmd_agent"
 # UI entry point
 fv-ui = "FactoryVerse.infra.ui.app:run_app"
 
+[project.entry-points."hermes_agent.plugins"]
+factoryverse = "FactoryVerse.integrations.hermes.plugin"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/FactoryVerse"]
 

@@ -130,6 +130,10 @@ local function _serialize_base_properties(entity, out)
         if r then
             out.recipe = r.name
         end
+        local ok_speed, crafting_speed = pcall(function() return entity.crafting_speed end)
+        if ok_speed and crafting_speed ~= nil then
+            out.crafting_speed = crafting_speed
+        end
     end
 
     -- Bounding box
@@ -152,6 +156,25 @@ local function _serialize_mining_drill_data(entity, out)
     if mining_area then
         out.mining_area = mining_area
     end
+    local mining_target = entity.mining_target
+    if mining_target and mining_target.valid then
+        out.mining_target = mining_target.name
+    elseif mining_area and entity.surface then
+        -- on_built_entity can fire before Factorio assigns mining_target.
+        -- Preserve a semantic component row by recording the first currently
+        -- minable resource prototype in the engine-provided mining area; a
+        -- later full configuration upsert replaces it with the active target.
+        local resources = entity.surface.find_entities_filtered{
+            area = mining_area,
+            type = "resource"
+        }
+        for _, resource in pairs(resources) do
+            if resource and resource.valid then
+                out.mining_target = resource.name
+                break
+            end
+        end
+    end
 end
 
 --- Serialize belt-specific data
@@ -161,6 +184,10 @@ local function _serialize_belt_data(entity, out)
     -- Belt item lines
     local item_lines = {}
     local max_index = 0
+    local ok_speed, belt_speed = pcall(function() return entity.prototype.belt_speed end)
+    if ok_speed and belt_speed ~= nil then
+        out.belt_speed = belt_speed
+    end
     local v = (entity.get_max_transport_line_index and entity.get_max_transport_line_index()) or 0
     max_index = (type(v) == "number" and v > 0) and v or 0
 
@@ -501,4 +528,3 @@ function M.serialize_ghost(ghost, builder_info)
 end
 
 return M
-

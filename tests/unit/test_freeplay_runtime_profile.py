@@ -7,6 +7,7 @@ from FactoryVerse.environment.tiers.tier4_runtime import Tier4Runtime
 from FactoryVerse.evals.freeplay.runtime_host import execution_deadline
 from FactoryVerse.evals.freeplay.supervisor import (
     FREEPLAY_STARTING_INVENTORY,
+    OFFSHORE_PUMP_DEBUG_INVENTORY,
     _freeplay_runtime_config,
 )
 
@@ -101,3 +102,10 @@ def test_freeplay_runtime_uses_manifest_pinned_debug_inventory(tmp_path):
 
     assert config.initial_inventory == inventory
     assert config.initial_inventory is not inventory
+
+
+def test_offshore_pump_debug_inventory_is_finite_and_focused():
+    assert OFFSHORE_PUMP_DEBUG_INVENTORY == {
+        "offshore-pump": 1,
+        "pipe": 4,
+    }

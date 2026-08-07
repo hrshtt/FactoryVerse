@@ -301,33 +301,92 @@ class SyncService:
         """
         queue_size = self._pending_operations.qsize()
         logger.debug(f"flush_pending() called, queue size: {queue_size}")
-        operations_flushed = 0
-
-        with self._db_lock:
-            while not self._pending_operations.empty():
-                try:
-                    payload = self._pending_operations.get_nowait()
-                    self._apply_operation(payload)
-                    operations_flushed += 1
-                except queue.Empty:
-                    break
-                except Exception as e:
-                    logger.error(f"Error flushing operation: {e}", exc_info=True)
-                    # Continue processing remaining operations
-
-        if operations_flushed > 0:
-            # CRITICAL: Explicitly commit to ensure changes are persisted
-            # DuckDB auto-commit may not be reliable with multiple operations
+        pending = []
+        while True:
             try:
-                self._db.commit()
-                # Force DuckDB to start a new transaction for next read
-                self._db.begin()
-            except Exception as e:
-                logger.error(f"Error committing flush: {e}", exc_info=True)
+                pending.append(self._pending_operations.get_nowait())
+            except queue.Empty:
+                break
 
-            logger.debug(f"Flushed {operations_flushed} pending operations")
+        # entity_status dumps are complete latest-wins snapshots. At game
+        # speed 8 they arrive faster than a read-triggered flush and the Lua
+        # rolling window can delete older referenced files before Python gets
+        # to them. Applying only the newest notification is equivalent state,
+        # prevents stale replacement, and keeps recovery bounded to one file.
+        latest_status = None
+        operations = []
+        def _payload_tick(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return -1
 
-        return operations_flushed
+        for payload in pending:
+            if (
+                payload.get("event_type") == "file_io"
+                and payload.get("file_type") == "entity_status"
+            ):
+                if latest_status is None or _payload_tick(
+                    payload.get("tick")
+                ) >= _payload_tick(latest_status.get("tick")):
+                    latest_status = payload
+            else:
+                operations.append(payload)
+        if latest_status is not None:
+            operations.append(latest_status)
+
+        rebuild_required = False
+        with self._db_lock:
+            for payload in operations:
+                try:
+                    # One UDP/logical operation is the atomic unit. In
+                    # particular, a map_entity mutation and all of its derived
+                    # rows must become visible together or not at all.
+                    self._db.execute("BEGIN TRANSACTION")
+                    self._apply_operation(payload)
+                    self._db.execute("COMMIT")
+                except Exception as e:
+                    try:
+                        self._db.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    logger.error(f"Error flushing operation: {e}", exc_info=True)
+                    if (
+                        payload.get("event_type") == "file_io"
+                        and payload.get("file_type") == "entity_status"
+                    ):
+                        retries = int(payload.get("_sync_retry_count", 0))
+                        if retries < 3:
+                            retry = dict(payload)
+                            retry["_sync_retry_count"] = retries + 1
+                            self._pending_operations.put_nowait(retry)
+                            logger.warning(
+                                "Deferred entity_status artifact recovery "
+                                "(attempt %d/3): %s",
+                                retries + 1,
+                                payload.get("file_path"),
+                            )
+                    elif payload.get("event_type") in (
+                        "entity_operation",
+                        "ghost_operation",
+                    ):
+                        # The append-only JSONL log remains authoritative. A
+                        # reducer failure must not silently lose a mutation;
+                        # request one rebuild after releasing the DB lock.
+                        rebuild_required = True
+
+        if rebuild_required:
+            self._needs_rebuild = True
+            self._on_rebuild()
+
+        if pending:
+            logger.debug(
+                "Flushed %d pending notifications as %d atomic operations",
+                len(pending),
+                len(operations),
+            )
+
+        return len(pending)
 
     def _apply_operation(self, payload: Dict[str, Any]) -> None:
         """Apply a single buffered operation to database.
@@ -569,7 +628,7 @@ class SyncService:
         if file_type == "power_networks":
             self._apply_power_networks_file(path)
         elif file_type == "entity_status":
-            self._apply_entity_status_file(path)
+            self._apply_entity_status_file(path, notified_tick=payload.get("tick"))
         elif file_type == "trees_rocks":
             self._apply_trees_rocks_file(path, payload.get("chunk") or {})
         elif file_type == "agent_production_statistics":
@@ -652,15 +711,47 @@ class SyncService:
         except Exception as e:
             logger.error(f"Failed to apply live power_networks sample: {e}", exc_info=True)
 
-    def _apply_entity_status_file(self, path: Path) -> None:
+    @staticmethod
+    def _status_tick(path: Path) -> int:
+        try:
+            return int(path.stem.rsplit("-", 1)[1])
+        except (IndexError, ValueError):
+            return -1
+
+    def _apply_entity_status_file(
+        self, path: Path, notified_tick: Optional[int] = None
+    ) -> None:
         """Read the full status dump at the notified path and apply it
-        (FULL REPLACE — see analytics_ops.apply_status_dump)."""
+        (FULL REPLACE — see analytics_ops.apply_status_dump).
+
+        If Lua's bounded rolling window removed the exact file while the
+        notification waited in Python's flush-before-read queue, recover only
+        to a dump at least as new as the notification. An older dump would
+        regress a latest-wins table and is therefore rejected.
+        """
         if not path.exists():
-            logger.warning(f"entity_status file not found for live sync: {path}")
-            return
+            candidates = list(path.parent.glob("status-*.jsonl"))
+            newest = max(candidates, key=self._status_tick) if candidates else None
+            minimum_tick = (
+                int(notified_tick)
+                if notified_tick is not None
+                else self._status_tick(path)
+            )
+            if newest is None or self._status_tick(newest) < minimum_tick:
+                raise FileNotFoundError(
+                    "entity_status artifact unavailable after bounded recovery: "
+                    f"notified={path}, notified_tick={minimum_tick}, "
+                    f"newest={newest}"
+                )
+            logger.info(
+                "Recovered missing entity_status artifact %s with newer dump %s",
+                path,
+                newest,
+            )
+            path = newest
         try:
             lines = []
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 for raw in f:
                     raw = raw.strip()
                     if raw:
@@ -668,8 +759,10 @@ class SyncService:
             if lines:
                 count = analytics_ops.apply_status_dump(self._db, lines)
                 logger.debug(f"Applied live entity_status dump: {count} rows")
-        except Exception as e:
-            logger.error(f"Failed to apply live entity_status dump: {e}", exc_info=True)
+        except Exception:
+            # Let flush_pending roll back this logical operation. A malformed
+            # or partially visible full dump must never wipe the prior table.
+            raise
 
     @staticmethod
     def _read_last_nonblank_line(path: Path) -> Optional[str]:

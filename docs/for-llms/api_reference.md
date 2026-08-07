@@ -1534,15 +1534,16 @@ furnaces = remote_view.get_entities(f'''
 find_water(near: Optional['MapPosition'] = ..., radius: Optional[float] = ..., limit: int = ...) -> List[Dict[str, Any]]
 ```
 
-Find water tiles on the map (offshore-pump sites). Terrain affordance — never probe placements to discover terrain.
+Find water-tile centers on the map as search hints. Results are not walkable destinations and are not validated offshore-pump anchors. Terrain affordance — never probe placements to discover terrain.
 
 **Decision Points:**
 - Empty list + stale chunk_snapshot_meta tick means OLD DATA, not 'no water'
-- Offshore pumps need a shoreline: pick a water tile adjacent to land
+- Never pass a returned water-tile position to walking.walk_to()
+- Resolve placement_hints.find_offshore_pump_sites() before travelling or placing
 
 **Examples:**
 
-*Siting an offshore pump / boiler chain:*
+*Finding a water cluster before resolving a pump anchor:*
 
 ```python
 # Nearest water to my position
@@ -1557,7 +1558,7 @@ else:
     print(f"No water in range; snapshot tick {freshness[0]['t']}")
 ```
 
-→ List of {'x','y','distance'} sorted by distance, or []
+→ List of water-tile search hints sorted by distance, or []; do not walk to or place at a returned tile
 
 
 
@@ -2128,11 +2129,14 @@ else:
 find_offshore_pump_sites(near: MapPosition, radius: int = ..., max_results: int = ...) -> List[ConnectionPosition]
 ```
 
-Find live engine-validated offshore-pump anchors. Each result contains both the placement position and required direction; these are not merely nearby water tiles.
+Find live engine-validated offshore-pump anchors. Each result contains the placement position, required direction, and an engine-derived standable approach position within build reach; these are not merely nearby water tiles. Results are ordered nearest-anchor first.
 
 **Decision Points:**
 - remote_view.find_water() returns water tiles, not pump anchors
-- Search around a known water tile and use the returned direction unchanged
+- Water-tile hints are not walking targets; resolve sites before travelling
+- Walk to site.approach_position, never site.position
+- Place at site.position and use site.direction unchanged
+- If walking cannot reach one approach position, try the next returned site
 - Increase radius or choose another water cluster only when the result is empty
 
 **Examples:**
@@ -2149,11 +2153,14 @@ sites = placement_hints.find_offshore_pump_sites(
 if not sites:
     raise RuntimeError("No validated offshore-pump site in the searched area")
 site = sites[0]
+# site.position can overlap water. Walk only to the supplied standable land
+# position, then place at the anchor with its validated direction unchanged.
+await walking.walk_to(site.approach_position, strict_goal=False)
 pump = inventory.get_item("offshore-pump")
-await pump.place(site.position, site.direction)
+pump.place(site.position, site.direction)
 ```
 
-→ Returns validated position-and-direction candidates
+→ Returns nearest-first validated anchor, direction, and standable-approach candidates
 
 
 
@@ -3131,6 +3138,7 @@ A valid position for placing a target entity to connect to a source. Returned by
 **Fields:**
 - `position`: MapPosition where target can be placed
 - `direction`: Required direction for target (or None)
+- `approach_position`: Optional standable MapPosition within build reach; always set for offshore-pump sites
 - `perpendicular_offset`: Alignment metric (0.0 = perfect alignment)
 
 **Examples:**
@@ -3160,4 +3168,4 @@ if positions:
 
 ---
 
-*Generated from registry on 2026-08-07 04:17:22*
+*Generated from registry on 2026-08-07 06:22:04*

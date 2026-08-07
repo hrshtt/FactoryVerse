@@ -157,6 +157,165 @@ def test_entity_electric_network_id_and_force_absent_stay_null(db):
     assert row == (None, None)
 
 
+@pytest.mark.parametrize(
+    ("entity_type", "name", "extra", "table"),
+    [
+        (
+            "inserter",
+            "inserter",
+            {
+                "inserter": {
+                    "pickup_position": {"x": 10.5, "y": 19.5},
+                    "drop_position": {"x": 10.5, "y": 21.5},
+                }
+            },
+            "inserter",
+        ),
+        (
+            "transport-belt",
+            "transport-belt",
+            {"belt_speed": 0.03125},
+            "transport_belt",
+        ),
+        (
+            "mining-drill",
+            "burner-mining-drill",
+            {"mining_target": "stone"},
+            "mining_drill",
+        ),
+        (
+            "assembling-machine",
+            "assembling-machine-1",
+            {"crafting_speed": 0.5},
+            "assembler",
+        ),
+    ],
+)
+def test_upsert_materializes_footprint_and_component(
+    db, entity_type, name, extra, table
+):
+    payload = _entity(
+        name=name,
+        extra={
+            "type": entity_type,
+            "tile_width": 1,
+            "tile_height": 1,
+            "footprint_tiles": [{"x": 10, "y": 20}],
+            **extra,
+        },
+    )
+    apply_ops.upsert_entity(db, payload, 0, 0)
+
+    assert db.execute(
+        "SELECT entity_name FROM footprint_tiles WHERE tile_x=10 AND tile_y=20"
+    ).fetchone() == (name,)
+    if table == "transport_belt":
+        assert db.execute("SELECT belt_speed FROM transport_belt").fetchone() == (
+            0.03125,
+        )
+    if table == "mining_drill":
+        assert db.execute("SELECT mining_target FROM mining_drill").fetchone() == (
+            "stone",
+        )
+    if table == "assembler":
+        assert db.execute("SELECT crafting_speed FROM assembler").fetchone() == (
+            0.5,
+        )
+    assert db.execute(
+        f"SELECT entity_name FROM {table} WHERE entity_name=? "
+        "AND position_x=10.5 AND position_y=20.5",
+        [name],
+    ).fetchone() == (name,)
+
+
+def test_upsert_replaces_stale_footprint_and_component_values(db):
+    first = _entity(
+        name="burner-mining-drill",
+        extra={
+            "type": "mining-drill",
+            "footprint_tiles": [{"x": 9, "y": 20}, {"x": 10, "y": 20}],
+            "mining_target": "stone",
+        },
+    )
+    second = _entity(
+        name="burner-mining-drill",
+        direction=4,
+        extra={
+            "type": "mining-drill",
+            "footprint_tiles": [{"x": 10, "y": 20}, {"x": 10, "y": 21}],
+            "mining_target": "iron-ore",
+        },
+    )
+    apply_ops.upsert_entity(db, first, 0, 0)
+    apply_ops.upsert_entity(db, second, 0, 0)
+
+    footprints = db.execute(
+        "SELECT tile_x, tile_y FROM footprint_tiles "
+        "WHERE entity_name='burner-mining-drill' ORDER BY tile_x, tile_y"
+    ).fetchall()
+    assert footprints == [(10, 20), (10, 21)]
+    assert db.execute(
+        "SELECT direction, mining_target FROM mining_drill"
+    ).fetchone() == ("4", "iron-ore")
+
+
+def test_remove_deletes_base_footprint_and_component(db):
+    payload = _entity(
+        name="transport-belt",
+        extra={
+            "type": "transport-belt",
+            "footprint_tiles": [{"x": 10, "y": 20}],
+        },
+    )
+    apply_ops.upsert_entity(db, payload, 0, 0)
+    apply_ops.remove_entity(db, "transport-belt", 10.5, 20.5)
+
+    assert db.execute("SELECT count(*) FROM map_entity").fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM footprint_tiles").fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM transport_belt").fetchone() == (0,)
+
+
+def test_remove_base_and_derivatives_succeeds_in_one_transaction(db):
+    payload = _entity(
+        name="transport-belt",
+        extra={
+            "type": "transport-belt",
+            "footprint_tiles": [{"x": 10, "y": 20}],
+        },
+    )
+    apply_ops.upsert_entity(db, payload, 0, 0)
+
+    db.execute("BEGIN TRANSACTION")
+    apply_ops.remove_entity(db, "transport-belt", 10.5, 20.5)
+    db.execute("COMMIT")
+
+    assert db.execute("SELECT count(*) FROM map_entity").fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM footprint_tiles").fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM transport_belt").fetchone() == (0,)
+
+
+def test_rotate_recomputes_asymmetric_footprint_and_component_direction(db):
+    payload = _entity(
+        name="transport-belt",
+        x=10.0,
+        extra={
+            "type": "transport-belt",
+            "tile_width": 1,
+            "tile_height": 2,
+            "footprint_tiles": [{"x": 10, "y": 19}, {"x": 10, "y": 20}],
+        },
+    )
+    apply_ops.upsert_entity(db, payload, 0, 0)
+    apply_ops.rotate_entity(db, "transport-belt", 10.0, 20.5, 4)
+
+    assert db.execute(
+        "SELECT tile_x, tile_y FROM footprint_tiles ORDER BY tile_x, tile_y"
+    ).fetchall() == [(9, 20), (10, 20)]
+    assert db.execute(
+        "SELECT direction FROM transport_belt"
+    ).fetchone() == ("4",)
+
+
 def test_ghost_fold_preserve_and_remove(db):
     apply_ops.upsert_ghost(db, _ghost(builder={"label": "g-plan", "placed_tick": 7}))
     assert _ghost_row(db) == (7, None, "g-plan")

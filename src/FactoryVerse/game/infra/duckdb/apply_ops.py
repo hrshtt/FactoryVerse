@@ -40,6 +40,7 @@ from typing import Any, Dict, Optional, Tuple
 
 ENTITY_PROVENANCE_COLS = ("agent_id", "player_id", "label", "placed_tick")
 GHOST_PROVENANCE_COLS = ("placed_tick", "placed_by", "label")
+ENTITY_COMPONENT_TABLES = ("inserter", "transport_belt", "mining_drill", "assembler")
 
 
 def _builder_block(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -60,6 +61,147 @@ def _existing_provenance(
         [name, x, y],
     ).fetchone()
     return row
+
+
+def _entity_key(entity_data: Dict[str, Any]) -> tuple[str, float, float]:
+    position = entity_data.get("position", {})
+    return (
+        entity_data.get("name", ""),
+        float(position.get("x", 0)),
+        float(position.get("y", 0)),
+    )
+
+
+def _remove_entity_derivatives(db, entity_name: str, pos_x: float, pos_y: float) -> None:
+    db.execute(
+        "DELETE FROM footprint_tiles WHERE entity_name = ? "
+        "AND entity_position_x = ? AND entity_position_y = ?",
+        [entity_name, pos_x, pos_y],
+    )
+    for table in ENTITY_COMPONENT_TABLES:
+        db.execute(
+            f"DELETE FROM {table} WHERE entity_name = ? "
+            "AND position_x = ? AND position_y = ?",
+            [entity_name, pos_x, pos_y],
+        )
+
+
+def _target_name(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        return value.get("name")
+    return value
+
+
+def _upsert_entity_derivatives(db, entity_data: Dict[str, Any]) -> None:
+    """Materialize footprint/component rows from one serialized entity.
+
+    The serializer payload is the source of truth for both bootstrap replay
+    and live UDP. Callers place this reducer in the same transaction as the
+    base map_entity mutation.
+    """
+    entity_name, pos_x, pos_y = _entity_key(entity_data)
+    direction = entity_data.get("direction")
+
+    for tile in entity_data.get("footprint_tiles") or []:
+        db.execute(
+            """
+            INSERT OR REPLACE INTO footprint_tiles
+            (tile_x, tile_y, entity_name, entity_position_x,
+             entity_position_y, is_ghost)
+            VALUES (?, ?, ?, ?, ?, FALSE)
+            """,
+            [int(tile["x"]), int(tile["y"]), entity_name, pos_x, pos_y],
+        )
+
+    entity_type = entity_data.get("type")
+    if entity_type == "inserter":
+        component = entity_data.get("inserter") or {}
+        pickup = component.get("pickup_position") or {}
+        drop = component.get("drop_position") or {}
+        db.execute(
+            """
+            INSERT OR REPLACE INTO inserter
+            (entity_name, position_x, position_y, direction,
+             pickup_position_x, pickup_position_y,
+             drop_position_x, drop_position_y)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                entity_name, pos_x, pos_y, direction,
+                pickup.get("x"), pickup.get("y"), drop.get("x"), drop.get("y"),
+            ],
+        )
+    elif entity_type in (
+        "transport-belt",
+        "underground-belt",
+        "splitter",
+        "loader",
+        "loader-1x1",
+        "linked-belt",
+    ):
+        db.execute(
+            """
+            INSERT OR REPLACE INTO transport_belt
+            (entity_name, position_x, position_y, direction, belt_speed)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [entity_name, pos_x, pos_y, direction, entity_data.get("belt_speed")],
+        )
+    elif entity_type == "mining-drill":
+        db.execute(
+            """
+            INSERT OR REPLACE INTO mining_drill
+            (entity_name, position_x, position_y, direction, mining_target)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                entity_name,
+                pos_x,
+                pos_y,
+                direction,
+                _target_name(entity_data.get("mining_target")),
+            ],
+        )
+    elif entity_type == "assembling-machine":
+        db.execute(
+            """
+            INSERT OR REPLACE INTO assembler
+            (entity_name, position_x, position_y, recipe, crafting_speed)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                entity_name,
+                pos_x,
+                pos_y,
+                entity_data.get("recipe"),
+                entity_data.get("crafting_speed"),
+            ],
+        )
+
+
+def _rotated_footprint(entity_data: Dict[str, Any], direction: Any) -> list[dict]:
+    """Recompute Lua's tile footprint for a partial rotation record."""
+    position = entity_data.get("position") or {}
+    width = int(entity_data.get("tile_width") or 1)
+    height = int(entity_data.get("tile_height") or 1)
+    try:
+        numeric_direction = int(direction)
+    except (TypeError, ValueError):
+        numeric_direction = -1
+    # Factorio cardinal enum values: north=0, east=4, south=8, west=12.
+    if numeric_direction in (4, 12) and width != height:
+        width, height = height, width
+    pos_x = float(position.get("x", 0))
+    pos_y = float(position.get("y", 0))
+    min_x = math.floor(pos_x - width / 2)
+    max_x = math.floor(pos_x + width / 2 - 0.001)
+    min_y = math.floor(pos_y - height / 2)
+    max_y = math.floor(pos_y + height / 2 - 0.001)
+    return [
+        {"x": x, "y": y}
+        for x in range(min_x, max_x + 1)
+        for y in range(min_y, max_y + 1)
+    ]
 
 
 def upsert_entity(
@@ -100,6 +242,9 @@ def upsert_entity(
         else:
             agent_id = player_id = label = placed_tick = None
 
+    # Clear the previous projection before replacing the base row so removed
+    # footprint tiles and component values cannot survive an update.
+    _remove_entity_derivatives(db, entity_name, pos_x, pos_y)
     db.execute(
         """
         INSERT OR REPLACE INTO map_entity
@@ -129,6 +274,7 @@ def upsert_entity(
             json.dumps(entity_data),
         ],
     )
+    _upsert_entity_derivatives(db, entity_data)
 
 
 def remove_entity(db, entity_name: str, pos_x: float, pos_y: float) -> int:
@@ -137,6 +283,7 @@ def remove_entity(db, entity_name: str, pos_x: float, pos_y: float) -> int:
         "SELECT COUNT(*) FROM map_entity WHERE entity_name = ? AND position_x = ? AND position_y = ?",
         [entity_name, pos_x, pos_y],
     ).fetchone()[0]
+    _remove_entity_derivatives(db, entity_name, pos_x, pos_y)
     db.execute(
         "DELETE FROM map_entity WHERE entity_name = ? AND position_x = ? AND position_y = ?",
         [entity_name, pos_x, pos_y],
@@ -146,11 +293,19 @@ def remove_entity(db, entity_name: str, pos_x: float, pos_y: float) -> int:
 
 def rotate_entity(db, entity_name: str, pos_x: float, pos_y: float,
                   direction: Any) -> None:
-    """Partial update: direction only. Provenance untouched by construction."""
-    db.execute(
-        "UPDATE map_entity SET direction = ? WHERE entity_name = ? AND position_x = ? AND position_y = ?",
-        [direction, entity_name, pos_x, pos_y],
-    )
+    """Apply a partial rotation while refreshing all direction-derived rows."""
+    row = db.execute(
+        "SELECT chunk_x, chunk_y, raw_data FROM map_entity "
+        "WHERE entity_name = ? AND position_x = ? AND position_y = ?",
+        [entity_name, pos_x, pos_y],
+    ).fetchone()
+    if row is None:
+        return
+    chunk_x, chunk_y, raw_data = row
+    entity_data = json.loads(raw_data)
+    entity_data["direction"] = direction
+    entity_data["footprint_tiles"] = _rotated_footprint(entity_data, direction)
+    upsert_entity(db, entity_data, int(chunk_x), int(chunk_y))
 
 
 def remove_resource_entity(db, name: str, pos_x: float, pos_y: float) -> int:

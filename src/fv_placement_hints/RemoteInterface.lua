@@ -115,11 +115,13 @@ Optimized to only check tiles with resources.]],
     --- @param entity_name string Entity prototype name (offshore-pump)
     --- @param area table {left_top: {x,y}, right_bottom: {x,y}}
     --- @param options table|nil {max_results: number}
-    --- @return table Array of {position, direction}
+    --- @return table Array of {position, direction, approach_position}
     get_water_placements = {
         category = "scanning",
         doc = [[Scan for valid offshore pump placements along water edges.
-Tests all cardinal directions per coastal tile.
+Tests all cardinal directions per coastal tile. Each result contains Factorio's
+canonical entity-center position plus a standable approach_position within
+build reach.
 Optimized to only check tiles near water.]],
         paramspec = {
             _param_order = {"entity_name", "area", "options"},
