@@ -819,12 +819,14 @@ def cmd_freeplay_eval_launch(args):
 
 
 def cmd_freeplay_eval_codex(args):
-    """Run a supervised freeplay campaign with a persistent Codex CLI thread."""
+    """Run a supervised freeplay campaign with a persistent Codex app-server thread."""
     from FactoryVerse.evals.freeplay.codex_runner import (
-        CodexCliClient,
+        CodexAppServerActionClient,
         CodexFreeplayRunner,
         codex_harness_configuration,
+        supervisor_owned_codex_configuration,
     )
+    from FactoryVerse.evals.freeplay.codex_context import freeplay_goal
     from FactoryVerse.evals.freeplay.supervisor import (
         FREEPLAY_STARTING_INVENTORY,
         NOTIFICATION_DEBUG_RAW_INVENTORY,
@@ -835,25 +837,35 @@ def cmd_freeplay_eval_codex(args):
         store = _freeplay_campaign_store(args.campaign)
         workspace = store.paths.root / "harness-workspace"
         control_dir = store.paths.root / "harness-control"
-        client = CodexCliClient(
+        offshore_pump_debug = bool(getattr(args, "offshore_pump_debug", False))
+        task_objective = freeplay_goal(
+            notification_debug=args.notification_debug,
+            offshore_pump_debug=offshore_pump_debug,
+            factory_debug=args.factory_debug,
+        )
+        client = CodexAppServerActionClient(
             executable=args.codex_bin,
             model=args.model,
             workspace=workspace,
             control_dir=control_dir,
             timeout_seconds=args.codex_timeout,
+            task_objective=task_objective,
         )
         codex_version = await client.version()
         version_suffix = codex_version.rsplit(" ", 1)[-1]
         harness = f"codex-cli/{version_suffix}"
-        harness_configuration = codex_harness_configuration(
-            codex_version=codex_version,
-            max_turns=args.max_turns,
-            checkpoint_every=args.checkpoint_every,
-            codex_timeout=args.codex_timeout,
-            execution_timeout=args.execution_timeout,
-            maximum_execution_timeout=args.maximum_execution_timeout,
-            notification_debug=args.notification_debug,
-            factory_debug=args.factory_debug,
+        harness_configuration = supervisor_owned_codex_configuration(
+            codex_harness_configuration(
+                codex_version=codex_version,
+                max_turns=args.max_turns,
+                checkpoint_every=args.checkpoint_every,
+                codex_timeout=args.codex_timeout,
+                execution_timeout=args.execution_timeout,
+                maximum_execution_timeout=args.maximum_execution_timeout,
+                notification_debug=args.notification_debug,
+                factory_debug=args.factory_debug,
+            ),
+            task_objective,
         )
 
         if not store.exists:
@@ -899,7 +911,11 @@ def cmd_freeplay_eval_codex(args):
                 notification_debug=args.notification_debug,
                 factory_debug=args.factory_debug,
             )
-            runner_result = await runner.run(preflight)
+            await client.start()
+            try:
+                runner_result = await runner.run(preflight)
+            finally:
+                await client.close()
             campaign_result = await supervisor.finish(
                 reason=runner_result["reason"],
                 checkpoint=True,

@@ -8,12 +8,17 @@ import pytest
 
 from FactoryVerse.evals.freeplay.codex_runner import (
     ACTION_SCHEMA,
+    CodexAppServerActionClient,
     CodexCliClient,
     CodexFreeplayRunner,
     CodexInvocation,
     CodexRunnerError,
     _validate_action,
+    codex_harness_configuration,
+    supervisor_owned_codex_configuration,
 )
+from FactoryVerse.integrations.codex import CodexTurnResult
+from FactoryVerse.evals.freeplay.codex_context import FREEPLAY_DEVELOPER_INSTRUCTIONS
 
 
 def _fake_codex(tmp_path: Path) -> Path:
@@ -103,6 +108,100 @@ def test_validate_action_rejects_lifecycle_and_ambiguous_report():
         )
 
 
+class _FakeCodexAppServer:
+    def __init__(self):
+        self.calls = []
+
+    async def start_thread(self, **kwargs):
+        self.calls.append(("thread/start", kwargs))
+        return "app-thread-1"
+
+    async def run_turn(self, **kwargs):
+        self.calls.append(("turn/start", kwargs))
+        return CodexTurnResult(
+            thread_id="app-thread-1",
+            turn_id="app-turn-1",
+            text=json.dumps(
+                {
+                    "state_summary": "starting",
+                    "action": "execute",
+                    "code": "print('hello')",
+                    "reason": "begin",
+                }
+            ),
+        )
+
+
+def test_app_server_action_client_supplies_task_without_codex_goal(tmp_path):
+    client = CodexAppServerActionClient(
+        executable="codex",
+        model="test-model",
+        workspace=tmp_path / "workspace",
+        control_dir=tmp_path / "control",
+        timeout_seconds=10,
+        task_objective="build durable production",
+        developer_instructions="stable developer contract",
+    )
+    server = _FakeCodexAppServer()
+    client._server = server
+
+    invocation = asyncio.run(client.invoke(turn=1, thread_id=None))
+
+    assert invocation.thread_id == "app-thread-1"
+    assert [call[0] for call in server.calls] == [
+        "thread/start",
+        "turn/start",
+    ]
+    assert server.calls[0][1]["developer_instructions"] == ("stable developer contract")
+    prompt = server.calls[1][1]["prompt"]
+    assert "Campaign objective:" in prompt
+    assert "build durable production" in prompt
+    assert "active Codex Goal" not in prompt
+
+
+def test_factoryverse_app_server_disables_goal_automatic_continuation(tmp_path):
+    client = CodexAppServerActionClient(
+        executable="codex",
+        model="test-model",
+        workspace=tmp_path / "workspace",
+        control_dir=tmp_path / "control",
+        timeout_seconds=10,
+        task_objective="build durable production",
+    )
+
+    assert client._server.disabled_features == ("goals",)
+
+
+def test_runner_rejects_prompt_or_task_drift_from_manifest():
+    configuration = supervisor_owned_codex_configuration(
+        codex_harness_configuration(
+            codex_version="codex-cli 9.9.9",
+            max_turns=10,
+            checkpoint_every=5,
+            codex_timeout=30,
+            execution_timeout=10,
+            maximum_execution_timeout=20,
+            factory_debug=True,
+        ),
+        "build durable production",
+    )
+    runner = object.__new__(CodexFreeplayRunner)
+    runner.supervisor = SimpleNamespace(
+        store=SimpleNamespace(manifest=lambda: {"harness_configuration": configuration})
+    )
+    runner.client = SimpleNamespace(
+        developer_instructions="changed",
+        task_objective="changed",
+    )
+
+    with pytest.raises(CodexRunnerError, match="developer instructions differ"):
+        runner._validate_codex_context_identity()
+
+    runner.client.developer_instructions = FREEPLAY_DEVELOPER_INSTRUCTIONS
+    with pytest.raises(CodexRunnerError, match="task objective differs"):
+        runner._validate_codex_context_identity()
+
+
 class _FakeStore:
     def __init__(self, root: Path, api: Path, schema: Path):
         self.paths = type(
@@ -111,6 +210,12 @@ class _FakeStore:
             {"root": root, "protocol_log": root / "runtime-protocol.jsonl"},
         )()
         self._manifest = {
+            "agent_id": "agent_1",
+            "harness_configuration": {
+                "adapter_protocol_version": 4,
+                "codex_goals_feature": False,
+                "turn_owner": "factoryverse-supervisor",
+            },
             "documentation": {
                 "api_reference": str(api),
                 "schema_reference": str(schema),
@@ -129,12 +234,46 @@ class _FakeSupervisor:
     def __init__(self, store):
         self.store = store
         self.checkpoint_reasons = []
+        self.environment = SimpleNamespace(tier3=_FakeTier3())
 
     async def checkpoint(self, reason):
         self.checkpoint_reasons.append(reason)
-        value = {"checkpoint_id": f"cp-{len(self.checkpoint_reasons)}", "reason": reason}
+        value = {
+            "checkpoint_id": f"cp-{len(self.checkpoint_reasons)}",
+            "reason": reason,
+        }
         self.store._checkpoints.append(value)
         return value
+
+
+class _FakeTier3:
+    def __init__(self):
+        self.tick = 10
+
+    def run_lua(self, source):
+        assert '"get_reachable", true' in source
+        self.tick += 1
+        return {
+            "tick": self.tick,
+            "actor": {
+                "agent_id": 1,
+                "tick": self.tick,
+                "position": {"x": 0, "y": 0},
+                "state": {
+                    "walking": {"active": False},
+                    "mining": {"active": False},
+                    "crafting": {"active": False, "queue_length": 0},
+                },
+            },
+            "inventory": {"wood": 1},
+            "interactable": {
+                "tick": self.tick,
+                "agent_position": {"x": 0, "y": 0},
+                "entities": [],
+                "resources": [{"name": "coal", "position": {"x": 1, "y": 0}}],
+                "ghosts": [],
+            },
+        }
 
 
 class _FakeActor:
@@ -183,6 +322,9 @@ class _FakeClient:
         self.model = "test-model"
 
     async def invoke(self, *, turn, thread_id):
+        live_state = json.loads((self.control_dir / "codex-state.json").read_text())
+        assert live_state["phase"] == "codex_inference"
+        assert live_state["pending_codex_turn"] == turn
         if turn == 1:
             action = {
                 "state_summary": "ran hello",
@@ -238,9 +380,17 @@ def test_codex_runner_keeps_lifecycle_in_supervisor(monkeypatch, tmp_path):
     state = json.loads((client.control_dir / "codex-state.json").read_text())
     assert state["thread_id"] == "thread-1"
     assert state["turns_completed"] == 2
-    assert json.loads((client.workspace / "last-observation.json").read_text())[
-        "event"
-    ] == "report_complete_acknowledged"
+    assert state["phase"] == "terminal"
+    assert (
+        json.loads((client.workspace / "last-observation.json").read_text())["event"]
+        == "report_complete_acknowledged"
+    )
+    interactable = json.loads(
+        (client.control_dir / "current-interactable-state.json").read_text()
+    )
+    assert interactable["ownership"] == "harness"
+    assert interactable["replacement_semantics"] == "supersedes_all_previous_snapshots"
+    assert interactable["interactable"]["resources"][0]["name"] == "coal"
     assert "Notification Debug Mission" in (client.workspace / "MISSION.md").read_text()
     mechanics = (client.workspace / "EARLY_GAME_MECHANICS.md").read_text()
     assert "Producing 50 iron plates" in mechanics
