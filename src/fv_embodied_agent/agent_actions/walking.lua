@@ -11,6 +11,26 @@ local WalkingActions = {}
 
 DEBUG = false
 
+--- Clear all state owned by one walking action.
+--- @param self Agent
+local function clear_walking_state(self)
+    local walking = self.walking
+    walking.action_id = nil
+    walking.start_tick = nil
+    walking.goal = nil
+    walking.original_goal = nil
+    walking.goal_entity = nil
+    walking.last_distance_to_entity = nil
+    walking.entity_ref = nil
+    walking.approach_candidates = nil
+    walking.approach_index = 0
+    walking.path_options = nil
+    walking.path_id = nil
+    walking.path = {}
+    walking.progress = 0
+    self.character.walking_state = { walking = false }
+end
+
 local function get_entity_reach_distance(agent, target_entity)
     if target_entity.type == "resource" or target_entity.type == "tree" or
        target_entity.type == "simple-entity" then
@@ -284,6 +304,7 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
         
         if not target_entity or not target_entity.valid then
             -- Entity not found - immediate failure
+            clear_walking_state(self)
             return {
                 success = false,
                 queued = false,
@@ -298,6 +319,7 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
         -- Check if already in reach
         if self.character.can_reach_entity(target_entity) then
             -- Already reachable, no need to walk
+            clear_walking_state(self)
             return {
                 success = true,
                 queued = false,
@@ -313,6 +335,7 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
         
         if #candidates == 0 then
             -- No standable tiles around entity
+            clear_walking_state(self)
             return {
                 success = false,
                 queued = false,
@@ -473,14 +496,7 @@ WalkingActions.process_walking = function(self)
                         goal = walking.original_goal,
                         message = "Path ended outside interaction reach",
                     }, "walking")
-                    walking.action_id = nil
-                    walking.goal = nil
-                    walking.original_goal = nil
-                    walking.goal_entity = nil
-                    walking.last_distance_to_entity = nil
-                    walking.progress = 0
-                    walking.path = {}
-                    self.character.walking_state = { walking = false }
+                    clear_walking_state(self)
                     return
                 end
             end
@@ -507,18 +523,9 @@ WalkingActions.process_walking = function(self)
                     actual_ticks = actual_ticks,
                 }, "walking")
                 
-                -- Clear tracking
-                walking.action_id = nil
-                walking.start_tick = nil
-                walking.goal = nil
-                walking.original_goal = nil
-                walking.goal_entity = nil
-                walking.last_distance_to_entity = nil
             end
-            
-            walking.progress = 0
-            walking.path = {}
-            self.character.walking_state = { walking = false }
+
+            clear_walking_state(self)
             
             return
         end
@@ -572,14 +579,7 @@ WalkingActions.process_walking = function(self)
                             goal = walking.original_goal,
                             message = "Path ended outside interaction reach",
                         }, "walking")
-                        walking.action_id = nil
-                        walking.goal = nil
-                        walking.original_goal = nil
-                        walking.goal_entity = nil
-                        walking.last_distance_to_entity = nil
-                        walking.progress = 0
-                        walking.path = {}
-                        self.character.walking_state = { walking = false }
+                        clear_walking_state(self)
                         return
                     end
                 end
@@ -606,18 +606,9 @@ WalkingActions.process_walking = function(self)
                         actual_ticks = actual_ticks,
                     }, "walking")
                     
-                    -- Clear tracking
-                    walking.action_id = nil
-                    walking.start_tick = nil
-                    walking.goal = nil
-                    walking.original_goal = nil
-                    walking.goal_entity = nil
-                    walking.last_distance_to_entity = nil
                 end
-                
-                walking.progress = 0
-                walking.path = {}
-                self.character.walking_state = { walking = false }
+
+                clear_walking_state(self)
                 
                 return
             end
@@ -639,25 +630,19 @@ end
 
 WalkingActions.stop_walking = function(self)
     local is_walking = self.character.walking_state["walking"]
-    if not is_walking then
+    local has_tracking = self.walking.action_id ~= nil or
+        self.walking.path_id ~= nil or
+        (self.walking.path and #self.walking.path > 0)
+    if not is_walking and not has_tracking then
         return {
             success = false,
             error = "Agent is not walking"
         }
     end
     
-    -- Clear walking tracking (don't send completion message for cancellation)
-    self.walking.action_id = nil
-    self.walking.start_tick = nil
-    self.walking.goal = nil
-    self.walking.original_goal = nil
-    self.walking.goal_entity = nil
-    self.walking.last_distance_to_entity = nil
-    
-    self.character.walking_state = { walking = false }
-    self.walking.path = nil
-    self.walking.path_id = nil
-    self.walking.progress = 0
+    -- Clear walking tracking (don't send completion message for cancellation).
+    -- This also reconciles stale bookkeeping after physical completion.
+    clear_walking_state(self)
     
     return {
         success = true,

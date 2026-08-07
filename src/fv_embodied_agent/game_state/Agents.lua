@@ -890,6 +890,9 @@ local function handle_path_failure(agent, event)
     walking.approach_index = 0
     walking.path_options = nil
     walking.path_id = nil
+    walking.path = {}
+    walking.progress = 0
+    agent.character.walking_state = { walking = false }
 end
 
 --- Get events (defined events and nth_tick)
@@ -934,6 +937,9 @@ function M.get_events()
                         -- Success - assign path and start walking
                         agent.walking.path = event.path
                         agent.walking.progress = 1
+                        -- The request is resolved; retaining its id makes
+                        -- completed walks appear active after path exhaustion.
+                        agent.walking.path_id = nil
                         break
                     end
                 end

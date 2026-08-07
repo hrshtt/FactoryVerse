@@ -215,13 +215,6 @@ def _insert_agent_item(tier3, item_name: str, count: int = 1) -> None:
     assert inserted == count
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "REACH-1: an engine-reachable chest can be absent from get_reachable "
-        "because the entity query uses center-radius distance"
-    ),
-)
 async def test_remote_entity_walk_success_establishes_engine_and_api_reach(
     live_reach_game,
 ):
@@ -259,13 +252,6 @@ async def test_remote_entity_walk_success_establishes_engine_and_api_reach(
     assert reachable is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "REACH-1: an engine-reachable tree can be absent from get_reachable "
-        "because the resource query uses center-radius distance"
-    ),
-)
 async def test_direct_entity_aware_walk_to_resource_establishes_resource_reach(
     live_reach_game,
 ):
@@ -290,13 +276,6 @@ async def test_direct_entity_aware_walk_to_resource_establishes_resource_reach(
     assert reachable is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG-001: completed walks retain path_id, so inspect reports active "
-        "while stop_walking rejects the cancellation as not walking"
-    ),
-)
 async def test_stop_reconciles_reported_walking_activity(live_reach_game):
     tier3 = live_reach_game["tier3"]
     movement = live_reach_game["tier4"]._movement
@@ -305,6 +284,8 @@ async def test_stop_reconciles_reported_walking_activity(live_reach_game):
 
     await movement.walk_to(target, timeout=30)
     before_stop = _activity_state(tier3)
+    assert before_stop["active"] is False
+    assert before_stop.get("path_id") is None
     try:
         stop_result = movement.stop()
         stop_error = None
