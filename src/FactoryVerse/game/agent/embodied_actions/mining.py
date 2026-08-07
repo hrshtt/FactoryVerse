@@ -281,6 +281,46 @@ class MiningAction:
             reason = response.reason or "unknown"
             raise RuntimeError(f"Failed to start mining: {reason}")
 
+        # A caller may omit position and ask Factorio to choose the nearest
+        # reachable entity. The immediate response is still before this queued
+        # intent is awaited, and carries the exact selected identity so the
+        # strict DuckDB barrier can establish its pre-completion baseline.
+        if self._resource_depletion_prepare is not None:
+            response_position = response.resource_position
+            if response.entity_name and response_position is not None:
+                if (
+                    depletion_baseline is None
+                    or depletion_baseline.get("resource_rows_at_start") != 1
+                ):
+                    depletion_baseline = self._resource_depletion_prepare(
+                        response.entity_name,
+                        float(response_position.x),
+                        float(response_position.y),
+                    )
+            if (
+                depletion_baseline is None
+                or depletion_baseline.get("resource_rows_at_start") != 1
+            ):
+                failed_facts = dict(depletion_baseline or {})
+                failed_facts["selected_entity_name"] = response.entity_name
+                failed_facts["selected_entity_position"] = (
+                    {
+                        "x": float(response_position.x),
+                        "y": float(response_position.y),
+                    }
+                    if response_position is not None
+                    else None
+                )
+                self.last_causal_facts = failed_facts
+                raise MiningReconciliationError(
+                    "Cannot prove the selected resource existed in DuckDB "
+                    "before queued mining completion",
+                    action_id=response.action_id or "",
+                    resource_name=response.entity_name or resource_name,
+                    position=failed_facts["selected_entity_position"],
+                    facts=failed_facts,
+                )
+
         # Wait for completion via UDP
         completion_dict = await self._listener.await_action(response, timeout=timeout)
 

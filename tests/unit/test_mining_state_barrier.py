@@ -61,6 +61,18 @@ class _CausalListener:
         }
 
 
+class _NearestRcon(_Rcon):
+    def execute_and_parse_json(self, _command):
+        return {
+            "success": True,
+            "queued": True,
+            "action_id": "mine-1",
+            "estimated_ticks": 1,
+            "entity_name": "tree-01",
+            "entity_position": {"x": 3.25, "y": -7.5},
+        }
+
+
 @pytest.mark.asyncio
 async def test_mine_waits_for_resource_depletion_barrier():
     mining = MiningAction(_Rcon(), _Listener())
@@ -170,6 +182,56 @@ async def test_mine_rejects_mismatched_barrier_without_overwriting_engine_tick()
     assert raised.value.facts["engine_destroy_event_tick"] == 42
     assert raised.value.facts["barrier_facts"]["snapshot_destroy_event_tick"] == 41
     assert mining.last_causal_facts["destroy_event_tick"] == 42
+
+
+@pytest.mark.asyncio
+async def test_positionless_mine_captures_exact_baseline_before_awaiting_completion():
+    order = []
+
+    class OrderedListener(_CausalListener):
+        async def await_action(self, response, timeout=None):
+            assert order == [
+                ("prepare", "tree-01", 3.25, -7.5),
+            ]
+            order.append(("await", response.action_id))
+            return await super().await_action(response, timeout=timeout)
+
+    mining = MiningAction(_NearestRcon(), OrderedListener())
+
+    def prepare(name, x, y):
+        order.append(("prepare", name, x, y))
+        return {"resource_rows_at_start": 1, "entity_sequence_floor": 7}
+
+    async def barrier(name, x, y, **kwargs):
+        order.append(("barrier", name, x, y))
+        assert kwargs == {
+            "expected_destroy_tick": 42,
+            "expected_action_id": "mine-1",
+            "baseline": {
+                "resource_rows_at_start": 1,
+                "entity_sequence_floor": 7,
+            },
+        }
+        return {
+            "snapshot_destroy_event_tick": 42,
+            "duckdb_delete_tick": 42,
+            "destroy_event_sequence": 8,
+            "destroy_action_id": "mine-1",
+            "resource_present_at_action_start": True,
+            "duckdb_rows_removed": 1,
+        }
+
+    mining.set_resource_depletion_barrier(barrier, prepare)
+    stacks = await mining.mine("tree", position=None)
+
+    assert [(stack.name, stack.count) for stack in stacks] == [("wood", 4)]
+    assert order == [
+        ("prepare", "tree-01", 3.25, -7.5),
+        ("await", "mine-1"),
+        ("barrier", "tree-01", 3.25, -7.5),
+    ]
+    assert mining.last_causal_facts["destroy_event_tick"] == 42
+    assert mining.last_causal_facts["snapshot_destroy_event_tick"] == 42
 
 
 class _DelayedRemovalSync:

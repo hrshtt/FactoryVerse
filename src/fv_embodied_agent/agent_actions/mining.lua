@@ -280,7 +280,8 @@ function MiningActions.mine_resource(self, resource_name, max_count, position)
         error("Agent: Cannot mine oil resources (use pumpjack)")
     end
     
-    if self.character.mining_state.mining then
+    if (self.mining and self.mining.action_id) or
+       self.character.mining_state.mining then
         error("Agent: Already mining, call stop_mining first")
     end
     
@@ -429,6 +430,8 @@ function MiningActions.mine_resource(self, resource_name, max_count, position)
         queued = true,
         action_id = action_id,
         tick = game.tick,
+        entity_name = entity_name,
+        entity_position = entity_position,
         mode = mode,
         estimated_ticks = estimated_ticks,
         expected_products = expected_products,
