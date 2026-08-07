@@ -773,8 +773,11 @@ def cmd_freeplay_eval_prejoin(args):
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     else:
         print(format_prejoin_mod_compatibility(result))
-    if not result.compatible:
-        raise SystemExit(1)
+    exit_code = {"match": 0, "mismatch": 1, "indeterminate": 2}[
+        result.status.value
+    ]
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def cmd_freeplay_eval_watch(args):

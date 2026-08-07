@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import zipfile
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .provenance import sha256_file
+from .provenance import canonical_json_sha256, sha256_file
 
 
 BUILTIN_MODS = {"base", "elevated-rails", "quality", "space-age"}
@@ -29,6 +31,20 @@ class _ModArtifact:
     sha256: str
 
 
+@dataclass(frozen=True)
+class _ModList:
+    enabled: set[str]
+    value: dict[str, Any]
+
+
+class PrejoinStatus(str, Enum):
+    """How conclusively the read-only evidence answers prejoin readiness."""
+
+    MATCH = "match"
+    MISMATCH = "mismatch"
+    INDETERMINATE = "indeterminate"
+
+
 @dataclass
 class PrejoinModCompatibility:
     """Exact filesystem comparison between a campaign and desktop client."""
@@ -43,10 +59,11 @@ class PrejoinModCompatibility:
     server_bundle_errors: list[str] = field(default_factory=list)
     client_bundle_errors: list[str] = field(default_factory=list)
     unverified_builtin_versions: list[str] = field(default_factory=list)
+    loaded_client_bytes_verified: bool = False
 
     @property
-    def compatible(self) -> bool:
-        return not any(
+    def status(self) -> PrejoinStatus:
+        if any(
             (
                 self.missing_mods,
                 self.extra_mods,
@@ -56,10 +73,20 @@ class PrejoinModCompatibility:
                 self.server_bundle_errors,
                 self.client_bundle_errors,
             )
-        )
+        ):
+            return PrejoinStatus.MISMATCH
+        if self.unverified_builtin_versions or not self.loaded_client_bytes_verified:
+            return PrejoinStatus.INDETERMINATE
+        return PrejoinStatus.MATCH
+
+    @property
+    def compatible(self) -> bool:
+        """Backward-compatible boolean that never promotes unknowns to success."""
+        return self.status is PrejoinStatus.MATCH
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "status": self.status.value,
             "compatible": self.compatible,
             "server_mod_dir": self.server_mod_dir,
             "client_mod_dir": self.client_mod_dir,
@@ -73,26 +100,48 @@ class PrejoinModCompatibility:
             "unverified_builtin_versions": self.unverified_builtin_versions,
             "client_files_modified": False,
             "restart_required_after_sync": True,
-            "loaded_client_bytes_verified": False,
+            "loaded_client_bytes_verified": self.loaded_client_bytes_verified,
         }
 
 
-def _enabled_mods(mod_dir: Path) -> set[str]:
+def _read_mod_list(mod_dir: Path) -> _ModList:
     mod_list_path = mod_dir / "mod-list.json"
     if not mod_list_path.is_file():
         raise ValueError(f"mod-list.json is missing: {mod_list_path}")
     try:
         value = json.loads(mod_list_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read mod-list.json: {mod_list_path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"mod-list.json root is not an object: {mod_list_path}")
     mods = value.get("mods")
     if not isinstance(mods, list):
         raise ValueError(f"mod-list.json has no mods array: {mod_list_path}")
-    return {
-        str(item["name"])
-        for item in mods
-        if isinstance(item, dict) and item.get("enabled") is True and item.get("name")
-    }
+    enabled: set[str] = set()
+    seen: set[str] = set()
+    for index, item in enumerate(mods):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"mod-list.json entry {index} is not an object: {mod_list_path}"
+            )
+        name = item.get("name")
+        if not isinstance(name, str) or not name or name.strip() != name:
+            raise ValueError(
+                f"mod-list.json entry {index} has an invalid name: {mod_list_path}"
+            )
+        if name in seen:
+            raise ValueError(
+                f"mod-list.json has duplicate mod name {name!r}: {mod_list_path}"
+            )
+        seen.add(name)
+        if not isinstance(item.get("enabled"), bool):
+            raise ValueError(
+                f"mod-list.json entry {index} has a non-boolean enabled value: "
+                f"{mod_list_path}"
+            )
+        if item["enabled"]:
+            enabled.add(name)
+    return _ModList(enabled=enabled, value=value)
 
 
 def _manifest_sha256(files: dict[str, str]) -> str:
@@ -104,80 +153,168 @@ def _manifest_sha256(files: dict[str, str]) -> str:
     return digest.hexdigest()
 
 
-def _directory_artifact(path: Path) -> _ModArtifact | None:
+def _artifact_identity(info: Any, path: Path) -> tuple[str, str]:
+    if not isinstance(info, dict):
+        raise ValueError(f"info.json root is not an object: {path}")
+    name = info.get("name")
+    version = info.get("version")
+    if not isinstance(name, str) or not name or name.strip() != name:
+        raise ValueError(f"info.json has an invalid name: {path}")
+    if not isinstance(version, str) or not version or version.strip() != version:
+        raise ValueError(f"info.json has an invalid version: {path}")
+    return name, version
+
+
+def _directory_artifact(path: Path) -> _ModArtifact:
+    if path.is_symlink():
+        raise ValueError(f"artifact directory is a symbolic link: {path}")
     info_path = path / "info.json"
+    if info_path.is_symlink():
+        raise ValueError(f"artifact info.json is a symbolic link: {info_path}")
     if not info_path.is_file():
-        return None
+        raise ValueError(f"artifact directory has no info.json: {path}")
     try:
         info = json.loads(info_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not info.get("name") or not info.get("version"):
-        return None
-    files = {
-        item.relative_to(path).as_posix(): sha256_file(item)
-        for item in sorted(path.rglob("*"))
-        if item.is_file()
-    }
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read artifact info.json: {info_path}: {exc}") from exc
+    name, version = _artifact_identity(info, info_path)
+    files: dict[str, str] = {}
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            raise ValueError(f"artifact contains a symbolic link: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise ValueError(f"artifact contains a non-regular entry: {item}")
+        try:
+            item.relative_to(path)
+        except ValueError as exc:
+            raise ValueError(f"artifact entry escapes its directory: {item}") from exc
+        files[item.relative_to(path).as_posix()] = sha256_file(item)
     return _ModArtifact(
-        name=str(info["name"]),
-        version=str(info["version"]),
+        name=name,
+        version=version,
         path=path,
         files=files,
         sha256=_manifest_sha256(files),
     )
 
 
-def _zip_artifact(path: Path) -> _ModArtifact | None:
+def _safe_zip_member_path(name: str, archive_path: Path) -> PurePosixPath:
+    if not name or "\\" in name or name.startswith("/"):
+        raise ValueError(f"ZIP has an unsafe member path {name!r}: {archive_path}")
+    components = name.split("/")
+    if components[-1] == "":
+        components = components[:-1]
+    if not components or any(item in {"", ".", ".."} for item in components):
+        raise ValueError(f"ZIP has an unsafe member path {name!r}: {archive_path}")
+    member_path = PurePosixPath(*components)
+    if member_path.is_absolute():
+        raise ValueError(f"ZIP has an unsafe member path {name!r}: {archive_path}")
+    return member_path
+
+
+def _zip_artifact(path: Path) -> _ModArtifact:
+    if path.is_symlink():
+        raise ValueError(f"artifact ZIP is a symbolic link: {path}")
     try:
         with zipfile.ZipFile(path) as archive:
-            info_entries = sorted(
-                (
-                    PurePosixPath(name)
-                    for name in archive.namelist()
-                    if PurePosixPath(name).name == "info.json"
-                    and "__MACOSX" not in PurePosixPath(name).parts
-                ),
-                key=lambda item: (len(item.parts), item.as_posix()),
-            )
-            if not info_entries:
-                return None
+            members: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
+            seen_members: set[str] = set()
+            for member in archive.infolist():
+                member_path = _safe_zip_member_path(member.filename, path)
+                logical_path = member_path.as_posix()
+                if logical_path in seen_members:
+                    raise ValueError(
+                        f"ZIP has duplicate logical member {logical_path!r}: {path}"
+                    )
+                seen_members.add(logical_path)
+                file_type = (member.external_attr >> 16) & 0o170000
+                if file_type == stat.S_IFLNK:
+                    raise ValueError(
+                        f"ZIP contains a symbolic-link member {logical_path!r}: {path}"
+                    )
+                if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                    raise ValueError(
+                        f"ZIP contains a non-regular member {logical_path!r}: {path}"
+                    )
+                members.append((member, member_path))
+            info_entries = [
+                member_path
+                for member, member_path in members
+                if not member.is_dir()
+                and member_path.name == "info.json"
+                and "__MACOSX" not in member_path.parts
+            ]
+            if len(info_entries) != 1:
+                raise ValueError(
+                    f"ZIP must contain exactly one info.json root; found "
+                    f"{len(info_entries)}: {path}"
+                )
             info_entry = info_entries[0]
             info = json.loads(archive.read(info_entry.as_posix()).decode("utf-8"))
-            if not info.get("name") or not info.get("version"):
-                return None
+            name, version = _artifact_identity(info, path)
             root = info_entry.parent
             files: dict[str, str] = {}
-            for member in archive.infolist():
-                member_path = PurePosixPath(member.filename)
-                if member.is_dir() or root not in member_path.parents:
+            for member, member_path in members:
+                if "__MACOSX" in member_path.parts:
+                    continue
+                if member_path != root and root not in member_path.parents:
+                    raise ValueError(
+                        f"ZIP member is outside the artifact root {root}: "
+                        f"{member_path} in {path}"
+                    )
+                if member.is_dir():
                     continue
                 relative = member_path.relative_to(root).as_posix()
                 files[relative] = hashlib.sha256(archive.read(member)).hexdigest()
-    except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError, KeyError):
-        return None
+    except (
+        OSError,
+        UnicodeDecodeError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+        KeyError,
+        RuntimeError,
+    ) as exc:
+        raise ValueError(f"cannot read artifact ZIP {path}: {exc}") from exc
     return _ModArtifact(
-        name=str(info["name"]),
-        version=str(info["version"]),
+        name=name,
+        version=version,
         path=path,
         files=files,
         sha256=_manifest_sha256(files),
     )
 
 
-def _discover_artifacts(mod_dir: Path) -> dict[str, list[_ModArtifact]]:
+def _artifact_shaped_directory(path: Path) -> bool:
+    if (path / "info.json").exists():
+        return True
+    stem, separator, version = path.name.rpartition("_")
+    return bool(separator and stem and version and version[0].isdigit())
+
+
+def _discover_artifacts(
+    mod_dir: Path,
+) -> tuple[dict[str, list[_ModArtifact]], list[str]]:
     artifacts: dict[str, list[_ModArtifact]] = {}
+    errors: list[str] = []
     if not mod_dir.is_dir():
-        return artifacts
+        return artifacts, [f"mod directory is missing or not a directory: {mod_dir}"]
     for path in sorted(mod_dir.iterdir()):
-        artifact = None
-        if path.is_dir():
-            artifact = _directory_artifact(path)
-        elif path.is_file() and path.suffix.lower() == ".zip":
-            artifact = _zip_artifact(path)
-        if artifact is not None:
+        if path.is_symlink():
+            errors.append(f"mod directory contains a symbolic link: {path}")
+            continue
+        is_zip = path.suffix.lower() == ".zip"
+        is_directory_artifact = path.is_dir() and _artifact_shaped_directory(path)
+        if not (is_zip or is_directory_artifact):
+            continue
+        try:
+            artifact = _zip_artifact(path) if is_zip else _directory_artifact(path)
+        except (OSError, ValueError) as exc:
+            errors.append(str(exc))
+        else:
             artifacts.setdefault(artifact.name, []).append(artifact)
-    return artifacts
+    return artifacts, errors
 
 
 def _content_difference(
@@ -220,6 +357,11 @@ def compare_campaign_client_mods(
     The comparison is read-only and does not trust client-side cache/hash files.
     Directory and ZIP artifacts are normalized to relative file paths and content
     hashes so archive packaging metadata cannot hide or invent a mismatch.
+
+    Existing immutable campaign hashes retain ``sha256_tree``'s native path
+    spelling. A campaign created on Windows can therefore conservatively report a
+    hash mismatch when checked on POSIX; changing that would invalidate existing
+    campaign hashes and requires a versioned provenance migration.
     """
     server_mod_dir = Path(server_mod_dir)
     client_mod_dir = Path(client_mod_dir)
@@ -233,21 +375,76 @@ def compare_campaign_client_mods(
             "campaign manifest has no expected_active_mods map"
         )
         return result
-    expected = {str(name): str(version) for name, version in expected_value.items()}
+    expected: dict[str, str] = {}
+    for name, version in expected_value.items():
+        if not isinstance(name, str) or not name or name.strip() != name:
+            result.server_bundle_errors.append(
+                "campaign manifest has an invalid expected mod name"
+            )
+            continue
+        if not isinstance(version, str) or not version or version.strip() != version:
+            result.server_bundle_errors.append(
+                f"campaign manifest has an invalid version for {name}"
+            )
+            continue
+        expected[name] = version
 
     try:
-        server_enabled = _enabled_mods(server_mod_dir)
+        server_mod_list = _read_mod_list(server_mod_dir)
+        server_enabled = server_mod_list.enabled
     except ValueError as exc:
         result.server_bundle_errors.append(str(exc))
+        server_mod_list = None
         server_enabled = set()
     try:
-        client_enabled = _enabled_mods(client_mod_dir)
+        client_enabled = _read_mod_list(client_mod_dir).enabled
     except ValueError as exc:
         result.client_bundle_errors.append(str(exc))
         client_enabled = set()
 
     expected_names = set(expected)
     manifest_hashes = campaign_manifest.get("hashes")
+    if not isinstance(manifest_hashes, dict):
+        result.server_bundle_errors.append("campaign manifest has no hashes map")
+        manifest_hashes = {}
+    expected_mod_list_hash = manifest_hashes.get("server_mod_list")
+    if not isinstance(expected_mod_list_hash, str) or not expected_mod_list_hash:
+        result.server_bundle_errors.append(
+            "campaign manifest has no immutable server_mod_list hash"
+        )
+    elif (
+        server_mod_list is not None
+        and canonical_json_sha256(server_mod_list.value) != expected_mod_list_hash
+    ):
+        result.server_bundle_errors.append(
+            "campaign server mod-list differs from immutable manifest"
+        )
+
+    expected_custom_hashes: dict[str, str] = {}
+    for name in sorted(expected_names - BUILTIN_MODS):
+        hash_key = CAMPAIGN_MOD_HASH_KEYS.get(name)
+        if hash_key is None:
+            result.server_bundle_errors.append(
+                f"campaign manifest defines no immutable hash key for custom mod: {name}"
+            )
+            continue
+        expected_hash = manifest_hashes.get(hash_key)
+        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+            result.server_bundle_errors.append(
+                f"campaign manifest has no immutable {hash_key} hash for custom mod: "
+                f"{name}"
+            )
+            continue
+        try:
+            bytes.fromhex(expected_hash)
+        except ValueError:
+            result.server_bundle_errors.append(
+                f"campaign manifest has an invalid {hash_key} hash for custom mod: "
+                f"{name}"
+            )
+            continue
+        expected_custom_hashes[name] = expected_hash
+
     if server_enabled != expected_names:
         missing = sorted(expected_names - server_enabled)
         extra = sorted(server_enabled - expected_names)
@@ -263,17 +460,15 @@ def compare_campaign_client_mods(
 
     result.missing_mods = sorted(expected_names - client_enabled)
     result.extra_mods = sorted(client_enabled - expected_names)
-    server_artifacts = _discover_artifacts(server_mod_dir)
-    client_artifacts = _discover_artifacts(client_mod_dir)
+    server_artifacts, server_artifact_errors = _discover_artifacts(server_mod_dir)
+    client_artifacts, client_artifact_errors = _discover_artifacts(client_mod_dir)
+    result.server_bundle_errors.extend(server_artifact_errors)
+    result.client_bundle_errors.extend(client_artifact_errors)
 
     server_exact: dict[str, _ModArtifact] = {}
     for name in sorted(expected_names):
         expected_version = expected[name]
-        server_candidates = [
-            artifact
-            for artifact in server_artifacts.get(name, [])
-            if artifact.version == expected_version
-        ]
+        server_candidates = server_artifacts.get(name, [])
         if not server_candidates and name in BUILTIN_MODS:
             continue
         if not server_candidates:
@@ -283,18 +478,20 @@ def compare_campaign_client_mods(
             continue
         if len(server_candidates) != 1:
             result.server_bundle_errors.append(
-                f"campaign server has {len(server_candidates)} artifacts for "
-                f"{name} {expected_version}"
+                f"campaign server has ambiguous artifacts for {name}: "
+                + ", ".join(str(item.path) for item in server_candidates)
             )
             continue
-        server_exact[name] = server_candidates[0]
-        hash_key = CAMPAIGN_MOD_HASH_KEYS.get(name)
-        if (
-            hash_key
-            and isinstance(manifest_hashes, dict)
-            and manifest_hashes.get(hash_key)
-            and server_candidates[0].sha256 != manifest_hashes[hash_key]
-        ):
+        candidate = server_candidates[0]
+        if candidate.version != expected_version:
+            result.server_bundle_errors.append(
+                f"campaign server artifact version differs from manifest: {name} "
+                f"expected {expected_version}, found {candidate.version}"
+            )
+            continue
+        server_exact[name] = candidate
+        expected_hash = expected_custom_hashes.get(name)
+        if expected_hash and candidate.sha256 != expected_hash:
             result.server_bundle_errors.append(
                 f"campaign server mod bytes differ from immutable manifest: {name}"
             )
@@ -315,7 +512,9 @@ def compare_campaign_client_mods(
                 {"side": "client", "name": name, "version": expected_version}
             )
             continue
-        exact = [artifact for artifact in installed if artifact.version == expected_version]
+        exact = [
+            artifact for artifact in installed if artifact.version == expected_version
+        ]
         if installed_versions != [expected_version] or len(exact) != 1:
             result.version_mismatches.append(
                 {
@@ -335,12 +534,18 @@ def compare_campaign_client_mods(
 
 def format_prejoin_mod_compatibility(result: PrejoinModCompatibility) -> str:
     """Render an actionable human report without changing either bundle."""
+    if result.status is PrejoinStatus.MATCH:
+        headline = "Verified prejoin evidence matches the campaign."
+    elif result.status is PrejoinStatus.INDETERMINATE:
+        headline = (
+            "On-disk custom mod artifacts match the campaign; full join readiness "
+            "is indeterminate."
+        )
+    else:
+        headline = "On-disk mod evidence does not match the campaign."
     lines = [
-        (
-            "Compatible client/server mod bundles."
-            if result.compatible
-            else "Client/server mod bundles are incompatible."
-        ),
+        headline,
+        f"Status: {result.status.value}",
         f"Server bundle: {result.server_mod_dir}",
         f"Client bundle: {result.client_mod_dir}",
     ]
@@ -376,7 +581,7 @@ def format_prejoin_mod_compatibility(result: PrejoinModCompatibility) -> str:
             + ", ".join(result.unverified_builtin_versions)
         )
     lines.append("This check did not modify client files.")
-    if not result.compatible:
+    if result.status is PrejoinStatus.MISMATCH:
         lines.append(
             "After syncing the client bundle, restart Factorio before connecting."
         )
