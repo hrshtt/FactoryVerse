@@ -55,6 +55,7 @@ smart fallback if the primary path is blocked.]],
             completion = {
                 success = { type = "boolean", doc = "True if agent reached goal" },
                 position = { type = "position", doc = "Final position of agent" },
+                interaction_reachable = { type = "boolean", doc = "True only after Factorio confirms entity interaction reach" },
                 elapsed_ticks = { type = "number", doc = "Game ticks elapsed" },
                 failure_type = { type = "string", doc = "Failure reason (if success=false)" },
                 candidates_tried = { type = "number", doc = "Number of approach candidates tried" },

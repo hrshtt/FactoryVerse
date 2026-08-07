@@ -99,6 +99,10 @@ def test_completed_and_stale_walks_clear_all_owned_bookkeeping() -> None:
             position = {{x = 4, y = 5}},
             walking_state = {{walking = false}},
         }}
+        character.can_reach_entity = function(_) return true end
+        local target = {{
+            valid = true, type = "container", position = {{x = 5, y = 5}},
+        }}
         local agent = {{
             agent_id = 1,
             character = character,
@@ -106,12 +110,14 @@ def test_completed_and_stale_walks_clear_all_owned_bookkeeping() -> None:
                 action_id = "walk-1", start_tick = 10, goal = {{x=4,y=5}},
                 original_goal = {{x=4,y=5}}, path_id = 99,
                 path = {{{{position={{x=4,y=5}}}}}}, progress = 2,
+                goal_entity = target,
                 entity_ref = {{name="wooden-chest"}}, approach_candidates = {{{{x=4,y=5}}}},
                 approach_index = 1, path_options = {{force="player"}},
             }},
         }}
         agent.enqueue_message = function(_, payload, channel)
             assert(payload.status == "completed")
+            assert(payload.interaction_reachable == true)
             assert(channel == "walking")
         end
 
@@ -130,5 +136,77 @@ def test_completed_and_stale_walks_clear_all_owned_bookkeeping() -> None:
         assert(stopped.success == true)
         assert(agent.walking.path_id == nil and agent.walking.action_id == nil)
         assert(character.walking_state.walking == false)
+        """
+    )
+
+
+def test_invalid_entity_target_fails_at_both_completion_branches() -> None:
+    """A destroyed entity target can never fall through to walking success."""
+    _run_lua(
+        f"""
+        package.path = {str(_lua_package_path())!r} .. ";" .. package.path
+        defines = {{direction = {{
+            east=0, northeast=1, north=2, northwest=3,
+            west=4, southwest=5, south=6, southeast=7,
+        }}}}
+        game = {{tick = 40}}
+
+        local Walking = require("agent_actions.walking")
+
+        local function make_agent(progress)
+            local character = {{
+                position = {{x = 4, y = 5}},
+                walking_state = {{walking = false}},
+            }}
+            character.can_reach_entity = function(_)
+                error("invalid targets must not be passed to can_reach_entity")
+            end
+            local agent = {{
+                agent_id = progress,
+                character = character,
+                walking = {{
+                    action_id = "invalid-" .. progress,
+                    start_tick = 10,
+                    goal = {{x=4,y=5}},
+                    original_goal = {{x=5,y=5}},
+                    goal_entity = {{valid=false}},
+                    last_distance_to_entity = 12,
+                    path_id = 99,
+                    path = {{{{position={{x=4,y=5}}}}}},
+                    progress = progress,
+                    entity_ref = {{name="wooden-chest"}},
+                    approach_candidates = {{{{x=4,y=5}}}},
+                    approach_index = 1,
+                    path_options = {{force="player"}},
+                }},
+            }}
+            agent.enqueue_message = function(_, payload, channel)
+                assert(payload.success == false)
+                assert(payload.status == "failed")
+                assert(payload.failure_type == "entity_not_found")
+                assert(payload.interaction_reachable == nil)
+                assert(channel == "walking")
+                agent.failure = payload
+            end
+            return agent
+        end
+
+        -- progress > #path enters the pre-waypoint completion branch.
+        local exhausted = make_agent(2)
+        Walking.process_walking(exhausted)
+        assert(exhausted.failure ~= nil)
+        assert(exhausted.walking.action_id == nil)
+        assert(exhausted.walking.last_distance_to_entity == nil)
+        assert(exhausted.walking.path_id == nil)
+        assert(exhausted.walking.progress == 0 and #exhausted.walking.path == 0)
+
+        -- progress == #path reaches the same terminal check after the waypoint.
+        local final_waypoint = make_agent(1)
+        Walking.process_walking(final_waypoint)
+        assert(final_waypoint.failure ~= nil)
+        assert(final_waypoint.walking.action_id == nil)
+        assert(final_waypoint.walking.last_distance_to_entity == nil)
+        assert(final_waypoint.walking.path_id == nil)
+        assert(final_waypoint.walking.progress == 0 and #final_waypoint.walking.path == 0)
         """
     )

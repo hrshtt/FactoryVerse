@@ -8,7 +8,7 @@ Walking Modes:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING, Dict, Union
+from typing import Optional, TYPE_CHECKING, Dict
 import asyncio
 import logging
 
@@ -132,6 +132,7 @@ class WalkingStarted(AsyncActionResponse):
 
     failure_type: Optional[str] = None
     position: Optional[Dict[str, float]] = None  # Present if already at destination
+    interaction_reachable: Optional[bool] = None
 
     @property
     def already_at_destination(self) -> bool:
@@ -149,6 +150,7 @@ class WalkingCompleted(AsyncActionCompletion):
     """
 
     position: Dict[str, float] = field(default_factory=dict)
+    interaction_reachable: Optional[bool] = None
 
     @property
     def final_position(self) -> MapPosition:
@@ -315,6 +317,16 @@ class MovementAction:
         # Check if already at destination
         # Note: 'already_at_destination' and 'position' are fields on WalkingStarted dataclass
         if isinstance(response, WalkingStarted) and response.already_at_destination:
+            if entity_ref and response.interaction_reachable is not True:
+                raise WalkingUnreachableError(
+                    message=(
+                        "Entity walk completed without authoritative interaction "
+                        "reach confirmation"
+                    ),
+                    failure_type="interaction_unvalidated",
+                    agent_position=MapPosition.from_dict(response.position),
+                    target_position=goal,
+                )
             pos = response.position
             # Ensure pos is not None before accessing keys
             if pos:
@@ -355,6 +367,9 @@ class MovementAction:
             except Exception:
                 pass  # spatial context is best-effort; never mask the real error
 
+            if failure_type == "entity_not_found" and entity_ref:
+                raise WalkingEntityNotFoundError(entity_ref["name"], goal)
+
             raise WalkingUnreachableError(
                 message=message,
                 failure_type=failure_type,
@@ -372,6 +387,22 @@ class MovementAction:
 
         completion = WalkingCompleted.from_dict(completion_dict)
         logger.debug(f"WalkingCompleted position: {completion.position}")
+
+        if entity_ref and completion.interaction_reachable is not True:
+            agent_position: Optional[MapPosition] = None
+            try:
+                agent_position = completion.final_position
+            except ValueError:
+                pass
+            raise WalkingUnreachableError(
+                message=(
+                    "Entity walk completed without authoritative interaction "
+                    "reach confirmation"
+                ),
+                failure_type="interaction_unvalidated",
+                agent_position=agent_position,
+                target_position=goal,
+            )
 
         # Return final position
         return completion.final_position

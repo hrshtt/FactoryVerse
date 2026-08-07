@@ -2,7 +2,7 @@
 
 These tests deliberately separate three outcomes:
 
-* an expected-failure contract test for a known open bug;
+* a regression contract for authoritative entity-walk completion;
 * a documentation-liveness test that fails on the advertised surface itself;
 * a passing characterization that proves the current score lacks the evidence
   needed to distinguish machine output from unattended automation.
@@ -14,7 +14,6 @@ failures and must be promoted to ordinary regression tests.
 from __future__ import annotations
 
 import importlib
-import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,25 +48,67 @@ class _FarCompletedWalkListener:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "REACH-1: successful entity-targeted walks are not postvalidated "
-        "against the interaction surface"
-    ),
-)
-async def test_reach_1_entity_walk_success_means_in_range_or_structured_failure():
-    """A completed entity walk must not return an out-of-range success."""
+async def test_reach_1_entity_walk_rejects_unvalidated_completion():
+    """Entity completion requires Factorio's authoritative reach marker."""
     movement = MovementAction(_QueuedWalkRcon(), _FarCompletedWalkListener())
     target = MapPosition(x=0.0, y=0.0)
 
-    try:
-        final = await movement.walk_to_entity("lab", target)
-    except WalkingUnreachableError:
-        # A structured failure is an honest contract outcome.
-        return
+    with pytest.raises(WalkingUnreachableError) as exc_info:
+        await movement.walk_to_entity("lab", target)
 
-    assert math.dist((final.x, final.y), (target.x, target.y)) <= 10.0
+    assert exc_info.value.failure_type == "interaction_unvalidated"
+
+
+class _BoundaryReachableWalkListener:
+    async def await_action(self, response, timeout=None):
+        assert response.action_id == "reach-1"
+        return {
+            "status": "completed",
+            "result": {
+                "position": {"x": 10.2, "y": 0.0},
+                "interaction_reachable": True,
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_reach_1_entity_walk_accepts_authoritative_boundary_reach():
+    """Do not replace Factorio boundary reach with a center-distance cutoff."""
+    movement = MovementAction(_QueuedWalkRcon(), _BoundaryReachableWalkListener())
+
+    final = await movement.walk_to_entity("lab", MapPosition(x=0.0, y=0.0))
+
+    assert final == MapPosition(x=10.2, y=0.0)
+
+
+class _ImmediateReachableWalkRcon:
+    def build_command(self, method, *args):
+        assert method == "walk_to"
+        return method
+
+    def execute_and_parse_json(self, command):
+        assert command == "walk_to"
+        return {
+            "success": True,
+            "queued": False,
+            "action_id": "reach-immediate",
+            "position": {"x": 3.0, "y": 4.0},
+            "interaction_reachable": True,
+        }
+
+
+class _UnusedWalkListener:
+    async def await_action(self, response, timeout=None):
+        raise AssertionError("immediate completion must not wait for UDP")
+
+
+@pytest.mark.asyncio
+async def test_reach_1_immediate_entity_walk_preserves_reach_confirmation():
+    movement = MovementAction(_ImmediateReachableWalkRcon(), _UnusedWalkListener())
+
+    final = await movement.walk_to_entity("lab", MapPosition(x=0.0, y=0.0))
+
+    assert final == MapPosition(x=3.0, y=4.0)
 
 
 @pytest.mark.xfail(
