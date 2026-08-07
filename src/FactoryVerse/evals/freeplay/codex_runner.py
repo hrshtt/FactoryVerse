@@ -17,7 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from FactoryVerse.integrations.codex import CodexAppServer, CodexAppServerError
 from .actor_session import ActorRuntimeSession
+from .codex_context import (
+    FREEPLAY_DEVELOPER_INSTRUCTIONS,
+    INTERACTABLE_STATE_FILENAME,
+    InteractableStateFile,
+    freeplay_goal,
+)
 from .models import utc_now
 from .provenance import canonical_json_sha256, sha256_file
 from FactoryVerse.utils.docs.bundle import write_reference_bundle
@@ -91,10 +98,13 @@ batch can be planned safely.
 """
 
 
-INITIAL_PROMPT = """Begin this FactoryVerse freeplay run.
+INITIAL_PROMPT = """Begin this FactoryVerse freeplay run under the active Codex Goal.
 
-Read RUN_BRIEF.md, MISSION.md when present, EARLY_GAME_MECHANICS.md,
-CAMPAIGN_START.json, BUGS.md, last-observation.json, and references/INDEX.md.
+Read MISSION.md when present, EARLY_GAME_MECHANICS.md, CAMPAIGN_START.json,
+BUGS.md, last-observation.json, and references/INDEX.md. Read the current
+harness-owned interactable state at
+`../harness-control/current-interactable-state.json` before proposing a local
+interaction.
 Do not re-query facts already established by the campaign-start snapshot;
 perform only reconnaissance needed to choose or validate a concrete build.
 Use your files for plans and reusable skills if useful. Return one structured
@@ -367,7 +377,7 @@ def _validate_action(value: Any) -> Dict[str, str]:
 
 
 class CodexCliClient:
-    """One persistent Codex thread invoked through stdout/stderr pipes."""
+    """Legacy ``codex exec`` adapter retained for old campaign compatibility."""
 
     def __init__(
         self,
@@ -548,6 +558,142 @@ class CodexCliClient:
                 handle.write(b"\n")
 
 
+class CodexAppServerActionClient:
+    """Freeplay action adapter over the reusable Codex app-server transport."""
+
+    def __init__(
+        self,
+        *,
+        executable: str,
+        model: str,
+        workspace: Path,
+        control_dir: Path,
+        timeout_seconds: float,
+        goal_objective: str,
+        developer_instructions: str = FREEPLAY_DEVELOPER_INSTRUCTIONS,
+    ):
+        self.executable = executable
+        self.model = model
+        self.workspace = Path(workspace)
+        self.control_dir = Path(control_dir)
+        self.timeout_seconds = timeout_seconds
+        self.goal_objective = goal_objective.strip()
+        self.developer_instructions = developer_instructions
+        self._thread_id: Optional[str] = None
+        self._server = CodexAppServer(
+            executable=executable,
+            request_timeout_seconds=min(timeout_seconds, 30.0),
+            event_log_path=self.control_dir / "codex-app-server.jsonl",
+            stderr_path=self.control_dir / "codex-stderr.log",
+            client_name="factoryverse-freeplay",
+        )
+
+    async def version(self) -> str:
+        return await self._server.version()
+
+    async def start(self) -> Dict[str, Any]:
+        return await self._server.start()
+
+    async def close(self) -> None:
+        await self._server.close()
+
+    async def set_goal_status(self, status: str) -> None:
+        if self._thread_id is None:
+            raise CodexRunnerError("Cannot update Goal before a thread exists")
+        await self._server.set_goal(
+            self._thread_id,
+            self.goal_objective,
+            status=status,
+        )
+
+    async def invoke(
+        self,
+        *,
+        turn: int,
+        thread_id: Optional[str],
+    ) -> CodexInvocation:
+        active_thread = await self._ensure_thread(thread_id)
+        prompt = FOLLOWUP_PROMPT if thread_id else INITIAL_PROMPT
+        _append_jsonl(
+            self.control_dir / "runner-events.jsonl",
+            {
+                "event": "codex_invocation_started",
+                "recorded_at": utc_now(),
+                "turn": turn,
+                "resuming_thread_id": thread_id,
+                "thread_id": active_thread,
+                "command_shape": "app_server_turn",
+            },
+        )
+        try:
+            result = await self._server.run_turn(
+                thread_id=active_thread,
+                prompt=prompt,
+                output_schema=ACTION_SCHEMA,
+                timeout_seconds=self.timeout_seconds,
+            )
+            action = _validate_action(json.loads(result.text))
+        except (asyncio.TimeoutError, json.JSONDecodeError, CodexAppServerError) as exc:
+            raise CodexRunnerError(
+                f"Codex app-server turn {turn} failed: {exc}"
+            ) from exc
+        _write_json(
+            self.control_dir / "responses" / f"turn-{turn:06d}.json",
+            action,
+        )
+        _append_jsonl(
+            self.control_dir / "runner-events.jsonl",
+            {
+                "event": "codex_invocation_finished",
+                "recorded_at": utc_now(),
+                "turn": turn,
+                "returncode": 0,
+                "thread_id": result.thread_id,
+                "turn_id": result.turn_id,
+            },
+        )
+        return CodexInvocation(
+            action=action,
+            thread_id=result.thread_id,
+            returncode=0,
+        )
+
+    async def _ensure_thread(self, thread_id: Optional[str]) -> str:
+        if self._thread_id is not None:
+            if thread_id not in (None, self._thread_id):
+                raise CodexRunnerError(
+                    "Stored Codex thread differs from the active app-server thread"
+                )
+            return self._thread_id
+        if thread_id:
+            active = await self._server.resume_thread(
+                thread_id,
+                cwd=self.workspace,
+                developer_instructions=self.developer_instructions,
+                model=self.model,
+            )
+            goal = await self._server.get_goal(active)
+            if goal is None:
+                await self._server.set_goal(active, self.goal_objective)
+            elif goal.get("objective") != self.goal_objective:
+                raise CodexRunnerError(
+                    "Stored Codex Goal differs from the immutable campaign objective"
+                )
+            elif goal.get("status") != "active":
+                raise CodexRunnerError(
+                    f"Stored Codex Goal is not active: {goal.get('status')!r}"
+                )
+        else:
+            active = await self._server.start_thread(
+                cwd=self.workspace,
+                developer_instructions=self.developer_instructions,
+                model=self.model,
+            )
+            await self._server.set_goal(active, self.goal_objective)
+        self._thread_id = active
+        return active
+
+
 def codex_harness_configuration(
     *,
     codex_version: str,
@@ -562,9 +708,9 @@ def codex_harness_configuration(
     """Return the immutable Codex-side configuration stored in the manifest."""
     return {
         "adapter": "FactoryVerse.evals.freeplay.codex_runner",
-        "adapter_protocol_version": 2,
+        "adapter_protocol_version": 3,
         "codex_version": codex_version,
-        "transport": "subprocess-pipes",
+        "transport": "codex-app-server-jsonrpc",
         "action_schema_sha256": canonical_json_sha256(ACTION_SCHEMA),
         "run_brief_sha256": hashlib.sha256(RUN_BRIEF.encode("utf-8")).hexdigest(),
         "max_turns": max_turns,
@@ -583,7 +729,7 @@ class CodexFreeplayRunner:
     def __init__(
         self,
         supervisor: Any,
-        client: CodexCliClient,
+        client: Any,
         *,
         max_turns: int,
         checkpoint_every: int,
@@ -611,6 +757,9 @@ class CodexFreeplayRunner:
         )
         self.workspace = client.workspace
         self.control_dir = client.control_dir
+        self.interactable_state = InteractableStateFile(
+            self.control_dir / INTERACTABLE_STATE_FILENAME
+        )
 
     def prepare_workspace(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -676,6 +825,7 @@ class CodexFreeplayRunner:
 
     async def run(self, preflight: Dict[str, Any]) -> Dict[str, Any]:
         self.prepare_workspace()
+        self._validate_codex_context_identity()
         state_path = self.control_dir / "codex-state.json"
         state: Dict[str, Any]
         if state_path.exists():
@@ -715,11 +865,13 @@ class CodexFreeplayRunner:
                 "reference_router": "references/INDEX.md",
             }
             self._write_observation(0, initial_observation)
+            self._refresh_interactable_state(reason="runtime_ready")
 
         last_reason = "codex_turn_budget_exhausted"
         while int(state["turns_completed"]) < self.max_turns:
             turn = int(state["turns_completed"]) + 1
             await self._surface_interturn_events(turn)
+            self._refresh_interactable_state(reason=f"before_codex_turn_{turn}")
             invocation = await self.client.invoke(
                 turn=turn,
                 thread_id=state.get("thread_id"),
@@ -744,12 +896,15 @@ class CodexFreeplayRunner:
                         "state_summary": action["state_summary"],
                     },
                 )
+                await self._set_goal_status("complete")
                 break
 
             state["pending_action_turn"] = turn
             _write_json(state_path, state)
             await self._execute_action(turn, action, state, state_path)
 
+        if last_reason == "codex_turn_budget_exhausted":
+            await self._set_goal_status("budgetLimited")
         return {
             "reason": last_reason,
             "thread_id": state.get("thread_id"),
@@ -943,6 +1098,7 @@ class CodexFreeplayRunner:
             "campaign_executions": state["total_executions"],
         }
         self._write_observation(turn, observation)
+        self._refresh_interactable_state(reason=f"after_execution_{turn}")
         state["turns_completed"] = turn
         state.pop("pending_action_turn", None)
         state["updated_at"] = utc_now()
@@ -956,6 +1112,43 @@ class CodexFreeplayRunner:
         # This mirror is deliberately in the agent-owned workspace. The
         # canonical record above remains outside the model's writable root.
         _write_json(self.workspace / "last-observation.json", observation)
+
+    def _refresh_interactable_state(self, *, reason: str) -> None:
+        try:
+            self.interactable_state.refresh(self.supervisor, reason=reason)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            self.interactable_state.mark_unavailable(reason=reason, error=detail)
+            raise CodexRunnerError(
+                f"Failed to refresh harness-owned interactable state: {detail}"
+            ) from exc
+
+    async def _set_goal_status(self, status: str) -> None:
+        update = getattr(self.client, "set_goal_status", None)
+        if update is not None:
+            await update(status)
+
+    def _validate_codex_context_identity(self) -> None:
+        """Bind the active prompt and Goal to the immutable campaign manifest."""
+        configuration = self.supervisor.store.manifest().get(
+            "harness_configuration", {}
+        )
+        expected_developer = configuration.get("developer_instructions_sha256")
+        developer_instructions = getattr(self.client, "developer_instructions", None)
+        if expected_developer and isinstance(developer_instructions, str):
+            actual = hashlib.sha256(developer_instructions.encode("utf-8")).hexdigest()
+            if actual != expected_developer:
+                raise CodexRunnerError(
+                    "Codex developer instructions differ from the campaign manifest"
+                )
+        expected_goal = configuration.get("goal_objective_sha256")
+        goal_objective = getattr(self.client, "goal_objective", None)
+        if expected_goal and isinstance(goal_objective, str):
+            actual = hashlib.sha256(goal_objective.encode("utf-8")).hexdigest()
+            if actual != expected_goal:
+                raise CodexRunnerError(
+                    "Codex Goal objective differs from the campaign manifest"
+                )
 
     @staticmethod
     def _write_static(path: Path, content: str) -> None:
