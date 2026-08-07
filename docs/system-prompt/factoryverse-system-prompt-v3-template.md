@@ -101,20 +101,23 @@ Query the database before committing to a plan:
 This is the canonical connection idiom. Each placement asks the previous entity where the next one goes:
 
 ```python
-# 1. Site the offshore pump ON THE SHORE (it must straddle land/water —
-#    a water tile or a wrong-facing land tile both reject). Probe the
-#    tiles around the water edge until one accepts:
+# 1. A water row is only a search hint. It is not walkable and is not a pump
+#    anchor. Resolve live-validated shoreline anchors before travelling:
 water = remote_view.find_water(near=walking.current_position, radius=50)
-wx, wy = water[0]["x"], water[0]["y"]   # walk near here first
-pump = None
-for dx, dy, d in [(0, -1, Direction.SOUTH), (0, 1, Direction.NORTH),
-                  (-1, 0, Direction.EAST), (1, 0, Direction.WEST)]:
-    try:
-        pump = inventory.get_item("offshore-pump").place(
-            MapPosition(x=wx + dx, y=wy + dy), d)
-        break
-    except RuntimeError:
-        continue  # structured error names the blocking tile; try next
+water_hint = MapPosition(x=water[0]["x"], y=water[0]["y"])
+sites = placement_hints.find_offshore_pump_sites(
+    near=water_hint, radius=20, max_results=20
+)
+if not sites:
+    raise RuntimeError("No validated offshore-pump anchor near this water cluster")
+site = sites[0]
+
+# site.position is the exact anchor and can overlap water. The affordance also
+# supplies a standable land point within build reach; walk only there.
+await walking.walk_to(site.approach_position, strict_goal=False)
+pump = inventory.get_item("offshore-pump").place(
+    site.position, site.direction
+)
 
 # 2. Ask the PUMP where a boiler connects (never hand-compute this)
 cues = placement_hints.get_connection_positions(

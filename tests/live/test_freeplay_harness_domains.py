@@ -722,3 +722,74 @@ print(json.dumps({
     assert committed["inventory"] == 0
     assert len(committed["reals"]) == 2
     assert {row["entity_name"] for row in committed["reals"]} == {"transport-belt"}
+
+
+async def test_offshore_pump_site_supplies_actionable_approach_position(live_harness):
+    """Pump discovery supplies the complete no-guessing walk-and-place path."""
+    supervisor, host = live_harness
+    supervisor.environment.tier3.run_lua(
+        "remote.call('admin', 'clear_inventory', 1); "
+        "remote.call('admin', 'add_items', 1, {['offshore-pump']=1}); return true"
+    )
+
+    result = await _execute_json(
+        host,
+        """
+import json
+
+origin = walking.current_position
+water_hints = remote_view.find_water(near=origin, radius=250, limit=500)
+if not water_hints:
+    raise AssertionError("no water hint found in the live campaign")
+
+sites = []
+for hint in water_hints:
+    center = MapPosition(x=hint["x"], y=hint["y"])
+    sites = placement_hints.find_offshore_pump_sites(
+        near=center, radius=20, max_results=20
+    )
+    if sites:
+        break
+if not sites:
+    raise AssertionError("no actionable offshore-pump site found near live water")
+
+pump_item = inventory.get_item("offshore-pump")
+if pump_item is None:
+    raise AssertionError("trusted setup did not provide an offshore pump")
+
+attempt_errors = []
+placed = None
+selected = None
+final_position = None
+for site in sites:
+    try:
+        final_position = await walking.walk_to(
+            site.approach_position, strict_goal=False, timeout=90
+        )
+        placed = pump_item.place(site.position, site.direction)
+        selected = site
+        break
+    except RuntimeError as exc:
+        attempt_errors.append(str(exc))
+
+if placed is None or selected is None or final_position is None:
+    raise AssertionError(f"all supplied pump sites failed: {attempt_errors}")
+
+print(json.dumps({
+    "anchor": [selected.position.x, selected.position.y],
+    "approach": [selected.approach_position.x, selected.approach_position.y],
+    "direction": selected.direction.value,
+    "final_position": [final_position.x, final_position.y],
+    "placed_position": [placed.position.x, placed.position.y],
+    "anchor_approach_distance": selected.position.distance(
+        selected.approach_position
+    ),
+    "remaining_inventory": inventory.check_total("offshore-pump"),
+}, sort_keys=True))
+""",
+        "offshore-pump-actionable-site",
+    )
+
+    assert result["placed_position"] == result["anchor"]
+    assert result["anchor_approach_distance"] <= 10
+    assert result["remaining_inventory"] == 0

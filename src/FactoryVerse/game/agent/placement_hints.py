@@ -144,12 +144,16 @@ def validate_entity_for_connection(
 class ConnectionPosition:
     """A valid position for placing a target entity to connect to a source entity.
 
-    Results are pre-sorted by alignment quality - the first position is the best.
-    Just use positions[0] for optimal placement.
+    Connection-query results are normally sorted by alignment quality.
+    Offshore-pump sites instead use map proximity and are sorted nearest-anchor
+    first around the requested search center.
 
     Attributes:
         position: The map position where the target entity should be placed.
         direction: The direction the target entity should face (if applicable).
+        approach_position: Optional standable character position within build
+            reach of ``position``. Offshore-pump site results always provide
+            this so callers never walk to the water-overlapping anchor.
         perpendicular_offset: Alignment quality metric - lower is better (0.0 = perfectly aligned).
         displaces_character: True when the only thing in the footprint is a
             character (usually YOU). The placement still works — the engine
@@ -161,6 +165,7 @@ class ConnectionPosition:
     direction: Optional[Direction]
     perpendicular_offset: float = 0.0  # Lower = better alignment
     displaces_character: bool = False
+    approach_position: Optional[MapPosition] = None
 
     def __post_init__(self):
         if self.perpendicular_offset < 0:
@@ -802,7 +807,13 @@ class PlacementHints:
         """Find valid offshore-pump anchors with required orientations.
 
         Unlike ``remote_view.find_water()``, every returned pair has already
-        passed Factorio's live ``surface.can_place_entity`` check.
+        passed Factorio's live ``surface.can_place_entity`` check. The input
+        ``near`` position is only a search center. A returned site is an entity
+        placement anchor and may overlap water. Every result therefore includes
+        an engine-derived standable ``approach_position`` within build reach.
+        Walk there, then place at ``position`` using ``direction`` unchanged.
+        Results are ordered by anchor distance from ``near``. If one approach
+        cannot be reached from the actor's current region, try the next site.
         """
         if radius < 1:
             raise ValueError("radius must be at least 1")
@@ -815,17 +826,49 @@ class PlacementHints:
         result = self._client.get_water_placements(
             "offshore-pump", area, max_results=max_results
         )
-        return [
+        if result.get("error"):
+            raise ConnectionQueryError(
+                "find_offshore_pump_sites",
+                f"area centered at {near}",
+                "offshore-pump",
+                RuntimeError(str(result["error"])),
+            )
+
+        candidates = [
+            candidate
+            for candidate in result.get("positions", [])
+            if candidate.get("valid", True)
+        ]
+        missing_approach = [
+            candidate for candidate in candidates if not candidate.get("approach_position")
+        ]
+        if missing_approach:
+            raise ConnectionQueryError(
+                "find_offshore_pump_sites",
+                f"area centered at {near}",
+                "offshore-pump",
+                RuntimeError(
+                    "placement-hints result omitted approach_position; "
+                    "Python and fv_placement_hints versions may differ"
+                ),
+            )
+
+        sites = [
             ConnectionPosition(
                 position=MapPosition(
                     x=float(candidate["position"]["x"]),
                     y=float(candidate["position"]["y"]),
                 ),
                 direction=Direction(candidate["direction"]),
+                approach_position=MapPosition(
+                    x=float(candidate["approach_position"]["x"]),
+                    y=float(candidate["approach_position"]["y"]),
+                ),
             )
-            for candidate in result.get("positions", [])
-            if candidate.get("valid", True)
+            for candidate in candidates
         ]
+        sites.sort(key=lambda site: site.position.distance(near))
+        return sites
 
     # =========================================================================
     # LINE PLANNING

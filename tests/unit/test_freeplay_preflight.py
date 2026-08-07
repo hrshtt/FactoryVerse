@@ -98,7 +98,14 @@ def test_preflight_ignores_noncombat_enemy_force_entities():
         "x": 8.5,
         "y": 9.5,
     }
-    assert result["nearest_water_tile"]["position"] == {"x": 12.0, "y": 13.0}
+    assert result["nearest_water_tile"] == {
+        "position": {"x": 12.0, "y": 13.0},
+        "usage": "search_hint_only",
+        "walk_target": False,
+        "validated_offshore_pump_anchor": False,
+        "required_next_call": "placement_hints.find_offshore_pump_sites",
+        "required_walk_target": "site.approach_position",
+    }
 
 
 def test_preflight_rejects_biter_spawner_or_worm_entities():

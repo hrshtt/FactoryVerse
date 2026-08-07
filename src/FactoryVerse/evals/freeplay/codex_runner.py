@@ -75,8 +75,9 @@ embodied Python interfaces for actions. Learn from runtime errors and inspect
 before acting. Do not claim an action occurred unless runtime output confirms
 it. Successful runtime `execute` and `status` responses include `game_events`;
 treat a `research_finished` event as an authoritative capability change and
-reconsider the next action against its unlocked recipes and effects. You may
-create plans, reusable Python helpers, and other memory files in this workspace.
+add its recipes and effects to the available option set. Do not abandon a sound
+in-progress build merely because a technology unlocked. You may create plans,
+reusable Python helpers, and other memory files in this workspace.
 
 Use `BUGS.md` as the durable bug ledger. Record suspected runtime or harness
 defects with expected behavior, actual behavior, exact evidence, reproduction,
@@ -140,7 +141,9 @@ When a trigger completes, the harness delivers one `research_finished` event
 either in the current execution's `runtime_response.game_events` or as an
 inter-turn `game_events` observation. The payload names the technology,
 unlocked recipes, and effects. Treat it as an authoritative capability change
-and immediately reconsider the current build against those unlocks.
+and record the new options. Continue a sound in-progress build unless an unlock
+materially improves it or removes its blocker; an unlock is an option, not an
+instruction to pivot.
 
 If a trigger is confirmed but its event is absent, query technology and recipe
 state once, record exact evidence in `BUGS.md`, and continue from observed
@@ -148,8 +151,22 @@ capability state. Do not repeatedly recreate the threshold.
 
 ## Placement and inventory mechanics
 
-A water tile is not an offshore-pump anchor. Use the validated offshore-pump
-site affordance from `placement_hints` to obtain both position and direction.
+`CAMPAIGN_START.json`'s `nearest_water_tile.position` and every row returned by
+`remote_view.find_water()` are water-tile search hints only. Water tiles are not
+walkable destinations and are not validated offshore-pump anchors. Never pass a
+water-tile position to `walking.walk_to()` and never place a pump at that raw
+position.
+
+Before travelling to build power, call
+`placement_hints.find_offshore_pump_sites(near=water_hint, ...)`. Each returned
+site supplies the exact live-validated pump placement position and required
+direction plus an engine-derived standable `approach_position` within build
+reach. Walk to `site.approach_position`, then place at `site.position` with
+`site.direction` unchanged. Never walk directly to `site.position`. If no site
+is returned, expand the search or choose another water cluster instead of
+probing placements. If one supplied approach point is not path-reachable from
+your current region, try the next returned site before changing clusters.
+
 For other entities, use placement hints or the validator instead of spending
 one turn per guessed coordinate.
 
@@ -204,9 +221,40 @@ after all three trigger outcomes have been checked.
 """
 
 
+OFFSHORE_PUMP_DEBUG_MISSION = """# Offshore Pump and Water Affordance Debug Mission
+
+This is a bounded harness-debugging run, not a factory progression run.
+
+Use only the documented public embodied interfaces and the supplied finite test
+items. Exercise the intended water and offshore-pump workflow without manually
+guessing shoreline offsets or probing placements:
+
+1. Read the campaign-start nearest-water entry and confirm that it is only a
+   search hint—not a walking target or validated pump anchor.
+2. Call `remote_view.find_water()` and use a returned water tile only as the
+   search center for `placement_hints.find_offshore_pump_sites()`.
+3. Inspect multiple returned sites. Confirm that each includes a canonical
+   half-tile `position`, required `direction`, and standable
+   `approach_position`, and that results are nearest-first.
+4. Walk to a supplied `approach_position`, never the water hint or
+   `site.position`. If that approach is unreachable, try the next returned site.
+5. Place the supplied offshore pump at `site.position` with `site.direction`
+   unchanged. Confirm the persisted entity position matches the returned site
+   and live inspection reports water as its fluid source.
+6. Use connection hints to attach at least one supplied pipe and inspect the
+   resulting pump/pipe fluid state. Do not hand-compute the connection.
+
+Record exact calls, returned coordinates, walking result, placed entity state,
+and connection evidence in `offshore-pump-report.md`. Put any discrepancy in
+`BUGS.md` with exact evidence. Do not modify FactoryVerse source or lifecycle
+state. Report complete only after the public path has either succeeded or
+produced a precise reproducible failure.
+"""
+
+
 FACTORY_DEBUG_MISSION = """# Factory Bootstrap and Scaling Debug Mission
 
-This is an open-ended 200-turn factory run. Your objective is to discover a
+This is an open-ended long-horizon factory run. Your objective is to discover a
 reliable bootstrap strategy from the live game, execute it, and continually
 scale the factory toward a rocket. Do not stop merely because an early
 milestone is complete.
@@ -219,37 +267,115 @@ Use the supplied routed API/schema references and confirmed runtime output as
 evidence. Record durable conclusions so later turns compound rather than
 rediscover them.
 
-Use a repeated improvement loop:
+The character's attention is the scarcest early resource. Spend manual work to
+install, start, extend, or restore production that will continue while the
+character moves and builds elsewhere. Judge progress by useful production rate,
+time to the next required intervention, and construction surplus—not by the
+mere existence of one machine, one recipe, or one completed technology.
 
-1. Measure the current system: resource supply, smelting, power, intermediate
-   production, science production/consumption, research state, and idle or
-   starved machines.
-2. Identify the limiting layer or missing capability.
-3. Execute a coherent batch that expands it, including its inputs, fuel,
-   output handling, placement search, and verification where causally safe.
-4. Verify the build in the live engine. Do not infer success from intent.
-5. Update `FACTORY_PLAN.md` and `PROGRESS.md`, then choose the next bottleneck.
+Treat the factory as a portfolio of simultaneous productive flows. Mining,
+smelting, construction materials, intermediates, and science should keep doing
+useful work in parallel whenever their inputs and outputs permit. A flow is not
+meaningfully autonomous unless it has all of:
+
+- a replenishing input and fuel path,
+- operating production machines,
+- an output escape path into consumption, a belt, or a buffer, and
+- enough input and output capacity to remain useful while attention is away.
+
+Estimate this autonomy horizon qualitatively: what will stop next, why, and how
+soon? Belts and machine inventories are buffers too. Use buffers to decouple
+producers from intermittent consumers, but do not confuse stored stock with
+replenishment rate or force a healthy flow through a needless chest bottleneck.
+
+Use this repeated operating loop:
+
+1. Maintain a compact factory balance sheet in `PROGRESS.md`: industrial stage,
+   installed and active productive capacity, starved or blocked machines,
+   fuel/output autonomy, material and construction reserves, and useful work
+   currently in flight.
+2. Preserve existing production. Service imminent fuel or output failures in a
+   grouped round when practical, without draining self-fueling systems below
+   their operating reserve.
+3. Choose the investment that most improves future unattended production,
+   construction optionality, or readiness for the next industrial stage.
+   Prefer replicating a verified productive module over creating an isolated
+   demonstration machine.
+4. Execute the largest coherent expansion current knowledge and inventory make
+   safe. Include its inputs, fuel, output handling, placement, startup, and
+   verification where causally possible.
+5. Verify sustained operation in the live engine, record the capacity delta,
+   and decide whether to replicate, extend, connect, or transition. Do not infer
+   production from successful placement alone.
 
 Prefer reusable Python helpers and data-driven placement over long repetitive
 blocks. Keep enough space and modularity for extensions, but favor a working
 production loop over speculative perfect layouts. Preserve and extend useful
 infrastructure instead of repeatedly rebuilding from scratch.
 
-## Milestone ladder
+Maintain forward pressure. Do not let inspection, local diagnosis, or repeated
+servicing become the whole turn when a safe repair and the next expansion can be
+combined. While planning or travelling, keep useful construction hand-crafting
+queued whenever ingredients and inventory space permit: prioritize the drills,
+furnaces, belts, inserters, chests, assemblers, and power equipment needed by the
+next coherent build. Do not consume scarce construction inputs on large manual
+batches of science or intermediates merely to keep the handcrafting queue busy.
+When practical, combine crafting, resource acquisition, construction, fueling,
+startup, and verification in one causally ordered Python program so waiting and
+travel overlap productive work.
 
-Treat this as guidance, not a rigid script. Re-plan when live evidence calls
-for it.
+Manual mining and hand-feeding are bootstrap and recovery tools, not steady
+production plans. Use them when they are the fastest way to install or restore
+productive capacity, when a required material has no working flow yet, or when
+waiting for the automated flow would stall the whole expansion. Otherwise
+collect from, service, and expand the installed factory instead.
 
-- Establish dependable fuel and automated iron, copper, and stone production.
-- Build stable steam power with verified generation and pole coverage.
-- Automate core logistics and intermediates: belts, inserters, gears, cable,
-  circuits, and assembling machines.
-- Build labs and sustained automation-science production; keep research active.
-- Expand throughput where measured starvation or backpressure appears.
-- Add logistic science, steel, improved mining/smelting, and the technologies
-  needed for larger-scale production.
-- Progress through oil, chemical and production chains, higher science packs,
-  and ultimately rocket infrastructure when reachable within the budget.
+## Early passive-fuel bootstrap
+
+Burner mining drills placed on coal can form self-fueling loops: arrange drill
+outputs so the drills feed one another and seed the loop with a small amount of
+fuel. A closed loop that fills its drill inventories and stops is self-preserving
+but is not yet a useful passive fuel supply. Verify orientation and operating
+reserve, then give surplus coal an escape path into a belt, chest, downstream
+consumer, or a safe grouped collection routine. Extend the escape path or output
+capacity when it limits the autonomy horizon.
+
+Use that coal to support several useful primitive flows as materials permit:
+coal and stone extraction with output capacity, and iron/copper drill-and-
+furnace cells or equivalent ore-to-plate flows with fuel and output handling.
+Replicate working cells instead of treating one cell per material as adequate.
+Do not impose a fixed ratio blindly; scale the flows that increase sustained
+construction-material production and keep the whole burner economy operating.
+
+## Industrial stages and transitions
+
+Stages describe the factory's operating regime, not a rigid build order or a
+checkbox satisfied by one machine. Keep useful capacity from the previous stage
+running until its replacement is connected and verified.
+
+1. **Embodied bootstrap:** obtain only the manual resources needed to start a
+   self-preserving fuel source and the first productive cells.
+2. **Distributed burner expansion:** multiply mining and smelting cells, add
+   input/output capacity, and accumulate stone, coal, plates, and construction
+   equipment while the character works elsewhere.
+3. **Power and logistics readiness:** assemble enough materials and confirm a
+   viable water, boiler, generator, and pole layout. Establish power without
+   unnecessarily idling the burner economy.
+4. **Hybrid transition:** add electric miners, belts, and centralized processing
+   alongside working primitive cells. Expand and validate the new flow before
+   retiring or neglecting the old one.
+5. **Compounding automation:** automate construction intermediates and science;
+   replicate production sections and keep research supplied when the upstream
+   economy can do so without exhausting the construction reserve.
+6. **Advanced expansion:** use the same operating doctrine for steel, improved
+   mining and smelting, oil, chemical chains, higher science, and rocket
+   infrastructure.
+
+An unlocked technology changes what is possible; it does not prove that a
+transition is affordable. Before adding a new consumer, confirm that its
+upstream flows can support it while still accumulating the materials needed to
+expand. Research may run continuously when supported by genuine surplus, but
+research activity is not a substitute for economic growth.
 
 Because enemies are disabled, do not spend capacity on defenses unless a live
 observation proves they are required.
@@ -272,35 +398,44 @@ FACTORY_PLAN_TEMPLATE = """# Factory Plan
 
 This is agent-owned planning memory. Revise it as live evidence changes.
 
-## Current objective
+## Operating objective
 
-Use the supplied campaign-start state and choose the next coherent production
-batch.
+Compound useful unattended production and construction capacity toward the next
+affordable industrial transition.
+
+## Current industrial stage and readiness
+
+- Stage: unknown until the first targeted validation
+- Evidence supporting this stage:
+- Missing conditions for the next stage:
 
 ## Confirmed constraints
 
 - Add only facts confirmed by runtime output or workspace references.
 
-## Milestones
+## Productive flows to preserve
 
-- [ ] Automated fuel and raw-resource extraction
-- [ ] Automated iron, copper, and stone processing
-- [ ] Stable verified steam power
-- [ ] Automated core intermediates and logistics
-- [ ] Sustained automation science and active research
-- [ ] Sustained logistic science
-- [ ] Scaled smelting/mining and steel
-- [ ] Oil and chemical production
-- [ ] Higher science and rocket infrastructure
-- [ ] Rocket launch confirmed
+- Record each useful flow, what keeps it running, and what will require the next
+  intervention.
 
-## Current limiting layer or evidenced blocker
+## Next capacity investment
 
-Unknown until the first targeted validation.
+- Build: unknown until the first targeted validation
+- Expected durable gain:
+- Inputs and construction reserve required:
+- Input, fuel, and output path:
+- Verification of sustained operation:
 
-## Next coherent build
+## In-flight useful work
 
-Unknown until the first targeted validation.
+- Hand-crafting queue:
+- Machines producing while the character moves or plans:
+
+## Transition horizon
+
+- Preserve or replicate before transitioning:
+- Technology options worth using when affordable:
+- Later objective after the next investment:
 """
 
 
@@ -309,19 +444,34 @@ PROGRESS_LOG_TEMPLATE = """# Factory Progress
 Update this durable log at least every ten executed actions and after major
 research or production milestones.
 
-## Latest verified state
+## Factory balance sheet
 
 - Turn: 0
 - Game tick: unknown
-- Power networks/live generation: not inspected
-- Mining capacity and observed activity: not inspected
-- Smelting capacity and observed activity: not inspected
-- Material buffers: not inspected
-- Science: not inspected
-- Research: not inspected
-- Limiting layer or evidenced blocker: targeted validation required
+- Industrial stage: not established
+- Fuel flow and autonomy horizon: not inspected
+- Raw extraction, installed/active/blocked: not inspected
+- Smelting, installed/active/starved/blocked: not inspected
+- Logistics and power: not inspected
+- Construction reserves and replenishment: not inspected
+- Intermediates and science: not inspected
+- Research and newly available options: not inspected
+- Useful hand-crafting or machine work in flight: none recorded
+- Manual production debt: identify recurring manual work that should become a
+  productive flow
 
-## Milestone history
+## Next intervention risks
+
+- What will stop first, why, and how soon: unknown
+- Productive flows that must be preserved during the next build: unknown
+
+## Latest verified capacity delta
+
+- Added, activated, replicated, or connected:
+- Sustained-operation evidence:
+- Remaining starvation or output blockage:
+
+## Growth history
 
 """
 
@@ -329,10 +479,17 @@ research or production milestones.
 FOLLOWUP_PROMPT = """Continue the same FactoryVerse freeplay run.
 
 Read last-observation.json for the trusted result of your previous action and
-return the next coherent batch of work, not merely the next primitive game
-operation. Update workspace plans or reusable helpers when useful. If an
-execution failed, diagnose it from the recorded output rather than assuming it
-succeeded. Campaign lifecycle remains supervisor-owned.
+read `../harness-control/current-interactable-state.json` before any next action
+whose validity depends on local interaction. The harness has replaced that file
+with the current snapshot; do not edit it or rely on an older snapshot.
+Return the next coherent batch of work, not merely the next primitive game
+operation. Preserve useful flows, update the factory balance sheet, and prefer a
+capacity investment that increases unattended production or construction
+optionality. Treat technology unlocks as options, not automatic pivots. Update
+workspace plans or reusable helpers when useful. If an execution failed,
+diagnose it from the recorded output rather than assuming it succeeded, then
+combine a safe repair with forward progress when practical. Campaign lifecycle
+remains supervisor-owned.
 """
 
 
@@ -419,7 +576,9 @@ class CodexCliClient:
         except asyncio.TimeoutError as exc:
             process.kill()
             await process.wait()
-            raise CodexRunnerError("Timed out while checking Codex CLI version") from exc
+            raise CodexRunnerError(
+                "Timed out while checking Codex CLI version"
+            ) from exc
         if process.returncode != 0:
             message = stderr.decode("utf-8", errors="replace").strip()
             raise CodexRunnerError(f"Codex version check failed: {message}")
@@ -693,6 +852,7 @@ def codex_harness_configuration(
     execution_timeout: float,
     maximum_execution_timeout: float,
     notification_debug: bool = False,
+    offshore_pump_debug: bool = False,
     factory_debug: bool = False,
 ) -> Dict[str, Any]:
     """Return the immutable Codex-side configuration stored in the manifest."""
@@ -717,6 +877,7 @@ def codex_harness_configuration(
         "execution_timeout_seconds": execution_timeout,
         "maximum_execution_timeout_seconds": maximum_execution_timeout,
         "notification_debug": notification_debug,
+        "offshore_pump_debug": offshore_pump_debug,
         "factory_debug": factory_debug,
     }
 
@@ -756,6 +917,7 @@ class CodexFreeplayRunner:
         execution_timeout: float,
         maximum_execution_timeout: float,
         notification_debug: bool = False,
+        offshore_pump_debug: bool = False,
         factory_debug: bool = False,
     ):
         if max_turns < 1:
@@ -767,9 +929,10 @@ class CodexFreeplayRunner:
         self.max_turns = max_turns
         self.checkpoint_every = checkpoint_every
         self.notification_debug = notification_debug
+        self.offshore_pump_debug = offshore_pump_debug
         self.factory_debug = factory_debug
-        if notification_debug and factory_debug:
-            raise ValueError("notification_debug and factory_debug are mutually exclusive")
+        if sum((notification_debug, offshore_pump_debug, factory_debug)) > 1:
+            raise ValueError("Codex debug profiles are mutually exclusive")
         self.actor = ActorRuntimeSession(
             supervisor,
             default_timeout=execution_timeout,
@@ -793,14 +956,16 @@ class CodexFreeplayRunner:
             self._write_static(
                 self.workspace / "MISSION.md", NOTIFICATION_DEBUG_MISSION
             )
+        elif self.offshore_pump_debug:
+            self._write_static(
+                self.workspace / "MISSION.md", OFFSHORE_PUMP_DEBUG_MISSION
+            )
         elif self.factory_debug:
             self._write_static(self.workspace / "MISSION.md", FACTORY_DEBUG_MISSION)
             self._seed_mutable(
                 self.workspace / "FACTORY_PLAN.md", FACTORY_PLAN_TEMPLATE
             )
-            self._seed_mutable(
-                self.workspace / "PROGRESS.md", PROGRESS_LOG_TEMPLATE
-            )
+            self._seed_mutable(self.workspace / "PROGRESS.md", PROGRESS_LOG_TEMPLATE)
         references = self.workspace / "references"
         references.mkdir(parents=True, exist_ok=True)
         documentation = self.supervisor.store.manifest()["documentation"]
@@ -839,9 +1004,7 @@ class CodexFreeplayRunner:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
         schema_text = json.dumps(ACTION_SCHEMA, indent=2, sort_keys=True) + "\n"
-        self._write_static(
-            self.control_dir / "next-action.schema.json", schema_text
-        )
+        self._write_static(self.control_dir / "next-action.schema.json", schema_text)
 
     async def run(self, preflight: Dict[str, Any]) -> Dict[str, Any]:
         self.prepare_workspace()
@@ -992,7 +1155,10 @@ class CodexFreeplayRunner:
             "baseline_checkpoint": baseline,
             "warning": (
                 "Immutable campaign-start snapshot; it is not current state after "
-                "actions. A water tile is not necessarily a valid offshore-pump anchor."
+                "actions. nearest_water_tile.position is an unwalkable search hint, "
+                "not a pump anchor or walking target. Resolve a live anchor and "
+                "direction with placement_hints.find_offshore_pump_sites, walk "
+                "to site.approach_position, and never walk to site.position."
             ),
         }
         _write_json(target, payload)
@@ -1023,9 +1189,15 @@ class CodexFreeplayRunner:
                     continue
                 request = event.get("request", {})
                 response = event.get("response", {})
-                if event.get("direction") == "actor_request" and request.get("id") == request_id:
+                if (
+                    event.get("direction") == "actor_request"
+                    and request.get("id") == request_id
+                ):
                     request_seen = True
-                if event.get("direction") == "actor_response" and response.get("id") == request_id:
+                if (
+                    event.get("direction") == "actor_response"
+                    and response.get("id") == request_id
+                ):
                     recovered_response = response
         if recovered_response is not None:
             await self._complete_execution(
@@ -1115,8 +1287,10 @@ class CodexFreeplayRunner:
                 for record in self.supervisor.store.checkpoint_records()
                 if record.get("reason") == checkpoint_reason
             ]
-            checkpoint = matching[-1] if matching else await self.supervisor.checkpoint(
-                reason=checkpoint_reason
+            checkpoint = (
+                matching[-1]
+                if matching
+                else await self.supervisor.checkpoint(reason=checkpoint_reason)
             )
         observation = {
             "event": "execution_result",

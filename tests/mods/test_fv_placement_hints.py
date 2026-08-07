@@ -593,6 +593,14 @@ class TestWaterPlacements:
         assert "positions" in result
         # Should find some valid positions at water edges
         # (may be 0 if water patch is too small or wrong shape)
+        for site in result["positions"]:
+            assert "approach_position" in site
+            assert {"x", "y"} <= set(site["approach_position"])
+            assert site["position"]["x"] % 1 == 0.5
+            assert site["position"]["y"] % 1 == 0.5
+            dx = site["position"]["x"] - site["approach_position"]["x"]
+            dy = site["position"]["y"] - site["approach_position"]["y"]
+            assert dx * dx + dy * dy <= 100
 
     def test_water_placements_no_water(self, placement_hints, test_area):
         """Test no placements found in area without water."""

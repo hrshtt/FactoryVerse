@@ -608,7 +608,7 @@ Some entities have special placement requirements:
 | `burner-mining-drill` | Must be placed on resource tiles |
 | `electric-mining-drill` | Must be placed on resource tiles |
 | `pumpjack` | Must be placed on resource tiles |
-| `offshore-pump` | Must be placed on water tiles |
+| `offshore-pump` | Use `find_offshore_pump_sites`; walk to `site.approach_position`, then place at the possibly water-overlapping `site.position` with `site.direction` |
 
 ### Connection Example
 

@@ -119,8 +119,9 @@ else:
         cls=PlacementHints,
         method_name="find_offshore_pump_sites",
         description="Find live engine-validated offshore-pump anchors. Each result "
-        "contains both the placement position and required direction; these are "
-        "not merely nearby water tiles.",
+        "contains the placement position, required direction, and an engine-derived "
+        "standable approach position within build reach; these are not merely nearby "
+        "water tiles. Results are ordered nearest-anchor first.",
         examples=[
             Example(
                 code="""water = remote_view.find_water(near=MapPosition(x=0, y=0), radius=80)
@@ -132,16 +133,25 @@ sites = placement_hints.find_offshore_pump_sites(
 if not sites:
     raise RuntimeError("No validated offshore-pump site in the searched area")
 site = sites[0]
+# site.position can overlap water. Walk only to the supplied standable land
+# position, then place at the anchor with its validated direction unchanged.
+await walking.walk_to(site.approach_position, strict_goal=False)
 pump = inventory.get_item("offshore-pump")
-await pump.place(site.position, site.direction)""",
+pump.place(site.position, site.direction)""",
                 decision_context="Placing an offshore pump without guessing shoreline anchors",
-                expected_outcome="Returns validated position-and-direction candidates",
+                expected_outcome=(
+                    "Returns nearest-first validated anchor, direction, and "
+                    "standable-approach candidates"
+                ),
                 validation_level=ValidationLevel.SYNTAX,
             )
         ],
         decision_points=[
             "remote_view.find_water() returns water tiles, not pump anchors",
-            "Search around a known water tile and use the returned direction unchanged",
+            "Water-tile hints are not walking targets; resolve sites before travelling",
+            "Walk to site.approach_position, never site.position",
+            "Place at site.position and use site.direction unchanged",
+            "If walking cannot reach one approach position, try the next returned site",
             "Increase radius or choose another water cluster only when the result is empty",
         ],
     )

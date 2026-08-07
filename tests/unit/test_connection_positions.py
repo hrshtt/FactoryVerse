@@ -17,11 +17,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from FactoryVerse.game.agent.placement_hints import (
+    ConnectionPosition,
     PlacementHints,
     ConnectionPositionList,
     _pole_prototype_distances,
 )
 from FactoryVerse.game.factory.factorio_types import Direction
+from FactoryVerse.game.factory.types import MapPosition
 from FactoryVerse.game.factory.prototypes import get_entity_prototypes
 
 
@@ -68,6 +70,15 @@ class TestFluidCueDirectionParsing:
         cues = hints._get_fluid_pipe_positions(_source(), "pipe")
         assert len(cues) == 1
         assert cues[0].direction is None
+
+    def test_approach_field_preserves_connection_position_positional_api(self):
+        cue = ConnectionPosition(
+            MapPosition(x=1.0, y=2.0), Direction.NORTH, 1.25, True
+        )
+
+        assert cue.perpendicular_offset == 1.25
+        assert cue.displaces_character is True
+        assert cue.approach_position is None
 
     def test_invalid_cues_filtered(self):
         hints = _hints_with_fluid_result([

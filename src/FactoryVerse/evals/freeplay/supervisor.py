@@ -63,6 +63,14 @@ NOTIFICATION_DEBUG_RAW_INVENTORY: Dict[str, int] = {
     "stone": 50,
 }
 
+# Focused affordance validation should not depend on unrelated research or
+# production milestones. Supply only the finite items needed to exercise the
+# public water-search, pump-placement, and fluid-connection path.
+OFFSHORE_PUMP_DEBUG_INVENTORY: Dict[str, int] = {
+    "offshore-pump": 1,
+    "pipe": 4,
+}
+
 
 def _mod_identity(source: Path) -> tuple[str, str]:
     info = json.loads((source / "info.json").read_text(encoding="utf-8"))
@@ -694,7 +702,14 @@ class FreeplaySupervisor:
                 "position": {
                     "x": float(water_rows[0][0]),
                     "y": float(water_rows[0][1]),
-                }
+                },
+                "usage": "search_hint_only",
+                "walk_target": False,
+                "validated_offshore_pump_anchor": False,
+                "required_next_call": (
+                    "placement_hints.find_offshore_pump_sites"
+                ),
+                "required_walk_target": "site.approach_position",
             }
         power_row = tier4.remote_view.execute_raw(
             """

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from FactoryVerse.game.factory.types import MapPosition
     from FactoryVerse.infra.udp_dispatcher import UDPDispatcher
     from FactoryVerse.game.factory.resource.base import BaseResource
     from FactoryVerse.game.factory.entity.base_entity import BaseEntity
@@ -609,7 +610,8 @@ class RemoteView:
 
         Terrain affordance: answers "where is water?" from the snapshot DB
         without probing placements (AFFORD-1 — never use place/pickup as a
-        terrain scanner).
+        terrain scanner). Returned positions are unwalkable water-tile centers,
+        not offshore-pump anchors or walking destinations.
 
         Args:
             near: If given, results are ordered by distance to this position
@@ -624,8 +626,10 @@ class RemoteView:
             `query("SELECT MAX(tick) FROM chunk_snapshot_meta")` before
             concluding water does not exist.
 
-        Use ``placement_hints.find_offshore_pump_sites`` around one of these
-        tiles to obtain engine-validated pump positions and directions.
+        Before travelling or placing, use
+        ``placement_hints.find_offshore_pump_sites`` around one of these tiles
+        to obtain engine-validated pump anchors, directions, and standable
+        approach positions.
         """
         self._ensure_query_ready()
         limit = int(limit)

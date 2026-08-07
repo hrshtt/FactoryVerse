@@ -752,6 +752,44 @@ def cmd_freeplay_eval_status(args):
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def cmd_freeplay_eval_watch(args):
+    """Run the event-driven, read-only Codex campaign operator."""
+    from FactoryVerse.evals.freeplay.operator_controller import (
+        OperatorSchedule,
+        run_freeplay_operator,
+    )
+
+    async def _run():
+        store = _freeplay_campaign_store(args.campaign)
+        schedule = OperatorSchedule(
+            min_interval_seconds=args.min_interval,
+            max_silence_seconds=args.max_silence,
+            debounce_seconds=args.debounce,
+            inference_grace_seconds=args.inference_grace,
+            execution_grace_seconds=args.execution_grace,
+        )
+        decision = await run_freeplay_operator(
+            store,
+            model=args.model,
+            objective=args.objective,
+            codex_bin=args.codex_bin,
+            schedule=schedule,
+            request_timeout_seconds=args.app_server_timeout,
+            turn_timeout_seconds=args.operator_turn_timeout,
+            once=args.once,
+            new_thread=args.new_thread,
+        )
+        print(json.dumps(decision, indent=2, sort_keys=True))
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        print(
+            "Freeplay operator stopped; the campaign was left running.",
+            file=sys.stderr,
+        )
+
+
 def cmd_freeplay_eval_launch(args):
     """Launch/resume a campaign and serve its single-owner actor protocol."""
     from FactoryVerse.evals.freeplay.runtime_host import (
@@ -830,6 +868,7 @@ def cmd_freeplay_eval_codex(args):
     from FactoryVerse.evals.freeplay.supervisor import (
         FREEPLAY_STARTING_INVENTORY,
         NOTIFICATION_DEBUG_RAW_INVENTORY,
+        OFFSHORE_PUMP_DEBUG_INVENTORY,
         FreeplaySupervisor,
     )
 
@@ -867,11 +906,14 @@ def cmd_freeplay_eval_codex(args):
             ),
             task_objective,
         )
+        harness_configuration["offshore_pump_debug"] = offshore_pump_debug
 
         if not store.exists:
             initial_inventory = dict(FREEPLAY_STARTING_INVENTORY)
             if args.notification_debug:
                 initial_inventory.update(NOTIFICATION_DEBUG_RAW_INVENTORY)
+            if offshore_pump_debug:
+                initial_inventory.update(OFFSHORE_PUMP_DEBUG_INVENTORY)
             FreeplaySupervisor.create_campaign(
                 store,
                 repo_root=get_config().project_root,
@@ -909,6 +951,7 @@ def cmd_freeplay_eval_codex(args):
                 execution_timeout=args.execution_timeout,
                 maximum_execution_timeout=args.maximum_execution_timeout,
                 notification_debug=args.notification_debug,
+                offshore_pump_debug=offshore_pump_debug,
                 factory_debug=args.factory_debug,
             )
             await client.start()
@@ -1411,6 +1454,82 @@ def main():
     freeplay_eval_status.add_argument("--campaign", required=True)
     freeplay_eval_status.set_defaults(func=cmd_freeplay_eval_status)
 
+    freeplay_eval_watch = freeplay_eval_sub.add_parser(
+        "watch",
+        help=(
+            "Watch structured campaign events and wake a persistent read-only "
+            "Codex operator thread"
+        ),
+    )
+    freeplay_eval_watch.add_argument("--campaign", required=True)
+    freeplay_eval_watch.add_argument(
+        "--model",
+        default=None,
+        help="Operator model (default: the Codex CLI configured model)",
+    )
+    freeplay_eval_watch.add_argument("--codex-bin", default="codex")
+    freeplay_eval_watch.add_argument(
+        "--objective",
+        default=(
+            "Monitor lifecycle health and evidence-backed progress without "
+            "steering the campaign or deciding its evaluation verdict."
+        ),
+        help="Run-specific operational objective supplied to every operator turn",
+    )
+    freeplay_eval_watch.add_argument(
+        "--min-interval",
+        type=float,
+        default=15.0,
+        help="Minimum seconds between operator turns",
+    )
+    freeplay_eval_watch.add_argument(
+        "--max-silence",
+        type=float,
+        default=300.0,
+        help="Maximum seconds without an operator turn when no event arrives",
+    )
+    freeplay_eval_watch.add_argument(
+        "--debounce",
+        type=float,
+        default=1.0,
+        help="Seconds to coalesce a burst of filesystem notifications",
+    )
+    freeplay_eval_watch.add_argument(
+        "--inference-grace",
+        type=float,
+        default=15.0,
+        help="Grace after the campaign's Codex inference timeout",
+    )
+    freeplay_eval_watch.add_argument(
+        "--execution-grace",
+        type=float,
+        default=15.0,
+        help="Grace after the campaign's maximum actor execution timeout",
+    )
+    freeplay_eval_watch.add_argument(
+        "--app-server-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout for app-server JSON-RPC requests",
+    )
+    freeplay_eval_watch.add_argument(
+        "--operator-turn-timeout",
+        type=float,
+        default=600.0,
+        help="Timeout for one operator model turn",
+    )
+    freeplay_eval_watch.add_argument(
+        "--once",
+        action="store_true",
+        help="Emit one operator decision and exit",
+    )
+    freeplay_eval_watch.add_argument(
+        "--new-thread",
+        action="store_true",
+        help="Start a new operator thread instead of resuming controller state",
+    )
+    freeplay_eval_watch.set_defaults(func=cmd_freeplay_eval_watch)
+
     freeplay_eval_launch = freeplay_eval_sub.add_parser(
         "launch", help="Launch or resume a campaign and open the JSONL runtime"
     )
@@ -1483,6 +1602,14 @@ def main():
         help=(
             "Run the bounded initial-research notification mission with only "
             "raw-resource provisioning and an agent-owned bug ledger"
+        ),
+    )
+    freeplay_debug_profiles.add_argument(
+        "--offshore-pump-debug",
+        action="store_true",
+        help=(
+            "Run the bounded water-hint, offshore-pump placement, and fluid "
+            "connection mission with finite supplied test items"
         ),
     )
     freeplay_debug_profiles.add_argument(
