@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 
 class CodexAppServerError(RuntimeError):
@@ -39,6 +40,7 @@ class CodexAppServer:
         stderr_path: Optional[Path] = None,
         client_name: str = "factoryverse-codex-integration",
         client_version: str = "1.0.0",
+        disabled_features: Sequence[str] = (),
     ):
         if request_timeout_seconds <= 0:
             raise ValueError("request_timeout_seconds must be positive")
@@ -48,6 +50,9 @@ class CodexAppServer:
         self.stderr_path = Path(stderr_path) if stderr_path else None
         self.client_name = client_name
         self.client_version = client_version
+        self.disabled_features = tuple(disabled_features)
+        if any(not feature.strip() for feature in self.disabled_features):
+            raise ValueError("disabled feature names must be non-empty")
         self.process: Optional[asyncio.subprocess.Process] = None
         self._request_id = 0
         self._pending: Dict[int, asyncio.Future[Dict[str, Any]]] = {}
@@ -85,9 +90,7 @@ class CodexAppServer:
             raise CodexAppServerError("Codex app-server is already started")
         try:
             self.process = await asyncio.create_subprocess_exec(
-                self.executable,
-                "app-server",
-                "--stdio",
+                *self._app_server_command(),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -114,6 +117,12 @@ class CodexAppServer:
             await self.close()
             raise
         return initialized
+
+    def _app_server_command(self) -> list[str]:
+        command = [self.executable, "app-server", "--stdio"]
+        for feature in self.disabled_features:
+            command.extend(("--disable", feature))
+        return command
 
     async def close(self) -> None:
         process = self.process
@@ -239,15 +248,30 @@ class CodexAppServer:
         if not isinstance(turn_id, str) or not turn_id:
             raise CodexAppServerError("turn/start returned no turn id")
 
-        while True:
-            completed = await self.wait_notification(
-                "turn/completed", timeout=timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
+        started = await self._wait_until("turn/started", deadline)
+        while started.get("threadId") != thread_id:
+            started = await self._wait_until("turn/started", deadline)
+        started_turn = started.get("turn") or {}
+        started_turn_id = started_turn.get("id")
+        if started_turn_id != turn_id:
+            if isinstance(started_turn_id, str) and started_turn_id:
+                await self._interrupt_best_effort(thread_id, started_turn_id)
+            raise CodexAppServerError(
+                "turn/start response id differs from turn/started notification: "
+                f"{turn_id!r} != {started_turn_id!r}"
             )
+
+        while True:
+            completed = await self._wait_until("turn/completed", deadline)
             if completed.get("threadId") != thread_id:
                 continue
             completed_turn = completed.get("turn") or {}
             if completed_turn.get("id") != turn_id:
-                continue
+                raise CodexAppServerError(
+                    "received completion for an unexpected same-thread turn: "
+                    f"expected {turn_id!r}, got {completed_turn.get('id')!r}"
+                )
             if completed_turn.get("status") != "completed":
                 raise CodexAppServerError(
                     f"turn {turn_id} ended as {completed_turn.get('status')}: "
@@ -268,6 +292,22 @@ class CodexAppServer:
                 thread_id=thread_id,
                 turn_id=turn_id,
                 text=messages[-1],
+            )
+
+    async def _wait_until(self, method: str, deadline: float) -> Dict[str, Any]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CodexAppServerError(f"Timed out waiting for {method}")
+        try:
+            return await self.wait_notification(method, timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise CodexAppServerError(f"Timed out waiting for {method}") from exc
+
+    async def _interrupt_best_effort(self, thread_id: str, turn_id: str) -> None:
+        with contextlib.suppress(Exception):
+            await self.request(
+                "turn/interrupt",
+                {"threadId": thread_id, "turnId": turn_id},
             )
 
     async def request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
