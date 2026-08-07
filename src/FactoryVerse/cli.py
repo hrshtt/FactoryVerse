@@ -752,6 +752,34 @@ def cmd_freeplay_eval_status(args):
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def cmd_freeplay_eval_prejoin(args):
+    """Read-only comparison of campaign server mods and installed client mods."""
+    from FactoryVerse.evals.freeplay.prejoin import (
+        compare_campaign_client_mods,
+        format_prejoin_mod_compatibility,
+    )
+    from FactoryVerse.infra.factorio_client_setup import get_client_mod_path
+
+    store = _freeplay_campaign_store(args.campaign)
+    client_mod_dir = (
+        Path(args.client_mod_dir) if args.client_mod_dir else get_client_mod_path()
+    )
+    result = compare_campaign_client_mods(
+        server_mod_dir=store.paths.server_mods,
+        client_mod_dir=client_mod_dir,
+        campaign_manifest=store.manifest(),
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(format_prejoin_mod_compatibility(result))
+    exit_code = {"match": 0, "mismatch": 1, "indeterminate": 2}[
+        result.status.value
+    ]
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
 def cmd_freeplay_eval_watch(args):
     """Run the event-driven, read-only Codex campaign operator."""
     from FactoryVerse.evals.freeplay.operator_controller import (
@@ -1453,6 +1481,20 @@ def main():
     )
     freeplay_eval_status.add_argument("--campaign", required=True)
     freeplay_eval_status.set_defaults(func=cmd_freeplay_eval_status)
+
+    freeplay_eval_prejoin = freeplay_eval_sub.add_parser(
+        "prejoin",
+        help="Compare campaign server mods with the desktop client before joining",
+    )
+    freeplay_eval_prejoin.add_argument("--campaign", required=True)
+    freeplay_eval_prejoin.add_argument(
+        "--client-mod-dir",
+        help="Client mods directory (default: detected Factorio application directory)",
+    )
+    freeplay_eval_prejoin.add_argument(
+        "--json", action="store_true", help="Emit the complete comparison as JSON"
+    )
+    freeplay_eval_prejoin.set_defaults(func=cmd_freeplay_eval_prejoin)
 
     freeplay_eval_watch = freeplay_eval_sub.add_parser(
         "watch",

@@ -37,6 +37,11 @@ def _get_mod_path() -> Path:
     return _detect_factorio_dir() / "mods"
 
 
+def get_client_mod_path() -> Path:
+    """Return the installed desktop client's mod directory without modifying it."""
+    return _get_mod_path()
+
+
 def _get_scenario_path() -> Path:
     """Get local Factorio scenario directory."""
     return _detect_factorio_dir() / "scenarios"
