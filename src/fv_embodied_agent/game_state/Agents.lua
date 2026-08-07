@@ -879,17 +879,7 @@ local function handle_path_failure(agent, event)
         message = string.format("No path found after trying %d approach(es)", candidates_tried),
     }, "walking")
     
-    -- Clear walking state
-    walking.action_id = nil
-    walking.start_tick = nil
-    walking.goal = nil
-    walking.original_goal = nil
-    walking.goal_entity = nil
-    walking.entity_ref = nil
-    walking.approach_candidates = nil
-    walking.approach_index = 0
-    walking.path_options = nil
-    walking.path_id = nil
+    agent:clear_walking_state()
 end
 
 --- Get events (defined events and nth_tick)
@@ -934,6 +924,9 @@ function M.get_events()
                         -- Success - assign path and start walking
                         agent.walking.path = event.path
                         agent.walking.progress = 1
+                        -- The request is resolved; retaining its id makes
+                        -- completed walks appear active after path exhaustion.
+                        agent.walking.path_id = nil
                         break
                     end
                 end

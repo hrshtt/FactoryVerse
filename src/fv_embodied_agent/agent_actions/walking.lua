@@ -11,6 +11,47 @@ local WalkingActions = {}
 
 DEBUG = false
 
+--- Clear all state owned by one walking action.
+--- @param self Agent
+local function clear_walking_state(self)
+    local walking = self.walking
+    walking.action_id = nil
+    walking.start_tick = nil
+    walking.goal = nil
+    walking.original_goal = nil
+    walking.goal_entity = nil
+    walking.last_distance_to_entity = nil
+    walking.entity_ref = nil
+    walking.approach_candidates = nil
+    walking.approach_index = 0
+    walking.path_options = nil
+    walking.path_id = nil
+    walking.path = {}
+    walking.progress = 0
+    self.character.walking_state = { walking = false }
+end
+
+-- Expose the single terminal cleanup operation to path-request event handlers.
+WalkingActions.clear_walking_state = clear_walking_state
+
+--- Fail an entity-targeted walk whose original target no longer exists.
+--- @param self Agent
+local function fail_invalid_entity_target(self)
+    local walking = self.walking
+    self:enqueue_message({
+        action = "walk_to",
+        agent_id = self.agent_id,
+        action_id = walking.action_id,
+        success = false,
+        status = "failed",
+        tick = game.tick or 0,
+        failure_type = "entity_not_found",
+        goal = walking.original_goal,
+        message = "Target entity became invalid before interaction reach was established",
+    }, "walking")
+    clear_walking_state(self)
+end
+
 local function get_entity_reach_distance(agent, target_entity)
     if target_entity.type == "resource" or target_entity.type == "tree" or
        target_entity.type == "simple-entity" then
@@ -284,6 +325,7 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
         
         if not target_entity or not target_entity.valid then
             -- Entity not found - immediate failure
+            clear_walking_state(self)
             return {
                 success = false,
                 queued = false,
@@ -298,12 +340,14 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
         -- Check if already in reach
         if self.character.can_reach_entity(target_entity) then
             -- Already reachable, no need to walk
+            clear_walking_state(self)
             return {
                 success = true,
                 queued = false,
                 action_id = action_id,
                 tick = rcon_tick,
                 position = {x = self.character.position.x, y = self.character.position.y},
+                interaction_reachable = true,
                 message = "Already in reach of entity"
             }
         end
@@ -313,6 +357,7 @@ WalkingActions.walk_to = function(self, goal, strict_goal, options, entity_ref)
         
         if #candidates == 0 then
             -- No standable tiles around entity
+            clear_walking_state(self)
             return {
                 success = false,
                 queued = false,
@@ -434,7 +479,11 @@ WalkingActions.process_walking = function(self)
     if not path or walking.progress > #path then
         -- Check if we need to validate distance to original goal entity
         local reached_goal = true
-        if walking.goal_entity and walking.goal_entity.valid then
+        if walking.entity_ref and
+           not (walking.goal_entity and walking.goal_entity.valid) then
+            fail_invalid_entity_target(self)
+            return
+        elseif walking.goal_entity and walking.goal_entity.valid then
             -- Check if agent is within reach distance of the original goal entity
             local agent_pos = self.character.position
             local entity_pos = walking.goal_entity.position
@@ -473,14 +522,7 @@ WalkingActions.process_walking = function(self)
                         goal = walking.original_goal,
                         message = "Path ended outside interaction reach",
                     }, "walking")
-                    walking.action_id = nil
-                    walking.goal = nil
-                    walking.original_goal = nil
-                    walking.goal_entity = nil
-                    walking.last_distance_to_entity = nil
-                    walking.progress = 0
-                    walking.path = {}
-                    self.character.walking_state = { walking = false }
+                    clear_walking_state(self)
                     return
                 end
             end
@@ -504,21 +546,13 @@ WalkingActions.process_walking = function(self)
                     tick = game.tick or 0,
                     position = { x = self.character.position.x, y = self.character.position.y },
                     goal = reported_goal,
+                    interaction_reachable = walking.entity_ref and true or nil,
                     actual_ticks = actual_ticks,
                 }, "walking")
                 
-                -- Clear tracking
-                walking.action_id = nil
-                walking.start_tick = nil
-                walking.goal = nil
-                walking.original_goal = nil
-                walking.goal_entity = nil
-                walking.last_distance_to_entity = nil
             end
-            
-            walking.progress = 0
-            walking.path = {}
-            self.character.walking_state = { walking = false }
+
+            clear_walking_state(self)
             
             return
         end
@@ -533,7 +567,11 @@ WalkingActions.process_walking = function(self)
         if walking.progress > #path then
             -- All waypoints reached, check if we need to validate distance to original goal entity
             local reached_goal = true
-            if walking.goal_entity and walking.goal_entity.valid then
+            if walking.entity_ref and
+               not (walking.goal_entity and walking.goal_entity.valid) then
+                fail_invalid_entity_target(self)
+                return
+            elseif walking.goal_entity and walking.goal_entity.valid then
                 -- Check if agent is within reach distance of the original goal entity
                 local agent_pos = self.character.position
                 local entity_pos = walking.goal_entity.position
@@ -572,14 +610,7 @@ WalkingActions.process_walking = function(self)
                             goal = walking.original_goal,
                             message = "Path ended outside interaction reach",
                         }, "walking")
-                        walking.action_id = nil
-                        walking.goal = nil
-                        walking.original_goal = nil
-                        walking.goal_entity = nil
-                        walking.last_distance_to_entity = nil
-                        walking.progress = 0
-                        walking.path = {}
-                        self.character.walking_state = { walking = false }
+                        clear_walking_state(self)
                         return
                     end
                 end
@@ -603,21 +634,13 @@ WalkingActions.process_walking = function(self)
                         tick = game.tick or 0,
                         position = { x = self.character.position.x, y = self.character.position.y },
                         goal = reported_goal,
+                        interaction_reachable = walking.entity_ref and true or nil,
                         actual_ticks = actual_ticks,
                     }, "walking")
                     
-                    -- Clear tracking
-                    walking.action_id = nil
-                    walking.start_tick = nil
-                    walking.goal = nil
-                    walking.original_goal = nil
-                    walking.goal_entity = nil
-                    walking.last_distance_to_entity = nil
                 end
-                
-                walking.progress = 0
-                walking.path = {}
-                self.character.walking_state = { walking = false }
+
+                clear_walking_state(self)
                 
                 return
             end
@@ -639,25 +662,19 @@ end
 
 WalkingActions.stop_walking = function(self)
     local is_walking = self.character.walking_state["walking"]
-    if not is_walking then
+    local has_tracking = self.walking.action_id ~= nil or
+        self.walking.path_id ~= nil or
+        (self.walking.path and #self.walking.path > 0)
+    if not is_walking and not has_tracking then
         return {
             success = false,
             error = "Agent is not walking"
         }
     end
     
-    -- Clear walking tracking (don't send completion message for cancellation)
-    self.walking.action_id = nil
-    self.walking.start_tick = nil
-    self.walking.goal = nil
-    self.walking.original_goal = nil
-    self.walking.goal_entity = nil
-    self.walking.last_distance_to_entity = nil
-    
-    self.character.walking_state = { walking = false }
-    self.walking.path = nil
-    self.walking.path_id = nil
-    self.walking.progress = 0
+    -- Clear walking tracking (don't send completion message for cancellation).
+    -- This also reconciles stale bookkeeping after physical completion.
+    clear_walking_state(self)
     
     return {
         success = true,

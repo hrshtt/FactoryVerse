@@ -34,6 +34,19 @@ local function position_key(x, y)
     return string.format("%.1f,%.1f", x, y)
 end
 
+--- Build an entity-boundary search area around the character.
+--- Unlike a position+radius filter, an area filter includes entities whose
+--- collision boxes intersect the area even when their centers fall outside it.
+--- @param position MapPosition
+--- @param reach number
+--- @return BoundingBox
+local function reach_area(position, reach)
+    return {
+        {position.x - reach, position.y - reach},
+        {position.x + reach, position.y + reach},
+    }
+end
+
 --- Get inventory contents as a simple table
 --- @param entity LuaEntity
 --- @param inventory_type defines.inventory
@@ -210,48 +223,50 @@ function ReachabilityActions.get_reachable(self, attach_ghosts)
     
     -- Resources (ore patches)
     local resources = surface.find_entities_filtered({
-        position = position,
-        radius = resource_reach,
+        area = reach_area(position, resource_reach),
         type = "resource"
     })
     for _, resource in ipairs(resources) do
-        local data = serialize_resource(resource)
-        if data then
-            table.insert(resources_data, data)
+        if self.character.can_reach_entity(resource) then
+            local data = serialize_resource(resource)
+            if data then
+                table.insert(resources_data, data)
+            end
         end
     end
     
     -- Trees
     local trees = surface.find_entities_filtered({
-        position = position,
-        radius = resource_reach,
+        area = reach_area(position, resource_reach),
         type = "tree"
     })
     for _, tree in ipairs(trees) do
-        local data = serialize_resource(tree)
-        if data then
-            table.insert(resources_data, data)
+        if self.character.can_reach_entity(tree) then
+            local data = serialize_resource(tree)
+            if data then
+                table.insert(resources_data, data)
+            end
         end
     end
     
     -- Simple entities (rocks)
     local rocks = surface.find_entities_filtered({
-        position = position,
-        radius = resource_reach,
+        area = reach_area(position, resource_reach),
         type = "simple-entity"
     })
     for _, rock in ipairs(rocks) do
-        local data = serialize_resource(rock)
-        if data then
-            table.insert(resources_data, data)
+        if self.character.can_reach_entity(rock) then
+            local data = serialize_resource(rock)
+            if data then
+                table.insert(resources_data, data)
+            end
         end
     end
     
     -- Find other entities within build reach_distance
     local build_reach = self.character.reach_distance
     local other_entities = surface.find_entities_filtered({
-        position = position,
-        radius = build_reach
+        area = reach_area(position, build_reach)
     })
     
     for _, entity in ipairs(other_entities) do
@@ -265,7 +280,7 @@ function ReachabilityActions.get_reachable(self, attach_ghosts)
             local is_tree_corpse = (entity.type == "corpse" and
                 (string.find(entity.name, "stump") or
                     string.find(entity.name, "tree")))
-            if not is_tree_corpse then
+            if not is_tree_corpse and self.character.can_reach_entity(entity) then
                 local data = serialize_entity_full(entity)
                 if data then
                     table.insert(entities_data, data)
@@ -306,4 +321,3 @@ function ReachabilityActions.get_reachable(self, attach_ghosts)
 end
 
 return ReachabilityActions
-

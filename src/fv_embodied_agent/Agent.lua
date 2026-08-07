@@ -49,6 +49,7 @@
 --- @field charted_chunks table[] List of charted chunk coordinates
 --- @field walk_to fun(self: Agent, goal: {x: number, y: number}, strict_goal?: boolean, options?: table): table
 --- @field stop_walking fun(self: Agent): table
+--- @field clear_walking_state fun(self: Agent)
 --- @field process_walking fun(self: Agent)
 --- @field mine_resource fun(self: Agent, resource_name: string, max_count?: number): table
 --- @field stop_mining fun(self: Agent): table
