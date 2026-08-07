@@ -4,7 +4,7 @@ Handles all mining-related operations: mine resources, cancel mining.
 """
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
 import logging
 
 from FactoryVerse.game.factory.types import MapPosition
@@ -21,6 +21,30 @@ if TYPE_CHECKING:
     from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
 
 logger = logging.getLogger(__name__)
+
+
+class MiningReconciliationError(RuntimeError):
+    """Mining reached a terminal transport state without causal agreement.
+
+    ``facts`` is intentionally machine-readable so callers and live contracts
+    can distinguish an engine/inventory disagreement from an ordinary action
+    timeout.  A reconciliation failure is never converted to mined items.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        action_id: str = "",
+        resource_name: str = "",
+        position: Optional[Dict[str, float]] = None,
+        facts: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.action_id = action_id
+        self.resource_name = resource_name
+        self.position = position
+        self.facts = facts or {}
 
 
 # =============================================================================
@@ -187,12 +211,19 @@ class MiningAction:
         self._listener = async_listener
         self._placement = placement
         self._resource_depletion_barrier: Optional[
-            Callable[[str, float, float], Awaitable[None]]
+            Callable[..., Awaitable[Optional[Dict[str, Any]]]]
         ] = None
+        self._resource_depletion_prepare: Optional[
+            Callable[[str, float, float], Dict[str, Any]]
+        ] = None
+        self.last_causal_facts: Dict[str, Any] = {}
 
     def set_resource_depletion_barrier(
         self,
-        barrier: Callable[[str, float, float], Awaitable[None]],
+        barrier: Callable[
+            ..., Awaitable[Optional[Dict[str, Any]]]
+        ],
+        prepare: Optional[Callable[[str, float, float], Dict[str, Any]]] = None,
     ) -> None:
         """Make depleted-resource completion causally fresh for later reads.
 
@@ -201,6 +232,38 @@ class MiningAction:
         visible in its owned database before ``mine()`` returns to actor code.
         """
         self._resource_depletion_barrier = barrier
+        self._resource_depletion_prepare = prepare
+
+    def _cancel_unproven_queued_mining(self, facts: Dict[str, Any]) -> None:
+        """Best-effort cleanup after RCON queued an action we cannot await safely."""
+        cleanup: Dict[str, Any] = {"attempted": True}
+        try:
+            response = self.cancel()
+            # Returning from stop_mining means Lua finalized and cleared its
+            # mining state. Its legacy direct response reports success=False
+            # for the semantic reason "cancelled", so preserve that separately
+            # rather than treating it as a failed cleanup command.
+            cleanup.update(
+                {
+                    "succeeded": True,
+                    "reported_success": response.success,
+                    "reason": response.reason,
+                    "action_id": response.action_id,
+                }
+            )
+        except Exception as exc:
+            cleanup.update(
+                {
+                    "succeeded": False,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            logger.warning(
+                "Failed to cancel queued mining after baseline rejection",
+                exc_info=True,
+            )
+        facts["queued_action_cleanup"] = cleanup
 
     async def mine(
         self,
@@ -228,6 +291,12 @@ class MiningAction:
             logger.warning(f"Capping mining count from {max_count} to 25")
             max_count = 25
 
+        depletion_baseline: Optional[Dict[str, Any]] = None
+        if position is not None and self._resource_depletion_prepare is not None:
+            depletion_baseline = self._resource_depletion_prepare(
+                resource_name, float(position.x), float(position.y)
+            )
+
         # Build and execute RCON command
         cmd = self._rcon.build_command(
             "mine_resource",
@@ -242,6 +311,47 @@ class MiningAction:
         if not response.is_queued:
             reason = response.reason or "unknown"
             raise RuntimeError(f"Failed to start mining: {reason}")
+
+        # A caller may omit position and ask Factorio to choose the nearest
+        # reachable entity. The immediate response is still before this queued
+        # intent is awaited, and carries the exact selected identity so the
+        # strict DuckDB barrier can establish its pre-completion baseline.
+        if self._resource_depletion_prepare is not None:
+            response_position = response.resource_position
+            if response.entity_name and response_position is not None:
+                if (
+                    depletion_baseline is None
+                    or depletion_baseline.get("resource_rows_at_start") != 1
+                ):
+                    depletion_baseline = self._resource_depletion_prepare(
+                        response.entity_name,
+                        float(response_position.x),
+                        float(response_position.y),
+                    )
+            if (
+                depletion_baseline is None
+                or depletion_baseline.get("resource_rows_at_start") != 1
+            ):
+                failed_facts = dict(depletion_baseline or {})
+                failed_facts["selected_entity_name"] = response.entity_name
+                failed_facts["selected_entity_position"] = (
+                    {
+                        "x": float(response_position.x),
+                        "y": float(response_position.y),
+                    }
+                    if response_position is not None
+                    else None
+                )
+                self._cancel_unproven_queued_mining(failed_facts)
+                self.last_causal_facts = failed_facts
+                raise MiningReconciliationError(
+                    "Cannot prove the selected resource existed in DuckDB "
+                    "before queued mining completion",
+                    action_id=response.action_id or "",
+                    resource_name=response.entity_name or resource_name,
+                    position=failed_facts["selected_entity_position"],
+                    facts=failed_facts,
+                )
 
         # Wait for completion via UDP
         completion_dict = await self._listener.await_action(response, timeout=timeout)
@@ -258,12 +368,48 @@ class MiningAction:
 
         completion = MiningCompleted.from_dict(completion_dict)
 
+        completion_position = completion_dict.get("position") or position
+        structured_position: Optional[Dict[str, float]]
+        if isinstance(completion_position, MapPosition):
+            structured_position = {
+                "x": float(completion_position.x),
+                "y": float(completion_position.y),
+            }
+        elif isinstance(completion_position, dict):
+            raw_x = completion_position.get("x")
+            raw_y = completion_position.get("y")
+            structured_position = (
+                {"x": float(raw_x), "y": float(raw_y)}
+                if isinstance(raw_x, (int, float))
+                and isinstance(raw_y, (int, float))
+                else None
+            )
+        else:
+            structured_position = None
+
+        raw_causal_facts = completion_dict.get("causal_facts") or {}
+        causal_facts = dict(raw_causal_facts)
+        engine_destroy_event_tick = causal_facts.get("destroy_event_tick")
+        if engine_destroy_event_tick is not None:
+            causal_facts["engine_destroy_event_tick"] = engine_destroy_event_tick
+        self.last_causal_facts = dict(causal_facts)
+        if not completion.success or completion.reason == "reconciliation_failed":
+            raise MiningReconciliationError(
+                "Mining completion facts did not reconcile for "
+                f"{completion_dict.get('entity_name') or resource_name}",
+                action_id=completion.action_id or response.action_id or "",
+                resource_name=str(
+                    completion_dict.get("entity_name") or resource_name
+                ),
+                position=structured_position,
+                facts=causal_facts,
+            )
+
         if (
             completion.success
             and completion.reason == "depleted"
             and self._resource_depletion_barrier is not None
         ):
-            completion_position = completion_dict.get("position") or position
             if isinstance(completion_position, MapPosition):
                 position_x = completion_position.x
                 position_y = completion_position.y
@@ -274,9 +420,96 @@ class MiningAction:
                 position_x = position_y = None
             if position_x is not None and position_y is not None:
                 entity_name = completion_dict.get("entity_name") or resource_name
-                await self._resource_depletion_barrier(
-                    str(entity_name), float(position_x), float(position_y)
-                )
+                try:
+                    if self._resource_depletion_prepare is not None:
+                        if engine_destroy_event_tick is None:
+                            raise MiningReconciliationError(
+                                "Mining completion omitted its engine destroy tick",
+                                action_id=completion.action_id
+                                or response.action_id
+                                or "",
+                                resource_name=str(entity_name),
+                                position=structured_position,
+                                facts=causal_facts,
+                            )
+                        barrier_facts = await self._resource_depletion_barrier(
+                            str(entity_name),
+                            float(position_x),
+                            float(position_y),
+                            expected_destroy_tick=engine_destroy_event_tick,
+                            expected_action_id=(
+                                completion.action_id or response.action_id or None
+                            ),
+                            baseline=depletion_baseline,
+                        )
+                    else:
+                        barrier_facts = await self._resource_depletion_barrier(
+                            str(entity_name), float(position_x), float(position_y)
+                        )
+                    if barrier_facts:
+                        snapshot_tick = barrier_facts.get(
+                            "snapshot_destroy_event_tick",
+                            barrier_facts.get("destroy_event_tick"),
+                        )
+                        expected_action_id = (
+                            completion.action_id or response.action_id or None
+                        )
+                        barrier_action_id = barrier_facts.get("destroy_action_id")
+                        sequence = barrier_facts.get("destroy_event_sequence")
+                        sequence_floor = (depletion_baseline or {}).get(
+                            "entity_sequence_floor"
+                        )
+                        strict_barrier = self._resource_depletion_prepare is not None
+                        barrier_matches = (
+                            not strict_barrier
+                            or (
+                                snapshot_tick == engine_destroy_event_tick
+                                and barrier_action_id == expected_action_id
+                                and isinstance(sequence, int)
+                                and isinstance(sequence_floor, int)
+                                and sequence > sequence_floor
+                                and barrier_facts.get(
+                                    "resource_present_at_action_start"
+                                )
+                                is True
+                            )
+                        )
+                        if not barrier_matches:
+                            failed_facts = dict(causal_facts)
+                            failed_facts["barrier_facts"] = dict(barrier_facts)
+                            failed_facts["duckdb_depleted"] = False
+                            self.last_causal_facts = failed_facts
+                            raise MiningReconciliationError(
+                                "DuckDB removal evidence does not belong to "
+                                "this mining action",
+                                action_id=completion.action_id
+                                or response.action_id
+                                or "",
+                                resource_name=str(entity_name),
+                                position=structured_position,
+                                facts=failed_facts,
+                            )
+                        causal_facts.update(
+                            {
+                                key: value
+                                for key, value in barrier_facts.items()
+                                if key != "destroy_event_tick"
+                            }
+                        )
+                    causal_facts["duckdb_depleted"] = True
+                    self.last_causal_facts = dict(causal_facts)
+                except TimeoutError as exc:
+                    failed_facts = dict(causal_facts)
+                    failed_facts["duckdb_depleted"] = False
+                    self.last_causal_facts = failed_facts
+                    raise MiningReconciliationError(
+                        "Engine mining completed but the exact DuckDB resource "
+                        "row did not reconcile",
+                        action_id=completion.action_id or response.action_id or "",
+                        resource_name=str(entity_name),
+                        position=structured_position,
+                        facts=failed_facts,
+                    ) from exc
 
         # Log actual_products for debugging
         if completion.actual_products:

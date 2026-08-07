@@ -426,13 +426,44 @@ class RemoteView:
         self._ensure_query_ready()
         return self._query.query(sql)
 
+    def capture_resource_depletion_baseline(
+        self,
+        entity_name: str,
+        position_x: float,
+        position_y: float,
+    ) -> Dict[str, Any]:
+        """Capture pre-action row presence and the entity-event sequence floor."""
+        if not self._loaded:
+            raise RuntimeError("RemoteView not loaded. Call load() first.")
+
+        if self._sync:
+            self._sync.flush_pending()
+        with self._db_lock:
+            rows_at_start = self._database.connection.execute(
+                """
+                SELECT count(*) FROM resource_entity
+                WHERE name = ? AND position_x = ? AND position_y = ?
+                """,
+                [entity_name, float(position_x), float(position_y)],
+            ).fetchone()[0]
+        return {
+            "resource_rows_at_start": rows_at_start,
+            "entity_sequence_floor": (
+                self._sync.get_entity_sequence() if self._sync else None
+            ),
+        }
+
     async def wait_for_resource_depletion(
         self,
         entity_name: str,
         position_x: float,
         position_y: float,
         timeout: float = 5.0,
-    ) -> None:
+        *,
+        expected_destroy_tick: Optional[int] = None,
+        expected_action_id: Optional[str] = None,
+        baseline: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Wait until an awaited depletion is visible in the owned database.
 
         Action completion and snapshot mutations use separate UDP transports,
@@ -458,7 +489,57 @@ class RemoteView:
                     [entity_name, float(position_x), float(position_y)],
                 ).fetchone()[0]
             if remaining == 0:
-                return
+                removal_fact = (
+                    self._sync.get_applied_resource_removal(
+                        entity_name, float(position_x), float(position_y)
+                    )
+                    if self._sync
+                    else None
+                )
+                if removal_fact:
+                    if expected_destroy_tick is None:
+                        # Backward-compatible internal use without a captured
+                        # causal baseline. Tier 4 always supplies the strict
+                        # action-bound arguments below.
+                        removed = removal_fact.get(
+                            "duckdb_rows_removed",
+                            removal_fact.get("remove_payload_rows_removed"),
+                        )
+                        if removed == 1:
+                            return removal_fact
+                    else:
+                        baseline = baseline or {}
+                        source_tick = removal_fact.get(
+                            "snapshot_destroy_event_tick",
+                            removal_fact.get("destroy_event_tick"),
+                        )
+                        sequence = removal_fact.get("destroy_event_sequence")
+                        sequence_floor = baseline.get("entity_sequence_floor")
+                        action_id = removal_fact.get("destroy_action_id")
+                        action_matches = (
+                            expected_action_id is None
+                            or action_id == expected_action_id
+                        )
+                        sequence_is_newer = (
+                            isinstance(sequence, int)
+                            and isinstance(sequence_floor, int)
+                            and sequence > sequence_floor
+                        )
+                        if (
+                            baseline.get("resource_rows_at_start") == 1
+                            and source_tick == expected_destroy_tick
+                            and action_matches
+                            and sequence_is_newer
+                        ):
+                            facts = dict(removal_fact)
+                            facts["resource_present_at_action_start"] = True
+                            facts["entity_sequence_floor"] = sequence_floor
+                            # This is the net transition proven by the barrier.
+                            # The exact reducer's own count remains available as
+                            # remove_payload_rows_removed (and may be zero when
+                            # a full-chunk rewrite arrived first).
+                            facts["duckdb_rows_removed"] = 1
+                            return facts
             if loop.time() >= deadline:
                 raise TimeoutError(
                     "Depleted resource did not become visible in DuckDB: "
