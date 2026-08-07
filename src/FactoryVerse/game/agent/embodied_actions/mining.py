@@ -4,7 +4,7 @@ Handles all mining-related operations: mine resources, cancel mining.
 """
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
 import logging
 
 from FactoryVerse.game.factory.types import MapPosition
@@ -21,6 +21,30 @@ if TYPE_CHECKING:
     from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
 
 logger = logging.getLogger(__name__)
+
+
+class MiningReconciliationError(RuntimeError):
+    """Mining reached a terminal transport state without causal agreement.
+
+    ``facts`` is intentionally machine-readable so callers and live contracts
+    can distinguish an engine/inventory disagreement from an ordinary action
+    timeout.  A reconciliation failure is never converted to mined items.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        action_id: str = "",
+        resource_name: str = "",
+        position: Optional[Dict[str, float]] = None,
+        facts: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.action_id = action_id
+        self.resource_name = resource_name
+        self.position = position
+        self.facts = facts or {}
 
 
 # =============================================================================
@@ -187,12 +211,15 @@ class MiningAction:
         self._listener = async_listener
         self._placement = placement
         self._resource_depletion_barrier: Optional[
-            Callable[[str, float, float], Awaitable[None]]
+            Callable[[str, float, float], Awaitable[Optional[Dict[str, Any]]]]
         ] = None
+        self.last_causal_facts: Dict[str, Any] = {}
 
     def set_resource_depletion_barrier(
         self,
-        barrier: Callable[[str, float, float], Awaitable[None]],
+        barrier: Callable[
+            [str, float, float], Awaitable[Optional[Dict[str, Any]]]
+        ],
     ) -> None:
         """Make depleted-resource completion causally fresh for later reads.
 
@@ -258,12 +285,44 @@ class MiningAction:
 
         completion = MiningCompleted.from_dict(completion_dict)
 
+        completion_position = completion_dict.get("position") or position
+        structured_position: Optional[Dict[str, float]]
+        if isinstance(completion_position, MapPosition):
+            structured_position = {
+                "x": float(completion_position.x),
+                "y": float(completion_position.y),
+            }
+        elif isinstance(completion_position, dict):
+            raw_x = completion_position.get("x")
+            raw_y = completion_position.get("y")
+            structured_position = (
+                {"x": float(raw_x), "y": float(raw_y)}
+                if isinstance(raw_x, (int, float))
+                and isinstance(raw_y, (int, float))
+                else None
+            )
+        else:
+            structured_position = None
+
+        causal_facts = completion_dict.get("causal_facts") or {}
+        self.last_causal_facts = dict(causal_facts)
+        if not completion.success or completion.reason == "reconciliation_failed":
+            raise MiningReconciliationError(
+                "Mining completion facts did not reconcile for "
+                f"{completion_dict.get('entity_name') or resource_name}",
+                action_id=completion.action_id or response.action_id or "",
+                resource_name=str(
+                    completion_dict.get("entity_name") or resource_name
+                ),
+                position=structured_position,
+                facts=causal_facts,
+            )
+
         if (
             completion.success
             and completion.reason == "depleted"
             and self._resource_depletion_barrier is not None
         ):
-            completion_position = completion_dict.get("position") or position
             if isinstance(completion_position, MapPosition):
                 position_x = completion_position.x
                 position_y = completion_position.y
@@ -274,9 +333,26 @@ class MiningAction:
                 position_x = position_y = None
             if position_x is not None and position_y is not None:
                 entity_name = completion_dict.get("entity_name") or resource_name
-                await self._resource_depletion_barrier(
-                    str(entity_name), float(position_x), float(position_y)
-                )
+                try:
+                    barrier_facts = await self._resource_depletion_barrier(
+                        str(entity_name), float(position_x), float(position_y)
+                    )
+                    if barrier_facts:
+                        causal_facts.update(barrier_facts)
+                    causal_facts["duckdb_depleted"] = True
+                    self.last_causal_facts = dict(causal_facts)
+                except TimeoutError as exc:
+                    failed_facts = dict(causal_facts)
+                    failed_facts["duckdb_depleted"] = False
+                    self.last_causal_facts = failed_facts
+                    raise MiningReconciliationError(
+                        "Engine mining completed but the exact DuckDB resource "
+                        "row did not reconcile",
+                        action_id=completion.action_id or response.action_id or "",
+                        resource_name=str(entity_name),
+                        position=structured_position,
+                        facts=failed_facts,
+                    ) from exc
 
         # Log actual_products for debugging
         if completion.actual_products:

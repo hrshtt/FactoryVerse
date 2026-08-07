@@ -64,6 +64,7 @@ M.ACTION_STATUS = {
     COMPLETED = "completed",
     CANCELLED = "cancelled",
     QUEUED = "queued",
+    FAILED = "failed",
 }
 
 -- ============================================================================
@@ -96,9 +97,9 @@ function M.create_action_payload(action_id, agent_id, action_type, status, rcon_
         tick = current_tick,
     }
     
-    if status == M.ACTION_STATUS.COMPLETED then
+    if status == M.ACTION_STATUS.COMPLETED or status == M.ACTION_STATUS.FAILED then
         payload.completion_tick = current_tick
-        payload.success = success ~= false
+        payload.success = status ~= M.ACTION_STATUS.FAILED and success ~= false
         if result then
             payload.result = result
         end
@@ -146,4 +147,3 @@ function M.send_action_completion_udp(payload)
 end
 
 return M
-

@@ -90,6 +90,9 @@ class SyncService:
         self._pending_operations = queue.Queue(maxsize=10000)
         self._db_lock = db_lock if db_lock is not None else threading.Lock()
         self._sequence_lock = threading.Lock()  # Separate lock for sequence checking
+        self._applied_resource_removals: Dict[
+            tuple[str, float, float], Dict[str, Any]
+        ] = {}
 
     @property
     def state(self) -> SyncState:
@@ -410,7 +413,20 @@ class SyncService:
 
         # Perform deletions (shared reducer)
         apply_ops.remove_entity(self._db, entity_name, pos_x, pos_y)
-        apply_ops.remove_resource_entity(self._db, entity_name, pos_x, pos_y)
+        resource_rows_removed = apply_ops.remove_resource_entity(
+            self._db, entity_name, pos_x, pos_y
+        )
+        if resource_exists:
+            source_tick = payload.get("tick")
+            self._applied_resource_removals[(entity_name, pos_x, pos_y)] = {
+                "destroy_event_tick": source_tick,
+                # DuckDB applies this exact destroy payload synchronously. Its
+                # Factorio tick is therefore the causal deletion tick; wall
+                # clock receipt time would not be comparable to game facts.
+                "duckdb_delete_tick": source_tick,
+                "destroy_event_sequence": payload.get("sequence"),
+                "duckdb_rows_removed": resource_rows_removed,
+            }
         
         # Log results
         if map_exists or resource_exists:
@@ -423,6 +439,15 @@ class SyncService:
                 f"Attempted to delete non-existent entity: {entity_name} at ({pos_x}, {pos_y}). "
                 "This may indicate a duplicate remove event or stale database state."
             )
+
+    def get_applied_resource_removal(
+        self, entity_name: str, pos_x: float, pos_y: float
+    ) -> Optional[Dict[str, Any]]:
+        """Return tick-indexed evidence for an exact applied destroy payload."""
+        fact = self._applied_resource_removals.get(
+            (entity_name, float(pos_x), float(pos_y))
+        )
+        return dict(fact) if fact is not None else None
 
     def _apply_ghost_upsert(self, payload: Dict[str, Any]) -> None:
         """Apply ghost upsert to database."""

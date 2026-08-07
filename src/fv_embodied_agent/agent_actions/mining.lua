@@ -26,6 +26,13 @@ local MINING_MODE = {
     DEPLETE = "deplete",          -- trees/rocks: wait for entity.valid == false
 }
 
+-- RCON can arm character mining between simulation ticks.  At accelerated
+-- game speeds Factorio may expose one stopped tick before the scripted mining
+-- state survives.  Never translate that transport/tick boundary directly to
+-- depletion: re-arm the exact LuaEntity a bounded number of times, then report
+-- an explicit reconciliation failure with the observed facts.
+local MAX_DEPLETION_RESTARTS = 3
+
 --- Entities with stochastic (random/probability-based) products
 local STOCHASTIC_ENTITIES = {
     ["huge-rock"] = true,
@@ -50,13 +57,6 @@ local function get_mining_mode(entity)
     else
         return MINING_MODE.DEPLETE
     end
-end
-
---- Check if entity has stochastic products
---- @param entity LuaEntity
---- @return boolean
-local function is_stochastic(entity)
-    return STOCHASTIC_ENTITIES[entity.name] == true
 end
 
 --- Calculate effective mining speed for character
@@ -84,39 +84,54 @@ local function get_completion_threshold(character, entity)
     return 1.0 - (progress_per_tick * 1.5) - 0.001
 end
 
---- Get expected products for a mineable entity (deterministic only)
+--- Get the product contract declared by a mineable entity.
 --- @param entity LuaEntity Entity being mined
---- @return table {item_name = amount, ...}
-local function get_expected_products(entity)
+--- @return table expected fixed counts
+--- @return table product names to inventory-snapshot
+--- @return boolean whether every product amount/probability is deterministic
+local function get_product_contract(entity)
     local proto = entity.prototype
     local mineable_props = proto.mineable_properties
     
     if not mineable_props or not mineable_props.products then
-        return {}
+        return {}, {}, true
     end
     
-    local products = {}
+    local expected = {}
+    local product_names = {}
+    local deterministic = true
     for _, product in pairs(mineable_props.products) do
-        -- Products can have probability < 1.0 (skip those) or amount/amount_min/amount_max
-        if not product.probability or product.probability >= 1.0 then
-            local amount = product.amount or product.amount_min or 1
-            products[product.name] = (products[product.name] or 0) + amount
+        if product.type and product.type ~= "item" then
+            deterministic = false
+        else
+            product_names[product.name] = true
+            local probability = product.probability or 1
+            local fixed_amount = product.amount
+            if not fixed_amount and product.amount_min and product.amount_max and
+               product.amount_min == product.amount_max then
+                fixed_amount = product.amount_min
+            end
+            if probability ~= 1 or not fixed_amount then
+                deterministic = false
+            else
+                expected[product.name] =
+                    (expected[product.name] or 0) + fixed_amount
+            end
         end
     end
     
-    return products
+    return expected, product_names, deterministic
 end
 
 --- Snapshot current inventory counts for common mining products
 --- @param character LuaEntity Character entity
 --- @return table {item_name = count, ...}
-local function snapshot_inventory(character)
+local function snapshot_inventory(character, product_names)
     local snapshot = {}
     local inventory = character.get_main_inventory()
     if not inventory then return snapshot end
-    
-    local common_products = {"stone", "coal", "iron-ore", "copper-ore", "wood"}
-    for _, name in ipairs(common_products) do
+
+    for name, _ in pairs(product_names or {}) do
         snapshot[name] = inventory.get_item_count(name)
     end
     return snapshot
@@ -139,6 +154,73 @@ local function get_inventory_diff(character, start_snapshot)
         end
     end
     return diff
+end
+
+local function entity_identity(entity, fallback)
+    if entity and entity.valid then
+        return {
+            name = entity.name,
+            type = entity.type,
+            position = {x = entity.position.x, y = entity.position.y},
+            unit_number = entity.unit_number,
+        }
+    end
+    return fallback
+end
+
+local function identities_match(left, right)
+    if not left or not right then return false end
+    if left.name ~= right.name or left.type ~= right.type then return false end
+    if left.unit_number and right.unit_number then
+        return left.unit_number == right.unit_number
+    end
+    return left.position and right.position and
+        math.abs(left.position.x - right.position.x) < 0.01 and
+        math.abs(left.position.y - right.position.y) < 0.01
+end
+
+--- Resolve a cursor/mining point that makes Factorio select this exact entity.
+--- Tree selection boxes can overlap even when their anchors are distinct, so
+--- ``update_selected_entity(entity.position)`` is not an identity-preserving
+--- operation.  Sampling within the target prototype's selection box lets the
+--- engine choose the requested LuaEntity rather than a neighbouring tree.
+local function select_exact_entity(character, entity)
+    if not (entity and entity.valid) then return nil end
+
+    local relative_box = entity.prototype and entity.prototype.selection_box
+    local fractions = {0.5, 0.2, 0.8, 0.05, 0.95}
+    local candidates = {{x = entity.position.x, y = entity.position.y}}
+    if relative_box and relative_box.left_top and relative_box.right_bottom then
+        local left = entity.position.x + relative_box.left_top.x
+        local top = entity.position.y + relative_box.left_top.y
+        local width = relative_box.right_bottom.x - relative_box.left_top.x
+        local height = relative_box.right_bottom.y - relative_box.left_top.y
+        for _, y_fraction in ipairs(fractions) do
+            for _, x_fraction in ipairs(fractions) do
+                table.insert(candidates, {
+                    x = left + width * x_fraction,
+                    y = top + height * y_fraction,
+                })
+            end
+        end
+    end
+
+    local expected = entity_identity(entity)
+    for _, candidate in ipairs(candidates) do
+        character.update_selected_entity(candidate)
+        if identities_match(expected, entity_identity(character.selected)) then
+            return candidate
+        end
+    end
+    return nil
+end
+
+local function append_causal_trace(mining_state, phase, facts)
+    mining_state.causal_trace = mining_state.causal_trace or {}
+    local entry = facts or {}
+    entry.phase = phase
+    entry.tick = game.tick
+    table.insert(mining_state.causal_trace, entry)
 end
 
 --- Calculate estimated mining time in ticks
@@ -253,7 +335,10 @@ function MiningActions.mine_resource(self, resource_name, max_count, position)
     
     -- Determine mining mode and properties
     local mode = get_mining_mode(entity)
-    local stochastic = is_stochastic(entity)
+    local prototype_expected, product_names, deterministic_products =
+        get_product_contract(entity)
+    local stochastic = STOCHASTIC_ENTITIES[entity.name] == true or
+        not deterministic_products
     
     -- Store entity info (survives entity destruction)
     local entity_name = entity.name
@@ -272,13 +357,11 @@ function MiningActions.mine_resource(self, resource_name, max_count, position)
         expected_products = { [entity_name] = target_count }
     else
         -- DEPLETE mode
-        if stochastic then
-            -- Need inventory snapshot for huge-rock
-            start_inventory = snapshot_inventory(self.character)
-        else
-            -- Deterministic - we know what we'll get
-            expected_products = get_expected_products(entity)
-        end
+        -- Inventory delta is a causal fact for every depleting entity.  The
+        -- previous deterministic path returned prototype products even when
+        -- the character received nothing.
+        expected_products = prototype_expected
+        start_inventory = snapshot_inventory(self.character, product_names)
     end
     
     -- Generate action ID
@@ -292,6 +375,8 @@ function MiningActions.mine_resource(self, resource_name, max_count, position)
         entity_name = entity_name,
         entity_type = entity_type,
         entity_position = entity_position,
+        entity = entity,
+        entity_identity = entity_identity(entity),
         -- Incremental mode only
         target_count = target_count,
         count_progress = 0,
@@ -302,11 +387,21 @@ function MiningActions.mine_resource(self, resource_name, max_count, position)
         start_inventory = start_inventory,
         -- For completion message
         expected_products = expected_products,
+        armed = false,
+        depletion_restarts = 0,
+        causal_trace = {},
     }
+
+    append_causal_trace(self.mining, "started", {
+        identity = self.mining.entity_identity,
+        inventory_before = start_inventory,
+    })
     
-    -- Start mining
-    self.character.update_selected_entity(entity.position)
-    self.character.mining_state = { mining = true, position = entity.position }
+    -- ``mine_resource`` is entered through an RCON command, outside the
+    -- regular on_tick state-machine phase.  Queue the intent here and arm the
+    -- character from ``process_mining`` on the next tick; directly setting
+    -- mining_state at this boundary can be cleared before Factorio simulates a
+    -- mining tick, especially when the game is accelerated.
     
     -- Calculate estimated time
     local estimated_ticks = calculate_mining_time_ticks(self.character, entity, target_count)
@@ -358,20 +453,61 @@ function MiningActions.finalize_mining(self, reason)
         if count > 0 then
             actual_products = { [mining_state.entity_name] = count }
         end
-    elseif mining_state.is_stochastic and mining_state.start_inventory then
-        -- Stochastic deplete: use inventory diff (works for cancelled too)
+    elseif mining_state.mode == MINING_MODE.DEPLETE and mining_state.start_inventory then
+        -- Depleting actions report only products observed in the character's
+        -- inventory, never prototype-derived expected products.
         actual_products = get_inventory_diff(self.character, mining_state.start_inventory)
         if not next(actual_products) then
             actual_products = nil  -- Empty table -> nil
         end
-    elseif reason ~= "cancelled" then
-        -- Deterministic deplete completed: use expected products
-        actual_products = mining_state.expected_products
     end
+
+    local exact_entity_exists = mining_state.entity and mining_state.entity.valid or false
+    local current_identity = entity_identity(mining_state.entity, mining_state.entity_identity)
+    local inventory_after = {}
+    local inventory = self.character.get_main_inventory()
+    for item_name, _ in pairs(mining_state.start_inventory or {}) do
+        inventory_after[item_name] = inventory and inventory.get_item_count(item_name) or 0
+    end
+
+    local products_agree = true
+    if mining_state.mode == MINING_MODE.DEPLETE then
+        if mining_state.is_stochastic then
+            -- Zero products is a valid outcome for probabilistic prototypes;
+            -- the observed inventory delta (including empty) is authoritative.
+            products_agree = true
+        elseif not actual_products or not next(actual_products) then
+            products_agree = false
+        else
+            for item_name, expected_count in pairs(mining_state.expected_products or {}) do
+                if actual_products[item_name] ~= expected_count then
+                    products_agree = false
+                end
+            end
+            for item_name, actual_count in pairs(actual_products) do
+                if (mining_state.expected_products or {})[item_name] ~= actual_count then
+                    products_agree = false
+                end
+            end
+        end
+        if reason == "depleted" and (exact_entity_exists or not products_agree) then
+            reason = "reconciliation_failed"
+        end
+    end
+
+    append_causal_trace(mining_state, "finalized", {
+        identity = current_identity,
+        engine_exists = exact_entity_exists,
+        inventory_after = inventory_after,
+        inventory_delta = actual_products or {},
+        expected_products = mining_state.expected_products or {},
+        products_agree = products_agree,
+        outcome = reason,
+    })
 
     -- Raise mining completed event for fv_snapshot to log
     -- Only raise when there are actual products (not for cancelled with 0 products)
-    if actual_products and next(actual_products) then
+    if reason ~= "reconciliation_failed" and actual_products and next(actual_products) then
         script.raise_event(custom_events.on_agent_mining_completed, {
             agent_id = self.agent_id,
             tick = game.tick,
@@ -419,8 +555,9 @@ function MiningActions.finalize_mining(self, reason)
     local message = {
         action = "mine_resource",
         agent_id = self.agent_id,
-        success = reason ~= "cancelled",
-        status = reason == "cancelled" and "cancelled" or "completed",
+        success = reason ~= "cancelled" and reason ~= "reconciliation_failed",
+        status = reason == "cancelled" and "cancelled" or
+            (reason == "reconciliation_failed" and "failed" or "completed"),
         action_id = mining_state.action_id,
         tick = game.tick,
         reason = reason,
@@ -430,13 +567,23 @@ function MiningActions.finalize_mining(self, reason)
         count = count,
         actual_products = actual_products,
         actual_ticks = actual_ticks,
+        causal_facts = {
+            identity = mining_state.entity_identity,
+            engine_exists = exact_entity_exists,
+            inventory_before = mining_state.start_inventory or {},
+            inventory_after = inventory_after,
+            inventory_delta = actual_products or {},
+            expected_products = mining_state.expected_products or {},
+            products_agree = products_agree,
+            destroy_event_tick = reason == "depleted" and game.tick or nil,
+            depletion_restarts = mining_state.depletion_restarts or 0,
+            trace = mining_state.causal_trace or {},
+        },
     }
     
     if reason == "cancelled" then
         message.cancelled = true
     end
-    
-    self:enqueue_message(message, "mining")
     
     -- Raise custom event for entity destruction (for trees/rocks that get depleted)
     -- This ensures FVSnapshot mod can track the entity destruction
@@ -482,6 +629,7 @@ function MiningActions.finalize_mining(self, reason)
                 entity_name = mining_state.entity_name,
                 entity_type = mining_state.entity_type,
                 position = mining_state.entity_position,
+                tick = game.tick,
             })
             if DEBUG then
                 game.print(string.format("[DEBUG mining.finalize_mining] Tick %d: Successfully raised on_agent_resource_mined event", game.tick))
@@ -498,6 +646,12 @@ function MiningActions.finalize_mining(self, reason)
                 tostring(mining_state and mining_state.entity_position ~= nil)))
         end
     end
+
+
+    -- Queue completion only after the same-tick destroy event has been raised.
+    -- The Python side still waits for DuckDB because the two UDP transports are
+    -- independent, but this preserves causal order at the game source.
+    self:enqueue_message(message, "mining")
     
     -- Clear mining state
     self.mining = {}
@@ -505,11 +659,12 @@ function MiningActions.finalize_mining(self, reason)
     self.character.mining_state = { mining = false }
     
     return {
-        success = reason ~= "cancelled",
+        success = reason ~= "cancelled" and reason ~= "reconciliation_failed",
         reason = reason,
         count = count,
         actual_products = actual_products,
         actual_ticks = actual_ticks,
+        causal_facts = message.causal_facts,
     }
 end
 
@@ -527,6 +682,38 @@ function MiningActions.process_mining(self)
 
     -- Early exit if no mining state
     if not mining_state or not mining_state.mode then
+        return
+    end
+
+    if not mining_state.armed then
+        if not (mining_state.entity and mining_state.entity.valid) then
+            append_causal_trace(mining_state, "arm_failed", {
+                identity = mining_state.entity_identity,
+                engine_exists = false,
+            })
+            self:finalize_mining("reconciliation_failed")
+            return
+        end
+        local can_reach = self.character.can_reach_entity(mining_state.entity)
+        local mining_position = can_reach and
+            select_exact_entity(self.character, mining_state.entity) or nil
+        append_causal_trace(mining_state, "armed", {
+            identity = entity_identity(mining_state.entity),
+            selected_identity = entity_identity(self.character.selected),
+            engine_exists = true,
+            can_reach = can_reach,
+            mining_position = mining_position,
+        })
+        if not can_reach or not mining_position then
+            self:finalize_mining("reconciliation_failed")
+            return
+        end
+        mining_state.mining_position = mining_position
+        self.character.mining_state = {
+            mining = true,
+            position = mining_position,
+        }
+        mining_state.armed = true
         return
     end
 
@@ -577,7 +764,45 @@ function MiningActions.process_mining(self)
     -- Now check if Factorio stopped mining (entity depleted or other reason)
     -- This check is AFTER cycle detection to ensure we count the final cycle
     if not self.character.mining_state.mining then
-        -- Factorio stopped mining for us - entity was depleted or interrupted
+        -- A stopped character is not proof of depletion.  For depleting
+        -- entities, reconcile against the exact LuaEntity captured at start.
+        if mining_state.mode == MINING_MODE.DEPLETE and
+           mining_state.entity and mining_state.entity.valid then
+            local current_identity = entity_identity(mining_state.entity)
+            local selected_identity = entity_identity(self.character.selected)
+            local can_reach = self.character.can_reach_entity(mining_state.entity)
+            mining_state.depletion_restarts = (mining_state.depletion_restarts or 0) + 1
+            append_causal_trace(mining_state, "stopped_while_entity_exists", {
+                identity = current_identity,
+                selected_identity = selected_identity,
+                selected_matches = identities_match(current_identity, selected_identity),
+                engine_exists = true,
+                can_reach = can_reach,
+                restart = mining_state.depletion_restarts,
+                inventory_delta = get_inventory_diff(
+                    self.character, mining_state.start_inventory or {}
+                ),
+            })
+
+            local mining_position = can_reach and
+                select_exact_entity(self.character, mining_state.entity) or nil
+            if can_reach and mining_position and
+               mining_state.depletion_restarts <= MAX_DEPLETION_RESTARTS then
+                -- A depleting entity credits products only when it becomes
+                -- invalid. This branch requires the exact entity to remain
+                -- valid, so re-arming cannot double-credit a completed mine.
+                mining_state.mining_position = mining_position
+                self.character.mining_state = {
+                    mining = true,
+                    position = mining_position,
+                }
+                return
+            end
+
+            self:finalize_mining("reconciliation_failed")
+            return
+        end
+
         local reason = mining_state.mode == MINING_MODE.INCREMENTAL and "completed" or "depleted"
         if DEBUG then
             game.print(string.format("[DEBUG mining.process_mining] Tick %d: Factorio stopped mining, count_progress=%d, calling finalize_mining with reason=%s",

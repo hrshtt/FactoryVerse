@@ -432,7 +432,7 @@ class RemoteView:
         position_x: float,
         position_y: float,
         timeout: float = 5.0,
-    ) -> None:
+    ) -> Dict[str, Any]:
         """Wait until an awaited depletion is visible in the owned database.
 
         Action completion and snapshot mutations use separate UDP transports,
@@ -458,7 +458,15 @@ class RemoteView:
                     [entity_name, float(position_x), float(position_y)],
                 ).fetchone()[0]
             if remaining == 0:
-                return
+                removal_fact = (
+                    self._sync.get_applied_resource_removal(
+                        entity_name, float(position_x), float(position_y)
+                    )
+                    if self._sync
+                    else None
+                )
+                if removal_fact and removal_fact.get("duckdb_rows_removed") == 1:
+                    return removal_fact
             if loop.time() >= deadline:
                 raise TimeoutError(
                     "Depleted resource did not become visible in DuckDB: "

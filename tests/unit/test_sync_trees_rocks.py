@@ -51,3 +51,37 @@ def test_trees_rocks_file_io_replaces_the_whole_chunk(tmp_path):
     assert database.connection.execute(
         "SELECT position_x, position_y FROM resource_entity"
     ).fetchall() == [(2.0, 3.0)]
+
+
+def test_exact_destroy_records_tick_indexed_duckdb_removal():
+    database = SnapshotDatabase()
+    database.ensure_schema()
+    apply_ops.upsert_resource_entity(
+        database.connection,
+        {"name": "tree-07", "type": "tree", "position": {"x": -9.25, "y": 47}},
+        -1,
+        1,
+    )
+    sync = SyncService(
+        database.connection,
+        udp_dispatcher=object(),
+        on_rebuild=lambda: None,
+    )
+
+    sync._apply_entity_remove(
+        {
+            "event_type": "entity_operation",
+            "op": "destroyed",
+            "name": "tree-07",
+            "position": {"x": -9.25, "y": 47},
+            "tick": 3914,
+            "sequence": 7,
+        }
+    )
+
+    assert sync.get_applied_resource_removal("tree-07", -9.25, 47) == {
+        "destroy_event_tick": 3914,
+        "duckdb_delete_tick": 3914,
+        "destroy_event_sequence": 7,
+        "duckdb_rows_removed": 1,
+    }

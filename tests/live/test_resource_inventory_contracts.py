@@ -73,6 +73,13 @@ async def resource_inventory_game(tmp_path_factory):
         await supervisor.start()
         tier3 = supervisor.environment.tier3
         tier4 = supervisor.environment.tier4
+        # Keep this lane about mining causality. The isolated snapshot-port
+        # boot defect is covered independently in test_database_coherence;
+        # repair it explicitly here so destroy-event delivery can be observed.
+        expected_snapshot_port = config.get_snapshot_port(tier3.instance)
+        boot_snapshot_port = tier3.map_api.get_udp_port()
+        if boot_snapshot_port != expected_snapshot_port:
+            tier3.map_api.set_udp_port(expected_snapshot_port)
         assert tier3.run_lua("return game.speed") == GAME_SPEED
         yield {
             "supervisor": supervisor,
@@ -83,6 +90,9 @@ async def resource_inventory_game(tmp_path_factory):
             "inventory": tier4.embodied_actions["inventory"],
             "crafting": tier4.embodied_actions["crafting"],
             "walking": tier4.embodied_actions["movement"],
+            "mining": tier4.embodied_actions["mining"],
+            "boot_snapshot_port": boot_snapshot_port,
+            "expected_snapshot_port": expected_snapshot_port,
         }
     finally:
         await supervisor.finish(
@@ -216,8 +226,9 @@ def _lua_item_map(items: dict[str, int]) -> str:
     return "{" + pairs + "}"
 
 
+@pytest.mark.parametrize("_sample", range(5), ids=lambda value: f"sample-{value + 1}")
 async def test_tree_resource_row_matches_engine_and_mining_inventory_causality(
-    resource_inventory_game,
+    resource_inventory_game, _sample,
 ):
     """A tree is a resource_entity whose removal and products match Factorio."""
     tier3 = resource_inventory_game["tier3"]
@@ -328,6 +339,22 @@ async def test_tree_resource_row_matches_engine_and_mining_inventory_causality(
         f"resource_entity retained the row; barrier error={depletion_error!r}"
     )
     assert depletion_error is None
+
+    causal_facts = resource_inventory_game["mining"].last_causal_facts
+    assert causal_facts["identity"] == {
+        "name": selected.name,
+        "type": "tree",
+        "position": {
+            "x": selected.position.x,
+            "y": selected.position.y,
+        },
+    }
+    assert causal_facts["engine_exists"] is False
+    assert causal_facts["inventory_delta"] == dict(returned)
+    assert causal_facts["destroy_event_tick"] is not None
+    assert causal_facts["duckdb_delete_tick"] == causal_facts["destroy_event_tick"]
+    assert causal_facts["duckdb_rows_removed"] == 1
+    assert causal_facts["duckdb_depleted"] is True
 
 
 async def test_burner_drill_craft_consumes_engine_recipe_and_creates_product(
