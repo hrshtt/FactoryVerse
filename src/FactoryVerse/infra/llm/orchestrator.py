@@ -490,12 +490,19 @@ class AgentOrchestrator:
                     else f"  Result: {exec_result}"
                 )
 
-                # Check for notifications right after tool execution completes
-                # This ensures notifications generated during DSL/tool execution are immediately available
-                await self._add_notifications_to_messages()
-
             # Close tool calls section in chat log
             self._log_to_chat("</details>\n\n")
+
+            # Notifications are drained AFTER every tool result is appended,
+            # never between them. They enter as a user message, and a user
+            # message interleaved among tool messages breaks the provider
+            # contract that each tool_call_id is answered immediately after the
+            # assistant message that requested it:
+            #   assistant(tool_calls=[A,B]) -> tool(A) -> user(...) -> tool(B)
+            # is rejected with "insufficient tool messages following tool_calls
+            # message", killing the run. Draining here also matches what the
+            # system prompt tells the agent — that events arrive between turns.
+            await self._add_notifications_to_messages()
 
             # Check task verification after tool execution
             # This runs the verification callback and injects progress into conversation

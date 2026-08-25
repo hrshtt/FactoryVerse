@@ -308,8 +308,12 @@ class Tier6Interaction(TierBase):
                 message = ""
 
             except Exception as e:
-                logger.error(f"Tier 6: Error in agent loop: {e}")
-                break
+                # Do not swallow. Breaking here left the caller believing the
+                # run ended normally, so a run that died on its second turn
+                # still printed "Freeplay completed". A harness whose purpose
+                # is to not lie must not report success on failure.
+                logger.error(f"Tier 6: Error in agent loop: {e}", exc_info=True)
+                raise
 
     async def start_session(self) -> str:
         """Start a new agent session.
