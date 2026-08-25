@@ -23,9 +23,10 @@ cp .env.example .env    # API keys, Factorio paths
 ```bash
 uv run fv client start --scenario lab-grid          # local client with the mods
 uv run fv server start --num 1 --scenario lab-grid  # headless server(s) in Docker
-uv run fv agent -p deepseek                          # interactive agent against it
-uv run fv freeplay-eval --help                       # campaign harness
-uv run fv ui                                         # control-center dashboard
+uv run fv run -p deepseek                            # freeplay agent against it
+uv run fv run --task iron_plate_throughput           # a verified task
+uv run fv run --interactive                          # human-in-the-loop REPL
+uv run fv campaign --help                            # external-harness campaigns
 ```
 
 `fv --help` lists everything. Providers: `prime_intellect` (default), `deepseek`, `openai`, `azure`, `local`; each reads its own API key from the environment.
@@ -43,7 +44,7 @@ uv run pytest tests/live -q     # needs a running instance; skips otherwise
 |---|---|
 | `src/FactoryVerse/environment/` | Orchestrator every entry point composes |
 | `src/FactoryVerse/game/` | Agent surface, entity objects, DuckDB map model |
-| `src/FactoryVerse/infra/` | RCON/UDP, Docker, LLM clients, sessions, UI |
+| `src/FactoryVerse/infra/` | RCON/UDP, Docker, LLM clients, sessions |
 | `src/FactoryVerse/evals/` | Freeplay campaigns |
 | `src/fv_embodied_agent/` | Lua mod — the body |
 | `src/fv_snapshot/` | Lua mod — the map |

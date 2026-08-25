@@ -1036,21 +1036,55 @@ class EnvironmentConfig(BaseModel):
         arbitrary_types_allowed = True
 
     @classmethod
-    def for_agent(
+    def for_run(
         cls,
-        mode: InteractionMode = InteractionMode.AUTONOMOUS,
-        llm_provider: str = "prime_intellect",
-        model: str = "intellect-3",
+        *,
+        instance: str = "client",
         scenario: str = "freeplay",
+        provider: str = "prime_intellect",
+        model: Optional[str] = None,
+        agent_id: str = "agent_1",
+        max_turns: Optional[int] = None,
+        task_name: Optional[str] = None,
+        interactive: bool = False,
     ) -> "EnvironmentConfig":
-        """Create config for agent runs."""
+        """The one place a full agent run (tiers 1–6) is assembled.
+
+        ``task_name`` selects a verified eval (session under .fv-output/evals/);
+        otherwise the run is freeplay (.fv-output/runs/). ``interactive`` puts
+        tier 6 in assisted mode. A ``client`` instance is attached to, never
+        owned; any other instance is treated as a Docker server.
+        """
+        if model is None:
+            from FactoryVerse.infra.llm.client.factory import default_model_for_provider
+
+            model = default_model_for_provider(provider) or "default"
+        infra_mode = InfraMode.EXTERNAL if instance == "client" else InfraMode.SERVER
+        mode = InteractionMode.ASSISTED if interactive else InteractionMode.AUTONOMOUS
         return cls(
+            tier1=InfraConfig(mode=infra_mode),
             tier2=SettingsConfig(scenario=scenario),
-            tier4=RuntimeConfig(variant=RuntimeVariant.FULL),
+            tier3=PythonConfig(instance=instance, agent_id=agent_id),
+            tier4=RuntimeConfig(
+                variant=RuntimeVariant.FULL,
+                agent_id=agent_id,
+                provider=provider,
+                model=model,
+                mode=mode.value,
+                session_mode=SessionMode.EVAL if task_name else SessionMode.LLM,
+                task_name=task_name,
+            ),
+            tier5=SpecificationConfig(
+                include_api_reference=True,
+                include_schema_reference=True,
+                include_initial_state=True,
+                task_name=task_name,
+            ),
             tier6=InteractionConfig(
                 mode=mode,
-                llm_provider=llm_provider,
+                llm_provider=provider,
                 model=model,
+                max_turns=max_turns,
             ),
         )
 
@@ -1068,54 +1102,3 @@ class EnvironmentConfig(BaseModel):
             tier4=RuntimeConfig(variant=variant),
         )
 
-    @classmethod
-    def for_mcp(cls, instance: Optional[str] = None) -> "EnvironmentConfig":
-        """Create config for MCP server."""
-        return cls(
-            tier3=PythonConfig(instance=instance),
-            tier4=RuntimeConfig(variant=RuntimeVariant.FULL),
-            tier6=InteractionConfig(mode=InteractionMode.MCP),
-        )
-
-    @classmethod
-    def for_eval(
-        cls,
-        task_name: str,
-        scenario: str = "test-ground",
-        agent_id: str = "agent_1",
-        initial_inventory: Optional[Dict[str, int]] = None,
-    ) -> "EnvironmentConfig":
-        """Create config for evaluation runs.
-
-        Eval runs track trajectories and create notebooks for reproducibility,
-        but skip LLM-specific artifacts (system_prompt, initial_state, chat).
-
-        Session directory: .fv-output/evals/{task_name}/{run_id}/
-        Artifacts created:
-        - trajectory.jsonl (mechanistic source of truth)
-        - notebook.ipynb (reproducibility)
-        - config.json (task + environment config)
-        - result.json (verification result, written by eval harness)
-
-        Args:
-            task_name: Task key for directory organization and verification
-            scenario: Scenario to load (default: test-ground)
-            agent_id: Agent identifier (default: agent_1)
-            initial_inventory: Optional inventory override (task inventory used if None)
-
-        Returns:
-            EnvironmentConfig suitable for eval runs (initialize up to Tier 4 only)
-        """
-        return cls(
-            tier2=SettingsConfig(scenario=scenario, peaceful=True),
-            tier3=PythonConfig(agent_id=agent_id),
-            tier4=RuntimeConfig(
-                variant=RuntimeVariant.FULL,  # Need DuckDB for verification
-                agent_id=agent_id,
-                session_mode=SessionMode.EVAL,
-                task_name=task_name,
-                initial_inventory=initial_inventory,
-                execution_mode=ExecutionMode.JUPYTER,  # Notebook for reproducibility
-            ),
-            # Tier 5 & 6 not configured - no LLM
-        )

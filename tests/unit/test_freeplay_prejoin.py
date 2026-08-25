@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from FactoryVerse.cli import cmd_freeplay_eval_prejoin
+from FactoryVerse.evals.freeplay import cli as campaign_cli
+from FactoryVerse.evals.freeplay.cli import cmd_prejoin as cmd_freeplay_eval_prejoin
 from FactoryVerse.evals.freeplay.prejoin import (
     PrejoinModCompatibility,
     compare_campaign_client_mods,
@@ -288,7 +289,7 @@ def test_cli_prejoin_reports_mismatch_and_exits_without_syncing(
         manifest=lambda: _manifest(server, fv_embodied_agent="1.0.0"),
     )
     monkeypatch.setattr(
-        "FactoryVerse.cli._freeplay_campaign_store", lambda campaign: store
+        "FactoryVerse.evals.freeplay.cli._store", lambda campaign: store
     )
     args = SimpleNamespace(
         campaign="campaign-1", client_mod_dir=str(client), json=False
@@ -565,7 +566,7 @@ def test_cli_prejoin_exits_two_when_join_readiness_is_indeterminate(
         manifest=lambda: manifest,
     )
     monkeypatch.setattr(
-        "FactoryVerse.cli._freeplay_campaign_store", lambda campaign: store
+        "FactoryVerse.evals.freeplay.cli._store", lambda campaign: store
     )
     args = SimpleNamespace(
         campaign="campaign-1", client_mod_dir=str(client), json=False
@@ -593,7 +594,7 @@ def test_cli_prejoin_returns_zero_for_verified_match(tmp_path, monkeypatch, caps
         loaded_client_bytes_verified=True,
     )
     monkeypatch.setattr(
-        "FactoryVerse.cli._freeplay_campaign_store", lambda campaign: store
+        "FactoryVerse.evals.freeplay.cli._store", lambda campaign: store
     )
     monkeypatch.setattr(
         "FactoryVerse.evals.freeplay.prejoin.compare_campaign_client_mods",

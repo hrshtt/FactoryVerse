@@ -24,7 +24,6 @@ dependencies = [
     "seaborn>=0.13.2",
     "watchdog>=6.0.0",
     "websocket-client>=1.9.0",
-    "nicegui>=2.0.0",
 ]
 
 # CLI entry points
@@ -33,10 +32,6 @@ dependencies = [
 factoryverse = "FactoryVerse.cli:main"
 # Short alias for convenience
 fv = "FactoryVerse.cli:main"
-# Agent runner - direct invocation
-factoryverse-agent = "FactoryVerse.cli:cmd_agent"
-# UI entry point
-fv-ui = "FactoryVerse.infra.ui.app:run_app"
 
 [project.entry-points."hermes_agent.plugins"]
 factoryverse = "FactoryVerse.integrations.hermes.plugin"

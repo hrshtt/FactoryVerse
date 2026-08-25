@@ -24,12 +24,12 @@ There is deliberately no issue tracker, certification ledger, retro archive, or 
 ## Layout
 
 ```
-src/FactoryVerse/environment/   Orchestrator — composes the tiered stack; every entry point uses it
+src/FactoryVerse/environment/   Orchestrator — composes the tiered stack; `EnvironmentConfig.for_run` is the one place a run is assembled
 src/FactoryVerse/game/agent/    Agent-facing surface: embodied actions, reachable/remote views
 src/FactoryVerse/game/factory/  Typed entity objects and prototype data
 src/FactoryVerse/game/infra/    DuckDB map model, op log, loaders
-src/FactoryVerse/infra/         RCON/UDP, Docker, LLM clients, sessions, UI
-src/FactoryVerse/evals/         Freeplay campaign harness
+src/FactoryVerse/infra/         RCON/UDP, Docker, LLM clients, sessions
+src/FactoryVerse/evals/         Freeplay campaign harness (+ its `fv campaign` CLI)
 src/FactoryVerse/dev/           Developer tooling (census)
 src/fv_embodied_agent/          Lua mod: what a human at the keyboard can do
 src/fv_snapshot/                Lua mod: game state → disk → DuckDB; entities/map/research interfaces
@@ -47,8 +47,12 @@ uv run pytest tests/unit -q                       # offline
 uv run pytest tests/live -q                       # needs a running instance
 uv run fv client start --scenario lab-grid        # local client with mods
 uv run fv server start --num 1 --scenario lab-grid
-uv run fv agent                                   # interactive agent
+uv run fv run                                     # freeplay agent (auto-detects/launches an instance)
+uv run fv run --task iron_plate_throughput        # verified task
+uv run fv run --interactive                       # human-in-the-loop REPL
 uv run fv docs generate                           # regenerate docs/for-llms/*
+uv run fv census                                  # ground-truth entity dump
+uv run fv campaign --help                         # external-harness campaigns
 ```
 
 `docs/system-prompt/` and `docs/for-llms/` are loaded at runtime — they are inputs to the agent, not documentation for you.

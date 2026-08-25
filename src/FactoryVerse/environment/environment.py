@@ -291,22 +291,19 @@ class Environment:
         cls,
         mode: str = "autonomous",
         provider: str = "prime_intellect",
-        model: str = "intellect-3",
+        model: Optional[str] = None,
         scenario: str = "freeplay",
+        instance: str = "client",
+        **kwargs,
     ) -> "Environment":
-        """Create environment for agent runs.
-
-        Args:
-            mode: Interaction mode (autonomous, assisted)
-            provider: LLM provider
-            model: Model name
-            scenario: Scenario to load
-        """
-        config = EnvironmentConfig.for_agent(
-            mode=InteractionMode(mode),
-            llm_provider=provider,
-            model=model,
+        """Create an environment for a full agent run (see EnvironmentConfig.for_run)."""
+        config = EnvironmentConfig.for_run(
+            instance=instance,
             scenario=scenario,
+            provider=provider,
+            model=model,
+            interactive=(mode == "assisted"),
+            **kwargs,
         )
         return cls(config=config)
 
@@ -326,16 +323,6 @@ class Environment:
             scenario=scenario,
             variant=RuntimeVariant(variant),
         )
-        return cls(config=config)
-
-    @classmethod
-    def for_mcp(cls, instance: Optional[str] = None) -> "Environment":
-        """Create environment for MCP server.
-
-        Args:
-            instance: Instance to connect to (auto-detect if None)
-        """
-        config = EnvironmentConfig.for_mcp(instance=instance)
         return cls(config=config)
 
     @classmethod
