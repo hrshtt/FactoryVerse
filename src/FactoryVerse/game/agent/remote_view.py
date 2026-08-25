@@ -45,6 +45,12 @@ from FactoryVerse.game.infra.duckdb.query import QueryExecutor
 from FactoryVerse.game.snapshot.types import LoadResult, SyncState
 from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
 
+# MINE-BLOCK-1: the two tables natural resources live in. Trees and rocks are
+# entities; ore deposits are tiles whose amount decrements as they are mined.
+# Any causal proof about a mined resource must name the right one.
+RESOURCE_ENTITY_TABLE = "resource_entity"
+RESOURCE_TILE_TABLE = "resource_tile"
+
 logger = logging.getLogger(__name__)
 
 
@@ -432,26 +438,68 @@ class RemoteView:
         position_x: float,
         position_y: float,
     ) -> Dict[str, Any]:
-        """Capture pre-action row presence and the entity-event sequence floor."""
+        """Capture pre-action row presence and the entity-event sequence floor.
+
+        MINE-BLOCK-1: natural resources live in two tables. Trees and rocks are
+        rows in ``resource_entity``; ore deposits are rows in ``resource_tile``.
+        This baseline used to query ``resource_entity`` unconditionally, so an
+        ore target could never be proven to exist, ``resource_rows_at_start``
+        came back 0, and every attempt to hand-mine ore was rejected before it
+        began — while trees mined normally. The barrier that exists to keep
+        mining honest was making the game's most basic action impossible.
+
+        The lookup now follows the resource to whichever table holds it and
+        reports that table, so the post-completion wait proves depletion
+        against the same rows this baseline measured.
+        """
         if not self._loaded:
             raise RuntimeError("RemoteView not loaded. Call load() first.")
 
         if self._sync:
             self._sync.flush_pending()
-        with self._db_lock:
-            rows_at_start = self._database.connection.execute(
-                """
-                SELECT count(*) FROM resource_entity
-                WHERE name = ? AND position_x = ? AND position_y = ?
-                """,
-                [entity_name, float(position_x), float(position_y)],
-            ).fetchone()[0]
-        return {
+
+        def _count(table: str) -> int:
+            with self._db_lock:
+                return self._database.connection.execute(
+                    f"""
+                    SELECT count(*) FROM {table}
+                    WHERE name = ? AND position_x = ? AND position_y = ?
+                    """,
+                    [entity_name, float(position_x), float(position_y)],
+                ).fetchone()[0]
+
+        resource_table = RESOURCE_ENTITY_TABLE
+        rows_at_start = _count(resource_table)
+        if rows_at_start == 0:
+            tile_rows = _count(RESOURCE_TILE_TABLE)
+            if tile_rows:
+                resource_table = RESOURCE_TILE_TABLE
+                rows_at_start = tile_rows
+
+        baseline: Dict[str, Any] = {
             "resource_rows_at_start": rows_at_start,
+            "resource_table": resource_table,
             "entity_sequence_floor": (
                 self._sync.get_entity_sequence() if self._sync else None
             ),
         }
+
+        # An ore tile is not consumed by a single mine() — its amount
+        # decrements and the row survives until exhausted. Record the starting
+        # amount so a partial mine has something to reconcile against; the
+        # row-removal proof below still governs the depleted case.
+        if resource_table == RESOURCE_TILE_TABLE and rows_at_start:
+            with self._db_lock:
+                amount = self._database.connection.execute(
+                    f"""
+                    SELECT amount FROM {RESOURCE_TILE_TABLE}
+                    WHERE name = ? AND position_x = ? AND position_y = ?
+                    """,
+                    [entity_name, float(position_x), float(position_y)],
+                ).fetchone()
+            baseline["resource_amount_at_start"] = amount[0] if amount else None
+
+        return baseline
 
     async def wait_for_resource_depletion(
         self,
@@ -477,13 +525,19 @@ class RemoteView:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        # MINE-BLOCK-1: prove depletion against the same table the baseline
+        # measured. Ore lives in resource_tile, trees and rocks in
+        # resource_entity; watching the wrong one can never observe the removal.
+        resource_table = (baseline or {}).get("resource_table") or RESOURCE_ENTITY_TABLE
+        if resource_table not in (RESOURCE_ENTITY_TABLE, RESOURCE_TILE_TABLE):
+            raise ValueError(f"Unknown resource table: {resource_table!r}")
         while True:
             if self._sync:
                 self._sync.flush_pending()
             with self._db_lock:
                 remaining = self._database.connection.execute(
-                    """
-                    SELECT count(*) FROM resource_entity
+                    f"""
+                    SELECT count(*) FROM {resource_table}
                     WHERE name = ? AND position_x = ? AND position_y = ?
                     """,
                     [entity_name, float(position_x), float(position_y)],
