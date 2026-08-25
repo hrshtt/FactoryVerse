@@ -92,6 +92,41 @@ def test_the_old_entity_only_lookup_could_never_prove_ore(database):
     assert tile_rows == 1, "the ore is really there, in the other table"
 
 
+def test_ore_baseline_accepts_the_tile_centre_the_engine_reports(database):
+    """The second layer of MINE-BLOCK-1, and the one that kept it broken.
+
+    resource_tile stores integer tile coordinates; Factorio resource entities
+    live at tile centres, and the query layer adds 0.5 when it hydrates one. So
+    every position the agent can actually hold — from the engine's mining
+    response, or from a hydrated resource object — is a centre, and can never
+    equal the stored integer. Finding the right table was not enough.
+    """
+    baseline = _view(database).capture_resource_depletion_baseline(
+        "copper-ore", -30.5, -70.5  # the centre of stored tile (-31, -71)
+    )
+
+    assert baseline["resource_rows_at_start"] == 1
+    assert baseline["resource_table"] == RESOURCE_TILE_TABLE
+    assert (baseline["resource_position_x"], baseline["resource_position_y"]) == (
+        -31.0,
+        -71.0,
+    )
+    assert baseline["resource_amount_at_start"] == 2120
+
+
+def test_tile_coordinates_are_still_accepted_directly(database):
+    """floor() must be a no-op on a coordinate that is already a tile index."""
+    baseline = _view(database).capture_resource_depletion_baseline(
+        "copper-ore", -31.0, -71.0
+    )
+
+    assert baseline["resource_rows_at_start"] == 1
+    assert (baseline["resource_position_x"], baseline["resource_position_y"]) == (
+        -31.0,
+        -71.0,
+    )
+
+
 def test_entity_baseline_still_reads_the_entity_table(database):
     """Trees kept working throughout; the fix must not move them."""
     baseline = _view(database).capture_resource_depletion_baseline(

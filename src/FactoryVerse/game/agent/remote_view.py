@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+import math
 import shutil
 import threading
 import time
@@ -458,27 +459,18 @@ class RemoteView:
         if self._sync:
             self._sync.flush_pending()
 
-        def _count(table: str) -> int:
-            with self._db_lock:
-                return self._database.connection.execute(
-                    f"""
-                    SELECT count(*) FROM {table}
-                    WHERE name = ? AND position_x = ? AND position_y = ?
-                    """,
-                    [entity_name, float(position_x), float(position_y)],
-                ).fetchone()[0]
-
-        resource_table = RESOURCE_ENTITY_TABLE
-        rows_at_start = _count(resource_table)
-        if rows_at_start == 0:
-            tile_rows = _count(RESOURCE_TILE_TABLE)
-            if tile_rows:
-                resource_table = RESOURCE_TILE_TABLE
-                rows_at_start = tile_rows
+        located = self._locate_resource_row(
+            entity_name, float(position_x), float(position_y)
+        )
+        resource_table, row_x, row_y, rows_at_start = located
 
         baseline: Dict[str, Any] = {
             "resource_rows_at_start": rows_at_start,
             "resource_table": resource_table,
+            # The coordinates that actually identify the row, which are not
+            # always the coordinates the caller passed (see _locate_resource_row).
+            "resource_position_x": row_x,
+            "resource_position_y": row_y,
             "entity_sequence_floor": (
                 self._sync.get_entity_sequence() if self._sync else None
             ),
@@ -495,11 +487,59 @@ class RemoteView:
                     SELECT amount FROM {RESOURCE_TILE_TABLE}
                     WHERE name = ? AND position_x = ? AND position_y = ?
                     """,
-                    [entity_name, float(position_x), float(position_y)],
+                    [entity_name, row_x, row_y],
                 ).fetchone()
             baseline["resource_amount_at_start"] = amount[0] if amount else None
 
         return baseline
+
+    def _locate_resource_row(
+        self, entity_name: str, position_x: float, position_y: float
+    ) -> Tuple[str, float, float, int]:
+        """Find which table and which coordinates identify this resource.
+
+        Two conventions meet here, and mismatching them is invisible until a
+        causal proof silently finds nothing:
+
+        * ``resource_entity`` (trees, rocks) stores exact entity positions.
+        * ``resource_tile`` (ore) stores **integer tile coordinates**, while the
+          Factorio resource entities themselves live at tile *centres*. The
+          query layer adds 0.5 when it hydrates a typed resource, so a position
+          that came back from the engine — or from a hydrated resource object —
+          is a centre and can never equal the stored integer.
+
+        Returns the table, the coordinates that actually match a row, and the
+        row count. A miss returns the entity table with the caller's own
+        coordinates and a count of 0, which is what the barrier rejects on.
+        """
+
+        def _count(table: str, x: float, y: float) -> int:
+            with self._db_lock:
+                return self._database.connection.execute(
+                    f"""
+                    SELECT count(*) FROM {table}
+                    WHERE name = ? AND position_x = ? AND position_y = ?
+                    """,
+                    [entity_name, x, y],
+                ).fetchone()[0]
+
+        entity_rows = _count(RESOURCE_ENTITY_TABLE, position_x, position_y)
+        if entity_rows:
+            return (RESOURCE_ENTITY_TABLE, position_x, position_y, entity_rows)
+
+        # Exact first (a caller may already hold tile coordinates), then the
+        # centre-to-tile conversion. floor() is the exact inverse of the +0.5
+        # the query layer applies, and is a no-op on a coordinate that is
+        # already a tile index.
+        for x, y in (
+            (position_x, position_y),
+            (float(math.floor(position_x)), float(math.floor(position_y))),
+        ):
+            tile_rows = _count(RESOURCE_TILE_TABLE, x, y)
+            if tile_rows:
+                return (RESOURCE_TILE_TABLE, x, y, tile_rows)
+
+        return (RESOURCE_ENTITY_TABLE, position_x, position_y, 0)
 
     async def wait_for_resource_depletion(
         self,
@@ -531,6 +571,14 @@ class RemoteView:
         resource_table = (baseline or {}).get("resource_table") or RESOURCE_ENTITY_TABLE
         if resource_table not in (RESOURCE_ENTITY_TABLE, RESOURCE_TILE_TABLE):
             raise ValueError(f"Unknown resource table: {resource_table!r}")
+        # Watch the row the baseline actually measured. An ore tile is stored
+        # at integer coordinates while the caller holds a tile centre, so
+        # reusing the caller's numbers here would watch a row that never
+        # existed and time out on a resource that really did deplete.
+        row_x = (baseline or {}).get("resource_position_x")
+        row_y = (baseline or {}).get("resource_position_y")
+        if row_x is None or row_y is None:
+            row_x, row_y = float(position_x), float(position_y)
         while True:
             if self._sync:
                 self._sync.flush_pending()
@@ -540,7 +588,7 @@ class RemoteView:
                     SELECT count(*) FROM {resource_table}
                     WHERE name = ? AND position_x = ? AND position_y = ?
                     """,
-                    [entity_name, float(position_x), float(position_y)],
+                    [entity_name, float(row_x), float(row_y)],
                 ).fetchone()[0]
             if remaining == 0:
                 removal_fact = (
