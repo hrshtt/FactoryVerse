@@ -17,7 +17,6 @@ FactoryVerse is a research platform for LLM agents playing Factorio: three Lua m
   - `GHOST_SURFACE_DEFERRED.md` — ghosts as a map-view write surface
   - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — notifications as a primitive (undesigned)
   - `TIER_RENAME_PROPOSAL.md` — rename the environment tiers
-  - `FREEPLAY_CODEX_LANES.md` — operator workflow for `fv lane` (not a plan)
 - **The code and its checks.** Nothing else in this repo is an authority on whether something works. If you need to know, run the check. If there is no check, there is no claim.
 
 There is deliberately no issue tracker, certification ledger, retro archive, or "known issues" list in the repo. Past sessions' conclusions were removed on purpose; do not reconstruct them from memory.
@@ -31,7 +30,7 @@ src/FactoryVerse/game/factory/  Typed entity objects and prototype data
 src/FactoryVerse/game/infra/    DuckDB map model, op log, loaders
 src/FactoryVerse/infra/         RCON/UDP, Docker, LLM clients, sessions, UI
 src/FactoryVerse/evals/         Freeplay campaign harness
-src/FactoryVerse/dev/           Developer tooling (lanes)
+src/FactoryVerse/dev/           Developer tooling (census)
 src/fv_embodied_agent/          Lua mod: what a human at the keyboard can do
 src/fv_snapshot/                Lua mod: game state → disk → DuckDB; entities/map/research interfaces
 src/fv_placement_hints/         Lua mod: placement reasoning
@@ -50,7 +49,6 @@ uv run fv client start --scenario lab-grid        # local client with mods
 uv run fv server start --num 1 --scenario lab-grid
 uv run fv agent                                   # interactive agent
 uv run fv docs generate                           # regenerate docs/for-llms/*
-uv run fv lane create <name> --objective "..."    # Codex operator worktree
 ```
 
 `docs/system-prompt/` and `docs/for-llms/` are loaded at runtime — they are inputs to the agent, not documentation for you.
