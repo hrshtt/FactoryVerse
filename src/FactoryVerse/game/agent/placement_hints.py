@@ -713,8 +713,7 @@ def _pole_prototype_distances(pole_name: str) -> Tuple[float, float]:
         raise ValueError(
             f"No prototype data for pole {pole_name!r} (maximum_wire_distance/"
             f"supply_area_distance missing). Is it a recognized, filtered "
-            f"electric-pole entity? (fv_filters.yaml scope, see L3.3 ledger "
-            f"row in docs/FLOOR_CERTIFICATION.md)"
+            f"electric-pole entity? (fv_filters.yaml scope)"
         )
     return proto["maximum_wire_distance"], proto["supply_area_distance"]
 

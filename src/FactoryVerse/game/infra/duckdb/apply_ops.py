@@ -10,8 +10,7 @@ Having one reducer is the single-reducer discipline from the event-sourcing
 pattern this pipeline implements (JSONL ops = the log, DuckDB = the
 materialized view, UDP = log shipping): transports are dumb pipes; identical
 logical ops must produce identical rows regardless of which path delivered
-them. Path agreement is certified by ledger L1.13
-(scripts/certification/check_replay_parity.py).
+them.
 
 PROVENANCE FOLD RULE (part of the record contract):
     Provenance fields (map_entity: agent_id, player_id, label, placed_tick;

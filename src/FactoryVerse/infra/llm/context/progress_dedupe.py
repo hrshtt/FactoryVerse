@@ -1,6 +1,6 @@
 """Dedupe verbatim-repeated Task Progress blocks before they enter LLM context.
 
-Background (OBS-2, docs/EVAL_ISSUE_TRACKER.md): the orchestrator injects a task
+Background: the orchestrator injects a task
 verification progress block as a user message after every tool batch. In the
 2026-06-10_23-35-34 engine_unit run that block was appended 163 times but had
 only 35 distinct contents — 128 verbatim consecutive repeats accumulated in the
