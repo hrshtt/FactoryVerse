@@ -4,6 +4,20 @@ This module provides shared starting inventories and other common
 configurations used by multiple task types.
 """
 
+# The human freeplay starter kit.
+#
+# Script-created agent characters are not LuaPlayer instances, so base
+# freeplay's ``on_player_created`` never hands them the vanilla starting
+# items. Any freeplay run mirrors this kit explicitly instead. Single source
+# of truth: the campaign supervisor and ``EnvironmentConfig.for_run`` both
+# read it from here so an in-repo freeplay run and a campaign freeplay run
+# start from the same state.
+FREEPLAY_STARTING_INVENTORY: dict[str, int] = {
+    "burner-mining-drill": 1,
+    "stone-furnace": 1,
+    "wood": 1,
+}
+
 # Standard lab inventory for throughput tasks
 # Provides everything needed for building automated factories
 LAB_STARTING_INVENTORY: dict[str, int] = {

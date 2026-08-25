@@ -640,9 +640,14 @@ class Orchestrator:
             if tier6 is None:
                 raise RuntimeError("Tier 6 not initialized")
 
+            # Freeplay = unscored and self-directed, NOT aimless. The standing
+            # objective in the system prompt's <identity> block still holds;
+            # this message must not contradict it or smuggle in a task.
             message = initial_message or (
-                "You are in freeplay mode. Build whatever factory you want! "
-                "Explore, experiment, and have fun automating production."
+                "This run is freeplay: there is no scored task and no fixed "
+                "sequence to follow. Your standing objective and principles are "
+                "unchanged — you decide what to build, in what order, and when. "
+                "Begin."
             )
 
             await tier6.run_loop(initial_message=message)

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from FactoryVerse.environment import Environment, Tier
+from FactoryVerse.game.tasks.definitions.common import FREEPLAY_STARTING_INVENTORY
 from FactoryVerse.environment.config import (
     EnvironmentConfig,
     ExecutionMode,
@@ -43,11 +44,6 @@ class FreeplayLaunchError(RuntimeError):
     pass
 
 
-FREEPLAY_STARTING_INVENTORY: Dict[str, int] = {
-    "burner-mining-drill": 1,
-    "stone-furnace": 1,
-    "wood": 1,
-}
 
 # Freeplay evaluations intentionally run faster than wall-clock simulation.
 # Pin this in every campaign manifest and verify the live engine value during

@@ -421,69 +421,17 @@ for row in result:
     def get_tool_definitions(self, mode: str = "autonomous") -> List[Dict[str, Any]]:
         """Return OpenAI-compatible tool definitions.
 
+        Delegates to the single shared definition so this path can never
+        describe the tools differently from the live tier6 adapter.
+
         Args:
-            mode: 'assisted' or 'autonomous' - determines which tools are available
+            mode: 'assisted' or 'autonomous'
         """
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "execute_duckdb",
-                    "description": "Execute SQL query against the FactoryVerse database to analyze map state.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "SQL query (DuckDB dialect)",
-                            }
-                        },
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "execute_dsl",
-                    "description": "Execute Python code using FactoryVerse DSL. Code runs in ipykernel with autoawait - use 'await' directly for async functions. All objects (walking, reachable, inventory, etc.) are pre-loaded.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "Python code to execute",
-                            }
-                        },
-                        "required": ["code"],
-                    },
-                },
-            },
-        ]
+        from FactoryVerse.environment.tool_definitions import (
+            get_tool_definitions as _shared_tool_definitions,
+        )
 
-        # Add respond tool only in assisted mode
-        if mode == "assisted":
-            tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "respond",
-                        "description": "Respond to the user with a text message. Use this when you want to chat, ask clarifying questions, explain your reasoning, or discuss strategy without taking any game actions.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string",
-                                    "description": "Your message to the user",
-                                }
-                            },
-                            "required": ["message"],
-                        },
-                    },
-                }
-            )
-
-        return tools
+        return _shared_tool_definitions(mode=mode)
 
     def stop(self):
         """Stop kernel client and shutdown kernel with verbose state verification."""

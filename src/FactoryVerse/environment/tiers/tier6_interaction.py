@@ -8,6 +8,11 @@ from typing import Optional, Any, Dict, List, TYPE_CHECKING, Callable, Awaitable
 
 from ..config import InteractionConfig, InteractionMode
 from ..status import Tier6Status, TierState, PrerequisiteResult
+from ..tool_definitions import (
+    check_read_only,
+    get_tool_definitions as _shared_tool_definitions,
+    leading_keyword,
+)
 from .base import TierBase, Tier, TierInitializationError
 
 if TYPE_CHECKING:
@@ -346,6 +351,59 @@ class Tier6Interaction(TierBase):
         )
 
 
+class _NoDatabase(Exception):
+    """No queryable database is attached to this runtime."""
+
+
+def _cell(value: Any) -> str:
+    """Render one value for a text table without breaking the row."""
+    if value is None:
+        return "NULL"
+    text = str(value)
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
+def _render_query_result(
+    columns: Optional[List[str]],
+    rows: List[List[Any]],
+    total: int,
+) -> str:
+    """Render query rows as a pipe table with a row count and a cap notice.
+
+    The shape is deliberate: ``Rows: N`` and the ``| --- |`` separator are what
+    OutputCompressor.compress_query_result looks for, so the character cap
+    downstream degrades this into "showing X of N rows" rather than a blind
+    character chop.
+    """
+    if total == 0:
+        header = "Rows: 0 (no rows matched)"
+        if columns:
+            header += "\nColumns: " + ", ".join(columns)
+        return header
+
+    lines = [f"Rows: {total}"]
+    if columns is None:
+        lines.append(
+            "(column names unavailable for this statement type — values in "
+            "statement order)"
+        )
+        width = max((len(r) for r in rows), default=0)
+        columns = [f"col{i + 1}" for i in range(width)]
+
+    lines.append("| " + " | ".join(_cell(c) for c in columns) + " |")
+    lines.append("| " + " | ".join("---" for _ in columns) + " |")
+    for row in rows:
+        lines.append("| " + " | ".join(_cell(v) for v in row) + " |")
+
+    if total > len(rows):
+        lines.append(
+            f"\n[showing first {len(rows)} of {total} rows — {total - len(rows)} "
+            f"not shown; narrow or aggregate the query to see the rest]"
+        )
+
+    return "\n".join(lines)
+
+
 class _RuntimeAdapter:
     """Adapter that implements RuntimeProtocol using Environment tiers.
 
@@ -356,6 +414,12 @@ class _RuntimeAdapter:
     - events: EventStream for temporal perception (preferred)
     - _listener: Access to AsyncActionListener (legacy, for backwards compat)
     """
+
+    # Caps for the query tool. Rows are capped while fetching so a huge
+    # result is never materialised into a string; the compressor then
+    # enforces the character cap.
+    _DUCKDB_MAX_ROWS = 100
+    _DUCKDB_MAX_CHARS = 5000
 
     def __init__(self, tier3, tier4):
         self._tier3 = tier3
@@ -417,88 +481,104 @@ class _RuntimeAdapter:
     def execute_duckdb(
         self, query: str, metadata: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Execute DuckDB query.
+        """Execute a read-only DuckDB query and return a legible table.
 
         ONE DB (CELL-1 item 6): when RemoteView is loaded, route through its
         connection (same flush-before-read + lock as remote_view.query) so
         the two agent query paths can never serve different truths. Tier4's
         own database is only the fallback for MINIMAL/partial runtimes.
+
+        Read-only is enforced here rather than left to RemoteView.execute_raw,
+        which deliberately drops the SELECT restriction: the agent's query tool
+        must not be a write channel into its own map model. A rejected
+        statement is returned as data, never raised.
+
+        The result carries column headers, a row count, and an explicit notice
+        when it was capped — a bare list of tuples tells the model neither what
+        it is looking at nor whether it is looking at all of it.
         """
-        if self._tier4 and self._tier4.remote_view is not None:
+        refusal = check_read_only(query)
+        if refusal is not None:
+            return refusal
+
+        try:
+            columns, rows, total = self._fetch_duckdb_rows(query)
+        except _NoDatabase:
+            return "Database not available"
+        except Exception as exc:  # surfaced as data: the model cannot catch it
+            detail = str(exc)
+            if len(detail) > 1000:
+                detail = detail[:1000] + "…"
+            return f"Query error: {type(exc).__name__}: {detail}"
+
+        rendered = _render_query_result(columns, rows, total)
+
+        from FactoryVerse.infra.llm.context.compressor import OutputCompressor
+
+        # Rows are already capped above; the +4 keeps the compressor's row
+        # logic from mistaking this table's trailing cap notice for data rows.
+        compressed = OutputCompressor().compress_query_result(
+            rendered,
+            max_rows=self._DUCKDB_MAX_ROWS + 4,
+            max_chars=self._DUCKDB_MAX_CHARS,
+        )
+        return compressed.text
+
+    def _fetch_duckdb_rows(self, query: str):
+        """Return (column_names_or_None, rows, total_row_count).
+
+        Rows are capped at ``_DUCKDB_MAX_ROWS`` for rendering, but ``total``
+        is the real count so the caller can say how much it is hiding.
+        """
+        max_rows = self._DUCKDB_MAX_ROWS
+        remote_view = self._tier4.remote_view if self._tier4 else None
+        if remote_view is not None:
             try:
-                if self._tier4.remote_view.is_loaded:
-                    result = self._tier4.remote_view.execute_raw(query)
-                    return str(result)
+                if remote_view.is_loaded:
+                    # query() returns dicts, so column names survive. It takes
+                    # only SELECT/WITH; DESCRIBE/SHOW/PRAGMA and anything its
+                    # own prefix check rejects fall back to the raw path
+                    # (already proven read-only above) and lose their headers.
+                    if leading_keyword(query) in ("SELECT", "WITH"):
+                        try:
+                            dict_rows = remote_view.query(query)
+                        except ValueError:
+                            dict_rows = None
+                        if dict_rows is not None:
+                            columns = (
+                                list(dict_rows[0].keys()) if dict_rows else None
+                            )
+                            rows = [
+                                [row.get(col) for col in (columns or [])]
+                                for row in dict_rows[:max_rows]
+                            ]
+                            return columns, rows, len(dict_rows)
+                    tuples = remote_view.execute_raw(query)
+                    return None, [list(r) for r in tuples[:max_rows]], len(tuples)
             except RuntimeError:
                 pass  # not loaded yet — fall through to tier4 database
+
         if self._tier4 and self._tier4.database:
-            result = self._tier4.database.execute(query).fetchall()
-            return str(result)
-        return "Database not available"
+            cursor = self._tier4.database.execute(query)
+            columns = (
+                [desc[0] for desc in cursor.description] if cursor.description else None
+            )
+            tuples = cursor.fetchall()
+            return columns, [list(r) for r in tuples[:max_rows]], len(tuples)
+
+        raise _NoDatabase()
 
     def respond(self, message: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """Return chat response."""
         return message
 
     def get_tool_definitions(self, mode: str = "autonomous") -> List[Dict[str, Any]]:
-        """Get tool definitions for LLM."""
-        # Return standard tool definitions
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "execute_dsl",
-                    "description": "Execute FactoryVerse DSL code",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "DSL code to execute",
-                            }
-                        },
-                        "required": ["code"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "execute_duckdb",
-                    "description": "Execute SQL query on game state database",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "SQL query"}
-                        },
-                        "required": ["query"],
-                    },
-                },
-            },
-        ]
+        """Get tool definitions for the LLM.
 
-        if mode == "assisted":
-            tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "respond",
-                        "description": "Send a response to the user",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string",
-                                    "description": "Response message",
-                                }
-                            },
-                            "required": ["message"],
-                        },
-                    },
-                }
-            )
-
-        return tools
+        Defined once in ``environment.tool_definitions`` — this is the live
+        path, and it used to carry the thinnest of three divergent copies.
+        """
+        return _shared_tool_definitions(mode=mode)
 
     async def execute_code(self, code: str, compress_output: bool = False) -> str:
         """Execute Python code and return output.

@@ -40,26 +40,26 @@ You can use them directly without importing.
 
 | Type | Module |
 |------|--------|
-| `BoundingBox` | `FactoryVerse.factory.types` |
-| `ConnectionPosition` | `FactoryVerse.agent.placement_hints` |
-| `ConnectionType` | `FactoryVerse.agent.placement_hints` |
-| `CraftingQueueStatus` | `FactoryVerse.factory.types` |
-| `Direction` | `FactoryVerse.factory.types` |
-| `EntityValidationError` | `FactoryVerse.agent.placement_hints` |
-| `GhostPlan` | `FactoryVerse.agent.placement_hints` |
-| `Item` | `FactoryVerse.factory.item.base` |
-| `ItemStack` | `FactoryVerse.factory.item.base` |
-| `MapPosition` | `FactoryVerse.factory.types` |
-| `PlaceableItem` | `FactoryVerse.factory.item.base` |
-| `PolePlacementResult` | `FactoryVerse.agent.placement_hints` |
-| `QueuedTechnology` | `FactoryVerse.agent.embodied_actions.research` |
-| `ResearchQueueItem` | `FactoryVerse.factory.types` |
-| `ResearchStatus` | `FactoryVerse.agent.embodied_actions.research` |
-| `WalkingEntityNotFoundError` | `FactoryVerse.agent.embodied_actions.walking` |
-| `WalkingError` | `FactoryVerse.agent.embodied_actions.walking` |
-| `WalkingNoStandableTilesError` | `FactoryVerse.agent.embodied_actions.walking` |
-| `WalkingUnreachableError` | `FactoryVerse.agent.embodied_actions.walking` |
-| `WireConnectionPosition` | `FactoryVerse.agent.placement_hints` |
+| `BoundingBox` | `FactoryVerse.game.factory.types` |
+| `ConnectionPosition` | `FactoryVerse.game.agent.placement_hints` |
+| `ConnectionType` | `FactoryVerse.game.agent.placement_hints` |
+| `CraftingQueueStatus` | `FactoryVerse.game.factory.types` |
+| `Direction` | `FactoryVerse.game.factory.factorio_types` |
+| `EntityValidationError` | `FactoryVerse.game.agent.placement_hints` |
+| `GhostPlan` | `FactoryVerse.game.agent.placement_hints` |
+| `Item` | `FactoryVerse.game.factory.item.base` |
+| `ItemStack` | `FactoryVerse.game.factory.item.base` |
+| `MapPosition` | `FactoryVerse.game.factory.types` |
+| `PlaceableItem` | `FactoryVerse.game.factory.item.base` |
+| `PolePlacementResult` | `FactoryVerse.game.agent.placement_hints` |
+| `QueuedTechnology` | `FactoryVerse.game.agent.embodied_actions.research` |
+| `ResearchQueueItem` | `FactoryVerse.game.factory.types` |
+| `ResearchStatus` | `FactoryVerse.game.agent.embodied_actions.research` |
+| `WalkingEntityNotFoundError` | `FactoryVerse.game.agent.embodied_actions.walking` |
+| `WalkingError` | `FactoryVerse.game.agent.embodied_actions.walking` |
+| `WalkingNoStandableTilesError` | `FactoryVerse.game.agent.embodied_actions.walking` |
+| `WalkingUnreachableError` | `FactoryVerse.game.agent.embodied_actions.walking` |
+| `WireConnectionPosition` | `FactoryVerse.game.agent.placement_hints` |
 
 
 ## Quick Reference
@@ -1174,17 +1174,17 @@ print(f"Status: {state.get('status')}")
 pickup_entity(entity_name: str, position: Optional[MapPosition] = ...) -> EntityPickedUp
 ```
 
-Pick up (mine) an entity from the map into the agent's inventory.
+Pick up a placed entity from the map into the agent's inventory.
 
 **Decision Points:**
 - Entity inventories are extracted along with the entity itself
-- Prefer entity.mine() when you already hold the entity object
+- Prefer entity.pickup() when you already hold the entity object
 
 **Examples:**
 
 *Removing/relocating placed entities:*
 
-Preconditions: Entity is within reach and mineable
+Preconditions: Entity is within reach and can be picked up
 
 ```python
 # Pick up a misplaced chest (contents come along)
@@ -3058,13 +3058,11 @@ for pos, direction in positions:
 
 ### ConnectionType
 
-Connection types for solving entity placement puzzles. Each type represents a different way entities can connect (item drop, fluid, wire, etc.). CRITICAL: ITEM_DROP is for mining drills (push directly to adjacent entities). INSERTER_REACH is for inserters (pick from ground/belts/entities). Cannot use inserters with drills as source.
+Connection types for solving entity placement puzzles. Each type represents a different way entities can connect (item drop, fluid, wire). CRITICAL: ITEM_DROP is for mining drills (push directly to adjacent entities); you cannot use inserters with drills as source. Inserters are NOT a connection type - use get_inserter_placement_positions(source, target) instead.
 
 **Values:**
 - `ITEM_DROP` = item_drop
 - `FLUID_PIPE` = fluid_pipe
-- `INSERTER_REACH` = inserter
-- `BELT_FLOW` = belt_flow
 - `ELECTRIC_WIRE` = wire
 
 **Examples:**
@@ -3075,9 +3073,8 @@ Connection types for solving entity placement puzzles. Each type represents a di
 # Available connection types
 ConnectionType.ITEM_DROP    # Mining drill -> Chest/Belt (drills push directly, no inserters)
 ConnectionType.FLUID_PIPE   # Pipe -> Machine/Pipe
-ConnectionType.INSERTER_REACH  # Inserter -> Source/Target (picks from ground/belts/entities, NOT drills)
-ConnectionType.BELT_FLOW    # Belt -> Belt
 ConnectionType.ELECTRIC_WIRE   # Pole -> Pole
+# For inserters: placement_hints.get_inserter_placement_positions(source, target)
 
 # Use with get_connection_positions
 positions = placement_hints.get_connection_positions(
@@ -3168,4 +3165,4 @@ if positions:
 
 ---
 
-*Generated from registry on 2026-08-07 06:22:04*
+*Generated from registry on 2026-08-25 19:03:49*

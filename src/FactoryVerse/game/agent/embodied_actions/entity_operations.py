@@ -7,7 +7,7 @@ Handles entity configuration and inventory operations:
 - take_inventory_item: Transfer items from entity to agent
 - put_inventory_item: Transfer items from agent to entity
 - inspect_entity: Get comprehensive entity state
-- pickup_entity: Mine entity into inventory
+- pickup_entity: Pick up entity into inventory
 """
 
 from dataclasses import dataclass, field
@@ -207,7 +207,7 @@ class EntityOperationsAction:
     - take_inventory_item(): Transfer items from entity to agent
     - put_inventory_item(): Transfer items from agent to entity
     - inspect_entity(): Get raw entity state dict (parsed at DSL entity level)
-    - pickup_entity(): Mine entity into inventory
+    - pickup_entity(): Pick up entity into inventory
 
     Note: inspect_entity returns a raw dict that should be parsed by entity-specific
     classes at the DSL level, allowing each entity type to define its own inspection
@@ -474,7 +474,7 @@ class EntityOperationsAction:
     ) -> EntityPickedUp:
         """Pick up an entity from the map into agent's inventory.
 
-        The entity must be within reach and mineable/deconstructable.
+        The entity must be within reach and removable (pickup/deconstruct).
 
         Args:
             entity_name: Entity prototype name to pick up

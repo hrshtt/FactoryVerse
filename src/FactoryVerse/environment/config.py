@@ -1061,6 +1061,28 @@ class EnvironmentConfig(BaseModel):
             model = default_model_for_provider(provider) or "default"
         infra_mode = InfraMode.EXTERNAL if instance == "client" else InfraMode.SERVER
         mode = InteractionMode.ASSISTED if interactive else InteractionMode.AUTONOMOUS
+
+        # FREEPLAY-INV-1: on a task run the starting kit is applied during cell
+        # allocation, but a freeplay run allocates no cell (only the lab-grid
+        # adapter is registered, and the inbuilt freeplay scenario does not
+        # answer its interface), so `_allocate_cell` returns before it can
+        # apply anything and the agent starts empty. Stock it at agent
+        # creation instead. Freeplay only — setting it for a task run would
+        # stock the agent twice.
+        #
+        # The kit is the vanilla freeplay starter, the same constant the
+        # campaign supervisor uses, so an in-repo freeplay run and a campaign
+        # freeplay run begin from the same state and their observations remain
+        # comparable. It is deliberately NOT the lab throughput kit: handing a
+        # freeplay agent hundreds of belts and poles would prejudge exactly the
+        # transport-affordance behaviour these runs exist to observe.
+        starting_inventory: Optional[Dict[str, int]] = None
+        if task_name is None:
+            from FactoryVerse.game.tasks.definitions.common import (
+                FREEPLAY_STARTING_INVENTORY,
+            )
+
+            starting_inventory = dict(FREEPLAY_STARTING_INVENTORY)
         return cls(
             tier1=InfraConfig(mode=infra_mode),
             tier2=SettingsConfig(scenario=scenario),
@@ -1068,6 +1090,13 @@ class EnvironmentConfig(BaseModel):
             tier4=RuntimeConfig(
                 variant=RuntimeVariant.FULL,
                 agent_id=agent_id,
+                # An agent run is a production run: the actor gets embodied
+                # interfaces and DuckDB, not raw RCON / runtime / scenario.
+                # Stated explicitly so `fv run` and the freeplay campaign
+                # supervisor draw the same affordance boundary; the field's
+                # own default stays DEBUG for dev entry points.
+                access_profile=RuntimeAccessProfile.PRODUCTION,
+                initial_inventory=starting_inventory,
                 provider=provider,
                 model=model,
                 mode=mode.value,

@@ -20,7 +20,7 @@ Factorio is a game where you:
 - **Peaceful Mode**: No enemies attack. Focus entirely on building.
 - **Time**: Measured in ticks (60 ticks = 1 second). Game events trigger asynchronously.
 - **Inventory**: Limited space. Items stack (typically 50-200 per stack).
-- **Reach**: You can only interact with entities within ~10 tiles of your position.
+- **Reach**: Two radii, not one. Entities are reachable — place, pick up, configure, transfer — within ~10 tiles of your position. Ore, trees and rocks must be within ~2.7 tiles to mine. Walk closer before mining than you would to build.
 - **Placement**: Entities must be placed on valid terrain without collisions.
 - **Power**: Most machines require electricity (steam engines, solar panels, etc.).
 - **Crafting**: Hand-craft items (slow) or use assembling machines (automated, faster).
@@ -101,9 +101,22 @@ Query the database before committing to a plan:
 This is the canonical connection idiom. Each placement asks the previous entity where the next one goes:
 
 ```python
+# 0. You can only place what you are holding. `inventory.get_item()` returns
+#    None when the item is not in your inventory — "you are not holding this"
+#    is a normal answer, not a crash, and an unguarded .place() on it dies with
+#    AttributeError on NoneType. Guard EVERY placement. Define this once; the
+#    namespace persists across code blocks.
+def held(item_name):
+    item = inventory.get_item(item_name)
+    if item is None:
+        raise RuntimeError(f"not holding {item_name} — craft or fetch it first")
+    return item
+
 # 1. A water row is only a search hint. It is not walkable and is not a pump
 #    anchor. Resolve live-validated shoreline anchors before travelling:
 water = remote_view.find_water(near=walking.current_position, radius=50)
+if not water:
+    raise RuntimeError("No water within 50 tiles — widen the radius or scout further")
 water_hint = MapPosition(x=water[0]["x"], y=water[0]["y"])
 sites = placement_hints.find_offshore_pump_sites(
     near=water_hint, radius=20, max_results=20
@@ -115,9 +128,7 @@ site = sites[0]
 # site.position is the exact anchor and can overlap water. The affordance also
 # supplies a standable land point within build reach; walk only there.
 await walking.walk_to(site.approach_position, strict_goal=False)
-pump = inventory.get_item("offshore-pump").place(
-    site.position, site.direction
-)
+pump = held("offshore-pump").place(site.position, site.direction)
 
 # 2. Ask the PUMP where a boiler connects (never hand-compute this)
 cues = placement_hints.get_connection_positions(
@@ -125,7 +136,7 @@ cues = placement_hints.get_connection_positions(
     target_entity_name="boiler",
     connection_type=ConnectionType.FLUID_PIPE,
 )
-boiler = inventory.get_item("boiler").place(cues[0].position, cues[0].direction)
+boiler = held("boiler").place(cues[0].position, cues[0].direction)
 
 # 3. Ask the BOILER where the steam engine goes. Expect exactly ONE cue —
 #    the boiler has a single steam port and the engine mates inline.
@@ -134,23 +145,22 @@ cues = placement_hints.get_connection_positions(
     target_entity_name="steam-engine",
     connection_type=ConnectionType.FLUID_PIPE,
 )
-engine = inventory.get_item("steam-engine").place(cues[0].position, cues[0].direction)
+engine = held("steam-engine").place(cues[0].position, cues[0].direction)
 
 # 4. Close the fuel LOOP — power is a consumable, not a one-time top-up.
-#    The boiler holds a tiny fuel buffer (~11 coal per insert observed), so a
-#    single add_fuel() burns off in minutes. Automate coal INTO the boiler:
-#    coal drill → inserter → boiler.
-boiler.add_fuel(inventory.create_item_stacks("coal", 11))   # priming charge only
-coal_drill = inventory.get_item("burner-mining-drill").place(coal_tile, Direction.SOUTH)
-cues = placement_hints.get_connection_positions(
-    source_entity=coal_drill, target_entity_name="burner-inserter",
-    connection_type=ConnectionType.ITEM_DROP,
-)   # inserter carries coal drill → boiler fuel slot; without this the loop starves silently
+#    The boiler holds a tiny fuel buffer (~11 coal per insert observed), so
+#    add_fuel() is a priming charge, NOT a coal supply:
+boiler.add_fuel(inventory.create_item_stacks("coal", 11))
+#    A standing supply is a separate problem you still have to solve. A burner
+#    mining drill sitting on coal delivers straight into whatever occupies its
+#    ITEM_DROP cue (an inserter cannot take FROM a drill), so a power block
+#    sited where coal is near water can feed itself. Until something feeds it,
+#    the boiler starves silently — come back and check it.
 
 # 5. Distribute power with poles — then VERIFY coverage BEFORE moving on
 #    (do NOT place a run of poles and walk away; check every machine is lit).
-report = verify.supply_coverage(entities=[(name, (x, y)), ...])  # your consumers
-print(report.summary)     # per-entity covered/margin, e.g. "0.15 short on Y toward pole line"
+report = verify.supply_coverage(entities=[(engine.name, engine.position)])  # your consumers
+print(report.summary)     # e.g. "1/2 covered | NOT covered: boiler@(12.5,7.5) (0.15 short on Y)"
 print(report.ascii_map)   # #=covered tile, P=pole, ?=proposed, UPPERCASE=covered
                           #   machine, lowercase=NOT covered — chase every lowercase letter
 # `covered` is a box-intersection fact, not a distance guess: a machine 5 tiles
@@ -158,7 +168,7 @@ print(report.ascii_map)   # #=covered tile, P=pole, ?=proposed, UPPERCASE=covere
 # pass proposed_pole=(name, (x, y)) and read the ? tile / margins it would add.
 ```
 
-If a cue list is empty, the space is blocked — clear it or re-site; do NOT fall back to hand-placing. If `cues[0].direction` is set, you MUST pass it to place(): the right position with the wrong rotation does not connect.
+If a cue list is empty, read `cues.reason` — it says WHY (blocked candidates, wrong source, nothing in range). Clear the space or re-site; do NOT fall back to hand-placing. If `cues[0].direction` is set, you MUST pass it to place(): the right position with the wrong rotation does not connect.
 
 **Diagnosing `no_power` — classify the cause before you touch anything.** `no_power` has two distinct causes — the entity isn't covered by any powered pole's supply area, or the generator chain upstream starved. Don't guess which: `remote_view.diagnose_power(name, position)` classifies it in one call:
 ```python
@@ -166,9 +176,11 @@ d = remote_view.diagnose_power("assembling-machine-1", pos)   # -> PowerDiagnosi
 # d.verdict ∈ {working, not_covered_by_any_pole, network_has_no_generation,
 #   network_undersupplied, upstream_generator_starved, no_status_data, ...}
 ```
-`not_covered_by_any_pole` → fix coverage with `verify.supply_coverage` (see the worked pattern below). Upstream verdicts (`upstream_generator_starved` / `network_has_no_generation`) point you up the fuel loop — walk the generator statuses (engine idle → boiler `no_fuel` → coal supply empty), not the wires. Caveat: a starved producer still reads `working` — only consumers show `low_power`, and undersupply shows as `low_power` status, not a wattage gap.
+`not_covered_by_any_pole` → fix coverage with `verify.supply_coverage` (step 5 of the worked pattern above). Upstream verdicts (`upstream_generator_starved` / `network_has_no_generation`) point you up the fuel loop — walk the generator statuses (engine idle → boiler `no_fuel` → coal supply empty), not the wires. Caveat: a starved producer still reads `working` — only consumers show `low_power`, and undersupply shows as `low_power` status, not a wattage gap.
 
-**Read the per-turn power digest.** Task Progress carries a line like `power: 2 nets | net@(352.5,1000.5) 41.9kW/41.9kW gen/load | net@(382.5,1000.5) 1.1kW/1.1kW 1 low_power` (gen/load watts per network, anchored by pole position, with any `low_power` consumer count). When a network's consumption climbs toward its production, that is the signal to expand generation (add boiler+engine) BEFORE consumers start reading `low_power`. If the digest shows `no_power`/`low_power` counts, `verify.supply_coverage` + `diagnose_power` are the follow-ups.
+**Where each answer comes from.** `diagnose_power` reads the polled `entity_status` snapshot table: a machine with no row yet returns `no_status_data`, and any row it does find is as fresh as the sample (`sample_tick` on the diagnosis says when). `verify.powered/connected/supply_coverage` read the live engine at call time. So: use the DB read to classify WHICH machine has WHICH problem cheaply, and `verify` to confirm the answer is still true before you act on it.
+
+**On task runs, read the per-turn power digest.** When a run is driven by a task with verification, its Task Progress block carries a line like `power: 2 nets | net@(352.5,1000.5) 41.9kW/41.9kW gen/load | net@(382.5,1000.5) 1.1kW/1.1kW 1 low_power` (gen/load watts per network, anchored by pole position, with any `low_power` consumer count). A freeplay run has no Task Progress block and therefore no digest — there, power state is only what you go and read: `diagnose_power` per suspect machine, `verify.supply_coverage` for a cluster. Either way, when a network's consumption climbs toward its production, that is the signal to expand generation (add boiler+engine) BEFORE consumers start reading `low_power`.
 
 ### Connection idioms (same principle, other links)
 
@@ -244,9 +256,10 @@ All action and query interfaces are pre-loaded as global variables:
 - **`crafting`** - Craft items and manage recipe queues
 - **`research`** - Queue and manage technology research
 - **`inventory`** - Query inventory and create item stacks
+- **`mining`** - Hand-mine by resource name; the route taught throughout this prompt is `resource.mine()` on a resource you got from the views
 - **`reachable_view`** - Query entities and resources within interaction range
-- **`resources`** - Alias for `reachable_view` (backward compatibility)
-- **`entity_ops`** - Pick up and remove entities
+- **`resources`** - The same object as `reachable_view`, under a second name
+- **`entity_ops`** - Operate a placed entity: set its recipe, filters and inventory limits, move items into and out of it, inspect it, and pick it up
 - **`placement`** - Place entities on the map
 - **`ghost_builder`** - Build ghost entities into real ones
 - **`placement_hints`** - Plan entity placements with spatial validation

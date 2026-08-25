@@ -32,6 +32,83 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_MAX_ERROR_MESSAGE_CHARS = 500
+_MAX_SOURCE_LINE_CHARS = 160
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _format_execution_error(
+    exc: BaseException,
+    code: str,
+    exec_filename: str,
+    line_offset: int,
+) -> str:
+    """Say where a code block failed and what it had already done.
+
+    Constitution §8: the model cannot see a traceback and cannot catch this
+    exception, so the returned text is the only account it gets of a partial
+    execution. Keep it to a few lines — the failing line, the top-level
+    statement that reached it, and an explicit statement about what already ran.
+
+    The first line always starts with "Error: " — downstream success detection
+    keys on that prefix.
+    """
+    source_lines = code.split("\n")
+
+    def source(lineno: int) -> str:
+        if 1 <= lineno <= len(source_lines):
+            return _clip(source_lines[lineno - 1], _MAX_SOURCE_LINE_CHARS)
+        return ""
+
+    # SyntaxError's str() appends the internal compile filename; use its own
+    # message so the harness does not leak that name into the agent's context.
+    message = exc.msg if isinstance(exc, SyntaxError) and exc.msg else exc
+    parts = [f"Error: {type(exc).__name__}: {_clip(message, _MAX_ERROR_MESSAGE_CHARS)}"]
+
+    if (
+        isinstance(exc, SyntaxError)
+        and exc.lineno is not None
+        and exc.filename in (exec_filename, None)
+    ):
+        lineno = exc.lineno - line_offset
+        text = _clip(exc.text or source(lineno) or "", _MAX_SOURCE_LINE_CHARS)
+        parts.append(f"  line {lineno}: {text}" if text else f"  line {lineno}")
+        parts.append("Nothing in this block ran: it did not compile.")
+        return "\n".join(parts)
+
+    # Only frames compiled from THIS block carry exec_filename, so line
+    # numbers are always read against the source that produced them.
+    block_lines = []
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename == exec_filename:
+            block_lines.append(tb.tb_lineno - line_offset)
+        tb = tb.tb_next
+
+    if not block_lines:
+        parts.append(
+            "  (raised below this block — inside the agent API, or inside a "
+            "helper defined by an earlier block)"
+        )
+        return "\n".join(parts)
+
+    innermost, outermost = block_lines[-1], block_lines[0]
+    parts.append(f"  line {innermost}: {source(innermost)}".rstrip())
+    if innermost != outermost:
+        parts.append(f"  reached from line {outermost}: {source(outermost)}".rstrip())
+    parts.append(
+        f"Statements before line {outermost} already ran; their effects on the "
+        f"world stand. Statements after it did not run. Variables assigned in "
+        f"this block were NOT saved — a block that raises leaves the namespace "
+        f"as it was."
+    )
+    return "\n".join(parts)
+
+
 class Tier4Runtime(TierBase):
     """Tier 4: FactoryVerse Runtime.
 
@@ -79,6 +156,9 @@ class Tier4Runtime(TierBase):
 
         # Persistent user namespace for code execution (survives across blocks)
         self._user_namespace: dict = {}
+
+        # Monotonic counter giving each executed block a unique code filename
+        self._exec_sequence: int = 0
 
     @property
     def config(self) -> RuntimeConfig:
@@ -1413,6 +1493,13 @@ class Tier4Runtime(TierBase):
         start_time = time.time()
         error_text = None
 
+        # A per-execution filename so a traceback frame can be attributed to
+        # THIS block. A helper defined in an earlier block keeps that block's
+        # filename, so its line numbers are never read against this source.
+        self._exec_sequence += 1
+        exec_filename = f"<execute_dsl:{self._exec_sequence}>"
+        line_offset = 0
+
         try:
             sys.stdout = stdout_capture
 
@@ -1422,8 +1509,10 @@ class Tier4Runtime(TierBase):
                 indented_code = "\n".join(f"    {line}" for line in code.split("\n"))
                 async_wrapper = f"async def __async_exec__():\n{indented_code}\n    return locals()\n"
 
-                # Compile and execute the wrapper definition
-                exec(compile(async_wrapper, "<string>", "exec"), namespace)
+                # The wrapper prepends one line, so traceback line numbers are
+                # one ahead of the user's own source.
+                line_offset = 1
+                exec(compile(async_wrapper, exec_filename, "exec"), namespace)
 
                 # Await the async function and capture its local variables
                 async_locals = await namespace["__async_exec__"]()
@@ -1434,7 +1523,7 @@ class Tier4Runtime(TierBase):
                         namespace[k] = v
             else:
                 # Sync code - simple exec
-                exec(code, namespace)
+                exec(compile(code, exec_filename, "exec"), namespace)
 
             # Persist user-defined variables for next code block
             for k, v in namespace.items():
@@ -1445,9 +1534,17 @@ class Tier4Runtime(TierBase):
 
         except Exception as e:
             output = stdout_capture.getvalue().strip()
-            error_text = f"Error: {type(e).__name__}: {e}"
+            # Constitution §8: a call that fails without saying what it already
+            # did is worse than a call that does nothing. Name the failing
+            # line, and label output captured before the failure as work that
+            # has already happened and will not be undone.
+            error_text = _format_execution_error(e, code, exec_filename, line_offset)
             if output:
-                output = f"{output}\n{error_text}"
+                output = (
+                    "Output printed before the failure (this work already "
+                    "happened and was not rolled back):\n"
+                    f"{output}\n\n{error_text}"
+                )
             else:
                 output = error_text
 

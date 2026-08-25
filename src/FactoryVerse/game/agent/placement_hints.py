@@ -65,13 +65,13 @@ class ConnectionType(Enum):
     """Connection types for solving entity placement puzzles.
 
     ITEM_DROP: Mining drills push items directly into adjacent entities. Cannot use inserters with drills.
-    INSERTER_REACH: Inserters pick from ground/belts/entities and drop to ground/belts/entities.
+
+    Inserters are NOT a connection type: use
+    ``get_inserter_placement_positions(source, target)`` instead.
     """
 
     ITEM_DROP = "item_drop"  # Mining drill -> Chest/Belt (direct push, no inserters)
     FLUID_PIPE = "fluid_pipe"  # Pipe -> Machine/Pipe
-    INSERTER_REACH = "inserter"  # Inserter -> Source/Target (picks from ground/belts/entities, NOT drills)
-    BELT_FLOW = "belt_flow"  # Belt -> Belt
     ELECTRIC_WIRE = "wire"  # Pole -> Pole
 
 

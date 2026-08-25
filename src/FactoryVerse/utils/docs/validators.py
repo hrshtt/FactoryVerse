@@ -486,7 +486,9 @@ class StaticAttributeValidator:
         ".build": "BaseEntity",
         ".remove": "None",
         ".walk_to": "MapPosition",
+        # Resource-side only: entities are removed with .pickup(), not .mine()
         ".mine": "List[ItemStack]",
+        ".pickup": "List[ItemStack]",
 
         # ElectricPole accessors (DOC-GAP-1: exist in electric_pole.py,
         # previously unregistered — supply-area / wire-reach reasoning)

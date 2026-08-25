@@ -891,7 +891,7 @@ print(f"Status: {state.get('status')}")""",
     registry.register_method(
         cls=EntityOperationsAction,
         method_name="pickup_entity",
-        description="Pick up (mine) an entity from the map into the agent's inventory.",
+        description="Pick up a placed entity from the map into the agent's inventory.",
         examples=[
             Example(
                 code="""# Pick up a misplaced chest (contents come along)
@@ -902,13 +902,13 @@ if result.has_items:
     print(f"Extracted: {result.extracted_items}")""",
                 decision_context="Removing/relocating placed entities",
                 expected_outcome="Entity removed from map, item + contents in agent inventory",
-                preconditions=["Entity is within reach and mineable"],
+                preconditions=["Entity is within reach and can be picked up"],
                 validation_level=ValidationLevel.SYNTAX,
             ),
         ],
         decision_points=[
             "Entity inventories are extracted along with the entity itself",
-            "Prefer entity.mine() when you already hold the entity object",
+            "Prefer entity.pickup() when you already hold the entity object",
         ],
     )
 

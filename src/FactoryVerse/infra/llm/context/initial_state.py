@@ -27,6 +27,19 @@ class InitialStateGenerator:
 
     The generated summary follows a "code + output" pattern to demonstrate
     how to query the game state using the available accessors.
+
+    IMPORTANT — two kinds of section:
+
+    * **Shown-code sections** use ``_execute_and_capture()``. The code they
+      print is rendered to the agent as an example, so it may ONLY use names
+      that exist in the agent's own execution namespace (the ``builtin_names``
+      dict in ``tier4_runtime.py``). Anything else teaches by example with an
+      example that raises ``NameError``.
+    * **Harness-computed sections** use ``_execute_json()``. These run with the
+      generator's own privileged namespace (``_InitialStateRuntimeAdapter``,
+      which carries ``scenario`` and ``rcon_client``) and render only the
+      resulting facts, never the code. Use this whenever the fact is worth
+      giving the agent but no agent-visible API produces it.
     """
 
     def __init__(self, runtime: RuntimeProtocol):
@@ -70,6 +83,38 @@ class InitialStateGenerator:
 """
         return markdown, output
 
+    def _execute_json(self, code: str, description: str) -> Any:
+        """Run privileged generator code and return its parsed JSON, no code shown.
+
+        For facts the agent should have but cannot compute itself. The code is
+        never rendered into the document, so it is free to use names that only
+        exist in the generator's adapter namespace (``scenario``,
+        ``rcon_client``).
+
+        Args:
+            code: Python code to execute; must print a single JSON document
+            description: Section name, used only in the skip warning
+
+        Returns:
+            Parsed JSON, or None if execution or parsing failed.
+        """
+        try:
+            output = self.runtime.execute_code(code, compress_output=False)
+        except Exception as e:  # noqa: BLE001 - generator must never abort a run
+            output = f"Error: {e}"
+
+        try:
+            return json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            # Loud skip (was silent: a missing namespace name dropped a whole
+            # section for every eval until the LIVE-1 #3 render check)
+            logger.warning(
+                "Initial state: %s section skipped — output was not JSON: %r",
+                description,
+                output[:200],
+            )
+            return None
+
     def _generate_position_and_inventory(self) -> tuple[str, dict[str, Any]]:
         """Generate agent position and inventory section.
 
@@ -100,6 +145,11 @@ print(json.dumps({
         Without this the agent has no way to know its cell limits and
         probes them with blind walks (field run: x=-5, y=-100, (200,70)).
 
+        HARNESS-COMPUTED: the cell grid lives on the scenario adapter, which is
+        not in the agent's namespace. The code below runs in the generator's
+        privileged namespace and is deliberately NOT shown to the agent — there
+        is no agent-visible API that yields cell bounds.
+
         Returns:
             Tuple of (markdown, parsed_data); empty markdown if no
             cell-based scenario adapter is available.
@@ -119,26 +169,15 @@ print(json.dumps({
     },
 }))"""
 
-        markdown, output = self._execute_and_capture(
-            code, "Your Working Area (IMPORTANT: hard bounds)"
-        )
-
-        try:
-            data = json.loads(output)
-        except (json.JSONDecodeError, ValueError):
-            # Loud skip (was silent: a missing namespace name dropped this
-            # section for every eval until the LIVE-1 #3 render check)
-            logger.warning(
-                "Initial state: working-area bounds section skipped — "
-                "code output was not JSON: %r",
-                output[:200],
-            )
+        data = self._execute_json(code, "Your Working Area (hard bounds)")
+        if not isinstance(data, dict) or not data:
             return "", {}
 
         area = data.get("buildable_area", {})
         lt, rb = area.get("left_top", {}), area.get("right_bottom", {})
-        markdown += (
-            f"\n**You are confined to cell {data.get('cell_index')}: "
+        markdown = (
+            "### Your Working Area (IMPORTANT: hard bounds)\n\n"
+            f"**You are confined to cell {data.get('cell_index')}: "
             f"({lt.get('x')}, {lt.get('y')}) to ({rb.get('x')}, {rb.get('y')}).** "
             "Tiles outside these bounds are out-of-map: unwalkable, unbuildable, "
             "and contain nothing. Do not spend actions probing beyond them.\n"
@@ -370,8 +409,13 @@ print(json.dumps(entities))'''
         """
         lines = [
             "# Initial Game State\n\n",
-            "This document shows the Python code that was executed to understand ",
-            "your current situation. You can use similar patterns to query the game state.\n\n",
+            "This document orients you in your current situation.\n\n",
+            "Sections below that show a **Code executed** block ran in your own "
+            "Python namespace — you can run that code yourself and use the same "
+            "patterns to re-query the game state at any time.\n\n",
+            "Sections with **no code block** are facts the harness computed for "
+            "you using privileged access you do not have. Take the facts; do not "
+            "look for an API that reproduces them.\n\n",
         ]
 
         # Add categorical references at the beginning (if available)
@@ -433,8 +477,12 @@ print(json.dumps(entities))'''
         # Technology & Recipes section
         lines.append("---\n\n")
 
-        # Get tech/recipe data via RCON
-        # Access rcon_client and agent_id from boilerplate's global namespace
+        # HARNESS-COMPUTED: there is no agent-visible API that lists researched
+        # technologies or enabled recipes (research.status() reports only the
+        # current/queued research, and no DuckDB table carries either catalog).
+        # This code therefore runs in the generator's privileged namespace
+        # (rcon_client, agent_id) and is deliberately NOT rendered into the
+        # document — only the facts it produces are.
         tech_recipe_code = """import json
 
 # Initialize defaults
@@ -483,22 +531,19 @@ print(json.dumps({
     "researched_technologies": researched_tech_names
 }))"""
 
-        try:
-            output = self.runtime.execute_code(tech_recipe_code, compress_output=False)
-            # Parse the JSON output
-            try:
-                data = json.loads(output)
-                enabled = data.get("enabled_recipes", [])
-                researched = data.get("researched_technologies", [])
-            except (json.JSONDecodeError, ValueError):
-                # Fallback: try to extract from output
-                enabled = []
-                researched = []
-        except Exception:
-            enabled = []
-            researched = []
+        tech_data = self._execute_json(tech_recipe_code, "Technology & Recipes")
+        if not isinstance(tech_data, dict):
+            tech_data = {}
+        enabled = tech_data.get("enabled_recipes", [])
+        researched = tech_data.get("researched_technologies", [])
 
         tech_section = self._generate_tech_and_recipes(researched, enabled)
+        lines.append(
+            "*Harness-computed: these catalogs were read for you at session "
+            "start. There is no query in your namespace that reproduces them — "
+            "`research.status()` reports only the current and queued research.*"
+            "\n\n"
+        )
         lines.append(tech_section)
         lines.append("\n")
 

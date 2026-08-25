@@ -307,40 +307,71 @@ def get_preimported_types() -> List[Tuple[str, str]]:
     Returns the types that are automatically available in Tier4 execute_code(),
     which is the execution context for agent code.
 
+    Module paths are read off the imported classes themselves (``__module__``)
+    rather than transcribed by hand, so a package move cannot silently ship a
+    false path into the agent's prompt.
+
     Returns:
         List of (type_name, module_path) tuples
     """
     # These types are injected into the execute_code namespace by Tier4Runtime.
     # Keep this list in sync with builtin_names in tier4_runtime.py execute_code().
-    preimported = [
+    from FactoryVerse.game.factory.types import (
+        MapPosition,
+        Direction,
+        BoundingBox,
+        CraftingQueueStatus,
+        ResearchQueueItem,
+    )
+    from FactoryVerse.game.agent.placement_hints import (
+        ConnectionType,
+        ConnectionPosition,
+        WireConnectionPosition,
+        GhostPlan,
+        PolePlacementResult,
+        EntityValidationError,
+    )
+    from FactoryVerse.game.factory.item.base import Item, PlaceableItem, ItemStack
+    from FactoryVerse.game.agent.embodied_actions.research import (
+        ResearchStatus,
+        QueuedTechnology,
+    )
+    from FactoryVerse.game.agent.embodied_actions.walking import (
+        WalkingError,
+        WalkingUnreachableError,
+        WalkingEntityNotFoundError,
+        WalkingNoStandableTilesError,
+    )
+
+    injected = [
         # Core spatial types
-        ("MapPosition", "FactoryVerse.factory.types"),
-        ("Direction", "FactoryVerse.factory.types"),
-        ("BoundingBox", "FactoryVerse.factory.types"),
+        MapPosition,
+        Direction,
+        BoundingBox,
         # Placement planning types
-        ("ConnectionType", "FactoryVerse.agent.placement_hints"),
-        ("ConnectionPosition", "FactoryVerse.agent.placement_hints"),
-        ("WireConnectionPosition", "FactoryVerse.agent.placement_hints"),
-        ("GhostPlan", "FactoryVerse.agent.placement_hints"),
-        ("PolePlacementResult", "FactoryVerse.agent.placement_hints"),
-        ("EntityValidationError", "FactoryVerse.agent.placement_hints"),
+        ConnectionType,
+        ConnectionPosition,
+        WireConnectionPosition,
+        GhostPlan,
+        PolePlacementResult,
+        EntityValidationError,
         # Item types
-        ("Item", "FactoryVerse.factory.item.base"),
-        ("PlaceableItem", "FactoryVerse.factory.item.base"),
-        ("ItemStack", "FactoryVerse.factory.item.base"),
+        Item,
+        PlaceableItem,
+        ItemStack,
         # Status types
-        ("CraftingQueueStatus", "FactoryVerse.factory.types"),
-        ("ResearchStatus", "FactoryVerse.agent.embodied_actions.research"),
-        ("ResearchQueueItem", "FactoryVerse.factory.types"),
-        ("QueuedTechnology", "FactoryVerse.agent.embodied_actions.research"),
+        CraftingQueueStatus,
+        ResearchStatus,
+        ResearchQueueItem,
+        QueuedTechnology,
         # Walking exception types
-        ("WalkingError", "FactoryVerse.agent.embodied_actions.walking"),
-        ("WalkingUnreachableError", "FactoryVerse.agent.embodied_actions.walking"),
-        ("WalkingEntityNotFoundError", "FactoryVerse.agent.embodied_actions.walking"),
-        ("WalkingNoStandableTilesError", "FactoryVerse.agent.embodied_actions.walking"),
+        WalkingError,
+        WalkingUnreachableError,
+        WalkingEntityNotFoundError,
+        WalkingNoStandableTilesError,
     ]
 
-    return preimported
+    return [(cls.__name__, cls.__module__) for cls in injected]
 
 
 def generate_preimported_types_markdown() -> str:

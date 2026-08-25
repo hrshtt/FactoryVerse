@@ -111,12 +111,13 @@ async def test_reach_1_immediate_entity_walk_preserves_reach_confirmation():
     assert final == MapPosition(x=3.0, y=4.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG-006: generated pre-imported type module paths are stale aliases",
-)
 def test_bug_006_every_documented_preimported_type_path_resolves():
-    """Every module/type pair printed in the generated API must be importable."""
+    """Every module/type pair printed in the generated API must be importable.
+
+    BUG-006 (fixed): the table used to hardcode stale ``FactoryVerse.agent.*`` /
+    ``FactoryVerse.factory.*`` aliases. The paths are now read off each class's
+    ``__module__``, so this is a regression guard against re-transcribing them.
+    """
     failures = []
     for type_name, module_name in get_preimported_types():
         try:
