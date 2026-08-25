@@ -2,14 +2,18 @@
 
 This module provides pluggable LLM clients with a unified interface:
 - LLMClient ABC with chat_completion method
-- OpenAICompatibleClient for OpenAI, PrimeIntellect, etc.
-- AnthropicClient for Claude models
-- Factory functions for common providers
+- OpenAICompatibleClient, which backs every provider (all of them speak the
+  OpenAI chat-completions wire format; a "provider" is a base_url + auth pair)
+- Factory functions for common providers: openai, prime_intellect, deepseek,
+  azure, local
+
+Claude models are reached as `anthropic/claude-*` model ids through an
+OpenAI-compatible gateway (e.g. prime_intellect), not via a separate client.
 
 Usage:
-    from FactoryVerse.infra.llm.client import create_openai_client, create_anthropic_client
+    from FactoryVerse.infra.llm.client import create_deepseek_client
 
-    client = create_openai_client(api_key="...", model="gpt-4o")
+    client = create_deepseek_client(model="deepseek-v4-pro")  # DEEPSEEK_API_KEY
     response = client.chat_completion(messages, tools)
 """
 
@@ -22,6 +26,10 @@ from FactoryVerse.infra.llm.client.openai_compatible import OpenAICompatibleClie
 from FactoryVerse.infra.llm.client.factory import (
     create_openai_client,
     create_prime_intellect_client,
+    create_deepseek_client,
+    create_client_from_env,
+    default_model_for_provider,
+    DEFAULT_MODELS,
 )
 
 __all__ = [
@@ -31,4 +39,8 @@ __all__ = [
     "OpenAICompatibleClient",
     "create_openai_client",
     "create_prime_intellect_client",
+    "create_deepseek_client",
+    "create_client_from_env",
+    "default_model_for_provider",
+    "DEFAULT_MODELS",
 ]

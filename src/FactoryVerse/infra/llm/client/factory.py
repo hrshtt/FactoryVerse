@@ -9,6 +9,27 @@ from typing import Optional, Dict
 from FactoryVerse.infra.llm.client.base import LLMClient
 from FactoryVerse.infra.llm.client.openai_compatible import OpenAICompatibleClient
 
+# DeepSeek's first-party platform endpoint (OpenAI-compatible chat completions).
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
+
+# Default model per provider, used when no --model / LLM_MODEL is supplied.
+# Keeps `-p deepseek` from inheriting a Prime-Intellect-shaped model id.
+DEFAULT_MODELS: Dict[str, str] = {
+    "openai": "gpt-4o",
+    "prime_intellect": "anthropic/claude-sonnet-4.6",
+    "deepseek": DEEPSEEK_DEFAULT_MODEL,
+    "azure": "gpt-4o",
+    "local": "default",
+}
+
+
+def default_model_for_provider(provider: Optional[str]) -> Optional[str]:
+    """Return the default model id for a provider, or None if unknown."""
+    if not provider:
+        return None
+    return DEFAULT_MODELS.get(provider)
+
 
 def _is_anthropic_model(model: Optional[str]) -> bool:
     """True when the model id names an Anthropic model (e.g. 'anthropic/claude-sonnet-4.6').
@@ -79,6 +100,39 @@ def create_prime_intellect_client(
         # gateway. The ~30k-token static prefix (system prompt + tools) is then
         # read from cache (~0.1x cost) instead of re-sent at full price per call.
         cache_static_prefix=_is_anthropic_model(model),
+    )
+
+
+def create_deepseek_client(
+    api_key: Optional[str] = None,
+    model: str = DEEPSEEK_DEFAULT_MODEL,
+) -> LLMClient:
+    """Create a client for DeepSeek's first-party platform API.
+
+    DeepSeek exposes an OpenAI-compatible chat-completions endpoint at
+    ``https://api.deepseek.com``, so this reuses OpenAICompatibleClient
+    unchanged. Both current models (``deepseek-v4-flash``, ``deepseek-v4-pro``)
+    support tool calls, which the agent loop requires.
+
+    Args:
+        api_key: DeepSeek API key (default: DEEPSEEK_API_KEY env var)
+        model: Model name (default: deepseek-v4-pro)
+
+    Returns:
+        Configured DeepSeek client
+    """
+    if api_key is None:
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError("DEEPSEEK_API_KEY environment variable not set")
+
+    return OpenAICompatibleClient(
+        api_key=api_key,
+        model=model,
+        base_url=DEEPSEEK_BASE_URL,
+        # DeepSeek does its own context caching server-side and rejects nothing,
+        # but the Anthropic cache_control annotation is meaningless here.
+        cache_static_prefix=False,
     )
 
 
@@ -159,7 +213,7 @@ def create_client_from_env(
         ValueError: If provider is unknown or required config is missing
     """
     provider = provider or os.getenv("LLM_PROVIDER", "prime_intellect")
-    model = model or os.getenv("LLM_MODEL")
+    model = model or os.getenv("LLM_MODEL") or default_model_for_provider(provider)
 
     factories: Dict[str, callable] = {
         "openai": lambda: create_openai_client(model=model)
@@ -168,6 +222,9 @@ def create_client_from_env(
         "prime_intellect": lambda: create_prime_intellect_client(model=model)
         if model
         else create_prime_intellect_client(),
+        "deepseek": lambda: create_deepseek_client(model=model)
+        if model
+        else create_deepseek_client(),
         "azure": lambda: create_azure_openai_client(deployment_name=model)
         if model
         else create_azure_openai_client(),

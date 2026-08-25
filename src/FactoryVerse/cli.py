@@ -9,6 +9,7 @@ initialization and verification.
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -1354,6 +1355,127 @@ def cmd_dev_census(args):
 # =============================================================================
 
 
+# =============================================================================
+# LANE COMMANDS (docs/architecture/FREEPLAY_CODEX_LANES.md)
+# =============================================================================
+
+
+def _lane_fail(exc: Exception) -> None:
+    print(f"Error: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_lane_create(args):
+    from FactoryVerse.dev.lane import LaneError, create_lane
+
+    kwargs = dict(
+        base_ref=args.base,
+        branch=args.branch,
+        lanes_root=args.root,
+        worktree_path=args.path,
+        development_slot=args.slot,
+        output_dir=args.output_dir,
+        env_file=args.env_file,
+        codex_executable=args.codex,
+        codex_model=args.model,
+        sandbox=args.sandbox,
+        approval_policy=args.approval_policy,
+        no_alt_screen=not args.alt_screen,
+        strict_config=args.strict_config,
+    )
+    if args.objective:
+        kwargs["objective"] = args.objective
+    try:
+        lane = create_lane(args.name, **kwargs)
+    except LaneError as exc:
+        _lane_fail(exc)
+    if args.json:
+        print(json.dumps(lane.to_dict(), indent=2))
+    else:
+        print(f"✓ Lane {lane.name!r} at {lane.worktree_path} (branch {lane.branch}, slot {lane.development_slot})")
+
+
+def cmd_lane_list(args):
+    from FactoryVerse.dev.lane import LaneError, list_lanes
+
+    try:
+        lanes = list_lanes()
+    except LaneError as exc:
+        _lane_fail(exc)
+    if args.json:
+        print(json.dumps([lane.to_dict() for lane in lanes], indent=2))
+        return
+    if not lanes:
+        print("No lanes registered.")
+        return
+    for lane in lanes:
+        print(f"{lane.name:24s} slot={lane.development_slot:<3d} {lane.branch:32s} {lane.worktree_path}")
+
+
+def cmd_lane_status(args):
+    from FactoryVerse.dev.lane import LaneError, lane_status, load_lane
+
+    try:
+        lane = load_lane(args.name)
+        status = lane_status(lane)
+    except LaneError as exc:
+        _lane_fail(exc)
+    if args.json:
+        print(json.dumps(status, indent=2))
+        return
+    for key, value in status.items():
+        print(f"{key}: {value}")
+
+
+def cmd_lane_path(args):
+    from FactoryVerse.dev.lane import LaneError, load_lane
+
+    try:
+        print(load_lane(args.name).worktree_path)
+    except LaneError as exc:
+        _lane_fail(exc)
+
+
+def cmd_lane_enter(args):
+    from FactoryVerse.dev.lane import LaneError, enter_lane, load_lane
+
+    try:
+        code = enter_lane(
+            load_lane(args.name),
+            additional_prompt=args.prompt,
+            search=args.search,
+            dry_run=args.dry_run,
+        )
+    except LaneError as exc:
+        _lane_fail(exc)
+    if code:
+        sys.exit(code)
+
+
+def cmd_lane_retire(args):
+    from FactoryVerse.dev.lane import LaneError, load_lane, retire_lane
+
+    try:
+        result = retire_lane(load_lane(args.name))
+    except LaneError as exc:
+        _lane_fail(exc)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"✓ Retired lane {args.name!r}; branch {result.get('preserved_branch')} kept")
+
+
+_PROVIDER_HELP = (
+    "LLM provider: prime_intellect (default), deepseek, openai, azure, local. "
+    "Each reads its own API key from the environment "
+    "(e.g. deepseek -> DEEPSEEK_API_KEY)."
+)
+_MODEL_HELP = (
+    "Model id. Defaults to the provider's default model "
+    "(deepseek -> deepseek-v4-pro, prime_intellect -> anthropic/claude-sonnet-4.6)."
+)
+
+
 def main():
     # Load environment variables from .env file
     from dotenv import load_dotenv
@@ -1435,8 +1557,8 @@ def main():
     eval_parser.add_argument(
         "-t", "--task", required=True, help="Task key (e.g., iron_plate_throughput)"
     )
-    eval_parser.add_argument("-p", "--provider", default="prime_intellect")
-    eval_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
+    eval_parser.add_argument("-p", "--provider", default="prime_intellect", help=_PROVIDER_HELP)
+    eval_parser.add_argument("--model", default=None, help=_MODEL_HELP)
     eval_parser.add_argument("-s", "--scenario", default="lab-grid", help="Scenario")
     eval_parser.add_argument("-i", "--instance", help="Factorio instance")
     eval_parser.add_argument("--agent-id", default="agent_1")
@@ -1448,8 +1570,8 @@ def main():
     freeplay_parser = subparsers.add_parser(
         "freeplay", help="Run open-ended freeplay (no task/verification)"
     )
-    freeplay_parser.add_argument("-p", "--provider", default="prime_intellect")
-    freeplay_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
+    freeplay_parser.add_argument("-p", "--provider", default="prime_intellect", help=_PROVIDER_HELP)
+    freeplay_parser.add_argument("--model", default=None, help=_MODEL_HELP)
     freeplay_parser.add_argument("-s", "--scenario", default="freeplay", help="Scenario")
     freeplay_parser.add_argument("-i", "--instance", help="Factorio instance")
     freeplay_parser.add_argument("--agent-id", default="agent_1")
@@ -1668,8 +1790,8 @@ def main():
     agent_parser = subparsers.add_parser(
         "agent", help="Run LLM agent in assisted (interactive) mode"
     )
-    agent_parser.add_argument("-p", "--provider", default="prime_intellect")
-    agent_parser.add_argument("--model", default="anthropic/claude-sonnet-4.6")
+    agent_parser.add_argument("-p", "--provider", default="prime_intellect", help=_PROVIDER_HELP)
+    agent_parser.add_argument("--model", default=None, help=_MODEL_HELP)
     agent_parser.add_argument("-s", "--scenario", help="Scenario")
     agent_parser.add_argument("-i", "--instance", help="Factorio instance")
     agent_parser.add_argument("--agent-id", default="agent_1")
@@ -1682,12 +1804,12 @@ def main():
 
     # models list
     models_list = models_sub.add_parser("list", help="List available models")
-    models_list.add_argument("-p", "--provider", help="LLM provider")
+    models_list.add_argument("-p", "--provider", help=_PROVIDER_HELP)
     models_list.set_defaults(func=cmd_models_list)
 
     # models select
     models_select = models_sub.add_parser("select", help="Interactively select a model")
-    models_select.add_argument("-p", "--provider", help="LLM provider")
+    models_select.add_argument("-p", "--provider", help=_PROVIDER_HELP)
     models_select.set_defaults(func=cmd_models_select)
 
     # ========== UI COMMAND ==========
@@ -1751,12 +1873,76 @@ def main():
     )
     dev_census.set_defaults(func=cmd_dev_census)
 
+    # ========== LANE COMMANDS ==========
+    # Durable git worktrees for interactive Codex operator sessions.
+    # See docs/architecture/FREEPLAY_CODEX_LANES.md.
+    lane_parser = subparsers.add_parser(
+        "lane", help="Bounded git worktree lanes for interactive Codex sessions"
+    )
+    lane_sub = lane_parser.add_subparsers(dest="lane_action")
+
+    lane_create = lane_sub.add_parser("create", help="Create a lane worktree + branch")
+    lane_create.add_argument("name", help="Lane name ([a-z0-9][a-z0-9._-]*)")
+    lane_create.add_argument("--base", default="HEAD", help="Base ref (default: HEAD)")
+    lane_create.add_argument("--branch", help="Branch name (default: research/lane-<name>)")
+    lane_create.add_argument("--root", help="Directory that holds lane worktrees")
+    lane_create.add_argument("--path", help="Explicit worktree path (overrides --root)")
+    lane_create.add_argument(
+        "--development-slot", "--slot", dest="slot", type=int,
+        help="Default FactoryVerse development slot (auto-assigned if omitted)",
+    )
+    lane_create.add_argument("--output-dir", default=".fv-output", help="Lane output root")
+    lane_create.add_argument("--objective", help="One-line operator objective")
+    lane_create.add_argument("--env-file", help="Optional .env; only FV_* keys are loaded")
+    lane_create.add_argument("--codex", default="codex", help="Codex executable")
+    lane_create.add_argument("--model", help="Codex model id")
+    lane_create.add_argument("--sandbox", default="workspace-write")
+    lane_create.add_argument("--approval-policy", default="on-request")
+    lane_create.add_argument("--alt-screen", action="store_true", help="Allow Codex alt screen")
+    lane_create.add_argument("--strict-config", action="store_true")
+    lane_create.add_argument("--json", action="store_true", help="Print manifest as JSON")
+    lane_create.set_defaults(func=cmd_lane_create)
+
+    lane_list = lane_sub.add_parser("list", help="List registered lanes")
+    lane_list.add_argument("--json", action="store_true")
+    lane_list.set_defaults(func=cmd_lane_list)
+
+    lane_status = lane_sub.add_parser("status", help="Health, ancestry, and campaigns of a lane")
+    lane_status.add_argument("name")
+    lane_status.add_argument("--json", action="store_true")
+    lane_status.set_defaults(func=cmd_lane_status)
+
+    lane_path = lane_sub.add_parser("path", help="Print the lane worktree path")
+    lane_path.add_argument("name")
+    lane_path.set_defaults(func=cmd_lane_path)
+
+    lane_enter = lane_sub.add_parser("enter", help="Launch Codex inside the lane")
+    lane_enter.add_argument("name")
+    lane_enter.add_argument("--prompt", help="Additional assignment appended to the operator prompt")
+    lane_enter.add_argument("--search", action="store_true", help="Pass --search to Codex")
+    lane_enter.add_argument("--dry-run", action="store_true", help="Print the command instead of running it")
+    lane_enter.set_defaults(func=cmd_lane_enter)
+
+    lane_retire = lane_sub.add_parser("retire", help="Remove the worktree; keep the branch")
+    lane_retire.add_argument("name")
+    lane_retire.add_argument("--json", action="store_true")
+    lane_retire.set_defaults(func=cmd_lane_retire)
+
     # ========== PARSE AND EXECUTE ==========
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
         sys.exit(0)
+
+    # Resolve --model per provider when the user didn't pin one, so `-p deepseek`
+    # doesn't inherit another provider's model id.
+    if getattr(args, "model", None) is None and getattr(args, "provider", None):
+        from FactoryVerse.infra.llm.client.factory import default_model_for_provider
+
+        resolved = os.getenv("LLM_MODEL") or default_model_for_provider(args.provider)
+        if resolved:
+            args.model = resolved
 
     # Handle subcommands that don't have their own function
     if hasattr(args, "func"):
