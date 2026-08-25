@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Any, TYPE_CHECKING
 
-from ..config import SettingsConfig
+from ..config import InfraMode, SettingsConfig
 from ..status import Tier2Status, TierState, PrerequisiteResult
 from .base import TierBase, Tier, TierInitializationError
 
@@ -188,59 +188,83 @@ class Tier2Settings(TierBase):
     # =========================================================================
 
     async def _generate_save_with_settings(self) -> None:
-        """Generate a save file with custom map settings.
+        """Verify the map the server will create matches the requested settings.
 
-        This handles settings that cannot be passed via CLI:
-        - Peaceful mode
-        - Resource generation settings
-        - Enemy evolution settings
+        PEACEFUL-1. This used to write a two-key JSON file to the output
+        directory and point ``_current_save`` at a zip it never created. The
+        server never reads that path: it creates its map from
+        ``server_config_dir/map-gen-settings.json``, which the container mounts
+        and passes to ``--create``. So ``SettingsConfig.peaceful`` decided
+        nothing, and a run could contradict the agent's own system prompt
+        ("no enemies attack") with nothing anywhere reporting the mismatch.
+
+        We do not write that file. It is checked in, it carries the full
+        autoplace/cliff/terrain configuration, and silently rewriting tracked
+        repo state during a run is worse than the bug. Instead the requested
+        settings are checked against it and a mismatch fails the tier loudly,
+        naming the file and the key. Silence is not evidence.
         """
         infra_config = self._env.config.infra_config
+        requested = self._build_map_gen_settings()
 
-        # Prepare map generation settings
-        map_gen = self._build_map_gen_settings()
+        # Only a server-mode run creates its own map. An attached client is
+        # already running whatever world it loaded; tier 2 cannot speak for it.
+        if self._env.config.tier1.mode != InfraMode.SERVER:
+            if self.config.peaceful:
+                logger.warning(
+                    "Tier 2: peaceful=True cannot be enforced on an attached "
+                    "instance — the world comes from the save the client "
+                    "already loaded. Verify it before trusting any claim "
+                    "about enemies."
+                )
+            self._current_scenario = self.config.scenario
+            self._current_save = None
+            return
 
-        # Write to temporary map-gen-settings.json
-        output_dir = infra_config.fv_output_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = infra_config.server_config_dir / "map-gen-settings.json"
+        if not settings_path.exists():
+            raise TierInitializationError(
+                self.tier_level,
+                f"Map generation settings not found at {settings_path}. The "
+                "server creates its map from this file; without it the "
+                "requested settings cannot be honoured.",
+            )
 
-        settings_path = output_dir / "map-gen-settings.json"
-        with open(settings_path, "w") as f:
-            json.dump(map_gen, f, indent=2)
+        mounted = json.loads(settings_path.read_text())
+        mismatches = [
+            f"{key}: requested {value!r}, file has {mounted.get(key)!r}"
+            for key, value in requested.items()
+            if mounted.get(key) != value
+        ]
+        if mismatches:
+            raise TierInitializationError(
+                self.tier_level,
+                "Requested map generation settings disagree with the file the "
+                f"server builds its map from ({settings_path}): "
+                + "; ".join(mismatches)
+                + ". Edit that file, or change the request — do not launch a "
+                "run whose world contradicts its own configuration.",
+            )
 
-        # Generate save filename
-        scenario = self.config.scenario
-        seed = self.config.seed or infra_config.map_gen_seed
-        save_name = f"{scenario}_seed{seed}"
-        if self.config.peaceful:
-            save_name += "_peaceful"
-
-        save_path = output_dir / "saves" / f"{save_name}.zip"
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # NOTE: Actual save generation would require running Factorio
-        # with --create <save> --map-gen-settings <path>
-        # For now, we just set up the paths - the client/server will
-        # need to generate the save on first run if it doesn't exist
-
-        self._current_save = save_path
-        self._current_scenario = scenario  # Keep track of source scenario
-
-        logger.info(f"Tier 2: Prepared settings for save {save_path}")
+        logger.info(
+            f"Tier 2: Verified map generation settings against {settings_path} "
+            f"({', '.join(f'{k}={v}' for k, v in requested.items()) or 'no constraints'})"
+        )
+        self._current_scenario = self.config.scenario
+        self._current_save = None
 
     def _build_map_gen_settings(self) -> Dict[str, Any]:
-        """Build map generation settings dictionary."""
+        """Build the map generation settings this run requires.
+
+        Keys must match Factorio's ``map-gen-settings.json`` schema exactly —
+        this dict is compared against that file. ``peaceful_mode`` was
+        previously written as ``peace_mode``, which the engine ignores.
+        """
         settings: Dict[str, Any] = {}
 
         # Peaceful mode
         if self.config.peaceful:
-            settings["peace_mode"] = True
-
-        # Seed
-        if self.config.seed is not None:
-            settings["seed"] = self.config.seed
-        elif self._env.config.infra_config.map_gen_seed:
-            settings["seed"] = self._env.config.infra_config.map_gen_seed
+            settings["peaceful_mode"] = True
 
         # Additional custom settings
         if self.config.map_gen_settings:
