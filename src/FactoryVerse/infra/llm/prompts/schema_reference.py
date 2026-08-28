@@ -412,7 +412,10 @@ furnace_ghosts = remote_view.get_ghosts(
 results = remote_view.query('''
     SELECT m.entity_name, m.position_x, m.position_y, d.mining_target
     FROM map_entity m
-    JOIN mining_drill d ON m.entity_key = d.entity_key
+    JOIN mining_drill d
+      ON m.entity_name = d.entity_name
+     AND m.position_x = d.position_x
+     AND m.position_y = d.position_y
 ''')
 
 # Get inserters with their pickup/drop positions
@@ -420,7 +423,10 @@ results = remote_view.query('''
     SELECT m.*, i.pickup_position_x, i.pickup_position_y,
            i.drop_position_x, i.drop_position_y
     FROM map_entity m
-    JOIN inserter i ON m.entity_key = i.entity_key
+    JOIN inserter i
+      ON m.entity_name = i.entity_name
+     AND m.position_x = i.position_x
+     AND m.position_y = i.position_y
 ''')
 ```
 

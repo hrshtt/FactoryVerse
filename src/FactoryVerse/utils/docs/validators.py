@@ -31,7 +31,41 @@ class CoverageValidator:
 
     This validator checks that all public methods on required classes
     are documented, and optionally that all documented methods have examples.
+
+    Some public methods on required classes are deliberately NOT documented
+    to the agent. Each such method must appear in COVERAGE_EXEMPTIONS with a
+    reason; an exemption that names a method which no longer exists, or which
+    has since been documented, is itself a failure (see assert_exemptions_live)
+    so the list cannot rot into a silent skip-list.
     """
+
+    # "ClassName.method" -> why the agent is not told about it.
+    COVERAGE_EXEMPTIONS: Dict[str, str] = {
+        # Harness-internal causal barriers: wired by Tier 4, never agent-visible.
+        "MiningAction.set_resource_depletion_barrier":
+            "harness causal barrier; installed by tier4_runtime, not an agent verb",
+        "PlacementAction.set_state_barrier":
+            "harness causal barrier; API_AFFORDANCE_REDESIGN §2.1 deletes it outright",
+        # Doomed accessor: entity_ops is absorbed onto entity objects
+        # (API_AFFORDANCE_REDESIGN §2.1); rotation is the rotatable mixin's .rotate().
+        "EntityOperationsAction.rotate_entity":
+            "entity_ops accessor scheduled for deletion; rotation lives on entity.rotate()",
+        # Harness-internal reconciliation and checkpoint machinery on RemoteView.
+        "RemoteView.checkpoint_database":
+            "campaign checkpoint plumbing, not a map-screen read",
+        "RemoteView.state_fingerprint":
+            "resume-parity instrument for the harness, not a map-screen read",
+        "RemoteView.capture_resource_depletion_baseline":
+            "mining causal-baseline proof; called by the mining action, not the agent",
+        "RemoteView.wait_for_placement":
+            "placement causal join used by the placement action, not the agent",
+        "RemoteView.wait_for_resource_depletion":
+            "mining causal join used by the mining action, not the agent",
+        # The transport under the execute_duckdb tool. The agent reaches it as
+        # a tool, never as a method; documenting it would advertise a second route.
+        "RemoteView.execute_raw":
+            "transport for the execute_duckdb tool; not an agent-facing method",
+    }
 
     def __init__(self, registry: Optional[DocumentationRegistry] = None):
         self._registry = registry or get_registry()
@@ -58,7 +92,48 @@ class CoverageValidator:
 
         report = self._registry.verify_coverage()
 
+        # Apply reasoned exemptions. They are subtracted from the missing list
+        # only; total_methods keeps counting them so the ratio stays honest.
+        exempt = self.COVERAGE_EXEMPTIONS
+        report.missing_methods = [
+            m for m in report.missing_methods
+            if f"{m.class_name}.{m.method_name}" not in exempt
+        ]
+        report.documented_methods = report.total_methods - len(report.missing_methods)
+
         return report
+
+    def assert_exemptions_live(self) -> None:
+        """Every exemption must name a real, discovered, still-undocumented method.
+
+        Raises AssertionError otherwise, so an exemption cannot outlive the
+        thing it exempts (method deleted or since documented).
+        """
+        if not self.COVERAGE_EXEMPTIONS:
+            raise AssertionError("COVERAGE_EXEMPTIONS is empty; the mechanism is vacuous")
+        problems = []
+        for key, reason in self.COVERAGE_EXEMPTIONS.items():
+            class_name, method_name = key.split(".", 1)
+            if not reason.strip():
+                problems.append(f"{key}: exemption has no reason")
+            cls = self._registry.get_class_object(class_name)
+            if cls is None:
+                # Required classes may be registered without register_class
+                for required in self._registry._required_classes:
+                    if required.__name__ == class_name:
+                        cls = required
+            if cls is None:
+                problems.append(f"{key}: class {class_name} is not registered")
+                continue
+            if not hasattr(cls, method_name):
+                problems.append(f"{key}: {class_name} has no attribute {method_name} — stale exemption")
+                continue
+            if method_name not in self._registry.discovered_methods(class_name):
+                problems.append(f"{key}: {method_name} is not a discovered public method — stale exemption")
+            if self._registry.get_method(class_name, method_name) is not None:
+                problems.append(f"{key}: now documented — remove the exemption")
+        if problems:
+            raise AssertionError("Stale coverage exemptions:\n" + "\n".join(f"  - {p}" for p in problems))
 
     def assert_complete(
         self,
@@ -883,3 +958,146 @@ class StaticAttributeValidator:
             raise AssertionError(
                 f"Static attribute validation failed:\n{report.summary()}"
             )
+
+
+
+class NamespaceCoverageValidator:
+    """The converse of CoverageValidator: everything the agent can reach is taught.
+
+    CoverageValidator checks documented -> exists. This checks exists ->
+    documented: every accessor bound into the agent namespace by
+    `tier4_runtime.py` is either registered with the docs registry under that
+    accessor name, or carries a reasoned exemption here. This is the check
+    whose absence let `events` sit in the namespace for months with zero
+    documentation (API_AFFORDANCE_REDESIGN §1.5, §6).
+    """
+
+    # accessor name -> why it is deliberately untaught
+    NAMESPACE_EXEMPTIONS: Dict[str, str] = {
+        "agent_id": "a value, not an accessor; shown in the prompt header",
+        "resources": "alias of reachable_view kept for old scripts; deleted with the namespace cuts",
+        "events": "deleted from the namespace by API_AFFORDANCE_REDESIGN §2.5; EventStream stays as transport",
+    }
+
+    def __init__(self, registry: Optional[DocumentationRegistry] = None):
+        self._registry = registry or get_registry()
+
+    @staticmethod
+    def agent_namespace_accessors() -> Dict[str, str]:
+        """Accessor names bound by Tier 4, parsed from the namespace literal.
+
+        Returns {name: value_expression}. Only entries whose value is an
+        instance attribute (`self._x`) count as accessors; direct class
+        bindings (MapPosition, Item, ...) are types and are documented by the
+        types section. Text-parsed because building a Tier4Runtime needs a
+        live stack; the parse is asserted non-empty by its callers.
+        """
+        import re
+        from pathlib import Path
+        import FactoryVerse.environment.tiers.tier4_runtime as t4
+
+        src = Path(t4.__file__).read_text()
+        start = src.index("builtin_names = {")
+        end = src.index("}", src.index("\"events\"", start))
+        block = src[start:end]
+        found: Dict[str, str] = {}
+        for m in re.finditer(r'^\s*"(\w+)":\s*(self\.[\w.]+)', block, re.M):
+            found[m.group(1)] = m.group(2)
+        return found
+
+    def validate(self) -> List[str]:
+        """Return a list of problems; empty means every accessor is taught or exempt."""
+        accessors = self.agent_namespace_accessors()
+        problems: List[str] = []
+        if len(accessors) < 10:
+            problems.append(f"namespace parse found only {len(accessors)} accessors — parser broken?")
+        documented = {c.accessor_name for c in self._registry.get_all_classes()}
+        for name in accessors:
+            if name in documented:
+                continue
+            if name in self.NAMESPACE_EXEMPTIONS:
+                continue
+            problems.append(f"'{name}' is bound in the agent namespace and has no documentation entry")
+        for name, reason in self.NAMESPACE_EXEMPTIONS.items():
+            if not reason.strip():
+                problems.append(f"exemption '{name}' has no reason")
+            if name not in accessors:
+                problems.append(f"exemption '{name}' names nothing in the namespace — stale")
+            if name in documented:
+                problems.append(f"exemption '{name}' is now documented — remove it")
+        return problems
+
+
+class ProseReferenceValidator:
+    """Attribute-checks the prose the model reads, not just the code examples.
+
+    Every backticked `accessor.method(` or `var.method(` token in a
+    description, note, decision point, precondition, expected outcome,
+    alternative or error case must resolve: accessor methods against the real
+    accessor class (via the registry), bare `.method(` against the
+    entity/resource/item classes the STATIC validator already knows. A prose
+    token that resolves nowhere is a lie shipped to the model.
+    """
+
+    _TOKEN = __import__("re").compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\(")  # backticks optional; prose is inconsistent
+
+    def __init__(self, registry: Optional[DocumentationRegistry] = None):
+        self._registry = registry or get_registry()
+        self._static = StaticAttributeValidator(self._registry)
+        self.tokens_checked = 0
+
+    def _prose_fields(self):
+        """Yield (location, text) for every prose field in the registry."""
+        for cls_doc in self._registry.get_all_classes():
+            base = f"{cls_doc.class_name}"
+            yield f"{base}.description", cls_doc.description
+            yield f"{base}.decision_context", cls_doc.decision_context
+            for i, n in enumerate(cls_doc.notes):
+                yield f"{base}.notes[{i}]", n
+            for m in cls_doc.methods + cls_doc.properties:
+                mb = f"{cls_doc.class_name}.{m.method_name}"
+                yield f"{mb}.description", m.description
+                for i, n in enumerate(m.decision_points):
+                    yield f"{mb}.decision_points[{i}]", n
+                for i, n in enumerate(m.notes):
+                    yield f"{mb}.notes[{i}]", n
+                for i, ex in enumerate(m.examples):
+                    yield f"{mb}.examples[{i}].decision_context", ex.decision_context
+                    yield f"{mb}.examples[{i}].expected_outcome", ex.expected_outcome
+                    for j, p in enumerate(ex.preconditions):
+                        yield f"{mb}.examples[{i}].preconditions[{j}]", p
+                    for j, a in enumerate(ex.alternatives):
+                        yield f"{mb}.examples[{i}].alternatives[{j}]", a
+                for i, ec in enumerate(m.error_cases):
+                    yield f"{mb}.error_cases[{i}].when", ec.when
+                    yield f"{mb}.error_cases[{i}].resolution", ec.resolution
+
+    def _resolves(self, obj: str, method: str) -> bool:
+        cls = self._registry.get_class_by_accessor(obj)
+        if cls is not None:
+            return hasattr(cls, method)
+        # Not an accessor: a variable holding an entity/resource/item/type.
+        # Accept if any known class in the type system has the method.
+        if f".{method}" in self._static.ACCESSOR_RETURN_TYPES:
+            return True
+        for known in self._static._class_map.values():
+            if method in self._static._get_class_attributes(known):
+                return True
+        # Types bound into the namespace directly (MapPosition(...) etc.)
+        if obj in self._static._class_map and hasattr(self._static._class_map[obj], method):
+            return True
+        return False
+
+    def validate(self) -> List[str]:
+        """Return problems as 'location: token — reason'. Empty means clean."""
+        self.tokens_checked = 0
+        problems: List[str] = []
+        for location, text in self._prose_fields():
+            if not text:
+                continue
+            for m in self._TOKEN.finditer(text):
+                obj, method = m.group(1), m.group(2)
+                self.tokens_checked += 1
+                if not self._resolves(obj, method):
+                    problems.append(f"{location}: `{obj}.{method}(` resolves to nothing")
+        return problems

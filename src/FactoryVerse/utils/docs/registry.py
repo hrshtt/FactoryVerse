@@ -70,6 +70,10 @@ class DocumentationRegistry:
         # Required classes for coverage (set via register_required_class)
         self._required_classes: Set[Type] = set()
         self._required_class_names: Set[str] = set()
+        # Class objects by class name, kept so validators can introspect the
+        # real class behind a documented accessor (prose checks, generated
+        # tables) instead of trusting a name that may no longer exist.
+        self._class_objects: Dict[str, Type] = {}
 
         # Method registry from actual classes (for coverage checking)
         self._actual_methods: Dict[str, Set[str]] = {}  # class_name -> set of method names
@@ -111,6 +115,7 @@ class DocumentationRegistry:
             related_classes=related_classes or [],
         )
         self._classes[class_name] = doc
+        self._class_objects[class_name] = cls
 
         # Discover public methods on this class (excluding internal ones)
         self._discover_methods(cls, exclude_methods)
@@ -415,6 +420,21 @@ class DocumentationRegistry:
         """Get all registered type documentation."""
         return list(self._types.values())
 
+    def get_class_object(self, class_name: str) -> Optional[Type]:
+        """The real class registered under `class_name`, if any."""
+        return self._class_objects.get(class_name)
+
+    def get_class_by_accessor(self, accessor_name: str) -> Optional[Type]:
+        """The real class the agent reaches through `accessor_name`."""
+        for doc in self._classes.values():
+            if doc.accessor_name == accessor_name:
+                return self._class_objects.get(doc.class_name)
+        return None
+
+    def discovered_methods(self, class_name: str) -> Set[str]:
+        """Public methods discovered on a class (what coverage is measured against)."""
+        return set(self._actual_methods.get(class_name, set()))
+
     def verify_coverage(self) -> CoverageReport:
         """Verify that all required classes have complete documentation.
 
@@ -466,3 +486,4 @@ class DocumentationRegistry:
         self._required_classes.clear()
         self._required_class_names.clear()
         self._actual_methods.clear()
+        self._class_objects.clear()

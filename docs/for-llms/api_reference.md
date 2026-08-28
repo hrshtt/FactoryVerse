@@ -20,18 +20,18 @@ These are available in the agent runtime:
 
 | Accessor | Class | Purpose |
 |----------|-------|---------|
-| `walking` | MovementAction | Walk to positions/entities |
-| `crafting` | CraftingAction | Hand-craft recipes |
-| `research` | ResearchAction | Queue and track research |
-| `inventory` | AgentInventory | Query and shape inventory |
-| `mining` | MiningAction | Mine reachable resources |
-| `placement` | PlacementAction | Place carried entities |
-| `entity_ops` | EntityOperationsAction | Inspect and operate entities |
-| `reachable_view` | ReachableView | Query nearby entities |
-| `remote_view` | RemoteView | Map-wide SQL queries |
-| `verify` | Verification | Verify live game state |
-| `ghost_builder` | GhostBuilderAction | Commit placement plans |
-| `placement_hints` | PlacementHints | Spatial reasoning for placement |
+| `walking` | MovementAction | Handles agent walking and pathfinding |
+| `crafting` | CraftingAction | Handles hand-crafting operations |
+| `research` | ResearchAction | Handles technology research |
+| `inventory` | AgentInventory | Query and shape agent inventory contents |
+| `mining` | MiningAction | Handles hand-mining of resources (ore, coal, stone) |
+| `placement` | PlacementAction | Places entities and ghosts on the map and removes ghosts |
+| `entity_ops` | EntityOperationsAction | Low-level entity configuration and inventory operations: set recipes, filters and limits, transfer items, inspect state, and pick up entities |
+| `reachable_view` | ReachableView | Query interface for nearby entities and resources within agent's interaction range |
+| `remote_view` | RemoteView | DuckDB-backed map queries for entities across the entire map |
+| `verify` | VerifyView | Live engine confirmation of power / coverage facts |
+| `placement_hints` | PlacementHints | Spatial reasoning engine for entity placement |
+| `ghost_builder` | GhostBuilderAction | Orchestrates ghost placement and building |
 
 ## Pre-Imported Types
 
@@ -3165,4 +3165,4 @@ if positions:
 
 ---
 
-*Generated from registry on 2026-08-25 19:03:49*
+*Generated from registry on 2026-08-29 02:09:04*

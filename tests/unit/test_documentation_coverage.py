@@ -526,6 +526,13 @@ class TestDocumentationIntegration:
         print(report.summary())
         assert report.total_methods > 0
 
+        # The verdict, not just the count. Undocumented methods on required
+        # classes fail here unless they carry a reasoned exemption
+        # (CoverageValidator.COVERAGE_EXEMPTIONS), and every exemption must
+        # still name a real, undocumented method — checked in
+        # test_docs_honesty.py::test_coverage_exemptions_are_live.
+        assert report.complete, report.summary()
+
 
 class TestDecorators:
     """Tests for documentation decorators."""

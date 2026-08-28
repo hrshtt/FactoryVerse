@@ -72,25 +72,28 @@ class MarkdownGenerator:
         | **REACHABLE** | `reachable_view` | Nearby entities with full mutation access |
         | **REMOTE** | `remote_view` | Map-wide SQL queries (read-only, walk_to only) |
 
-        ### Top-Level Accessors
+        """).strip() + "\n\n" + self._generate_accessor_table()
 
-        These are available in the agent runtime:
+    def _generate_accessor_table(self) -> str:
+        """Top-level accessor table, derived from the registry.
 
-        | Accessor | Class | Purpose |
-        |----------|-------|---------|
-        | `walking` | MovementAction | Walk to positions/entities |
-        | `crafting` | CraftingAction | Hand-craft recipes |
-        | `research` | ResearchAction | Queue and track research |
-        | `inventory` | AgentInventory | Query and shape inventory |
-        | `mining` | MiningAction | Mine reachable resources |
-        | `placement` | PlacementAction | Place carried entities |
-        | `entity_ops` | EntityOperationsAction | Inspect and operate entities |
-        | `reachable_view` | ReachableView | Query nearby entities |
-        | `remote_view` | RemoteView | Map-wide SQL queries |
-        | `verify` | Verification | Verify live game state |
-        | `ghost_builder` | GhostBuilderAction | Commit placement plans |
-        | `placement_hints` | PlacementHints | Spatial reasoning for placement |
-        """).strip()
+        Never hand-written: a hand-written table once shipped a class name
+        that did not exist (`Verification`). Every row here names a class the
+        registry holds an object for, so the table cannot name a phantom.
+        """
+        lines = [
+            "### Top-Level Accessors",
+            "",
+            "These are available in the agent runtime:",
+            "",
+            "| Accessor | Class | Purpose |",
+            "|----------|-------|---------|",
+        ]
+        for cls_doc in self._registry.get_all_classes():
+            purpose = (cls_doc.description or "").strip().split("\n", 1)[0]
+            purpose = purpose.split(". ", 1)[0].rstrip(".")
+            lines.append(f"| `{cls_doc.accessor_name}` | {cls_doc.class_name} | {purpose} |")
+        return "\n".join(lines)
 
     def _generate_preimported_types_section(self) -> str:
         """Generate section for pre-imported types (programmatic)."""

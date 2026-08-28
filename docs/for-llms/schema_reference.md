@@ -1,6 +1,6 @@
 # FactoryVerse Schema Reference
 
-> Auto-generated on 2026-08-07 04:15
+> Auto-generated on 2026-08-29 02:09
 
 This document describes the DuckDB database schema used for map-wide queries via `remote_view`.
 The database is read-only from the LLM's perspective - data is synchronized from the game automatically.
@@ -188,8 +188,8 @@ Core entity table containing all placed entities on the map
 | `label` | `VARCHAR` | Optional user-defined label |
 | `placed_tick` | `INTEGER` | Game tick when entity was placed |
 | `raw_data` | `VARCHAR` | JSON blob with full entity data |
-| `tile_x` | `INTEGER` | Anchor tile X coordinate (integer grid position) |
-| `tile_y` | `INTEGER` | Anchor tile Y coordinate (integer grid position) |
+| `tile_x` | `INTEGER` | X of the tile containing the entity centre (floor(position_x)); written on every upsert |
+| `tile_y` | `INTEGER` | Y of the tile containing the entity centre (floor(position_y)); written on every upsert |
 
 electric_network_id: as of last entity write; fresh network membership lives in power_networks (engine network ids renumber on merge/split).
 
@@ -211,7 +211,7 @@ Ghost entities - planned placements that haven't been built yet
 | `chunk_y` | `INTEGER` | Chunk Y coordinate |
 | `direction` | `VARCHAR` | Entity direction |
 | `placed_tick` | `INTEGER` | Game tick when ghost was created |
-| `placed_by` | `VARCHAR` | Who placed this ghost (agent/player) |
+| `placed_by` | `VARCHAR` | Who placed this ghost: 'agent:<id>' or 'player:<id>'; NULL when the op carried no builder |
 | `label` | `VARCHAR` | Optional label |
 | `raw_data` | `VARCHAR` | JSON blob with full ghost data |
 
@@ -331,9 +331,9 @@ Inserter-specific data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_name` | `VARCHAR` | FK to map_entity |
-| `position_x` | `DOUBLE` | FK to map_entity |
-| `position_y` | `DOUBLE` | FK to map_entity |
+| `entity_name` | `VARCHAR` | Entity name matching map_entity's composite key |
+| `position_x` | `DOUBLE` | Entity X matching map_entity's composite key |
+| `position_y` | `DOUBLE` | Entity Y matching map_entity's composite key |
 | `direction` | `VARCHAR` | Inserter direction |
 | `pickup_position_x` | `DOUBLE` | Pickup position X |
 | `pickup_position_y` | `DOUBLE` | Pickup position Y |
@@ -346,9 +346,9 @@ Transport belt data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_name` | `VARCHAR` | FK to map_entity |
-| `position_x` | `DOUBLE` | FK to map_entity |
-| `position_y` | `DOUBLE` | FK to map_entity |
+| `entity_name` | `VARCHAR` | Entity name matching map_entity's composite key |
+| `position_x` | `DOUBLE` | Entity X matching map_entity's composite key |
+| `position_y` | `DOUBLE` | Entity Y matching map_entity's composite key |
 | `direction` | `VARCHAR` | Belt direction |
 | `belt_speed` | `DOUBLE` | Belt speed |
 
@@ -358,9 +358,9 @@ Mining drill data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_name` | `VARCHAR` | FK to map_entity |
-| `position_x` | `DOUBLE` | FK to map_entity |
-| `position_y` | `DOUBLE` | FK to map_entity |
+| `entity_name` | `VARCHAR` | Entity name matching map_entity's composite key |
+| `position_x` | `DOUBLE` | Entity X matching map_entity's composite key |
+| `position_y` | `DOUBLE` | Entity Y matching map_entity's composite key |
 | `direction` | `VARCHAR` | Drill direction |
 | `mining_target` | `VARCHAR` | What resource this drill is mining |
 
@@ -370,9 +370,9 @@ Assembling machine data
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_name` | `VARCHAR` | FK to map_entity |
-| `position_x` | `DOUBLE` | FK to map_entity |
-| `position_y` | `DOUBLE` | FK to map_entity |
+| `entity_name` | `VARCHAR` | Entity name matching map_entity's composite key |
+| `position_x` | `DOUBLE` | Entity X matching map_entity's composite key |
+| `position_y` | `DOUBLE` | Entity Y matching map_entity's composite key |
 | `recipe` | `VARCHAR` | Currently set recipe |
 | `crafting_speed` | `DOUBLE` | Crafting speed multiplier |
 
@@ -569,7 +569,10 @@ furnace_ghosts = remote_view.get_ghosts(
 results = remote_view.query('''
     SELECT m.entity_name, m.position_x, m.position_y, d.mining_target
     FROM map_entity m
-    JOIN mining_drill d ON m.entity_key = d.entity_key
+    JOIN mining_drill d
+      ON m.entity_name = d.entity_name
+     AND m.position_x = d.position_x
+     AND m.position_y = d.position_y
 ''')
 
 # Get inserters with their pickup/drop positions
@@ -577,7 +580,10 @@ results = remote_view.query('''
     SELECT m.*, i.pickup_position_x, i.pickup_position_y,
            i.drop_position_x, i.drop_position_y
     FROM map_entity m
-    JOIN inserter i ON m.entity_key = i.entity_key
+    JOIN inserter i
+      ON m.entity_name = i.entity_name
+     AND m.position_x = i.position_x
+     AND m.position_y = i.position_y
 ''')
 ```
 
