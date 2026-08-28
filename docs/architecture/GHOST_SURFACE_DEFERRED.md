@@ -51,6 +51,8 @@ This sits correctly under Constitution §10: ghost placement and removal raise e
 
 `ghost_builder` has **zero dependents in the primitive layer.** Nothing composes on `build_plan` or `build_ghosts`; `BaseEntity.build()` / `remove()` and `item.place_ghost()` call placement directly and survive; label inheritance lives in Lua, not Python.
 
+*Scoped 2026-08-28, so the deletion is not misread as zero-touch:* outside the primitive layer it is wired in `environment/runtime.py`, `environment/tiers/tier4_runtime.py` (loader, property, namespace dict), `environment/sessions.py`, `environment/agent_runtime.py` (module preload), the docs registry and generator, the runtime prompt (*"prefer placement_hints + ghost_builder"* for multi-entity layouts, with worked `build_plan` examples), and three tests (`test_building_contracts`, `test_environment_tiers`, `tests/live/test_freeplay_harness_domains`). The 2026-08-25 baseline run made zero calls to it on a prompt that steered toward it. Also note the builder continues past failures in *both* modes — `strict` only gates an upfront inventory check (`ghost_builder.py:129-153`), not the per-item loop.
+
 | Structure | Post-removal path | Loss |
 |---|---|---|
 | Single entities | Direct `place()` — never ghost-coupled | None |
@@ -75,7 +77,7 @@ Post-removal, the near-term executor is hand-building. Honest, and consistent wi
 
 Bots becoming the executor requires two deliberate decisions, not hope: a filter change admitting the bot and chest stack, and eval scenarios progressing past the current ceiling to construction robotics. Neither is decided here. Under Constitution §3, taking those two decisions in order *is* the honest path to ghosts-at-scale being game-native end to end — the gate is sequencing information, not an obstacle.
 
-**Unverified:** whether roboport and construction-robot actually survive into the live prototype set. Worth checking; it does not gate the deletion.
+**Verified 2026-08-28:** roboport and construction-robot do **not** survive. `fv_filters.yaml` excludes the `logistic-network` subgroup (`:57` entities, `:200` recipes), entity filtering resolves through the placing item's subgroup (`utils/filters.py:164-178`), and in the live prototype dump `roboport`, `construction-robot`, `logistic-robot` and all five logistic chests carry `subgroup: "logistic-network"`. The exclusion is by subgroup, not by name.
 
 ## 5. Blueprints — the lawful successor
 

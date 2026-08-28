@@ -43,7 +43,7 @@ The ordering machinery is doing real work — prerequisites check downward, rese
 
 Same class of change: a name that describes what the thing is, not what it was called when it was written. Recorded here because it is a mechanical rename with the same execution discipline, not because it is tier-related.
 
-**Why.** The tool the model is handed is named `execute_dsl` and described as "Execute FactoryVerse DSL code". The thing it executes is Python — a persistent namespace with top-level `await`, over the embodied action objects. There is no DSL. The adapter's own docstring goes further and says the method runs *Lua via RCON*, which is false and is exactly the kind of stale prose no example-validator ever checks. A model reading "DSL" reasonably expects a restricted language and under-uses Python; a reader of the docstring expects RCON access the production profile forbids.
+**Why.** The tool the model is handed is named `execute_dsl`. The thing it executes is Python — a persistent namespace with top-level `await`, over the embodied action objects. There is no DSL. *Corrected 2026-08-28:* the description was repaired in `fda10e2` and now reads "Run Python in the agent's body." (`environment/tool_definitions.py:30`), and the tier-6 adapter docstring now says "Python, not Lua"; the earlier "Execute FactoryVerse DSL code" survives only in a docstring in `infra/session/session.py` that the model never sees. **The argument survives on the name alone:** the tool schema is prompt, the name is the first thing the model learns, and a model reading "DSL" reasonably expects a restricted language and under-uses Python. The system prompt still headlines the section "`execute_dsl` — Take Actions in the Game" and wraps the reference in a `<dsl_reference>` tag.
 
 The tool schema is prompt. Its name is the first thing the model learns about the surface, and it is currently wrong.
 
@@ -51,4 +51,4 @@ The tool schema is prompt. Its name is the first thing the model learns about th
 
 **Execution.** Ride the same mechanical commit as the tier rename, or a sibling one; deprecated alias for one cycle; fix the docstring in the same pass rather than leaving a correct name over a false description. Trajectory records carry the tool name, so the trajectory reader must accept both names for historical runs.
 
-**Relationship to the turn contract.** `TURN_CONTRACT_DEFERRED.md` adds `end_turn` beside `execute_python` and `execute_duckdb`. Landing the rename first means the turn contract's tool table is written once with correct names.
+**Relationship to the turn contract.** `TURN_CONTRACT_DEFERRED.md` adds `end_turn` beside `execute_python` and `execute_duckdb`, and (2026-08-29) that is the whole tool table in both play modes. Landing the rename first means the turn contract's tool table is written once with correct names. The tool table's single definition is `environment/tool_definitions.py`, not the tier-6 file.

@@ -1,16 +1,18 @@
 # The HUD Partition — deferred refactor plan
 
-**Status: DEFERRED.** Grounded in code sweeps; nothing here has been executed. Principles live in `docs/CONSTITUTION.md` — this plan's original cleavage rule is constitutionalised there as §5, and its candidate principle (*a blocking form is sugar over an agent-visible lifecycle; wrappers may hide mechanism, never policy*) is frozen as §9 in a stronger form.
+**Status: PARTIALLY SUPERSEDED (2026-08-29).** Grounded in code sweeps; nothing here has been executed. Principles live in `docs/CONSTITUTION.md` — this plan's original cleavage rule is constitutionalised there as §5, and its candidate principle (*a blocking form is sugar over an agent-visible lifecycle; wrappers may hide mechanism, never policy*) is frozen as §9 in a stronger form.
+
+> **Amendment 2026-08-29.** The tool half of this plan is withdrawn. Hand crafting and research **stay in the Python runtime** as accessors. The cognitive-burden motivation that produced the tools is met instead by splitting play into two **modes** — *planning* and *gameplay* — each a turn type owned by `TURN_CONTRACT_DEFERRED.md` §6. The reasoning: introducing top-level tools was an attempt to draw a boundary around a Python API that kept growing; a mode boundary draws it more strictly, keeps every action in one API with one grammar, and categorises the experiment cleanly. What survives here, section by section: the naming rule (§2.1, §2.2), the three-response-kinds and tick-stamp rules (§2.4, now rules for Python results), the join contract and `await_item` (§3), what does not move (§4), the mining rule (§5), the multi-agent facts (§10). What is withdrawn: the tool table (§2), the self-state tool (§2.3), the tool-registration and namespace-deletion steps (§8). Sections below carry their own amendment notes where the change bites.
 
 ## Summary
 
-Remove **crafting** and **research** from the agent-visible Python namespace. They become discrete tools whose completions arrive as between-turn events. Python stays — sharpened — as the embodiment surface: everything the avatar does with its body in space, plus every live read of map entities.
+~~Remove **crafting** and **research** from the agent-visible Python namespace. They become discrete tools whose completions arrive as between-turn events.~~ **Withdrawn 2026-08-29** — they stay in Python (see the amendment above). What this summary still asserts: Python is the embodiment surface, completions arrive in the turn report, and the blocking `craft()` is deleted in favour of enqueue-plus-`await_item`.
 
 | Human interface | Agent surface |
 |---|---|
 | The avatar in the world, and the windows you open by clicking things in it | `execute_dsl` — code-as-action over body verbs and entity interaction |
 | The map screen | `execute_duckdb` for stable structure; `remote_view` for live map-scale reads |
-| The HUD — the crafting queue, the research bar, your own state | discrete tools, plus between-turn events |
+| The HUD — the crafting queue, the research bar, your own state | ~~discrete tools~~ → `crafting` and `research` accessors in Python (2026-08-29), plus the turn report |
 
 **The cleaving question is not "does the body do it" but *what were you touching when you did it*.** A window you open by clicking something on the map is Python. A window that belongs to you, and not to anything on the map, is a tool. Crafting and research are exactly Factorio's two HUD queues — the processes the game renders as chrome because they run without the avatar.
 
@@ -28,6 +30,8 @@ The interaction *shape* then teaches what prose cannot: the model starts a craft
 
 ## 2. The tools
 
+> **Withdrawn 2026-08-29.** No tool in this table will be built. The table is kept because its *contracts* — best-effort in-order batches, derived-not-extrapolated time remaining, selector-keyed clear, prerequisite-expanded research add, hand-craftable-versus-machine-only in the catalog — are the contracts the Python `crafting` and `research` accessors must now honour. Read each row as a method contract, not a tool. The two catalogs become **reads** on those accessors (`research.list_technologies()`, `crafting.list_recipes()`); the Lua remotes `get_technologies` (`agent_actions/researching.lua:35`) and `get_recipes` (`agent_actions/crafting.lua:15`) already exist and are today reached only by the one-shot initial-state prompt builder. That read, not a tool, is what closes the 2026-08-25 run's CATALOG-1 finding, where discovery ran through a mutating `enqueue`/`dequeue` loop and cancelled three real research jobs.
+
 Queue-centric naming, because the engine owns the queues and the tools manipulate them. "Start" would imply the tool does the crafting.
 
 | Tool | Contract |
@@ -38,18 +42,18 @@ Queue-centric naming, because the engine owns the queues and the tools manipulat
 | `research_queue_clear(selector)` | One tech, or all. Cancellation is non-destructive — per-tech progress is preserved |
 | `list_recipes(filters)` | Name match, enabled versus locked-with-unlock-path, and **hand-craftable versus machine-only**, so models avoid the smelting game-rule failure instead of discovering it. Craftable-right-now is a returned annotation, not a filter; that keeps the catalog a catalog |
 | `list_technologies(filters)` | Available (prerequisites met) versus researched versus locked; science-pack costs; what each unlocks |
-| agent self-state | Position, health, inventory, and current activity — walking, mining, idle. The human sees their own character animation; this is the honest equivalent. **Name it something other than `status`**: it collides with entity status and means something entirely different |
+| ~~agent self-state~~ | **Withdrawn 2026-08-29.** Position, health, inventory and current activity are already readable through the existing Python surface; no tool is added. The naming warning survives: nothing on the agent's own state may be called `status` |
 
 ### 2.1 Crafting names two acts — separate them
 
-- **Personal crafting → `hand_crafting`**, a tool. Its own screen, hotkey-opened, and it hands you nothing directly: it holds ingredients in a buffer and delivers finished items to inventory. **The interactivity is indirect, which is exactly why it leaves Python.**
+- **Personal crafting → `hand_crafting`** — the *name* of the act. Its own screen, hotkey-opened, and it hands you nothing directly: it holds ingredients in a buffer and delivers finished items to inventory. ~~The interactivity is indirect, which is exactly why it leaves Python.~~ *(2026-08-29: it does not leave Python; the indirectness is expressed by enqueue-plus-`await_item` rather than by a tool boundary.)*
 - **Setting a recipe on an assembler → Python**, on the entity. You clicked that machine.
 
 **`hand_crafting` is a naming rule as much as a placement: the word never appears on an entity.** This is the same trap already fixed once by making `mine` resource-exclusive (§5.2) — one verb spanning the boundary teaches models to reach for the wrong surface.
 
 ### 2.2 Catalogs follow their screens; per-machine applicability does not
 
-Listing technologies and listing recipes are tabs in those two screens, so they are tools.
+Listing technologies and listing recipes are tabs in those two screens, so they belong with the queue they sit beside — reads on `research` and `crafting` (2026-08-29; previously "so they are tools").
 
 **What a specific machine can accept is not.** That question is parameterized by an entity the agent is holding, so Constitution §4 puts it on the entity. Same underlying prototype data, two owners, split on *is this a question about an entity?*
 
@@ -59,13 +63,15 @@ Listing technologies and listing recipes are tabs in those two screens, so they 
 |---|---|
 | One entity's status | **Python**, on the entity — the hover-and-click analog |
 | The base-wide status summary | **Python**, on `remote_view` — the same live read batched, grouped by status value with drill-down, sharing a root with the per-entity name so the relationship is legible |
-| The agent's own state | **A tool.** This is what the earlier `get_status` was actually reaching for |
+| The agent's own state | ~~A tool.~~ **Existing Python reads** (2026-08-29). This is what the earlier `get_status` was actually reaching for |
 
-The self-state tool has no exact human analog. It is a sensible helper, and it is where inventory appears at HUD level — which is lawful: facts may live on more than one surface, verbs may not.
+~~The self-state tool has no exact human analog.~~ Self-state stays where it is read today; inventory appearing both on `inventory` and in an entity's inspection is lawful: facts may live on more than one surface, verbs may not.
 
 **Orientation, not gating.** Reading self-state and then acting next turn is check-then-act across a turn boundary. The taught idiom for downstream gating stays the in-code state-join (§3), inside the block that acts. A model using self-state as a polling loop has rebuilt the dead-poll failure — so the baseline run scores its call frequency.
 
 ### 2.4 Contract rules across all of them
+
+*(2026-08-29: these are now rules for the Python results of `crafting` and `research`, and for every entry in the turn report. Rule 3's third kind — harness/transport error, world state unknown — is the only one that may surface as a tool error on `execute_python`.)*
 
 1. **Stamp everything with the tick** — every tool response, every notification. Time remaining means nothing without a clock to subtract from, and a visible clock advancing across messages the model did not cause is the cheapest teacher of world-independence.
 2. **Queue mutations return the queue.** Per-item results *plus* authoritative post-op state. This mirrors the HUD — after you click, you see the queue — and it kills the ambiguity around batches, auto-inserted prerequisites and partial failure in one move.
@@ -150,11 +156,11 @@ This is Constitution §4 read from the negative side: **a verb earns a top-level
 
 **No entity-side name, docstring, return type or prompt line may use "mine" for picking up a placed entity, even though the engine does.** The engine's conflation is not inherited.
 
-**One live defect this rule catches:** a decision-point note in the generated reference instructs the model to *"prefer `entity.mine()` when you already hold the entity object."* **No `mine` exists on any entity or mixin** — the method is `pickup()`. A model following documented guidance takes an `AttributeError`. And the reason it survives validation is itself the finding: the example validator walks code examples only, so prose fields are never attribute-checked.
+**One live defect this rule caught** *(fixed in `fda10e2`, 2026-08-25; the reference now reads "Prefer `entity.pickup()`")*: a decision-point note in the generated reference instructed the model to *"prefer `entity.mine()` when you already hold the entity object."* **No `mine` exists on any entity or mixin** — the method is `pickup()`. The reason it survived validation is still live and is the more important finding: the example validator walks code examples only, and every prose field (`decision_points`, `notes`, `preconditions`, `expected_outcome`, all of `ErrorCase`) still ships to the model unchecked.
 
 ## 6. Before believing any of this worked
 
-- **Does the interaction layer actually inject notifications between turns?** The prompt *documents* that it does. Whether it happens is unverified — a mirage-shaped claim by our own taxonomy. **Nothing proceeds without an executed answer**, and the question belongs to the notification channel, not to crafting (§7).
+- **Does the interaction layer actually inject notifications between turns?** The prompt *documents* that it does. *Answered 2026-08-25/28:* notifications **do** reach the model (15 Game Events blocks in the deepseek run) — but between inferences inside a turn, not between turns (`orchestrator.py:505`), and nothing records that they were delivered (`TrajectoryWriter.notification()` has no caller). The Turn Contract owns the correction.
 - **Lifecycle comprehension probes**, no acting: what is pending right now? if you enqueue fifty gears and then walk, do they finish? what is the world-state after a craft "timeout"? what does `await_item` return when its bound expires with the craft still running? Wrong predictions justify surface surgery; right-but-unused means salience, which is not this plan's problem.
 - **A baseline behavioral micro-eval on the current surface:** the fifty-belts scenario, time-boxed so interleaving wins by construction. Do models discover enqueue-then-walk today, unprompted and then prompted? **If they already interleave when prompted, the expected effect shrinks — reassess before building.** It also scores self-state call frequency (§2.3).
 
@@ -164,7 +170,7 @@ Constitution §13: none of this is true until its check has been run.
 
 **This plan is what motivated opening `NOTIFICATIONS_PRIMITIVE_DEFERRED.md`**, and it now has two claims on that channel.
 
-The partition ships no `craft_await`, so its join story rests on completions arriving between turns. `inventory.await_item` rests on the same signal: **a wait can be no more honest than the completion it is waiting for.**
+The partition ships no `craft_await`, so its join story rests on completions arriving in the turn report (2026-08-29: the report is the only between-turn channel; today the orchestrator drains notifications between *inferences* inside a turn, `infra/llm/orchestrator.py:505`, which the Turn Contract corrects). `inventory.await_item` rests on the same signal: **a wait can be no more honest than the completion it is waiting for.**
 
 The failure mode is already in the tree, in §9's inventory: a craft timeout has no cancel path, so the craft completes in the world while Python reports failure. Constitution §9 forbids exactly that. But a channel with no sequence number and no loss detection cannot enforce it — a dropped datagram means the wait ends, the craft finishes, and nothing reconciles the two.
 
@@ -174,10 +180,10 @@ The failure mode is already in the tree, in §9's inventory: a craft timeout has
 
 1. **The gates** (§6).
 2. **One Lua touch:** handle-keyed cancellation for the crafting queue, which is recipe-name-keyed today. Crafting *completion* needs no Lua work — it already emits on the same channel research uses. A mod change means a full restart to pick up.
-3. **The tool layer:** register the §2 tools in the interaction layer's tool table; handlers call the existing Lua enqueue, status and dequeue verbs. No new game logic in handlers.
-4. **Namespace deletion:** remove `crafting` and `research` from the agent-visible namespace; delete `craft()` and its timeout path; regenerate the reference. Keep the overlap window — tools live, namespace not yet deleted — inside a single eval cycle. Duplication is the drift vector.
+3. ~~**The tool layer**~~ **The accessor contracts (2026-08-29):** make `crafting` and `research` honour the §2 contracts as methods — handle-keyed dequeue, derived time remaining in every enqueue result, prerequisite-expanded research add with the post-op queue returned, a caller-scoped research cancel (today `cancel_current_research` in `researching.lua:153` cancels whatever is active, regardless of who queued it), and the two catalog reads. No new game logic; handlers call the existing Lua verbs.
+4. ~~**Namespace deletion**~~ **Delete the blocking form only:** delete `craft()` and its timeout path (`crafting.py:180` awaits with no `try/except`, no server-side cancel, and re-raises a bare `asyncio.TimeoutError` while the craft completes in the world — the CRAFT-TIMEOUT-1 incident of 2026-08-25). `crafting` and `research` stay in the namespace; regenerate the reference.
 5. **The mining-name pass:** deletions and renames only. The mining action itself is untouched and stays injected infrastructure, which is already how the reachable view receives it. Drop the accessor from the namespace and from the documentation; resolve the alias that points "resources" at the mining action in one place and at the reachable view in another; purge the entity-side "mine" vocabulary (§5.2). Afterward: the generated reference has no top-level `mining.` accessor, `resource.mine()` and `entity.pickup()` still resolve, and no entity-side string contains "mine".
-6. **Teaching:** the cleaving question in one sentence, and the reconcile idiom — state-join first, `await_item` as the bounded form. Seed the unlocked-recipes and current-research placeholders that already exist in the prompt template; let unlock events push catalog changes, and `list_recipes` handle detail pulls.
+6. **Teaching:** the cleaving question in one sentence, and the reconcile idiom — state-join first, `await_item` as the bounded form. ~~Seed the unlocked-recipes and current-research placeholders that already exist in the prompt template~~ — *corrected 2026-08-29: `{UNLOCKED_RECIPES}`, `{AVAILABLE_TECHNOLOGIES}` and `{CURRENT_RESEARCH}` exist only as comments in `infra/llm/prompts/system_prompt.py:71-74`; the template contains none of them and nothing fills them.* The catalog reads and the turn report's research section replace what those placeholders were meant to do.
 7. **Re-run the probes and the micro-eval; diff.**
 
 ## 9. Risks, and the policy hiding in the current tree
@@ -193,7 +199,7 @@ The failure mode is already in the tree, in §9's inventory: a craft timeout has
 **The hidden-policy inventory** that motivated the candidate principle now frozen as Constitution §9. Each is a wrapper hiding *policy*, not mechanism:
 
 - Walking timeout silently stops the walk and then raises.
-- **Craft timeout has no cancel path — the craft completes in the world while Python reports failure.** Belief divergence by construction.
+- **Craft timeout has no cancel path — the craft completes in the world while Python reports failure.** Belief divergence by construction. *Observed live on 2026-08-25 (CRAFT-TIMEOUT-1); still present at `crafting.py:180`.*
 - Progress packets extend the deadline for walking only.
 - The ghost builder's non-strict mode continues past failures.
 - A list-valued inventory transfer is N sequential calls behind one apparently atomic call.
@@ -219,7 +225,8 @@ Crafting is **character-scoped** and private; research is **force-scoped** and c
 
 ## 12. Related plans
 
-- `API_AFFORDANCE_REDESIGN_DEFERRED.md` — the parent. §5 here is the namespace-shape half of the same decision.
+- `API_AFFORDANCE_REDESIGN_DEFERRED.md` — the parent. §5 here is the namespace-shape half of the same decision. Its §3 is amended alongside this plan's §2.
+- `TURN_CONTRACT_DEFERRED.md` — §6 owns the two modes that replace the tools withdrawn here.
 - `GHOST_SURFACE_DEFERRED.md` — `ghost_builder` fails §5.2 as well as being removed there on progression grounds.
 - `BELT_AFFORDANCE_DEFERRED_PLAN.md` — `place_line` lands on the item, per §5.2's reversal, and stays below this boundary as body-occupying work.
 - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — §7. Two dependents now.

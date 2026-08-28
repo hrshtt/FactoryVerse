@@ -12,14 +12,16 @@ FactoryVerse is a research platform for LLM agents playing Factorio: three Lua m
 - **`docs/architecture/*.md`** — the plans currently being worked toward (each is self-contained and states its own gates):
   - `API_AFFORDANCE_REDESIGN_DEFERRED.md` — parent plan: affordance decides ownership
   - `TURN_CONTRACT_DEFERRED.md` — what a turn is; upstream of most other plans
-  - `HUD_PARTITION_DEFERRED_REFACTOR.md` — craft/research → tools; Python is the body
-  - `BELT_AFFORDANCE_DEFERRED_PLAN.md` — belts, poles, pipes as held objects
+  - `HUD_PARTITION_DEFERRED_REFACTOR.md` — partially superseded 2026-08-29: craft/research stay in Python; join contract, mining rule and naming rule survive
+  - `BELT_AFFORDANCE_DEFERRED_PLAN.md` — superseded by `TRANSPORT_CONNECTIVITY_PLAN.md`; kept for its teaching section
+  - `TRANSPORT_CONNECTIVITY_PLAN.md` — belts, poles, pipes: derived structure, live simulation, no stored adjacency
   - `GHOST_SURFACE_DEFERRED.md` — ghosts as a map-view write surface
-  - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — notifications as a primitive (undesigned)
+  - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — notifications as a primitive (designed, not executed)
+  - `SCENARIO_BOOT_CONTRACT_DEFERRED.md` — what a world boot is: scenario resolution, world settings, observer policy
   - `TIER_RENAME_PROPOSAL.md` — rename the environment tiers
 - **The code and its checks.** Nothing else in this repo is an authority on whether something works. If you need to know, run the check. If there is no check, there is no claim.
 
-There is deliberately no issue tracker, certification ledger, retro archive, or "known issues" list in the repo. Past sessions' conclusions were removed on purpose; do not reconstruct them from memory.
+There is deliberately no issue tracker, certification ledger, retro archive, or "known issues" list in the repo. External-harness transports (Codex, Hermes) were removed 2026-08-29 and are rebuilt only after the refactor; `fv run` is the sole interaction path. Past sessions' conclusions were removed on purpose; do not reconstruct them from memory.
 
 ## Layout
 
@@ -29,7 +31,7 @@ src/FactoryVerse/game/agent/    Agent-facing surface: embodied actions, reachabl
 src/FactoryVerse/game/factory/  Typed entity objects and prototype data
 src/FactoryVerse/game/infra/    DuckDB map model, op log, loaders
 src/FactoryVerse/infra/         RCON/UDP, Docker, LLM clients, sessions
-src/FactoryVerse/evals/         Freeplay campaign harness (+ its `fv campaign` CLI)
+src/FactoryVerse/evals/         Freeplay campaign supervisor: manifest, checkpoints, prejoin, stdio actor protocol (`fv campaign`)
 src/FactoryVerse/dev/           Developer tooling (census)
 src/fv_embodied_agent/          Lua mod: what a human at the keyboard can do
 src/fv_snapshot/                Lua mod: game state → disk → DuckDB; entities/map/research interfaces
@@ -50,12 +52,12 @@ uv run fv server start --num 1 --scenario lab-grid
 uv run fv run                                     # freeplay agent (auto-detects/launches an instance)
 uv run fv run --task iron_plate_throughput        # verified task
 uv run fv run --interactive                       # human-in-the-loop REPL
-uv run fv docs generate                           # regenerate docs/for-llms/*
+uv run fv docs generate                           # regenerate docs/for-llms/api_reference.md
 uv run fv census                                  # ground-truth entity dump
-uv run fv campaign --help                         # external-harness campaigns
+uv run fv campaign --help                         # supervised campaigns (create/status/prejoin/launch)
 ```
 
-`docs/system-prompt/` and `docs/for-llms/` are loaded at runtime — they are inputs to the agent, not documentation for you.
+`docs/system-prompt/*-template.md` is the runtime prompt input. `docs/for-llms/*` are generated snapshots of what the agent is shown (Tier 5 regenerates the same text in-process; `fv docs generate` rewrites only `api_reference.md`). They are agent inputs, not documentation for you.
 
 ## Factorio runtime constraints
 

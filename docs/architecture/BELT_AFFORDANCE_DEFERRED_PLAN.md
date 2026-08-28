@@ -2,6 +2,8 @@
 
 **Status: DEFERRED.** Grounded in code reads; nothing here has been executed. Principles live in `docs/CONSTITUTION.md`.
 
+**Superseded by `TRANSPORT_CONNECTIVITY_PLAN.md`** (its §12 says what is absorbed and what is carried forward); kept for its teaching section and its baseline gate. Not amended further.
+
 **The motivating observation:** across eval runs, models do not use belts to connect resources. They do use power — which is taught, cued, and free of phantoms.
 
 ## Summary

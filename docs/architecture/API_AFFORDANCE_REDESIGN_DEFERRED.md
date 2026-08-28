@@ -2,6 +2,8 @@
 
 **Status: DEFERRED.** Grounded in code reads; nothing here has been executed. Principles live in `docs/CONSTITUTION.md`.
 
+> **Amendment 2026-08-29.** Three changes, each marked in place: (1) §3 — no HUD tools; `crafting` and `research` stay in the namespace (§2.7), and the cognitive-burden boundary moves to the two play modes in `TURN_CONTRACT_DEFERRED.md` §6. (2) §4.1 — the alert argument is rewritten around `defines.alert_type`, per `TRANSPORT_CONNECTIVITY_PLAN.md` §11. (3) A new §4.6 applies Constitution §10/§11 retroactively to every table in the map model, because the model was built before `remote_view` existed as the declared home for volatile reads. Audit corrections from 2026-08-28 are applied inline.
+
 This plan owns the agent-visible surface as a whole. The four sibling plans own their corners in mechanism detail, and each states its own case.
 
 ## Summary
@@ -12,9 +14,9 @@ The agent-visible Python namespace has fourteen accessors. Nine of them are verb
 
 | | Now | After |
 |---|---|---|
-| Python accessors | `walking` `crafting` `mining` `research` `inventory` `placement` `entity_ops` `reachable_view` `remote_view` `ghost_builder` `placement_hints` `verify` `events` | `walking` `inventory` `reachable_view` `remote_view` `entity_reference` |
-| Tools | `execute_dsl`, `execute_duckdb` | plus `hand_crafting`, research, and agent self-state |
-| Where the deleted verbs go | — | onto entity and item objects, onto the new reference object, into the tools, or deleted outright |
+| Python accessors | `walking` `crafting` `mining` `research` `inventory` `placement` `entity_ops` `reachable_view` `resources` (alias of `reachable_view`) `remote_view` `ghost_builder` `placement_hints` `verify` `events` | `walking` `inventory` `crafting` `research` `reachable_view` `remote_view` `entity_reference` *(2026-08-29; was without `crafting`/`research`)* |
+| Tools | `execute_dsl`, `execute_duckdb` (+ `respond` in assisted mode) | `execute_python`, `execute_duckdb`, `end_turn` — no HUD tools (2026-08-29) |
+| Where the deleted verbs go | — | onto entity and item objects, onto the new reference object, or deleted outright |
 
 **The second-order reason this matters is eval validity.** An API carrying a greedy set-cover pole planner cannot answer the charge that the model was handed a factory-building kit, because no human performs set-cover. An API whose every verb is a gesture can.
 
@@ -62,6 +64,8 @@ Greedy set-cover over a list of consumers. A pre-flight validation service. A wa
 
 `events` has been in the namespace for months and appears in **zero** documentation entries. The completeness check we have runs one direction only — everything documented exists — so an *undocumented* accessor is invisible to it.
 
+*Sharpened 2026-08-28.* `events` is absent from the generated reference and the system prompt but **is** advertised to the model in the `execute_dsl` tool description (`environment/tool_definitions.py:36`); `verify` and `ghost_builder` are the mirror case — documented in the reference, absent from that description; `resources` is in neither. And the reference's "Top-Level Accessors" table is a hardcoded string literal in `utils/docs/generator.py:75-92`, unchecked against the runtime, that names a class `Verification` which does not exist (the class is `VerifyView`). Three surfaces describe the namespace; none is derived from it.
+
 This is a second failure mode, distinct from the hallucinated-capability one we already guard against: **dead capability** rather than imagined capability, and `events` is its live instance. It is deleted in §2.5, but the gap that hid it is the more important finding — it is why §6 adds a check in the other direction.
 
 ## 2. Python after the redesign
@@ -78,7 +82,7 @@ This is a second failure mode, distinct from the hallucinated-capability one we 
 | `entity_ops.set_entity_recipe` / `set_entity_filter` | the crafter and inserter mixins | ✅ |
 | `entity_ops.put_` / `take_inventory_item` | the burner mixin's fuel verbs, the crafter mixin's ingredient and product verbs, the container's store and take | ✅ |
 | `entity_ops.set_inventory_limit` | `Container.set_limit()` | ❌ **build** |
-| `verify.powered` | `entity.status` | ✅ route exists |
+| `verify.powered` | `entity.status` | route exists as `entity.inspect().status` (`entity/inspection.py:51`); there is no `.status` property on `BaseEntity` today — **build** the property over the batched read |
 | `verify.connected` | comparing two entities' network ids | ✅ already redundant |
 | `verify.supply_coverage` | the pole reference's supply area, plus per-entity status | ✅ substrate exists |
 | `mining` | `resource.mine()` | ✅ — the HUD plan owns this |
@@ -150,16 +154,18 @@ It yields immediately if the items are already held, waits if the work is genuin
 ### 2.7 The resulting namespace
 
 ```
-agent_id, walking, inventory, reachable_view, remote_view, entity_reference
+agent_id, walking, inventory, crafting, research, reachable_view, remote_view, entity_reference
 ```
 
-Six names, and every one of them answers "which human gesture is this?"
+Eight names *(2026-08-29; was six)*, and every one of them answers "which human gesture is this?" `crafting` and `research` are the two HUD queues — windows that belong to you and not to anything on the map — and they stay in Python by decision: the boundary that was to be drawn with tools is drawn instead with the planning/gameplay modes (§3). They pass §4's negative test: neither is ever parameterized by an object the agent already holds.
 
 `walking` stays top-level because it is a **declared medium exception** (Constitution §2) — the motor loop is dropped, the destination decision kept. Not because its argument happens to be a position.
 
 Debug-profile accessors are unchanged.
 
 ## 3. The tools
+
+> **Superseded 2026-08-29.** No HUD tools will be built. The tool table is `execute_python`, `execute_duckdb`, `end_turn` (`TURN_CONTRACT_DEFERRED.md` §11), and it is the same in both play modes; the modes differ in what `execute_python`'s namespace binds. Constitution §5's reading "a window that belongs to you … is a tool" is narrowed: the HUD's *ownership* is expressed by the accessors `crafting` and `research` carrying no entity, never appearing on one, and reporting their completions in the turn report — not by a separate call channel. The `hand_crafting` naming rule and the catalog/per-machine split below survive as rules on those accessors. The rest of this section is kept as the record of what was decided against.
 
 Constitution §5: **a window you open by clicking something on the map is Python; a window that belongs to you, and not to anything on the map, is a tool.**
 
@@ -169,7 +175,7 @@ Constitution §5: **a window you open by clicking something on the map is Python
 | research | The technology screen | Queue, clear, read current research |
 | agent self-state | The always-on chrome | Position, health, inventory, current activity. No exact analog; a sensible helper. **Name it something other than `status`** — it collides with entity status and means something else |
 
-**The catalogs follow their screens.** Listing technologies and listing recipes are tabs in those two windows, so they are tools.
+**The catalogs follow their screens.** Listing technologies and listing recipes are tabs in those two windows, so they are reads on `research` and `crafting` (2026-08-29; the Lua remotes `get_technologies` and `get_recipes` already exist).
 
 **What a specific machine can accept is not.** That question is parameterized by an entity the agent is holding, so §4 puts it on the entity. Same prototype data, two owners, split on *is this a question about an entity?*
 
@@ -190,7 +196,7 @@ The HUD plan owns the tool contracts in full.
 
 We have no animation channel. **A batched status read is the proxy for that glance** — which makes it a **medium-exception argument** (Constitution §2), the same family as the map-as-database. It is not an infrastructure compromise or a wart on the design. It is the design, applied.
 
-**Alerts are a different engine mechanism, and they are discounted.** They were conflated with entity status; they are not the same thing. Two facts close the question for now: the engine's alert API hangs off a player object, and our agents are bare character entities with no player — the same gating already documented in the mods for charting. And after `fv_filters.yaml` removes military, trains, space and the bot stack, almost nothing in the alert vocabulary applies to this scope anyway.
+**Alerts are a different engine mechanism, and they are discounted.** They were conflated with entity status; they are not the same thing. *Amended 2026-08-29 per `TRANSPORT_CONNECTIVITY_PLAN.md` §11:* the closing fact is the enumeration, not the gating. `defines.alert_type` has exactly seventeen values and **not one is power-related**; "not connected to power" was never an alert — it is entity status, rendered by `render_no_power_icon` / `render_no_network_icon` on the electric energy-source prototype. That cannot rot with a filter file. The earlier reasons still hold as corroboration: every alert method hangs off `LuaPlayer` and our agents are bare characters; and after `fv_filters.yaml` removes military, trains, space and the bot stack, almost nothing in the alert vocabulary applies to this scope.
 
 **No alert work until bots exist**, at which point construction failures and destroyed entities make the surface meaningful. What the agent actually needs — *this furnace has no fuel*, *this drill has no power*, *the output is backed up* — are not alerts at all. They are entity status values, which the game renders as icons on the machine in the world, and which are fully available to us.
 
@@ -247,6 +253,36 @@ Status lands on disk and is read on demand. The only wire traffic is the file-ap
 
 **So this section has no dependency on the notification primitive**, and can land before, after or independently of it. With alerts discounted there is nothing left here that is notification-shaped, which is why the notification plan reserves no alert slot.
 
+### 4.6 Retroactive membership audit of the map model *(added 2026-08-29)*
+
+The map model was built before `remote_view` existed as the declared home for volatile, source-declaring reads, so Constitution §10 was never applied to it as a whole. This section applies it to every table, from the schema inventory taken on 2026-08-28 (`game/infra/duckdb/schema_definitions.py`; seventeen base tables, no views, one DDL site in `database.py:157`).
+
+| Table | §10 class | Fate |
+|---|---|---|
+| `map_entity` | Update | stays. Two dead columns: `tile_x`/`tile_y` are declared, documented to the agent, and have no writer in any language (`apply_ops.py:250-253` omits them; the serializer's `anchor_tile` is dropped into `raw_data`) — write them or delete them |
+| `ghost` | Update | stays. `placed_by` has no write path (`apply_ops.py:385`) |
+| `footprint_tiles` | Update (derived) | stays. `is_ghost` is only ever written `FALSE` (`apply_ops.py:111`) |
+| `inserter`, `transport_belt`, `mining_drill`, `assembler` | Update (derived) | stay. Routing is hand-listed twice, in Python (`apply_ops.py:119-179`) and Lua (`serialize.lua:17-42`), from neither the prototype pipeline nor `fv_filters.yaml`; `furnace` and `rocket-silo` get no `assembler` row though their recipe is serialized. Derive the routing once. `transport_belt` gains `belt_to_ground_type` (`TRANSPORT_CONNECTIVITY_PLAN.md` §2.2) |
+| `resource_entity` | Update | stays |
+| `agent_manual_production_statistics` | Update (aggregated from event-driven craft/mine records) | stays |
+| `resource_tile` | Load only | stays, **but** `amount` has no update path and goes stale on the first mine. Either the resource-depletion event feeds it, or the schema notes say it is a charting-time value |
+| `water_tile` | Load only | stays (immutable in practice) |
+| `chunk_snapshot_meta` | Load only | stays, **but** `tick` never moves during a session (`sync._handle_chunk_init` is a no-op) while the schema notes tell the agent to trust it as a freshness marker. Fix or re-document |
+| `entity_status` | **polled, volatile** | **leaves the database** (§4.2). Becomes the dump-file reader on `remote_view`, source-declared |
+| `power_samples`, `power_networks` | **polled, volatile** | **leave the database.** Same mechanism: the 300-tick sampler still writes `power_networks.jsonl`; `remote_view` reads it and says so. Engine-owned network ids keep their anchor-pole identity as today |
+| `agent_production_statistics` | **polled, volatile** | **leaves the database.** The force production read is one RCON call (`Agent.lua:618`); the turn report's Production row reads it live at the turn boundary and the per-agent JSONL remains the record |
+| `sync_state` | infrastructure | stays; loses the `entity_status_last_tick` key |
+
+**`raw_data` is the second half of the audit.** It carries the whole serializer payload, and inside it: `belt_data.item_lines` (items on belts — the most volatile fact in the game, on every belt row), and stored adjacency — `belt_neighbours`, `underground_neighbour`, `pipe_neighbours`, `pole_data.connected_poles`, inserter `pickup_target`/`drop_target` — which is stale by construction because a placement re-serializes only the placed entity. All of these are deleted from the serializer, not merely ignored (`TRANSPORT_CONNECTIVITY_PLAN.md` §2.1, §8.2). Adjacency is derived at read time from geometry; simulation state is read live.
+
+**Doc drift that gates this work** (each is a §14/§15 defect: the agent is told things about the schema that are not true):
+
+- The two component-table join examples shipped to the model use a column `entity_key` that exists in no table (`infra/llm/prompts/schema_reference.py:415,423` → `docs/for-llms/schema_reference.md`, → the system prompt).
+- `docs/for-llms/schema_reference.md` is regenerated by no CLI command (`fv docs generate` writes only the API reference) and on disk documents foreign keys deleted on 2026-08-07; the system prompt embeds a fresher copy. Three surfaces, two schemas.
+- No check compares the DDL with the documented schema, and no check compares documented columns with written columns. `tests/unit/test_state_tables_wired.py` checks only that each table group is created.
+
+**Forced order.** Build the dump reader and the summary on `remote_view` first; re-point the power presentation (`remote_view.py:74-114` reads `entity_status` to render `power_networks`) at the reader; then cut the four tables, their schema entries, boot loads and sync keys together; then the turn report's Status and Production rows consume the reader (`TURN_CONTRACT_DEFERRED.md` §4). Nothing is cut before its replacement declares its source.
+
 ## 5. Refactor steps
 
 Ordered so nothing is deleted before its replacement exists.
@@ -256,7 +292,7 @@ Ordered so nothing is deleted before its replacement exists.
 3. **Repair before absorbing.** The belt plan's read repairs — the two diagonal defects, the drifting underground distances, the stale inserter names — are **blocking**. Do not move broken reads onto a new object.
 4. **Change the status presentation.** Smaller than it looks, because the dump layer is untouched: build the raw reader and the summary on `remote_view`; *then* cut the reducer, its table and schema entry, its boot load and its sync marker. Re-scope and re-verify against the dump layer alone. Make `entity.status` the sole per-entity route, which means fixing the residual place where inspection still serializes a raw status integer instead of the symbolic name.
 5. **Keep the batched live read** as view infrastructure, then delete the verify module.
-6. **Split the tools** with the HUD plan: `hand_crafting`, research, self-state; catalogs follow their screens; per-machine applicability lands on the entity; `await_item` lands with them.
+6. ~~**Split the tools** with the HUD plan~~ **Harden the two HUD accessors** (2026-08-29): `crafting` and `research` take the HUD plan's §2 contracts as method contracts; the catalog reads land on them; per-machine applicability lands on the entity; `await_item` lands with them; the blocking `craft()` is deleted. Then apply §4.6 to the map model in its forced order.
 7. **Delete the namespace entries**, one commit per surface, each with its documentation: the flat walk, then placement, then entity operations, then the hints module, then verify, then `events`. `events` is the cheapest of them — it has no documentation to remove and no agent-facing consumer to migrate; only the accessor line goes, and `EventStream` stays wired for the orchestrator. Regenerate the reference after each.
 8. **Teach.** Four plans edit the same prompt template; whichever lands later rebases. The minimum here: affordance ownership stated once as a rule the model can apply; the hydrated-versus-raw query idiom (§1.1); the reference-versus-real-object distinction; and the status idiom with its base-wide summary (§4.3, the discoverability debt).
 9. **Re-run the batteries and diff.**
@@ -275,7 +311,11 @@ Constitution §13: none of this is true until its check has been run.
 
 | What | Where |
 |---|---|
-| The agent-visible namespace — ground truth for the surface | `environment/tiers/tier4_runtime.py` |
+| The agent-visible namespace — ground truth for the surface | `environment/tiers/tier4_runtime.py` (`execute_code`, the dict at `:1416-1486`) |
+| The tool table — the only definition; tier 6 registers it | `environment/tool_definitions.py` |
+| The hardcoded accessor table in the generated reference | `utils/docs/generator.py` |
+| A dead Factoriopedia class carrying a `system_prompt` property, zero importers | `game/factory/factoriopedia.py` |
+| Schema DDL, the reducer, and the hand-written schema prose with the `entity_key` phantom | `game/infra/duckdb/schema_definitions.py`; `game/infra/duckdb/apply_ops.py`; `infra/llm/prompts/schema_reference.py` |
 | Both flat forms and their object counterparts | `game/factory/item/base.py`; `game/factory/entity/base_entity.py` |
 | View promotion on arrival, only on the object path | `game/factory/entity/base_entity.py` |
 | Hydrated versus raw query results | `game/agent/remote_view.py` |
@@ -302,7 +342,9 @@ Engine research on alerts (§4.1) was read against the versioned Lua API documen
 Each states its own current position; none needs amending from here.
 
 - **`BELT_AFFORDANCE_DEFERRED_PLAN.md`** — owns `place_line`, the phantom deletions and the per-entity contracts. **Its repairs are blocking for §2.2.**
-- **`HUD_PARTITION_DEFERRED_REFACTOR.md`** — owns the tool contracts, the `hand_crafting` naming rule, and the namespace-shape argument that `mining` and `entity_ops` fail.
+- **`HUD_PARTITION_DEFERRED_REFACTOR.md`** — partially superseded 2026-08-29 alongside §3 here; still owns the `hand_crafting` naming rule, the join contract, and the namespace-shape argument that `mining` and `entity_ops` fail.
+- **`TURN_CONTRACT_DEFERRED.md`** — owns the two play modes that replace the tools, and the report that consumes §4.6's reader.
+- **`TRANSPORT_CONNECTIVITY_PLAN.md`** — amends §4.1 by name; its §8 repairs block step 3; its §2.1/§8.2 are the `raw_data` half of §4.6.
 - **`GHOST_SURFACE_DEFERRED.md`** — owns the ghost primitives, the builder's removal on progression grounds, and blueprints as the successor.
 - **`NOTIFICATIONS_PRIMITIVE_DEFERRED.md`** — owns the completion channel. `await_item` is a dependent; status is not.
 - **`TIER_RENAME_PROPOSAL.md`** — orthogonal; it renames internal layers, not the agent-visible surface.
