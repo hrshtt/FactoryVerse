@@ -1,331 +1,185 @@
---- factorio_verse/core/game_state/Spectator.lua
---- Spectator module for managing spectator mode and auto-follow functionality.
---- Static module - no instantiation required.
+--- game_state/Spectator.lua — the observer policy.
+---
+--- A human who joins a world this mod runs in has no character and cannot
+--- alter the world. That is the spectator controller ("can't change anything
+--- in the world but can view anything"), not the god controller (no body, but
+--- full ability to build and mine). The policy lives in the mod rather than
+--- in a scenario so that a checkpoint-resumed world — whose scenario script
+--- was baked at creation — is covered too, and so that it can be read back
+--- from the running world (SCENARIO_BOOT_CONTRACT_DEFERRED.md §5).
+---
+--- Governed by the runtime-global setting `fv-observer-spectator` (default
+--- true). Agents are script-created characters with no LuaPlayer, so
+--- on_player_joined_game never fires for them; the `player.connected` guard
+--- makes that intent explicit rather than incidental.
+---
+--- Camera-follow of an agent is kept as an opt-in remote (`follow_agent`);
+--- it costs one position write per connected spectator per tick only while
+--- a follow target is set.
 
 local M = {}
 
--- ============================================================================
--- CONFIGURATION
--- ============================================================================
+local SETTING = "fv-observer-spectator"
 
---- Initialize spectator storage
-local function initialize_storage()
-    if not storage.spectator then
-        storage.spectator = {
-            enabled = false,  -- Global flag to enable/disable spectator mode
-            following_agent_id = nil,  -- Agent ID to follow (nil = no follow)
-        }
-    end
+local function policy_enabled()
+    local setting = settings.global[SETTING]
+    return setting ~= nil and setting.value == true
 end
 
---- Get spectator config
---- @return table Spectator config
 local function get_config()
-    initialize_storage()
+    if not storage.spectator then
+        storage.spectator = { following_agent_id = nil }
+    end
     return storage.spectator
 end
 
--- ============================================================================
--- SPECTATOR FUNCTIONS
--- ============================================================================
-
---- Make a player a spectator
---- @param player LuaPlayer
+--- Switch a connected human to the spectator controller and destroy the
+--- character the engine gave them. set_controller detaches; it does not
+--- destroy — without the explicit destroy an orphaned body stands in the
+--- world, minable and collidable.
 local function make_spectator(player)
-    if not player or not player.valid then
-        return
+    if not (player and player.valid and player.connected) then
+        return false
     end
-    
+    if player.controller_type == defines.controllers.spectator then
+        return true
+    end
     local character = player.character
-    player.set_controller({type = defines.controllers.spectator})
-    
-    -- Destroy character if it exists
+    player.set_controller({ type = defines.controllers.spectator })
     if character and character.valid then
         character.destroy()
     end
+    return true
 end
 
---- Get target character to follow
---- @return LuaEntity|nil Target character entity or nil
 local function get_follow_target()
     local config = get_config()
-    
-    if not config.enabled or not config.following_agent_id then
+    if not config.following_agent_id or not storage.agents then
         return nil
     end
-    
-    if not storage.agents then
-        return nil
-    end
-    
     local agent = storage.agents[config.following_agent_id]
     if not agent then
         return nil
     end
-    
-    -- Try to get character from agent
-    local character = agent.character
-    if character and character.valid then
-        return character
+    if agent.character and agent.character.valid then
+        return agent.character
     end
-    
-    -- Fallback: try entity field
     if agent.entity and agent.entity.valid then
         return agent.entity
     end
-    
     return nil
 end
 
---- Update camera positions for all players to follow target
 local function update_camera_positions()
     local target = get_follow_target()
-    
-    if not target or not target.valid then
+    if not target then
         return
     end
-    
-    -- Update all players' positions to match target
     for _, player in pairs(game.connected_players) do
-        if player and player.valid then
-            -- Only update if player is in spectator mode
-            if player.controller_type == defines.controllers.spectator then
-                player.position = target.position
-            end
+        if player.valid and player.controller_type == defines.controllers.spectator then
+            player.position = target.position
         end
     end
 end
 
 -- ============================================================================
--- REMOTE INTERFACE API
+-- REMOTE API
 -- ============================================================================
 
---- Make all connected players spectators
-local function make_all_players_spectators()
-    for _, player in pairs(game.connected_players) do
-        if player and player.valid then
-            make_spectator(player)
-        end
-    end
-end
-
---- Enable spectator mode and optionally set agent to follow
---- @param enabled boolean Enable/disable spectator mode
---- @param agent_id number|nil Agent ID to follow (nil = stop following)
---- @return table Result {success: boolean, message: string}
-function M.enable_spectator_mode(enabled, agent_id)
-    local config = get_config()
-    local was_enabled = config.enabled
-    config.enabled = enabled or false
-    
-    if enabled and agent_id then
-        -- Validate agent exists
-        if not storage.agents or not storage.agents[agent_id] then
-            return {
-                success = false,
-                message = "Agent " .. tostring(agent_id) .. " not found"
-            }
-        end
-        config.following_agent_id = agent_id
-    else
-        config.following_agent_id = nil
-    end
-    
-    -- If enabling spectator mode, convert all existing players
-    if enabled and not was_enabled then
-        make_all_players_spectators()
-        
-        -- If following an agent, update positions immediately
-        if config.following_agent_id then
-            local target = get_follow_target()
-            if target and target.valid then
-                for _, player in pairs(game.connected_players) do
-                    if player and player.valid and player.controller_type == defines.controllers.spectator then
-                        player.position = target.position
-                    end
-                end
-            end
-        end
-    end
-    
-    local message = enabled and "Spectator mode enabled" or "Spectator mode disabled"
-    if enabled and agent_id then
-        message = message .. " (following agent " .. tostring(agent_id) .. ")"
-    end
-    
-    return {
-        success = true,
-        message = message
-    }
-end
-
---- Get spectator mode status
---- @return table Status {enabled: boolean, following_agent_id: number|nil}
+--- What the policy is and whether it is in force — the read a boot probe
+--- uses to prove the observer policy from the running world.
 function M.get_spectator_status()
-    local config = get_config()
+    local players = {}
+    for _, player in pairs(game.connected_players) do
+        players[#players + 1] = {
+            name = player.name,
+            controller = player.controller_type,
+            has_character = player.character ~= nil,
+        }
+    end
     return {
-        enabled = config.enabled,
-        following_agent_id = config.following_agent_id
+        setting = SETTING,
+        enabled = policy_enabled(),
+        following_agent_id = get_config().following_agent_id,
+        connected_players = players,
     }
 end
 
---- Select which agent to follow
---- @param agent_id number Agent ID to follow
---- @return table Result {success: boolean, message: string}
+--- Apply the policy now to every connected human (used after the setting
+--- is switched on mid-session).
+function M.apply_to_connected_players()
+    if not policy_enabled() then
+        return { success = false, message = SETTING .. " is disabled" }
+    end
+    local count = 0
+    for _, player in pairs(game.connected_players) do
+        if make_spectator(player) then
+            count = count + 1
+        end
+    end
+    return { success = true, converted = count }
+end
+
 function M.follow_agent(agent_id)
     if not agent_id then
-        return {
-            success = false,
-            message = "Agent ID is required"
-        }
+        return { success = false, message = "Agent ID is required" }
     end
-    
-    -- Validate agent exists
     if not storage.agents or not storage.agents[agent_id] then
-        return {
-            success = false,
-            message = "Agent " .. tostring(agent_id) .. " not found"
-        }
+        return { success = false, message = "Agent " .. tostring(agent_id) .. " not found" }
     end
-    
-    local config = get_config()
-    local was_enabled = config.enabled
-    
-    -- Enable spectator mode if not already enabled
-    if not config.enabled then
-        config.enabled = true
-        make_all_players_spectators()
-    end
-    
-    -- Set the agent to follow
-    config.following_agent_id = agent_id
-    
-    -- Update all spectator players' positions immediately
-    local target = get_follow_target()
-    if target and target.valid then
-        for _, player in pairs(game.connected_players) do
-            if player and player.valid and player.controller_type == defines.controllers.spectator then
-                player.position = target.position
-            end
-        end
-    end
-    
-    local message = "Now following agent " .. tostring(agent_id)
-    if not was_enabled then
-        message = message .. " (spectator mode enabled)"
-    end
-    
-    return {
-        success = true,
-        message = message
-    }
+    get_config().following_agent_id = agent_id
+    update_camera_positions()
+    return { success = true, message = "Now following agent " .. tostring(agent_id) }
 end
 
---- Stop following (but keep spectator mode enabled)
---- @return table Result {success: boolean, message: string}
 function M.stop_following()
-    local config = get_config()
-    config.following_agent_id = nil
-    
-    return {
-        success = true,
-        message = "Stopped following agent"
-    }
+    get_config().following_agent_id = nil
+    return { success = true, message = "Stopped following agent" }
 end
 
 -- ============================================================================
--- EVENT HANDLERS
+-- EVENTS
 -- ============================================================================
 
---- Get events (defined events and nth_tick)
---- @return table {defined_events = {}, nth_tick = {}}
 function M.get_events()
     return {
         defined_events = {
             [defines.events.on_player_joined_game] = function(event)
-                local player = game.get_player(event.player_index)
-                if not player or not player.valid then
+                if not policy_enabled() then
                     return
                 end
-                
-                local config = get_config()
-                
-                -- If spectator mode is enabled, make new players spectators
-                if config.enabled then
-                    make_spectator(player)
-                    
-                    -- If following an agent, update position immediately
-                    if config.following_agent_id then
-                        local target = get_follow_target()
-                        if target and target.valid then
-                            player.position = target.position
-                        end
-                    end
+                local player = game.get_player(event.player_index)
+                if make_spectator(player) then
+                    log("fv_embodied_agent: " .. player.name .. " joined as spectator (" .. SETTING .. ")")
+                    update_camera_positions()
                 end
             end,
-            
-            [defines.events.on_tick] = function(event)
-                local config = get_config()
-                
-                -- Early exit: Only process if spectator mode is enabled and we're following an agent
-                if not config.enabled or not config.following_agent_id then
-                    return
+            [defines.events.on_runtime_mod_setting_changed] = function(event)
+                if event.setting == SETTING and policy_enabled() then
+                    M.apply_to_connected_players()
                 end
-                
-                -- Early exit: Check if agents storage exists and has agents
-                if not storage.agents then
-                    return
+            end,
+            [defines.events.on_tick] = function()
+                if get_config().following_agent_id then
+                    update_camera_positions()
                 end
-                
-                -- Check if agents table has any entries (it's a dictionary, not array)
-                local has_agents = false
-                for _ in pairs(storage.agents) do
-                    has_agents = true
-                    break
-                end
-                if not has_agents then
-                    return
-                end
-                
-                -- Update camera positions
-                update_camera_positions()
-            end
+            end,
         },
-        nth_tick = {}
+        nth_tick = {},
     }
 end
 
--- ============================================================================
--- REMOTE INTERFACE REGISTRATION
--- ============================================================================
-
---- Register remote interface for spectator methods
---- @return table Remote interface table
 function M.register_remote_interface()
     return {
-        enable_spectator_mode = function(enabled, agent_id)
-            return M.enable_spectator_mode(enabled, agent_id)
-        end,
-        follow_agent = function(agent_id)
-            return M.follow_agent(agent_id)
-        end,
-        get_spectator_status = function()
-            return M.get_spectator_status()
-        end,
-        stop_following = function()
-            return M.stop_following()
-        end
+        get_spectator_status = M.get_spectator_status,
+        apply_to_connected_players = M.apply_to_connected_players,
+        follow_agent = M.follow_agent,
+        stop_following = M.stop_following,
     }
 end
 
--- ============================================================================
--- INITIALIZATION
--- ============================================================================
-
---- Initialize spectator storage (called from control.lua)
 function M.initialize_storage()
-    initialize_storage()
+    get_config()
 end
 
 return M
-

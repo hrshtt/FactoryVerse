@@ -234,7 +234,7 @@ class Tier2Settings(TierBase):
         mismatches = [
             f"{key}: requested {value!r}, file has {mounted.get(key)!r}"
             for key, value in requested.items()
-            if mounted.get(key) != value
+            if not _settings_match(mounted.get(key), value)
         ]
         if mismatches:
             raise TierInitializationError(
@@ -253,7 +253,7 @@ class Tier2Settings(TierBase):
         self._current_scenario = self.config.scenario
         self._current_save = None
 
-    def _build_map_gen_settings(self) -> Dict[str, Any]:
+    def _build_map_gen_settings(self) -> Dict[str, Any]:  # noqa: D401
         """Build the map generation settings this run requires.
 
         Keys must match Factorio's ``map-gen-settings.json`` schema exactly —
@@ -262,9 +262,16 @@ class Tier2Settings(TierBase):
         """
         settings: Dict[str, Any] = {}
 
-        # Peaceful mode
+        # "Peaceful" means a world with no enemy entities, not merely enemies
+        # that do not attack. Measured (SCENARIO_BOOT_CONTRACT §4): only the
+        # zeroed enemy-base autoplace empties the world; no_enemies_mode
+        # closes later spawning; peaceful_mode is the backstop.
         if self.config.peaceful:
             settings["peaceful_mode"] = True
+            settings["no_enemies_mode"] = True
+            settings["autoplace_controls"] = {
+                "enemy-base": {"frequency": 0, "size": 0, "richness": 0}
+            }
 
         # Additional custom settings
         if self.config.map_gen_settings:
@@ -318,3 +325,20 @@ class Tier2Settings(TierBase):
             # Start client
             await tier1.start_client(**launch_args)
             logger.info("Tier 2: Started Factorio client")
+
+
+def _settings_match(mounted: Any, requested: Any) -> bool:
+    """A requested value matches when the file carries it; dicts match as subsets.
+
+    ``autoplace_controls`` in the file lists every control; the request only
+    constrains ``enemy-base``. Numbers compare by value so ``0`` and ``0.0``
+    agree.
+    """
+    if isinstance(requested, dict):
+        if not isinstance(mounted, dict):
+            return False
+        return all(_settings_match(mounted.get(k), v) for k, v in requested.items())
+    if isinstance(requested, (int, float)) and isinstance(mounted, (int, float)) \
+            and not isinstance(requested, bool) and not isinstance(mounted, bool):
+        return float(mounted) == float(requested)
+    return mounted == requested

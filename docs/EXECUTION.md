@@ -1,0 +1,65 @@
+# Execution — where the refactor stands
+
+One page, four questions: what we are doing, what we are up to right now, what has been done, what comes next. Updated on every commit that moves a phase. Dated entries only; no undated "currently".
+
+This is not a finding ledger or an issue tracker — those were removed on purpose. A row here says a phase's *work* landed; whether it *works* is answered only by the check named on the row (Constitution §13). If a row has no check, it is a claim, and it says so.
+
+The plans in `docs/architecture/` are the authority on *what*; this page is the authority on *where we are*.
+
+---
+
+## What we are doing
+
+Replacing the agent's harness in the order the amended plans force, so that every later eval run is on a named world, under a defined turn, over a map model that holds only event-backed facts, through a namespace whose every verb is a human gesture. Branch: `prompt-audit-fixes`. The external harnesses (Codex, Hermes) are gone until this is done; `fv run` is the sole path.
+
+Decisions that shape the order (2026-08-29): hand crafting and research stay in Python — the game splits into two **modes** (planning, gameplay) instead of growing top-level tools; the observer policy lives in `fv_embodied_agent` as a mod setting; polled tables leave the database and become source-declaring reads on `remote_view`; deletions of doomed verbs are prioritised so nothing is repaired on a surface about to be removed.
+
+| Phase | Owns | Plan sections |
+|---|---|---|
+| 0 | The floor stops lying: checks that cannot pass vacuously, serializer without fabrications, dead code and dead columns gone | API §6, TRANSPORT §8/§9.9, NOTIFICATIONS gate 5 |
+| 1 | Which world: scenario resolution, `--create` gone, settings load-bearing, observer policy, snapshot boot reconciliation | SCENARIO Stages 0–5, TRANSPORT §13 |
+| 2 | The turn: one path, nonce conformance, full input in the record, tick ledger, `turn` stream with epoch/seq, `end_turn` + fast-forward, the report, two modes | TURN §3–§8, NOTIFICATIONS design |
+| 3 | The surface: `await_item`, `Container.set_limit`, `entity_reference`, catalog reads on `crafting`/`research`, status/power/production readers on `remote_view`, then the namespace deletions one commit per surface and the polled tables cut | API §2, §4, §5; HUD §3, §5, §8 |
+| 4 | Transport and ghosts: fixture check, `belt.contents`, `belt_to_ground_type`, `transport.line()`, poles, fluid, `place_line`, `ghost_builder` deleted | TRANSPORT §14, GHOST §4 |
+| 5 | Names: tier rename, `execute_dsl → execute_python` | TIER_RENAME |
+
+---
+
+## What we are up to (2026-08-29)
+
+- **Phase 2 starting** — the turn, on the one remaining path (the in-repo orchestrator). Gates first: nonce conformance and the full model input in the record.
+- **Phase 1 owes one live check**: a human client joining a running world (spectator controller, no character, nothing altered) — `tests/live/test_scenario_boot_contract.py`, skipped until `FV_LIVE_HUMAN_CLIENT=1` with a client connected.
+
+---
+
+## What has been done
+
+| Date | What | Commit | Check |
+|---|---|---|---|
+| 2026-08-28 | Ten code audits of the nine plans against the tree (namespace, turn loop, notifications, schema, scenario boot, transport repairs, crafting/research/mining, test battery, run forensics, ghosts) | — | The audits' claims were folded into the plans; each plan names its own checks |
+| 2026-08-29 | Plans aligned with the tree and the decisions above; API §4.6 retroactive map-model audit added | `c53a0ee` | none — documentation |
+| 2026-08-29 | Codex runner, Codex app-server, Hermes entry point removed; campaign infra kept | `12412be` | `uv run pytest tests/unit -q` green; `fv --help` renders |
+| 2026-08-29 | Notifications gate 5: `vocabulary.lua` (wire vs target), parity checked from both sides | `e39e942` | `tests/unit/test_vocabulary_parity.py` — 13 green, 4 strict xfail naming the exact gaps |
+| 2026-08-29 | Phase 0A — coverage asserts complete with live exemptions; converse namespace check; accessor table derived from registry; every SQL example executes against the real DDL; DDL↔doc parity; prose method tokens resolved; `entity_key` phantom gone; `fv docs generate` writes both docs | `d84b464` | `tests/unit/test_documentation_coverage.py`, `tests/unit/test_docs_honesty.py` |
+| 2026-08-29 | Phase 0B — five geometry events registered; pipe `dx>0` fabrication replaced by a `ports` emit; `item_lines` and `belt_neighbours` dropped; dead cross-mod event pair fixed; `Error.lua` and nine dead senders deleted | `3972df1` | `tests/unit/test_snapshot_lua_contracts.py` (text contracts); `luac -p`. **Live (2026-08-29):** `tests/live/test_database_coherence.py` 13 passed and `test_entity_persistence_contracts.py` 2 passed on fresh Docker servers with the changed mods; a local client on `lab-grid` loads both mods with no errors and mints exactly one `EntityInterface` event pair (241/242) where it used to mint two. Still unexercised in-engine: `_on_entity_teleported` on ghosts, flipped-splitter state |
+| 2026-08-29 | Phase 0C — `tile_x/tile_y` and `ghost.placed_by` written; broken Jupyter bootstrap and dead `factoriopedia.py` deleted; RESOURCE-FILTER-1 and CONTAINER-CONTENTS-1 fixed | `c030f36` | `tests/unit/test_phase0_dead_columns_and_lies.py` |
+
+| 2026-08-29 | Phase 1A — one scenario resolver (repo-only for container boots; `setup_client` fails closed); FactoryVerse `freeplay` scenario restored from `236cba9` as a thin world-shaper with contract v2; `--create` branch and cached initial save deleted, every scenario boots `--start-server-load-scenario`, compose `restart: "no"`; §4.3 no-enemy recipe in both JSON files and asserted by preflight; `Spectator.lua` revived behind mod setting `fv-observer-spectator` (default on); `lab-grid` god block removed; post-boot probe (`environment/boot_probe.py`) in preflight; scenario hash in the manifest and preflight fails on mismatch | `see git log` | `tests/unit/test_scenario_boot_contract.py` (18). **Live (2026-08-29):** `tests/live/test_scenario_boot_contract.py` 6 passed on `factoriotools/factorio:2.0.76` — FactoryVerse `freeplay` loaded (base interface absent), seed honoured, 0 enemies in the §7 area, second seed gives a different world. Human-join check pending |
+| 2026-08-29 | Phase 1B — snapshot boot reconciliation: `Map.boot()` on `on_init`/`on_configuration_changed` walks `get_chunks()` ∩ `is_chunk_charted`; one chunk-registration path; one writer of `has_tracked_entities`; `EMPTY` phase distinct from `MAINTENANCE`; probe `remote.call("map","get_boot_report")`; dead status walk deleted; Python bootstrap wait accepts `EMPTY` | `see git log` | `tests/unit/test_snapshot_lua_contracts.py` (12). **Live (2026-08-29):** `tests/live/test_snapshot_boot_contract.py` passed on the `iron-saturated` fixture — 1360 generated, 427 charted, 10 with entities, 404 entities tracked, phase MAINTENANCE, 49 s |
+
+Battery after Phase 1: 422 passed, 1 skipped (needs the prototype dump), 4 xfailed (strict).
+
+Still in the serializer because Python reads them (go with Phase 4): `belt_data.underground_neighbour`, `pole_data.connected_poles`, inserter/miner `pickup_target`/`drop_target`. Known dead code left in place: `infra/services/agent_service.py` (no importer). `footprint_tiles.is_ghost` kept — `remote_view` reads it, but ghosts write no footprint tiles (Phase 3 decides).
+
+---
+
+## What we will do
+
+In order. Each phase starts when the previous one's check column has no "pending".
+
+1. **Finish Phase 1** and certify it live: scenario-matches-manifest, fresh boot differs by seed, zero enemies in the §7 fixed area, joining human has no character and alters nothing, fixture ingests ≥ 400 entities at boot.
+2. **Phase 2 — the turn.** First the two gates that precede any clock work: a nonce printed by a program must appear in the next inference's input; the trajectory records the full model input, every notification, and every context compression. Then tick stamps on `execute_dsl`, `stream.lua` behind the `turn` stream, drain only at the turn boundary, `end_turn` with fast-forward, the report, the planning/gameplay mode split. Open question recorded in TURN §6: the planning-mode namespace is an assumption until it is exercised.
+3. **Phase 3 — the surface.** Build before deleting: dump readers on `remote_view` (status current/changed, power, production), re-point the power presentation, then cut `entity_status`, `power_samples`, `power_networks`, `agent_production_statistics`. `await_item`, `Container.set_limit`, `entity_reference`, catalog reads. Then delete: blocking `craft()`, the `placement`, `entity_ops`, `verify`, `events`, `mining` accessors, `placement_hints._call()`'s error-key raise, `resources` alias. Regenerate the reference after each.
+4. **Phase 4 — transport and ghosts**, each behind the fixture check.
+5. **Phase 5 — names.**
+6. **Then** the first eval run under the new contract, with the comprehension probes the plans list, and the belt baseline on a task with a forced ore→smelter gap (TRANSPORT §9.8). External harness transports are rebuilt only after that run.

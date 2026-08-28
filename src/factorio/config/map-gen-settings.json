@@ -6,7 +6,9 @@
   "_starting_area_comment": "Multiplier for 'biter free zone radius'",
   "starting_area": 1,
 
+  "_enemy_comment": "No enemy entities: enemy-base autoplace zeroed is what empties the world; no_enemies_mode closes spawner/trigger spawning; peaceful_mode is the backstop. Measured 2026-08-25 (SCENARIO_BOOT_CONTRACT §4).",
   "peaceful_mode": true,
+  "no_enemies_mode": true,
   "autoplace_controls":
   {
     "coal": {"frequency": 1, "size": 1, "richness": 1},
@@ -17,7 +19,7 @@
     "crude-oil": {"frequency": 1, "size": 1, "richness": 1},
     "water": {"frequency": 1, "size": 1},
     "trees": {"frequency": 1, "size": 1},
-    "enemy-base": {"frequency": 1, "size": 1}
+    "enemy-base": {"frequency": 0, "size": 0, "richness": 0}
   },
 
   "cliff_settings":

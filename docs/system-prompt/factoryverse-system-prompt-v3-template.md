@@ -17,7 +17,7 @@ Factorio is a game where you:
 - Scale production to eventually launch a rocket
 
 **Key mechanics**:
-- **Peaceful Mode**: No enemies attack. Focus entirely on building.
+- **No enemies**: The world is generated with no enemy nests, worms or units, and none spawn later. Nothing hostile exists to attack you or to block a build site.
 - **Time**: Measured in ticks (60 ticks = 1 second). Game events trigger asynchronously.
 - **Inventory**: Limited space. Items stack (typically 50-200 per stack).
 - **Reach**: Two radii, not one. Entities are reachable — place, pick up, configure, transfer — within ~10 tiles of your position. Ore, trees and rocks must be within ~2.7 tiles to mine. Walk closer before mining than you would to build.

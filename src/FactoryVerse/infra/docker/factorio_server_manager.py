@@ -373,8 +373,11 @@ class FactorioServerManager:
         emulator = cfg.factorio_emulator
         factorio_bin = f"{emulator} /opt/factorio/bin/x64/factorio".strip()
 
+        # Fresh boot = a scenario start: the map is generated at every boot
+        # from the mounted settings, so seed/peaceful/enemy settings are
+        # load-bearing by construction. Resume = --start-server <save>. There
+        # is deliberately no third case that serves a cached world nobody named.
         entrypoint: list[str] = []
-        create_command: Optional[str] = None
         restore_mod_list: Optional[str] = None
         if self.isolated_mods:
             restore_mod_list = (
@@ -386,25 +389,6 @@ class FactorioServerManager:
         if save:
             save_file = save if save.endswith(".zip") else f"{save}.zip"
             start_arg = f"--start-server /factorio/saves/{save_file}"
-        elif scenario == "freeplay":
-            # The Docker image's built-in freeplay scenario is not present
-            # below write-data (/factorio/scenarios), and Factorio rejects an
-            # absolute scenario path as an invalid level name. Create a seeded
-            # native save first, then serve it. The campaign saves mount makes
-            # this idempotent across container restarts.
-            initial_save = "/factorio/saves/factoryverse-initial.zip"
-            start_arg = f"--start-server {initial_save}"
-            create_command = " ".join(
-                [
-                    factorio_bin,
-                    f"--create {initial_save}",
-                    "--map-gen-settings /factorio/config/map-gen-settings.json",
-                    "--map-settings /factorio/config/map-settings.json",
-                    "--mod-directory /opt/factorio/mods",
-                    f"--map-gen-seed {cfg.map_gen_seed}",
-                ]
-            )
-            entrypoint = ["/bin/sh", "-c"]
         else:
             start_arg = f"--start-server-load-scenario {scenario}"
 
@@ -427,19 +411,7 @@ class FactorioServerManager:
         ]
 
         command = " ".join(command_parts)
-        if create_command is not None:
-            restore_before_create = (
-                f"{restore_mod_list}; " if restore_mod_list is not None else ""
-            )
-            restore_before_start = (
-                f"{restore_mod_list}; " if restore_mod_list is not None else ""
-            )
-            command = (
-                f"{restore_before_create}"
-                "if [ ! -s /factorio/saves/factoryverse-initial.zip ]; then "
-                f"{create_command}; fi; {restore_before_start}exec {command}"
-            )
-        elif restore_mod_list is not None:
+        if restore_mod_list is not None:
             command = f"{restore_mod_list}; exec {command}"
 
         # Build port mappings - only game and RCON
@@ -472,9 +444,12 @@ class FactorioServerManager:
             ],
             # extra_hosts needed here since sidecar shares network namespace
             "extra_hosts": ["host.docker.internal:host-gateway"],
-            # A campaign supervisor owns process lifecycle. An automatic
-            # container restart can bypass preparation and conceal a crash.
-            "restart": "no" if self.isolated_mods else "unless-stopped",
+            # Never restart automatically. A fresh boot is a scenario start,
+            # so a restarted container would come back at tick 0 on a new
+            # world while looking like the old one; a resume is an explicit
+            # --start-server <save>. The supervisor (or the operator) owns
+            # lifecycle, and a crash must stay visible.
+            "restart": "no",
         }
 
     def _build_udp_forwarder_config(self, instance_id: int) -> dict:
@@ -521,7 +496,7 @@ class FactorioServerManager:
             "entrypoint": ["/bin/sh", "-c"],
             "command": [command],
             "depends_on": [f"factorio_{instance_id}"],
-            "restart": "no" if self.isolated_mods else "unless-stopped",
+            "restart": "no",
         }
 
     # =========================================================================

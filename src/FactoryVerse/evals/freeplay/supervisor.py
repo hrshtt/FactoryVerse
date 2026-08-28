@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from FactoryVerse.environment import Environment, Tier
 from FactoryVerse.game.tasks.definitions.common import FREEPLAY_STARTING_INVENTORY
+from FactoryVerse.environment.boot_probe import boot_errors, probe_boot
 from FactoryVerse.environment.config import (
     EnvironmentConfig,
     ExecutionMode,
@@ -168,6 +169,9 @@ def build_campaign_manifest(
         "repository": repository_provenance(repo_root),
         "hashes": {
             "map_gen_settings": canonical_json_sha256(map_settings),
+            # The scenario script is part of the world; a boot proves it
+            # loaded this one through its contract interface (boot_probe).
+            "scenario": sha256_tree(infra_config.scenarios_dir / "freeplay"),
             "embodied_mod": sha256_tree(infra_config.embodied_agent_mod_dir),
             "snapshot_mod": sha256_tree(infra_config.snapshot_mod_dir),
             "placement_hints_mod": sha256_tree(
@@ -643,6 +647,7 @@ class FreeplaySupervisor:
             }
             """.replace("__AGENT_INTERFACE__", agent_interface)
         )
+        boot = probe_boot(tier3)
         fingerprint = tier4.remote_view.state_fingerprint()
         sync = tier4.remote_view.sync_state
         perception_row = tier4.remote_view.execute_raw(
@@ -718,6 +723,17 @@ class FreeplaySupervisor:
         if active_mods is None:
             active_mods = self._read_active_mods()
         errors.extend(self._active_mod_errors(active_mods))
+        manifest = self.store.manifest()
+        errors.extend(
+            boot_errors(boot, expected_scenario=manifest.get("scenario", "freeplay"))
+        )
+        expected_scenario_hash = manifest.get("hashes", {}).get("scenario")
+        if expected_scenario_hash is not None:
+            scenario_dir = (
+                self.repo_root / "src" / "factorio" / "scenarios" / manifest.get("scenario", "freeplay")
+            )
+            if not scenario_dir.is_dir() or sha256_tree(scenario_dir) != expected_scenario_hash:
+                errors.append("repo scenario differs from the campaign manifest hash")
         if engine.get("enemy_base_frequency") not in (0, 0.0):
             errors.append("enemy-base frequency is not zero")
         if engine.get("enemy_base_size") not in (0, 0.0):
@@ -772,6 +788,7 @@ class FreeplaySupervisor:
             "valid": not errors,
             "errors": errors,
             "game_tick": int(engine["tick"]),
+            "boot": boot,
             "active_mods": active_mods,
             "enemy_state": engine,
             "database_fingerprint": fingerprint,

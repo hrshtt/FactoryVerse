@@ -23,14 +23,14 @@
   },
   "enemy_evolution":
   {
-    "enabled": true,
+    "enabled": false,
     "time_factor": 0.000004,
     "destroy_factor": 0.002,
     "pollution_factor": 0.0000009
   },
   "enemy_expansion":
   {
-    "enabled": true,
+    "enabled": false,
     "max_expansion_distance": 7,
     "friendly_base_influence_radius": 2,
     "enemy_building_influence_radius": 2,

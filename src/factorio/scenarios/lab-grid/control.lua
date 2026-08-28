@@ -689,15 +689,5 @@ script.on_event(defines.events.on_built_entity, on_built_entity)
 script.on_event(defines.events.script_raised_built, on_built_entity)
 script.on_event(defines.events.on_robot_built_entity, on_built_entity)
 
--- Put players in god mode (no character) - agents have their own characters
-script.on_event(defines.events.on_player_joined_game, function(event)
-    local player = game.get_player(event.player_index)
-    if player then
-        local character = player.character
-        player.set_controller({type = defines.controllers.god})
-        if character then
-            character.destroy()
-        end
-        game.print("Lab Grid: Player " .. player.name .. " set to god mode (spectator)")
-    end
-end)
+-- Joining humans are made non-embodied observers by fv_embodied_agent
+-- (setting fv-observer-spectator). The scenario does not set a controller.

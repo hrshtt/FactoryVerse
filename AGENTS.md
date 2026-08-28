@@ -19,6 +19,7 @@ FactoryVerse is a research platform for LLM agents playing Factorio: three Lua m
   - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — notifications as a primitive (designed, not executed)
   - `SCENARIO_BOOT_CONTRACT_DEFERRED.md` — what a world boot is: scenario resolution, world settings, observer policy
   - `TIER_RENAME_PROPOSAL.md` — rename the environment tiers
+- **`docs/EXECUTION.md`** — where the refactor stands: phases, what landed (with its commit and check), what is next. Update it on every commit that moves a phase.
 - **The code and its checks.** Nothing else in this repo is an authority on whether something works. If you need to know, run the check. If there is no check, there is no claim.
 
 There is deliberately no issue tracker, certification ledger, retro archive, or "known issues" list in the repo. External-harness transports (Codex, Hermes) were removed 2026-08-29 and are rebuilt only after the refactor; `fv run` is the sole interaction path. Past sessions' conclusions were removed on purpose; do not reconstruct them from memory.

@@ -549,8 +549,15 @@ def setup_client(
         client_scenario_dir = scenario_path / scenario
         project_scenario_dir = project_scenarios_dir / scenario
 
-        if not project_scenario_dir.exists():
-            print(f"⚠️  Scenario '{scenario}' not found in project at {project_scenario_dir}")
+        if not (project_scenario_dir / "control.lua").exists():
+            # A client that silently runs whatever stale copy already sits in
+            # its write-data is the same defect as a server serving a cached
+            # world: the run's scenario would be one nobody chose.
+            raise FileNotFoundError(
+                f"Scenario '{scenario}' not found in project at "
+                f"{project_scenario_dir}. Only repo scenarios are launchable; "
+                "a stale copy in the client's scenarios directory is not used."
+            )
         else:
             # Use hash-based detection (same pattern as mods)
             if force or _scenario_needs_update(project_scenario_dir, scenario_path, scenario):

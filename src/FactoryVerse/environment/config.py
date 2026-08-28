@@ -342,33 +342,6 @@ class FactoryVerseConfig(BaseSettings):
         return self.project_root / "src" / "factorio" / "scenarios"
 
     @property
-    def local_scenarios_dir(self) -> Path:
-        """Get local Factorio scenarios directory.
-
-        This is where user's custom scenarios live:
-        - macOS: ~/Library/Application Support/factorio/scenarios
-        - Linux: ~/.factorio/scenarios
-        - Windows: %APPDATA%/Factorio/scenarios
-        """
-        return _detect_factorio_dir() / "scenarios"
-
-    @property
-    def inbuilt_scenarios_dir(self) -> Optional[Path]:
-        """Get Factorio's inbuilt scenarios directory.
-
-        These are bundled with Factorio (freeplay, sandbox, etc.):
-        - macOS: .../Factorio.app/Contents/data/base/scenarios
-        - Linux/Windows: .../Factorio/data/base/scenarios
-
-        Returns:
-            Path to inbuilt scenarios, or None if Factorio not found.
-        """
-        install_dir = _detect_factorio_install_dir()
-        if install_dir:
-            return install_dir / "data" / "base" / "scenarios"
-        return None
-
-    @property
     def server_config_dir(self) -> Path:
         """Get server config directory."""
         return self.project_root / "src" / "factorio" / "config"
@@ -538,106 +511,61 @@ class FactoryVerseConfig(BaseSettings):
             if d.is_dir() and (d / "control.lua").exists()
         ]
 
-    def list_scenarios(self, include_local: bool = True) -> List[str]:
-        """List available scenarios from repo, inbuilt, and optionally local directories.
+    # -------------------------------------------------------------------------
+    # Scenario resolution — one function, one precedence
+    # -------------------------------------------------------------------------
+    #
+    # A boot loads a scenario from exactly one place: the repo's scenarios
+    # directory, which is mounted into the container at /factorio/scenarios
+    # (-> /opt/factorio/scenarios) and synced into a client's write-data by
+    # setup_client. The host's Factorio install is never consulted: a scenario
+    # the container cannot see must not pass a prerequisite check, and a name
+    # that resolves only because the developer has Factorio installed on this
+    # machine is a check on the wrong machine.
+    #
+    # The engine's own MOD/NAME form (e.g. "base/freeplay") is passed through
+    # untouched: it is resolved by the engine inside the boot, not by us, and
+    # it is spelled with a slash so it cannot be confused with a repo name.
 
-        Priority order (highest first):
-        1. Repo scenarios (custom FactoryVerse scenarios)
-        2. Inbuilt Factorio scenarios (freeplay, sandbox, etc.)
-        3. Local user scenarios (if include_local=True)
+    @staticmethod
+    def is_engine_scenario(scenario: str) -> bool:
+        """MOD/NAME scenarios ship with the engine and are resolved by it."""
+        return "/" in scenario
 
-        Args:
-            include_local: If True, include local user Factorio scenarios
+    def resolve_scenario(self, scenario: str) -> Optional[Path]:
+        """Resolve a scenario name to the directory a boot will load.
 
-        Returns:
-            List of scenario names (deduplicated, sorted)
+        Returns the repo scenario directory, or None if no repo scenario of
+        that name exists. Engine scenarios (``MOD/NAME``) have no directory on
+        this side and return None; use ``is_engine_scenario`` to tell the two
+        apart.
         """
-        # Start with repo scenarios (highest precedence)
-        all_scenarios = set(self._list_scenarios_in_dir(self.scenarios_dir))
-
-        # Add inbuilt Factorio scenarios
-        if self.inbuilt_scenarios_dir:
-            inbuilt = set(self._list_scenarios_in_dir(self.inbuilt_scenarios_dir))
-            all_scenarios |= inbuilt
-
-        # Add local user scenarios (lowest precedence)
-        if include_local:
-            local_scenarios = set(self._list_scenarios_in_dir(self.local_scenarios_dir))
-            all_scenarios |= local_scenarios
-
-        return sorted(list(all_scenarios))
-
-    def validate_scenario(self, scenario: str) -> bool:
-        """Check if a scenario exists (in repo, inbuilt, or local directories)."""
-        # Check repo first (highest precedence)
+        if self.is_engine_scenario(scenario):
+            return None
         repo_path = self.scenarios_dir / scenario
-        if repo_path.exists() and (repo_path / "control.lua").exists():
-            return True
-        # Check inbuilt Factorio scenarios
-        if self.inbuilt_scenarios_dir:
-            inbuilt_path = self.inbuilt_scenarios_dir / scenario
-            if inbuilt_path.exists() and (inbuilt_path / "control.lua").exists():
-                return True
-        # Check local user scenarios
-        local_path = self.local_scenarios_dir / scenario
-        if local_path.exists() and (local_path / "control.lua").exists():
-            return True
-        return False
-
-    def get_scenario_source(self, scenario: str) -> Optional[Path]:
-        """Get the source path for a scenario.
-
-        Priority order (highest first):
-        1. Repo scenarios
-        2. Inbuilt Factorio scenarios
-        3. Local user scenarios
-
-        Args:
-            scenario: Scenario name
-
-        Returns:
-            Path to scenario directory, or None if not found
-        """
-        # Repo takes precedence
-        repo_path = self.scenarios_dir / scenario
-        if repo_path.exists() and (repo_path / "control.lua").exists():
+        if repo_path.is_dir() and (repo_path / "control.lua").exists():
             return repo_path
-        # Check inbuilt Factorio scenarios
-        if self.inbuilt_scenarios_dir:
-            inbuilt_path = self.inbuilt_scenarios_dir / scenario
-            if inbuilt_path.exists() and (inbuilt_path / "control.lua").exists():
-                return inbuilt_path
-        # Fallback to local
-        local_path = self.local_scenarios_dir / scenario
-        if local_path.exists() and (local_path / "control.lua").exists():
-            return local_path
         return None
 
+    def list_scenarios(self, include_local: bool = False) -> List[str]:
+        """List the scenarios a boot can load: the repo's, nothing else.
+
+        ``include_local`` is accepted for call-site compatibility and ignored;
+        host-install and user-directory scenarios are not boot candidates.
+        """
+        return sorted(self._list_scenarios_in_dir(self.scenarios_dir))
+
+    def validate_scenario(self, scenario: str) -> bool:
+        """True iff a boot can load this scenario (repo, or engine MOD/NAME)."""
+        return self.is_engine_scenario(scenario) or self.resolve_scenario(scenario) is not None
+
+    def get_scenario_source(self, scenario: str) -> Optional[Path]:
+        """The repo directory a scenario is loaded from, or None."""
+        return self.resolve_scenario(scenario)
+
     def is_repo_scenario(self, scenario: str) -> bool:
-        """Check if a scenario is from the repo (hot-reloadable).
-
-        Args:
-            scenario: Scenario name
-
-        Returns:
-            True if scenario exists in repo's scenarios directory
-        """
-        repo_path = self.scenarios_dir / scenario
-        return repo_path.exists() and (repo_path / "control.lua").exists()
-
-    def is_inbuilt_scenario(self, scenario: str) -> bool:
-        """Check if a scenario is an inbuilt Factorio scenario.
-
-        Args:
-            scenario: Scenario name
-
-        Returns:
-            True if scenario exists in Factorio's inbuilt scenarios directory
-        """
-        if not self.inbuilt_scenarios_dir:
-            return False
-        inbuilt_path = self.inbuilt_scenarios_dir / scenario
-        return inbuilt_path.exists() and (inbuilt_path / "control.lua").exists()
+        """Check if a scenario is from the repo (hot-reloadable)."""
+        return self.resolve_scenario(scenario) is not None
 
 
 class AgentRuntimeConfig:

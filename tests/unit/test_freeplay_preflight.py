@@ -46,7 +46,25 @@ class _Tier3:
         self.hostile_count = hostile_count
         self.lua = None
 
-    def run_lua(self, source):
+    def run_lua(self, source, **_kwargs):
+        if "remote.interfaces" in source:
+            # The Stage 0 boot probe: a world that booted the named scenario
+            # with the observer policy on and nothing hostile in it.
+            return {
+                "tick": 100,
+                "interfaces": ["agent", "factoryverse_freeplay", "map", "spectator"],
+                "contract": {"name": "freeplay", "version": 2},
+                "world": {
+                    "seed": 44340,
+                    "peaceful_mode": True,
+                    "no_enemies_mode": True,
+                    "enemy_base": {"frequency": 0, "size": 0, "richness": 0},
+                    "always_day": True,
+                },
+                "enemies": {"total": 0, "spawners": 0, "worms": 0, "units": 0},
+                "observer": {"enabled": True, "connected_players": []},
+                "ingestion": {"available": True, "charted_chunks": 1, "tracked_chunks": 1},
+            }
         self.lua = source
         return {
             "tick": 100,
@@ -123,9 +141,9 @@ def test_preflight_fails_loudly_when_hostile_count_is_missing():
     supervisor, tier3 = _supervisor(hostile_count=0)
     original_run_lua = tier3.run_lua
 
-    def without_count(source):
-        result = original_run_lua(source)
-        result.pop("hostile_combat_entity_count")
+    def without_count(source, **kwargs):
+        result = original_run_lua(source, **kwargs)
+        result.pop("hostile_combat_entity_count", None)
         return result
 
     tier3.run_lua = without_count
@@ -153,9 +171,10 @@ def test_preflight_rejects_wrong_game_speed():
     supervisor, tier3 = _supervisor(hostile_count=0)
     original_run_lua = tier3.run_lua
 
-    def at_wrong_speed(source):
-        result = original_run_lua(source)
-        result["game_speed"] = 1
+    def at_wrong_speed(source, **kwargs):
+        result = original_run_lua(source, **kwargs)
+        if "remote.interfaces" not in source:
+            result["game_speed"] = 1
         return result
 
     tier3.run_lua = at_wrong_speed
