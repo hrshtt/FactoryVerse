@@ -112,13 +112,12 @@ local function aggregate_all_events()
     -- Map orchestrates getting chunks, Entities provides the tracking logic
     -- Status files are written every 60 ticks and kept in a rolling buffer of 50 files
     -- ONLY runs during MAINTENANCE phase (disabled during initial snapshotting)
+    -- The dump is a force-filtered surface scan (one engine call); it runs in
+    -- every quiescent phase, EMPTY included, so the heartbeat file keeps
+    -- distinguishing "sampler alive, nothing to report" from "sampler dead".
     add_nth_tick_handler(60, function()
-        -- Check system phase before running status tracking
-        if Map.get_system_phase() == "MAINTENANCE" then
-            local charted_chunks = Map.get_charted_chunks()
-            Entities.track_all_charted_chunk_entity_status(charted_chunks)
-            -- Also dump compressed status to disk
-            Entities.dump_status_to_disk(charted_chunks)
+        if Map.get_system_phase() ~= "INITIAL_SNAPSHOTTING" then
+            Entities.dump_status_to_disk()
         end
     end)
 
@@ -242,15 +241,13 @@ script.on_init(function()
     -- This is critical when starting a new map with a fresh seed
     clear_snapshot_directories()
 
-    -- Initialize storage for Map module (ONLY in on_init, not on_load!)
-    -- This creates storage.chunk_tracker and storage.system_state
-    Map.init_storage()
-
-    -- Initialize game state modules (builds module-level tables)
-    -- These do NOT modify storage, only set M.disk_write_snapshot tables
+    -- Module-level tables first (no storage writes)
     Entities.init()
     Resource.init()
-    Map.init()
+
+    -- Map.boot: storage init + boot reconciliation of already-charted chunks.
+    -- This is the one storage-writable lifecycle entry point (see Map.boot).
+    Map.boot("on_init")
 
     log("Initialized fv_snapshot game state modules and custom events")
 
@@ -290,14 +287,13 @@ script.on_configuration_changed(function()
     -- Also clear on configuration changed (e.g. mod update) to be safe
     clear_snapshot_directories()
 
-    -- Run storage migrations (e.g., adding new fields to existing saves)
-    -- This is safe because on_configuration_changed CAN modify storage
-    Map.init_storage()
-
     -- Rebuild module-level tables
     Entities.init()
     Resource.init()
-    Map.init()
+
+    -- Storage migrations + boot reconciliation. This is the hook that fires
+    -- when the mod is added to an existing save — the case §13 measured.
+    Map.boot("on_configuration_changed")
 
     log("Migrated fv_snapshot storage after configuration change")
 end)

@@ -117,3 +117,76 @@ def test_dead_senders_are_gone():
     ):
         assert fn not in payloads, fn
     assert "function M.send_entity_operation" in payloads
+
+
+# ---------------------------------------------------------------------------
+# Phase 1B (2026-08-29): the snapshot boot contract — TRANSPORT §13.
+# A world charted before the mod existed must be ingested at boot, and the
+# phase machine must not report a healthy MAINTENANCE over a world it never
+# looked at. Text contracts here; the numbers live in
+# tests/live/test_snapshot_boot_contract.py.
+# ---------------------------------------------------------------------------
+
+MAP = SNAPSHOT / "game_state" / "Map.lua"
+CONTROL = SNAPSHOT / "control.lua"
+
+
+def test_boot_is_the_single_storage_writable_lifecycle_entry():
+    control = CONTROL.read_text()
+    on_init = control[control.index("script.on_init("):control.index("script.on_load(")]
+    on_conf = control[control.index("script.on_configuration_changed("):]
+    assert 'Map.boot("on_init")' in on_init
+    assert 'Map.boot("on_configuration_changed")' in on_conf
+    # The old two-step (init_storage + init) must not survive beside boot().
+    assert "Map.init_storage()" not in on_init and "Map.init_storage()" not in on_conf
+    m = MAP.read_text()
+    boot = m[m.index("function M.boot(reason)"):]
+    boot = boot[:boot.index("\nend")]
+    assert "M.init_storage()" in boot and "M.boot_reconcile_charted_chunks(reason)" in boot
+
+
+def test_boot_pass_walks_generated_chunks_and_filters_by_charted_force():
+    m = MAP.read_text()
+    fn = m[m.index("function M.boot_reconcile_charted_chunks"):m.index("function M.get_boot_report")]
+    assert "surface.get_chunks()" in fn
+    assert "is_chunk_charted(surface" in fn
+    assert "forces.get_tracked_forces()" in fn
+    assert 'register_charted_chunk(chunk.x, chunk.y, "boot"' in fn
+
+
+def test_chart_handlers_and_boot_share_one_registration_path():
+    m = MAP.read_text()
+    calls = re.findall(r"register_charted_chunk\(([^)]*)\)", m)
+    origins = {re.search(r'"(player|agent|boot)"', c).group(1) for c in calls if re.search(r'"(player|agent|boot)"', c)}
+    assert origins == {"player", "agent", "boot"}, origins
+
+
+def test_has_tracked_entities_has_exactly_one_writer():
+    m = MAP.read_text()
+    writers = [ln for ln in m.splitlines() if re.search(r"\.has_tracked_entities\s*=", ln)]
+    assert len(writers) == 1, writers
+    # ...and that writer is called from the snapshot-complete path too, so a
+    # forced or boot-time snapshot flags the chunk.
+    complete = m[m.index("local function phase_complete"):m.index("function M._on_tick_snapshot_chunks")]
+    assert "M.refresh_chunk_entity_flag(chunk_x, chunk_y)" in complete
+
+
+def test_phase_machine_distinguishes_empty_from_maintenance():
+    m = MAP.read_text()
+    assert 'EMPTY = "EMPTY"' in m
+    trans = m[m.index("local function transition_to_maintenance"):m.index("enqueue_chunk_for_snapshot = function")]
+    assert "chunks_considered" in trans and "SystemPhase.EMPTY" in trans
+    # Nothing may still gate on MAINTENANCE alone where EMPTY is also quiescent.
+    assert "== SystemPhase.MAINTENANCE then" not in m
+    assert "get_boot_report = M.get_boot_report" in m
+
+
+def test_dead_status_walk_is_gone():
+    e = ENTITIES.read_text()
+    for name in ("track_all_charted_chunk_entity_status", "track_chunk_entity_status", "track_entity_status"):
+        assert name not in e, name
+    assert "function M.dump_status_to_disk()" in e
+    assert "function M.collect_all_statuses_for_dump()" in e
+    control = CONTROL.read_text()
+    assert "Entities.dump_status_to_disk()" in control
+    assert 'get_system_phase() ~= "INITIAL_SNAPSHOTTING"' in control

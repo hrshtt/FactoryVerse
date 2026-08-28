@@ -30,7 +30,6 @@ local Resource = require("game_state.Resource")
 local forces = require("utils.forces")
 
 -- Local reference to utility function for performance
-local entity_key = utils.entity_key
 
 local M = {}
 
@@ -51,106 +50,6 @@ for status_name, status_code in pairs(defines.entity_status) do
     ENTITY_STATUS_NAMES[status_code] = status_name
 end
 
---- Track entity status change
---- @param entity LuaEntity
---- @return table {is_new_record: boolean, status: string, key: string}
-function M.track_entity_status(entity)
-    storage.entity_status = storage.entity_status or {}
-    local key = entity_key(entity.name, entity.position.x, entity.position.y)
-    local last_record = storage.entity_status[key] or nil
-    local is_new_record = false
-    if last_record and (last_record.status == entity.status) then
-        last_record.tick = game.tick
-    else
-        last_record = {
-            status = entity.status,
-            tick = game.tick
-        }
-        is_new_record = true
-    end
-    storage.entity_status[key] = last_record
-    return { is_new_record = is_new_record, status = last_record.status, key = key }
-end
-
---- Track entity status for all entities in a chunk
---- @param chunk_position table {x: number, y: number} Chunk coordinates
---- @return table Status records keyed by entity.name .. position.x .. position.y
-function M.track_chunk_entity_status(chunk_position)
-    local surface = game.surfaces[1]
-    
-    local chunk_area = {
-        left_top = {
-            x = chunk_position.x * 32,
-            y = chunk_position.y * 32
-        },
-        right_bottom = {
-            x = (chunk_position.x + 1) * 32,
-            y = (chunk_position.y + 1) * 32
-        }
-    }
-    
-    -- Check count first for early exit
-    -- Use dynamic forces to include player + all agent forces
-    local tracked_forces = forces.get_tracked_forces()
-    local entity_count = surface.count_entities_filtered {
-        area = chunk_area,
-        force = tracked_forces,
-    }
-    if entity_count == 0 then return {} end
-
-    local entities = surface.find_entities_filtered {
-        area = chunk_area,
-        force = tracked_forces,
-    }
-    local status_records = {}
-    for _, entity in ipairs(entities) do
-        if entity and entity.valid then
-            local result = M.track_entity_status(entity)
-            if result.is_new_record then
-                status_records[result.key] = {
-                    position = { entity.position.x, entity.position.y },
-                    status = result.status,
-                    tick = game.tick
-                }
-            end
-        end
-    end
-    return status_records
-end
-
---- Track entity status for all charted chunks
---- @param charted_chunks table List of chunks to process
-function M.track_all_charted_chunk_entity_status(charted_chunks)
-    if not charted_chunks then return end
-    
-    -- if M.DEBUG then
-    --     game.print(string.format("[DEBUG Entities.track_all_charted_chunk_entity_status] Tick %d: processing %d chunks", 
-    --         game.tick, #charted_chunks))
-    -- end
-    
-    local all_status_records = {}
-    local processed_chunks = 0
-
-    for _, chunk in ipairs(charted_chunks) do
-        local chunk_pos = { x = chunk.x, y = chunk.y }
-        local records = M.track_chunk_entity_status(chunk_pos)
-        processed_chunks = processed_chunks + 1
-        for key, status in pairs(records) do
-            all_status_records[key] = status
-        end
-    end
-
-    -- if M.DEBUG then
-    --     local record_count = 0
-    --     for _ in pairs(all_status_records) do record_count = record_count + 1 end
-    --     game.print(string.format("[DEBUG Entities.track_all_charted_chunk_entity_status] Tick %d: processed %d chunks, %d status records", 
-    --         game.tick, processed_chunks, record_count))
-    -- end
-
-    -- Status records are written to disk via dump_status_to_disk() - no UDP needed
-    -- External systems read status files on-demand from disk
-end
-
 -- ============================================================================
 -- STATUS DUMP TO DISK (full symbolic snapshot)
 -- ============================================================================
@@ -168,17 +67,12 @@ end
 ---   status-less entities are likewise excluded by the same guard. => the
 ---   force filter + nil-status guard together are a sufficient, self-documenting
 ---   filter; no ENTITY_NAME_ENUM allow-list is used.
---- SCOPE NOTE (L1.17 finding, 2026-07-12): this deliberately does NOT scope
---- to charted chunks. lab-grid runs the snapshot system in SELECTIVE
---- orchestration mode, where chunk-charted events never fire, so
---- Map.get_charted_chunks() is empty for the whole boot and a charted-chunk
---- walk emits count=0 forever (structurally empty feed). A single
---- force-filtered surface scan is what the power sampler already does and is
---- one engine call; tracked-force entity counts are bounded (resources/trees
---- are neutral-force and never enter the scan).
---- @param charted_chunks table|nil Ignored (kept for call-site compatibility)
+--- Scope is the whole surface, not the charted-chunk list: one force-filtered
+--- scan is one engine call, tracked-force entity counts are bounded
+--- (resources/trees are neutral-force and never enter it), and it does not
+--- depend on the chunk tracker being populated.
 --- @return table Array of {name, status, x, y} records
-function M.collect_all_statuses_for_dump(charted_chunks)
+function M.collect_all_statuses_for_dump()
     local surface = game.surfaces[1]
     local status_records = {}
 
@@ -225,9 +119,8 @@ end
 ---
 --- This is a full snapshot, so we overwrite (append = false); the reader treats
 --- each file as a complete, latest-wins statement of current statuses.
---- @param charted_chunks table List of chunks to process
-function M.dump_status_to_disk(charted_chunks)
-    local status_records = M.collect_all_statuses_for_dump(charted_chunks)
+function M.dump_status_to_disk()
+    local status_records = M.collect_all_statuses_for_dump()
     local records_count = #status_records
     local tick = game.tick
 

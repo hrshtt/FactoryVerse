@@ -77,8 +77,17 @@ local SnapshotPhase = {
 
 local SystemPhase = {
     INITIAL_SNAPSHOTTING = "INITIAL_SNAPSHOTTING",
-    MAINTENANCE = "MAINTENANCE"
+    MAINTENANCE = "MAINTENANCE",
+    -- EMPTY: the bootstrap wait ended and no chunk was ever considered for
+    -- any tracked force. Distinct from MAINTENANCE on purpose: "nothing to
+    -- do" and "nothing was asked" must not render the same (Constitution §15).
+    EMPTY = "EMPTY",
 }
+
+--- A phase in which the snapshot queue is drained and new work may be queued.
+local function is_quiescent_phase(phase)
+    return phase == SystemPhase.MAINTENANCE or phase == SystemPhase.EMPTY
+end
 
 -- ============================================================================
 -- ORCHESTRATION MODE - Controls when/how snapshotting is triggered
@@ -685,9 +694,11 @@ local function init_system_state_storage(force)
             stats = {
                 chunks_snapshotted = 0,
                 chunks_pending = 0,
+                chunks_considered = 0,  -- every chunk ever registered (charted event or boot pass)
                 phase_start_tick = game and game.tick or 0,
                 initial_snapshot_duration_ticks = nil,
             },
+            boot = nil,  -- last boot reconciliation report (see M.get_boot_report)
             -- Bootstrap waiting: Allow time for scenario/freeplay charting to complete
             -- Scenarios like freeplay call force.chart() which is ASYNCHRONOUS
             -- The on_chunk_charted events fire AFTER chart() returns
@@ -700,6 +711,9 @@ local function init_system_state_storage(force)
     -- This is safe here because this function is only called from on_init/on_configuration_changed
     if storage.system_state and not storage.system_state.deferred_chunks then
         storage.system_state.deferred_chunks = {}
+    end
+    if storage.system_state and storage.system_state.stats.chunks_considered == nil then
+        storage.system_state.stats.chunks_considered = 0
     end
 end
 
@@ -721,11 +735,17 @@ end
 --- Transition to MAINTENANCE phase
 local function transition_to_maintenance()
     local state = get_system_state()
-    if state.phase == SystemPhase.MAINTENANCE then
-        return  -- Already in maintenance
+    if is_quiescent_phase(state.phase) then
+        return  -- Already quiescent
     end
-    
-    state.phase = SystemPhase.MAINTENANCE
+
+    -- Zero chunks ever considered means the boot pass and the chart handlers
+    -- both saw nothing: report EMPTY, never a healthy-looking MAINTENANCE.
+    if (state.stats.chunks_considered or 0) == 0 then
+        state.phase = SystemPhase.EMPTY
+    else
+        state.phase = SystemPhase.MAINTENANCE
+    end
     state.stats.initial_snapshot_duration_ticks = game.tick - state.stats.phase_start_tick
     
     -- Log transition with performance summary
@@ -742,7 +762,7 @@ local function transition_to_maintenance()
     end
     
     -- Send UDP notification
-    local payload = udp_payloads.system_phase_changed(SystemPhase.MAINTENANCE, state.stats)
+    local payload = udp_payloads.system_phase_changed(state.phase, state.stats)
     udp_payloads.send_event(payload)
 end
 
@@ -890,6 +910,8 @@ function M.get_snapshot_status()
         phase = phase_names[state.phase] or "UNKNOWN",
         phase_id = state.phase,
         system_phase = sys_state.phase,
+        boot = sys_state.boot,
+        chunks_considered = sys_state.stats.chunks_considered or 0,
         current_chunk = state.chunk_x and { x = state.chunk_x, y = state.chunk_y } or nil,
         pending_chunks = pending_count,
         completed_chunks = completed_count,
@@ -978,7 +1000,7 @@ function M.trigger_initial_snapshot()
     sys_state.deferred_chunks = {}
 
     -- If we queued chunks and we're not already snapshotting, start
-    if chunks_queued > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+    if chunks_queued > 0 and is_quiescent_phase(sys_state.phase) then
         sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
         sys_state.stats.phase_start_tick = game.tick
     end
@@ -1043,7 +1065,7 @@ function M.snapshot_area(bounds, priority)
 
     -- If we're in maintenance and chunks were queued, switch to initial snapshotting
     -- This ensures the snapshot state machine processes them
-    if queued > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+    if queued > 0 and is_quiescent_phase(sys_state.phase) then
         sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
         sys_state.stats.phase_start_tick = game.tick
     end
@@ -1088,7 +1110,7 @@ function M.re_snapshot_area(bounds, priority)
     end
 
     -- Switch to initial snapshotting if needed
-    if #chunks > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+    if #chunks > 0 and is_quiescent_phase(sys_state.phase) then
         sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
         sys_state.stats.phase_start_tick = game.tick
     end
@@ -1136,7 +1158,7 @@ function M.re_snapshot_chunks(chunks, priority)
         end
     end
 
-    if #queued > 0 and sys_state.phase == SystemPhase.MAINTENANCE then
+    if #queued > 0 and is_quiescent_phase(sys_state.phase) then
         sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
         sys_state.stats.phase_start_tick = game.tick
         sys_state.current_wait_tick = sys_state.bootstrap_wait_ticks
@@ -1793,9 +1815,12 @@ local function phase_complete(state)
         end
     end
     
-    -- Mark chunk as snapshotted
+    -- Mark chunk as snapshotted, and refresh the tracked-entity flag here —
+    -- not only on the charted path — so a forced or boot-time snapshot leaves
+    -- get_charted_chunks() able to see the chunk.
     tracker:mark_chunk_snapshotted(chunk_x, chunk_y)
-    
+    M.refresh_chunk_entity_flag(chunk_x, chunk_y)
+
     -- Update system statistics
     local sys_state = get_system_state()
     sys_state.stats.chunks_snapshotted = sys_state.stats.chunks_snapshotted + 1
@@ -2008,112 +2033,230 @@ end
 -- EVENT-DRIVEN RESOURCE SNAPSHOTTING
 -- ============================================================================
 
+-- ============================================================================
+-- CHUNK REGISTRATION — one path for chart events and the boot pass
+-- ============================================================================
+
+local function chunk_area_of(chunk_x, chunk_y)
+    return {
+        left_top = { x = chunk_x * 32, y = chunk_y * 32 },
+        right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 },
+    }
+end
+
+--- Recount tracked-force entities in a chunk and cache the result on its entry.
+--- This is the ONLY writer of has_tracked_entities / tracked_entity_count.
+--- @return number entity_count
+function M.refresh_chunk_entity_flag(chunk_x, chunk_y)
+    local surface = game.surfaces[1]
+    local tracker = M.get_chunk_tracker()
+    local entity_count = surface.count_entities_filtered {
+        area = chunk_area_of(chunk_x, chunk_y),
+        force = forces.get_tracked_forces(),
+    }
+    local chunk_entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
+    chunk_entry.has_tracked_entities = (entity_count > 0)
+    chunk_entry.tracked_entity_count = entity_count
+    return entity_count
+end
+
+--- Register a charted chunk with the tracker and route it by orchestration mode.
+--- Called by both chart-event handlers and by the boot reconciliation pass, so
+--- a chunk charted before the mod existed is treated exactly like one charted
+--- in front of it.
+--- @param chunk_x number
+--- @param chunk_y number
+--- @param origin string "player" | "agent" | "boot"
+--- @param agent_id any|nil
+--- @return boolean needs_snapshot
+local function register_charted_chunk(chunk_x, chunk_y, origin, agent_id)
+    local tracker = M.get_chunk_tracker()
+    local sys_state = get_system_state()
+    local is_new = tracker:get_chunk_entry(chunk_x, chunk_y) == nil
+
+    M.refresh_chunk_entity_flag(chunk_x, chunk_y)
+    if is_new then
+        sys_state.stats.chunks_considered = (sys_state.stats.chunks_considered or 0) + 1
+    end
+
+    local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
+    local mode = get_orchestration_mode()
+    if mode == OrchestrationMode.AUTO then
+        tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
+    elseif mode == OrchestrationMode.DEFERRED then
+        local chunk_key = chunk_x .. "," .. chunk_y
+        if not sys_state.deferred_chunks[chunk_key] then
+            sys_state.deferred_chunks[chunk_key] = { x = chunk_x, y = chunk_y }
+        end
+    end
+    -- SELECTIVE: tracked only; snapshotting happens via snapshot_area()
+
+    -- The boot pass announces itself once (see M.boot_reconcile_charted_chunks),
+    -- not per chunk: hundreds of datagrams in one tick is not a signal.
+    if origin ~= "boot" then
+        local payload = udp_payloads.chunk_charted({ x = chunk_x, y = chunk_y }, game.tick, origin, needs_snapshot)
+        if agent_id ~= nil then payload.agent_id = agent_id end
+        payload.orchestration_mode = mode
+        udp_payloads.send_event(payload)
+    end
+    return needs_snapshot
+end
+
 --- Handle chunk charted event (by players)
---- Behavior depends on orchestration mode:
----   AUTO: Mark chunk as needing snapshot immediately
----   DEFERRED: Track chunk but don't queue until trigger_initial_snapshot() called
----   SELECTIVE: Just track chunk, snapshotting only via explicit snapshot_area() calls
 --- @param event table - on_chunk_charted event
 function M._on_chunk_charted(event)
-    local chunk_x = event.position.x
-    local chunk_y = event.position.y
-    local tracker = M.get_chunk_tracker()
-    local surface = game.surfaces[1]
-
-    -- Count tracked force entities in this chunk (player + all agent forces)
-    local chunk_area = {
-        left_top = { x = chunk_x * 32, y = chunk_y * 32 },
-        right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
-    }
-    local tracked_forces = forces.get_tracked_forces()
-    local entity_count = surface.count_entities_filtered {
-        area = chunk_area,
-        force = tracked_forces
-    }
-
-    -- Update chunk tracker with entity count
-    -- ChunkTracker IS our cache - no need for separate storage.charted_chunks_cache
-    local chunk_entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
-    chunk_entry.has_tracked_entities = (entity_count > 0)
-    chunk_entry.tracked_entity_count = entity_count
-
-    -- Check if chunk needs snapshotting (not already snapshotted)
-    local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
-
-    -- Handle based on orchestration mode
-    local mode = get_orchestration_mode()
-    if mode == OrchestrationMode.AUTO then
-        -- AUTO: Queue for immediate snapshotting
-        tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
-    elseif mode == OrchestrationMode.DEFERRED then
-        -- DEFERRED: Track in deferred list, don't queue yet
-        local sys_state = get_system_state()
-        local chunk_key = chunk_x .. "," .. chunk_y
-        if not sys_state.deferred_chunks[chunk_key] then
-            sys_state.deferred_chunks[chunk_key] = { x = chunk_x, y = chunk_y }
-        end
-    end
-    -- SELECTIVE: Don't auto-queue, only snapshot via explicit snapshot_area() calls
-
-    -- Send chunk_charted payload (always, regardless of mode)
-    local chunk = { x = chunk_x, y = chunk_y }
-    local payload = udp_payloads.chunk_charted(chunk, game.tick, "player", needs_snapshot)
-    payload.orchestration_mode = mode
-    udp_payloads.send_event(payload)
+    register_charted_chunk(event.position.x, event.position.y, "player", nil)
 end
 
---- Handle agent chunk charted event
---- Behavior depends on orchestration mode (same as _on_chunk_charted)
---- Note: Agents also mark chunks directly in charting.lua, but this handles the event for consistency
---- @param event table - Agent.on_chunk_charted event with {chunk_x, chunk_y}
+--- Handle agent chunk charted event (Agent.on_chunk_charted with {chunk_x, chunk_y})
 function M._on_agent_chunk_charted(event)
-    local chunk_x = event.chunk_x
-    local chunk_y = event.chunk_y
-    local tracker = M.get_chunk_tracker()
+    register_charted_chunk(event.chunk_x, event.chunk_y, "agent", event.agent_id or "unknown")
+end
+
+-- ============================================================================
+-- BOOT RECONCILIATION — a world charted before the mod existed
+-- ============================================================================
+--
+-- on_chunk_charted never fires for chunks that were charted before this mod
+-- was added to the save (or before on_init ran). Without this pass the
+-- tracker stays empty, get_charted_chunks() returns nothing forever, and the
+-- phase machine reports a healthy MAINTENANCE over a world it never looked at
+-- (TRANSPORT_CONNECTIVITY_PLAN §13, measured 2026-08-28: 0 chunks, 0 entities,
+-- phase MAINTENANCE on a 404-entity base).
+--
+-- Cost is bounded by what exists: one get_chunks() walk over generated chunks
+-- plus one is_chunk_charted per tracked force and one count_entities_filtered
+-- per charted chunk, all in the boot tick. The snapshot work itself is queued
+-- to the per-tick state machine, which is the batching mechanism.
+--
+-- Eager, not lazy, for resource/water chunks: the map model's resource_tile and
+-- water_tile tables are load-only (Constitution §10 "Load"), and nothing in
+-- Python snapshots a chunk on demand — a chunk not queued here is a chunk the
+-- agent's map screen never shows. The queue is the cap.
+
+--- Walk every generated chunk on surface 1, register those charted by any
+--- tracked force, and record a report in storage.system_state.boot.
+--- Safe only where storage is writable (on_init / on_configuration_changed).
+--- @param reason string "on_init" | "on_configuration_changed"
+--- @return table the boot report (same shape as M.get_boot_report().chunks)
+function M.boot_reconcile_charted_chunks(reason)
     local surface = game.surfaces[1]
+    local sys_state = get_system_state()
+    local tracker = M.get_chunk_tracker()
+    local tracked = forces.get_tracked_forces()
+    local force_objects = {}
+    for _, name in ipairs(tracked) do
+        local f = game.forces[name]
+        if f then force_objects[#force_objects + 1] = f end
+    end
 
-    -- Count tracked force entities in this chunk (player + all agent forces)
-    local chunk_area = {
-        left_top = { x = chunk_x * 32, y = chunk_y * 32 },
-        right_bottom = { x = (chunk_x + 1) * 32, y = (chunk_y + 1) * 32 }
-    }
-    local tracked_forces = forces.get_tracked_forces()
-    local entity_count = surface.count_entities_filtered {
-        area = chunk_area,
-        force = tracked_forces
-    }
+    local generated, charted, registered, with_entities = 0, 0, 0, 0
+    local pending_before = #sys_state.pending_chunks
+    local deferred_before = 0
+    for _ in pairs(sys_state.deferred_chunks) do deferred_before = deferred_before + 1 end
 
-    -- Update chunk tracker with entity count
-    -- ChunkTracker IS our cache - no need for separate storage.charted_chunks_cache
-    local chunk_entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
-    chunk_entry.has_tracked_entities = (entity_count > 0)
-    chunk_entry.tracked_entity_count = entity_count
-
-    -- Check if chunk needs snapshotting (not already snapshotted)
-    local needs_snapshot = tracker:chunk_needs_snapshot(chunk_x, chunk_y)
-
-    -- Handle based on orchestration mode
-    local mode = get_orchestration_mode()
-    if mode == OrchestrationMode.AUTO then
-        -- AUTO: Queue for immediate snapshotting
-        tracker:mark_chunk_needs_snapshot(chunk_x, chunk_y)
-    elseif mode == OrchestrationMode.DEFERRED then
-        -- DEFERRED: Track in deferred list, don't queue yet
-        local sys_state = get_system_state()
-        local chunk_key = chunk_x .. "," .. chunk_y
-        if not sys_state.deferred_chunks[chunk_key] then
-            sys_state.deferred_chunks[chunk_key] = { x = chunk_x, y = chunk_y }
+    for chunk in surface.get_chunks() do
+        generated = generated + 1
+        local is_charted = false
+        for _, f in ipairs(force_objects) do
+            if f.is_chunk_charted(surface, { x = chunk.x, y = chunk.y }) then
+                is_charted = true
+                break
+            end
+        end
+        if is_charted then
+            charted = charted + 1
+            local was_known = tracker:get_chunk_entry(chunk.x, chunk.y) ~= nil
+            register_charted_chunk(chunk.x, chunk.y, "boot", nil)
+            if not was_known then registered = registered + 1 end
+            if tracker:get_chunk_entry(chunk.x, chunk.y).has_tracked_entities then
+                with_entities = with_entities + 1
+            end
         end
     end
-    -- SELECTIVE: Don't auto-queue, only snapshot via explicit snapshot_area() calls
 
-    -- Send chunk_charted payload (always, regardless of mode)
-    local chunk = { x = chunk_x, y = chunk_y }
-    local agent_id = event.agent_id or "unknown"
-    local payload = udp_payloads.chunk_charted(chunk, game.tick, "agent", needs_snapshot)
-    payload.agent_id = agent_id  -- Include agent_id if available
-    payload.orchestration_mode = mode
+    local queued = #sys_state.pending_chunks - pending_before
+    local deferred_after = 0
+    for _ in pairs(sys_state.deferred_chunks) do deferred_after = deferred_after + 1 end
+    local deferred = deferred_after - deferred_before
+
+    -- A boot that registered work must not sit in a quiescent phase.
+    if queued > 0 and is_quiescent_phase(sys_state.phase) then
+        sys_state.phase = SystemPhase.INITIAL_SNAPSHOTTING
+        sys_state.stats.phase_start_tick = game.tick
+        sys_state.current_wait_tick = 0
+    end
+
+    sys_state.boot = {
+        reason = reason,
+        tick = game.tick,
+        mode = get_orchestration_mode(),
+        forces = tracked,
+        chunks = {
+            generated = generated,
+            charted = charted,
+            registered = registered,
+            with_entities = with_entities,
+            queued = queued,
+            deferred = deferred,
+        },
+    }
+
+    log(string.format(
+        "[fv_snapshot boot] %s: generated=%d charted=%d registered=%d with_entities=%d queued=%d deferred=%d mode=%s forces=%d",
+        reason, generated, charted, registered, with_entities, queued, deferred, sys_state.boot.mode, #tracked))
+
+    local payload = udp_payloads.system_phase_changed(sys_state.phase, sys_state.stats)
+    payload.boot = sys_state.boot
     udp_payloads.send_event(payload)
+
+    return sys_state.boot
 end
+
+--- The boot contract probe. Python preflight calls
+--- remote.call("map", "get_boot_report") and asserts chunks.charted > 0 (or
+--- that phase ~= "EMPTY") before believing the map model reflects the world.
+--- @return table {reason, tick, mode, forces, phase, chunks={generated, charted,
+---   registered, with_entities, queued, deferred}, tracker={registered,
+---   with_entities, snapshotted, pending}, entities={tracked}, queue={pending}}
+function M.get_boot_report()
+    local sys_state = get_system_state()
+    local tracker = M.get_chunk_tracker()
+    local reg, ent, snap, pend, tracked_entities = 0, 0, 0, 0, 0
+    for _, entry in pairs(tracker.chunk_lookup) do
+        reg = reg + 1
+        if entry.has_tracked_entities then ent = ent + 1 end
+        if entry.snapshot_tick ~= nil then snap = snap + 1 else pend = pend + 1 end
+        tracked_entities = tracked_entities + (entry.tracked_entity_count or 0)
+    end
+    local boot = sys_state.boot or {
+        reason = "none", tick = nil, mode = get_orchestration_mode(),
+        forces = forces.get_tracked_forces(), chunks = {},
+    }
+    return {
+        reason = boot.reason,
+        tick = boot.tick,
+        mode = boot.mode,
+        forces = boot.forces,
+        phase = sys_state.phase,
+        chunks = boot.chunks,
+        tracker = { registered = reg, with_entities = ent, snapshotted = snap, pending = pend },
+        entities = { tracked = tracked_entities },
+        queue = { pending = #sys_state.pending_chunks },
+    }
+end
+
+--- The single lifecycle entry point for storage-writable hooks.
+--- control.lua calls this from on_init and on_configuration_changed; anything
+--- else that must run on exactly those two hooks (the notification stream's
+--- new_epoch, for one) slots in here.
+--- @param reason string "on_init" | "on_configuration_changed"
+function M.boot(reason)
+    M.init_storage()
+    M.init()
+    return M.boot_reconcile_charted_chunks(reason)
+end
+
+M.admin_api.get_boot_report = M.get_boot_report
 
 return M

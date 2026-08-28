@@ -1826,7 +1826,9 @@ class RemoteView:
         def handle_phase_change(payload: dict) -> None:
             """Handle system_phase_changed UDP event."""
             phase = payload.get("phase")
-            if phase == "MAINTENANCE":
+            # EMPTY = nothing was charted, so there was nothing to snapshot;
+            # quiescent like MAINTENANCE (fv_snapshot Map.lua is_quiescent_phase).
+            if phase in ("MAINTENANCE", "EMPTY"):
                 phase_received["phase"] = phase
                 phase_received["stats"] = payload.get("stats", {})
                 bootstrap_complete.set()
@@ -1868,7 +1870,7 @@ class RemoteView:
 
                     status = self._map_api.get_snapshot_status()
 
-                    if status.system_phase == "MAINTENANCE":
+                    if status.system_phase in ("MAINTENANCE", "EMPTY"):
                         # Bootstrap complete! (detected via polling)
                         logger.info(
                             "✅ Bootstrap complete! Transitioned to MAINTENANCE mode (via polling)."
