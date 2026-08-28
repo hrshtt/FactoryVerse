@@ -142,140 +142,16 @@ class FactoryVerseSession:
         self._env = Environment(config=config)
         await self._env.initialize(up_to=Tier.RUNTIME)
 
-        # Start Jupyter executor if provided (for agent runs)
+        # Start Jupyter executor if provided (for agent runs). The kernel is
+        # NOT seeded with a namespace here: the former `_generate_setup_code`
+        # bootstrap imported classes that no longer exist and was reachable
+        # from no entry point; the agent namespace is assembled in one place
+        # (Tier4Runtime.execute_code).
         if self.executor is not None:
             await self.executor.start()
 
-            # Inject runtime setup into Jupyter kernel
-            self._inject_runtime_setup()
-
         self._started = True
         logger.info(f"Session {self.session_id} started")
-
-    def _inject_runtime_setup(self) -> None:
-        """Inject runtime setup code into Jupyter kernel."""
-        if self.executor is None or self._env is None:
-            return
-
-        # Generate setup code that imports from Environment's components
-        setup_code = self._generate_setup_code()
-        result = self.executor.execute(setup_code)
-
-        if result.is_error:
-            logger.error(f"Failed to inject runtime setup: {result.error}")
-            raise RuntimeError(f"Runtime setup failed: {result.error}")
-
-        logger.debug("Runtime setup injected into Jupyter kernel")
-
-    def _generate_setup_code(self) -> str:
-        """Generate Python code to set up the runtime namespace in Jupyter."""
-        tier3 = self._env.tier3
-        tier4 = self._env.tier4
-
-        # Get instance and port info
-        instance = tier3.instance if tier3 else "client"
-        agent_id = self._agent_id
-
-        return f'''
-# FactoryVerse Runtime Setup (auto-generated)
-import asyncio
-
-# Core infrastructure
-from FactoryVerse.environment.config import get_config
-from FactoryVerse.infra.instance_manager import FactorioInstanceManager
-from factorio_rcon import RCONClient
-
-config = get_config()
-
-# Get instance
-instance_name = "{instance}"
-if instance_name == "client":
-    instance = FactorioInstanceManager.get_client(config)
-elif instance_name.startswith("server_"):
-    server_id = int(instance_name.split("_")[1])
-    instance = FactorioInstanceManager.get_server(server_id, config)
-else:
-    instance = FactorioInstanceManager.get_active(require_single=True)
-
-# RCON client
-rcon_client = RCONClient(instance.rcon_host, instance.rcon_port, instance.rcon_password)
-rcon_client.connect()
-
-# Agent ID
-agent_id = "{agent_id}"
-
-# Database
-from FactoryVerse.game.infra.duckdb import SnapshotLoader, FactorioDatabase
-snapshot_loader = SnapshotLoader(instance.snapshot_dir)
-database = FactorioDatabase()
-database.load_from_snapshot(snapshot_loader.get_latest())
-
-# Embodied actions
-from FactoryVerse.game.agent.embodied_actions import (
-    Walking,
-    Crafting,
-    Research,
-    Inventory,
-    PlaceEntity,
-    EntityOperations,
-    Resources,
-)
-from FactoryVerse.game.agent.infra.rcon_handler import RCONHandler
-from FactoryVerse.game.agent.infra.async_listener import AsyncNotificationListener
-
-rcon_handler = RCONHandler(rcon_client, agent_id)
-
-# Calculate UDP port for agent
-def _get_agent_port(agent_id: str, instance_name: str) -> int:
-    agent_num = int(agent_id.split("_")[1]) if "_" in agent_id else 1
-    if instance_name == "client":
-        return config.get_agent_port_range(instance="client")[agent_num - 1]
-    elif instance_name.startswith("server_"):
-        server_id = int(instance_name.split("_")[1])
-        return config.get_agent_port_range(server_index=server_id)[agent_num - 1]
-    return 34202 + (agent_num - 1)
-
-udp_port = _get_agent_port(agent_id, instance_name)
-async_listener = AsyncNotificationListener(udp_port)
-async_listener.start()
-
-# Create action modules
-walking = Walking(rcon_handler, database, async_listener)
-crafting = Crafting(rcon_handler, database, async_listener)
-research = Research(rcon_handler, database, async_listener)
-inventory = Inventory(rcon_handler, database)
-placement = PlaceEntity(rcon_handler, database)
-entity_ops = EntityOperations(rcon_handler, database)
-resources = Resources(rcon_handler, database)
-
-# Views
-from FactoryVerse.game.agent.reachable_view import ReachableView
-from FactoryVerse.game.agent.remote_view import RemoteView
-
-reachable_view = ReachableView(rcon_handler, database)
-remote_view = RemoteView(database)
-
-# PlacementHints and GhostBuilder
-from FactoryVerse.game.agent.placement_hints import PlacementHints
-from FactoryVerse.game.agent.ghost_builder import GhostBuilder
-
-placement_hints = PlacementHints(rcon_handler, database)
-ghost_builder = GhostBuilder(rcon_handler, database)
-
-# VerifyView (live power/coverage confirmation)
-from FactoryVerse.game.agent.verify_view import VerifyView
-
-verify = VerifyView(rcon_handler)
-
-# Common types (pre-imported for convenience)
-from FactoryVerse.game.factory.types import MapPosition, Direction, BoundingBox  # noqa: F401
-from FactoryVerse.game.agent.placement_hints import ConnectionType, GhostPlan  # noqa: F401
-from FactoryVerse.game.factory.item.base import Item, PlaceableItem, ItemStack  # noqa: F401
-
-print(f"✅ FactoryVerse runtime ready for agent {{agent_id}}")
-print(f"   Instance: {{instance_name}}")
-print(f"   UDP Port: {{udp_port}}")
-'''
 
     async def stop(self) -> None:
         """Stop the session and cleanup.

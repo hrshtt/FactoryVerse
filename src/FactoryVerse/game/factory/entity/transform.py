@@ -389,8 +389,27 @@ def _transform_container(
     if entity_type not in container_types:
         return None
 
-    contents = raw_data.get("contents", {})
-    return ContainerState(contents=contents)
+    return ContainerState(contents=_normalize_contents(raw_data.get("contents")))
+
+
+def _normalize_contents(contents: Any) -> Dict[str, int]:
+    """Collapse an inventory payload to {item_name: count}.
+
+    Factorio 2.0 `LuaInventory.get_contents()` returns a list of
+    `{name, count, quality}` stacks for a non-empty inventory (the empty
+    case serializes as `{}`), while older payloads and tests use a dict.
+    Accept both; sum counts per name (quality variants of one item merge).
+    """
+    if not contents:
+        return {}
+    if isinstance(contents, dict):
+        return {str(k): int(v) for k, v in contents.items()}
+    result: Dict[str, int] = {}
+    for stack in contents:
+        if not isinstance(stack, dict) or "name" not in stack:
+            continue
+        result[stack["name"]] = result.get(stack["name"], 0) + int(stack.get("count", 0))
+    return result
 
 
 def _transform_lab(raw_data: Dict[str, Any], entity_type: str) -> Optional[LabState]:

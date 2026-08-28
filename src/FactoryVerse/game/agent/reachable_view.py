@@ -432,7 +432,9 @@ class ReachableView:
             
             # Handle simplified aliases
             if resource_type == "ore":
-                resource_type = "resource"
+                # RESOURCE-FILTER-1: this branch used to rebind the local and
+                # never filter `matches`, so "ore" returned trees and rocks too.
+                matches = [data for data in matches if data.get("type") == "resource"]
             elif resource_type == "entity":
                 # Match both trees and simple-entities
                 matches = [

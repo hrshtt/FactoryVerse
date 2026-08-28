@@ -51,6 +51,23 @@ def _builder_block(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _placed_by(builder: Dict[str, Any]) -> Optional[str]:
+    """Who placed a ghost, from the builder block the mod already emits.
+
+    The Lua side (Entities.write_entity_snapshot) carries agent_id /
+    player_id, never a `placed_by` string; the column is derived here so
+    it is written on every attributed ghost op.
+    """
+    explicit = builder.get("placed_by")
+    if explicit:
+        return str(explicit)
+    if builder.get("agent_id") is not None:
+        return f"agent:{builder['agent_id']}"
+    if builder.get("player_id") is not None:
+        return f"player:{builder['player_id']}"
+    return None
+
+
 def _existing_provenance(
     db, table: str, name_col: str, name: str, x: float, y: float, cols: Tuple[str, ...]
 ) -> Optional[Tuple]:
@@ -83,6 +100,19 @@ def _remove_entity_derivatives(db, entity_name: str, pos_x: float, pos_y: float)
             "AND position_x = ? AND position_y = ?",
             [entity_name, pos_x, pos_y],
         )
+
+
+def _anchor_tile(entity_data: Dict[str, Any], pos_x: float, pos_y: float) -> tuple[int, int]:
+    """The tile containing the entity's centre.
+
+    The serializer emits it as `anchor_tile` (serialize.lua: floor(pos)); fall
+    back to the same arithmetic when a payload predates that field so the
+    column is never NULL for a row that exists.
+    """
+    anchor = entity_data.get("anchor_tile")
+    if isinstance(anchor, dict) and "x" in anchor and "y" in anchor:
+        return int(anchor["x"]), int(anchor["y"])
+    return math.floor(pos_x), math.floor(pos_y)
 
 
 def _target_name(value: Any) -> Optional[str]:
@@ -244,14 +274,15 @@ def upsert_entity(
     # Clear the previous projection before replacing the base row so removed
     # footprint tiles and component values cannot survive an update.
     _remove_entity_derivatives(db, entity_name, pos_x, pos_y)
+    tile_x, tile_y = _anchor_tile(entity_data, pos_x, pos_y)
     db.execute(
         """
         INSERT OR REPLACE INTO map_entity
         (entity_name, position_x, position_y, chunk_x, chunk_y,
          direction, bbox_min_x, bbox_min_y, bbox_max_x, bbox_max_y,
          electric_network_id, force,
-         agent_id, player_id, label, placed_tick, raw_data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         agent_id, player_id, label, placed_tick, raw_data, tile_x, tile_y)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             entity_name,
@@ -271,6 +302,8 @@ def upsert_entity(
             label,
             placed_tick,
             json.dumps(entity_data),
+            tile_x,
+            tile_y,
         ],
     )
     _upsert_entity_derivatives(db, entity_data)
@@ -383,10 +416,7 @@ def upsert_ghost(
         placed_tick = builder.get("placed_tick",
                                   ghost_data.get("placed_tick", default_tick))
         label = builder.get("label", ghost_data.get("label"))
-        # placed_by: no write path emits it yet (MIRAGE-4 residual, design
-        # call pending) — read as-emitted so the column goes live the moment
-        # the mod emits it, without a loader edit
-        placed_by = builder.get("placed_by", ghost_data.get("placed_by"))
+        placed_by = _placed_by(builder) or ghost_data.get("placed_by")
     else:
         existing = _existing_provenance(
             db, "ghost", "ghost_name", ghost_name, pos_x, pos_y,
@@ -396,17 +426,6 @@ def upsert_ghost(
         else:
             placed_tick = placed_by = label = None
 
-    # NOTE (Task 1 gap check): serialize_ghost (src/fv_embodied_agent/utils/
-    # serialize.lua:444-446) DOES emit `force` on ghost payloads, but ghosts
-    # never carry `electric_network_id` (ghosts aren't networked — engine
-    # doesn't expose it). The GHOST table has no `force` column and adding
-    # one is out of this agent's file-ownership scope (schema_definitions.py
-    # ownership here is scoped to the MAP_ENTITY definition only — see
-    # power-impl-contracts.md file-ownership list and C3, which only
-    # mandates the map_entity.force column). `force` is NOT lost: it's still
-    # captured in ghost.raw_data (json_extract(raw_data, '$.force') works
-    # today). Flagging for the schema owner / cert stage rather than adding
-    # a column to a table this agent doesn't own.
     db.execute(
         """
         INSERT OR REPLACE INTO ghost
