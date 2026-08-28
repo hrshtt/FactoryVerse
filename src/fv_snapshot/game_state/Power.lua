@@ -5,7 +5,6 @@
 -- Module-level local references for global lookups (performance optimization)
 -- (This module currently doesn't use many globals, but kept for consistency)
 
-local GameStateError = require("utils.Error")
 
 local snapshot = require("utils.snapshot")
 local udp_payloads = require("utils.udp_payloads")

@@ -47,14 +47,17 @@ script.register_metatable('EntityInterface', EntityInterface)
 -- CUSTOM EVENT INITIALIZATION (must be at module load time)
 -- ============================================================================
 
--- Generate custom event IDs (must be at module load time)
--- Entity configuration changed event
-EntityInterface.on_entity_configuration_changed = script.generate_event_name()
-log("EntityInterface: Generated custom event 'entity_configuration_changed': " .. tostring(EntityInterface.on_entity_configuration_changed))
-
--- Entity rotated event
-EntityInterface.on_entity_rotated = script.generate_event_name()
-log("EntityInterface: Generated custom event 'entity_rotated': " .. tostring(EntityInterface.on_entity_rotated))
+-- Generate custom event IDs (must be at module load time) — but ONLY in the mod that
+-- owns them. fv_snapshot requires this file across the mod boundary for the admin
+-- facade; a cross-mod require executes this chunk again in that mod's Lua state, and
+-- an unguarded generate_event_name() there minted a second, dead pair of IDs that
+-- nobody raised (2026-08-28 audit). In any other mod these stay nil.
+if script.mod_name == "fv_embodied_agent" then
+    EntityInterface.on_entity_configuration_changed = script.generate_event_name()
+    log("EntityInterface: Generated custom event 'entity_configuration_changed': " .. tostring(EntityInterface.on_entity_configuration_changed))
+    EntityInterface.on_entity_rotated = script.generate_event_name()
+    log("EntityInterface: Generated custom event 'entity_rotated': " .. tostring(EntityInterface.on_entity_rotated))
+end
 
 -- ============================================================================
 -- ENTITY RESOLUTION

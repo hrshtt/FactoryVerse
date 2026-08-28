@@ -181,52 +181,23 @@ end
 --- @param entity LuaEntity
 --- @param out table Output table to populate
 local function _serialize_belt_data(entity, out)
-    -- Belt item lines
-    local item_lines = {}
-    local max_index = 0
+    -- Only event-backed structure goes to the map model (Constitution §10;
+    -- API_AFFORDANCE §4.6). Items on the belt are simulation state and are read
+    -- live; belt_neighbours is adjacency that is derived from (position, direction)
+    -- at read time and was stale by construction when stored (TRANSPORT §2.1).
     local ok_speed, belt_speed = pcall(function() return entity.prototype.belt_speed end)
     if ok_speed and belt_speed ~= nil then
         out.belt_speed = belt_speed
     end
-    local v = (entity.get_max_transport_line_index and entity.get_max_transport_line_index()) or 0
-    max_index = (type(v) == "number" and v > 0) and v or 0
 
-    for li = 1, max_index do
-        local tl = entity.get_transport_line and entity.get_transport_line(li) or nil
-        if tl then
-            local contents = tl.get_contents and tl.get_contents() or nil
-            if contents and next(contents) ~= nil then
-                item_lines[#item_lines + 1] = { index = li, items = contents }
-            end
-        end
-    end
-
-    -- Belt neighbours (inputs/outputs)
-    local inputs_refs, outputs_refs = {}, {}
-    local bn = entity.belt_neighbours
-    if bn then
-        if bn.inputs then
-            for _, n in ipairs(bn.inputs) do
-                if n and n.valid and n.name and n.position then
-                    inputs_refs[#inputs_refs + 1] = {name = n.name, position = {x = n.position.x, y = n.position.y}}
-                end
-            end
-        end
-        if bn.outputs then
-            for _, n in ipairs(bn.outputs) do
-                if n and n.valid and n.name and n.position then
-                    outputs_refs[#outputs_refs + 1] = {name = n.name, position = {x = n.position.x, y = n.position.y}}
-                end
-            end
-        end
-    end
-
-    -- Underground belt pairing
+    -- Underground belt pairing: belt_to_ground_type is the one column the belt
+    -- derivation needs to bridge a tunnel (TRANSPORT §2.2). underground_neighbour is
+    -- still emitted because Python's BeltState reads it (transform.py); it is
+    -- adjacency and goes when the derived component replaces it.
     local underground_other = nil
     local belt_to_ground_type = nil
     if entity.type == "underground-belt" then
         belt_to_ground_type = entity.belt_to_ground_type
-        -- For underground belts, neighbours is the other end of the connection (LuaEntity or nil)
         local un = entity.neighbours
         if un and un.valid and un.name and un.position then
             underground_other = {name = un.name, position = {x = un.position.x, y = un.position.y}}
@@ -234,8 +205,6 @@ local function _serialize_belt_data(entity, out)
     end
 
     out.belt_data = {
-        item_lines = item_lines,
-        belt_neighbours = ((#inputs_refs > 0 or #outputs_refs > 0) and { inputs = inputs_refs, outputs = outputs_refs }) or nil,
         belt_to_ground_type = belt_to_ground_type,
         underground_neighbour = underground_other
     }
@@ -245,40 +214,32 @@ end
 --- @param entity LuaEntity
 --- @param out table Output table to populate
 local function _serialize_pipe_data(entity, out)
-    local inputs_refs, outputs_refs = {}, {}
+    -- Ports as the engine reports them (get_pipe_connections), per fluidbox. No
+    -- inputs/outputs split: pipes have production_type=none and every port is
+    -- input-output, so the split an earlier version computed from dx > 0 was a
+    -- fabrication (TRANSPORT §8.1). Ports are prototype geometry — structure, not
+    -- simulation — and carry no neighbour identity, so nothing here goes stale
+    -- when a neighbour is placed.
+    local ports = {}
     local fb = entity.fluidbox
-    if fb then
+    if fb and fb.get_pipe_connections then
         for k = 1, #fb do
-            local connections = fb.get_connections and fb.get_connections(k) or {}
-            for _, conn in ipairs(connections) do
-                if conn.owner and conn.owner.valid and conn.owner.name and conn.owner.position then
-                    local conn_entity = conn.owner
-                    local conn_ref = {name = conn_entity.name, position = {x = conn_entity.position.x, y = conn_entity.position.y}}
-
-                    -- Categorize connections based on entity type and relative position
-                    if conn_entity.type == "pipe" or conn_entity.type == "pipe-to-ground" then
-                        if conn_entity.position and entity.position then
-                            local dx = conn_entity.position.x - entity.position.x
-                            local dy = conn_entity.position.y - entity.position.y
-                            if dx > 0 or dy > 0 then
-                                inputs_refs[#inputs_refs + 1] = conn_ref
-                            else
-                                outputs_refs[#outputs_refs + 1] = conn_ref
-                            end
-                        else
-                            inputs_refs[#inputs_refs + 1] = conn_ref
-                        end
-                    else
-                        inputs_refs[#inputs_refs + 1] = conn_ref
-                    end
+            local ok, conns = pcall(fb.get_pipe_connections, k)
+            if ok and conns then
+                for i, c in ipairs(conns) do
+                    ports[#ports + 1] = {
+                        fluidbox_index = k,
+                        index = i,
+                        position = c.position and {x = c.position.x, y = c.position.y} or nil,
+                        target_position = c.target_position and {x = c.target_position.x, y = c.target_position.y} or nil,
+                        flow_direction = c.flow_direction,
+                        connection_type = c.connection_type,
+                    }
                 end
             end
         end
     end
-
-    out.pipe_data = {
-        pipe_neighbours = ((#inputs_refs > 0 or #outputs_refs > 0) and { inputs = inputs_refs, outputs = outputs_refs }) or nil
-    }
+    out.pipe_data = { ports = (#ports > 0) and ports or nil }
 end
 
 --- Serialize inserter-specific data

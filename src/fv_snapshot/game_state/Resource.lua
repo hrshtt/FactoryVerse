@@ -11,7 +11,6 @@ local string_format = string.format
 -- Cache helpers functions for performance
 local table_to_json = helpers.table_to_json
 
-local GameStateError = require("utils.Error")
 local utils = require("utils.utils")
 local snapshot = require("utils.snapshot")
 local udp_payloads = require("utils.udp_payloads")

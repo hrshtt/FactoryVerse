@@ -4,7 +4,6 @@
 ---
 --- NOTE: fv_embodied_agent has isolated storage. Must use remote.call to access agent data.
 
-local GameStateError = require("utils.Error")
 
 local M = {}
 

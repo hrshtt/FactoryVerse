@@ -15,9 +15,11 @@ local string_format = string.format
 -- Cache helpers functions for performance
 local table_to_json = helpers.table_to_json
 
--- EntityInterface is from fv_embodied_agent mod (dependency)
--- NOTE: These requires are for utility functions/constants only.
--- fv_embodied_agent's storage is isolated - must use remote.call for agent data.
+-- EntityInterface is from fv_embodied_agent mod (dependency); used ONLY for the admin
+-- facade (EntityInterface:new). Never subscribe to its event IDs from here — a
+-- cross-mod require shares an implementation, never an instance, so any ID it
+-- generated at load in this state belongs to nobody. The file guards its own
+-- generate_event_name() on script.mod_name for the same reason.
 local EntityInterface = require("__fv_embodied_agent__.game_state.EntityInterface")
 local serialize = require("__fv_embodied_agent__/utils/serialize")
 local utils = require("utils.utils")
@@ -1030,6 +1032,44 @@ local function _on_agent_entity_configuration_changed(event)
     end
 end
 
+--- on_entity_cloned carries the copy in `destination`; the source is untouched.
+local function _on_entity_cloned(event)
+    if event.destination then
+        _on_entity_built({ entity = event.destination, tick = event.tick })
+    end
+end
+
+--- script_raised_teleported: the entity keeps its identity, but map rows are keyed by
+--- name+position, so the old row is removed and the entity is re-snapshotted where it
+--- now stands. Only `event.old_position` is available for the removal (2.0.76 spec).
+local function _on_entity_teleported(event)
+    local entity = event.entity
+    if not (entity and entity.valid) or entity.type == "character" then
+        return
+    end
+    local old = event.old_position
+    if old then
+        local chunk_coords = utils.to_chunk_coordinates(old)
+        if chunk_coords then
+            local is_ghost = entity.type == "entity-ghost"
+            local name = is_ghost and entity.ghost_name or entity.name or "unknown"
+            local operation
+            if is_ghost then
+                operation = snapshot.make_ghost_remove_operation(old, name)
+                snapshot.append_ghost_operation(chunk_coords.x, chunk_coords.y, operation)
+            else
+                operation = snapshot.make_remove_operation(old, name)
+                snapshot.append_entity_operation(chunk_coords.x, chunk_coords.y, operation)
+            end
+            local payload = udp_payloads.entity_destroyed({ x = chunk_coords.x, y = chunk_coords.y }, name, old)
+            if is_ghost then payload.is_ghost = true end
+            payload.sequence = operation.sequence
+            udp_payloads.send_entity_operation(payload)
+        end
+    end
+    M.write_entity_snapshot(entity, entity.type == "entity-ghost")
+end
+
 --- Build disk write snapshot events table
 --- Called after init() to populate events
 function M._build_disk_write_snapshot()
@@ -1055,15 +1095,20 @@ function M._build_disk_write_snapshot()
         [defines.events.script_raised_destroy] = _on_entity_destroyed,
         [defines.events.on_entity_settings_pasted] = _on_entity_settings_pasted,
         [defines.events.on_player_rotated_entity] = _on_entity_rotated,  -- Player rotates entity (R key)
+        -- Geometry-changing events that were unsubscribed until 2026-08-29
+        -- (TRANSPORT_CONNECTIVITY_PLAN §8.6): a derived view over an incomplete
+        -- event set is a floor that lies. Fields per resources/factorio-api/2.0.76.
+        [defines.events.on_robot_built_entity] = _on_entity_built,      -- event.entity
+        [defines.events.script_raised_revive] = _on_entity_built,       -- event.entity (ghost -> real)
+        [defines.events.on_player_flipped_entity] = _on_entity_rotated, -- event.entity; flip changes direction
+        [defines.events.on_entity_cloned] = _on_entity_cloned,          -- event.destination
+        [defines.events.script_raised_teleported] = _on_entity_teleported, -- event.entity + event.old_position
     }
-    
-    -- Add EntityInterface events (from fv_embodied_agent mod dependency)
-    if EntityInterface.on_entity_configuration_changed then
-        events[EntityInterface.on_entity_configuration_changed] = _on_entity_configuration_changed
-    end
-    if EntityInterface.on_entity_rotated then
-        events[EntityInterface.on_entity_rotated] = _on_entity_rotated
-    end
+
+    -- Agent-side entity events arrive ONLY by served value (custom_events remote).
+    -- Subscribing to EntityInterface.on_entity_* here was a dead pair: the cross-mod
+    -- require re-ran generate_event_name() in this mod's Lua state, so the IDs never
+    -- matched the ones the agent mod raises (NOTIFICATIONS plan, census defect).
     
     -- Add Agent custom events if available (for agent-driven entity operations)
     if agent_events then

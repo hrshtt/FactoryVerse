@@ -22,24 +22,30 @@ from FactoryVerse.game.infra.duckdb.loader import SnapshotLoader
 
 INIT_TICK = 78000
 
-# Fresh init state: pipe with the CORRECT neighbours (boiler + pipe)
+# Fresh init state: the pipe as serialized AFTER the init snapshot. The
+# discriminator is a field the stale record lacks. (Until 2026-08-29 this fixture
+# used `pipe_neighbours.inputs == [boiler, pipe]`, whose expected value was itself
+# the serializer's dx>0 fabrication — TRANSPORT §8.1. The serializer now emits
+# engine ports; the fixture just needs two distinguishable payloads.)
 PIPE_INIT = {
     "name": "pipe",
     "type": "pipe",
     "position": {"x": 109.5, "y": 67.5},
     "direction": 0,
     "pipe_data": {
-        "pipe_neighbours": {
-            "inputs": [
-                {"name": "boiler", "position": {"x": 110, "y": 65.5}},
-                {"name": "pipe", "position": {"x": 109.5, "y": 68.5}},
-            ],
-            "outputs": [],
-        }
+        "ports": [
+            {"fluidbox_index": 1, "index": 1, "position": {"x": 109.5, "y": 67.5},
+             "target_position": {"x": 109.5, "y": 66.5}, "flow_direction": "input-output",
+             "connection_type": "normal"},
+            {"fluidbox_index": 1, "index": 2, "position": {"x": 109.5, "y": 67.5},
+             "target_position": {"x": 109.5, "y": 68.5}, "flow_direction": "input-output",
+             "connection_type": "normal"},
+        ]
     },
+    "snapshot_origin": "init",
 }
 
-# Stale build-tick upsert: predates the init snapshot, lists only [pipe]
+# Stale build-tick upsert: predates the init snapshot
 STALE_UPDATE = {
     "op": "upsert",
     "tick": 64881,
@@ -49,12 +55,8 @@ STALE_UPDATE = {
         "type": "pipe",
         "position": {"x": 109.5, "y": 67.5},
         "direction": 0,
-        "pipe_data": {
-            "pipe_neighbours": {
-                "inputs": [{"name": "pipe", "position": {"x": 109.5, "y": 68.5}}],
-                "outputs": [],
-            }
-        },
+        "pipe_data": {"ports": None},
+        "snapshot_origin": "stale-build-tick",
     },
 }
 
@@ -123,16 +125,16 @@ class TestStaleUpdateReplay:
         assert len(rows) == 1
 
     def test_stale_update_not_replayed_over_fresher_init(self, loaded_db):
-        """The exact L2.2 failure: stale pipe_neighbours must NOT win."""
+        """The exact L2.2 failure: a stale build-tick update must NOT win."""
         con, _ = loaded_db
         (raw,) = con.execute(
             "SELECT raw_data FROM map_entity WHERE entity_name = 'pipe'"
         ).fetchone()
-        inputs = json.loads(raw)["pipe_data"]["pipe_neighbours"]["inputs"]
-        names = sorted(n["name"] for n in inputs)
-        assert names == ["boiler", "pipe"], (
+        data = json.loads(raw)
+        assert data["snapshot_origin"] == "init", (
             "stale build-tick update overwrote the fresher init snapshot"
         )
+        assert len(data["pipe_data"]["ports"]) == 2
 
     def test_newer_than_init_update_applies(self, loaded_db):
         con, result = loaded_db
@@ -175,9 +177,8 @@ class TestNoMetaFallback:
             (raw,) = db.connection.execute(
                 "SELECT raw_data FROM map_entity WHERE entity_name = 'pipe'"
             ).fetchone()
-            inputs = json.loads(raw)["pipe_data"]["pipe_neighbours"]["inputs"]
             # No init tick to order against -> the update record applied
-            assert [n["name"] for n in inputs] == ["pipe"]
+            assert json.loads(raw)["snapshot_origin"] == "stale-build-tick"
         finally:
             db.close()
 
