@@ -33,9 +33,6 @@ factoryverse = "FactoryVerse.cli:main"
 # Short alias for convenience
 fv = "FactoryVerse.cli:main"
 
-[project.entry-points."hermes_agent.plugins"]
-factoryverse = "FactoryVerse.integrations.hermes.plugin"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/FactoryVerse"]
 

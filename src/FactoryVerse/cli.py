@@ -3,9 +3,9 @@
     fv client start|stop        local Factorio client with the mods
     fv server start|stop        headless Docker server(s)
     fv run                      drive an agent (freeplay, --task, or --interactive)
-    fv docs generate            regenerate docs/for-llms/*
+    fv docs generate            regenerate docs/for-llms/api_reference.md and schema_reference.md
     fv census                   ground-truth entity dump from a running instance
-    fv campaign ...             external-harness freeplay campaigns
+    fv campaign ...             supervised freeplay campaigns (create/status/prejoin/launch)
 
 All run configuration is assembled by ``EnvironmentConfig.for_run`` so the CLI
 holds no knowledge of the tier stack.
@@ -251,12 +251,16 @@ def cmd_run(args):
 
 
 def cmd_docs_generate(args):
+    """Regenerate both agent-facing references. Needs no running instance."""
+    from FactoryVerse.infra.llm.prompts.schema_reference import write_schema_reference
     from FactoryVerse.utils.docs.generator import write_api_reference
     from FactoryVerse.utils.docs.registry import reset_registry
 
     reset_registry()
     path = write_api_reference(Path(args.output) if args.output else None)
     print(f"✅ Wrote {path}")
+    if not args.output:
+        print(f"✅ Wrote {write_schema_reference()}")
 
 
 def cmd_census(args):
@@ -325,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_run)
 
     docs = sub.add_parser("docs", help="Agent-facing reference docs").add_subparsers(dest="action", required=True)
-    p = docs.add_parser("generate", help="Regenerate docs/for-llms/api_reference.md")
+    p = docs.add_parser("generate", help="Regenerate docs/for-llms/api_reference.md and schema_reference.md (no instance needed)")
     p.add_argument("-o", "--output", help="Output path")
     p.set_defaults(func=cmd_docs_generate)
 
