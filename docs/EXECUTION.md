@@ -27,7 +27,8 @@ Decisions that shape the order (2026-08-29): hand crafting and research stay in 
 
 ## What we are up to (2026-08-29)
 
-- **Phase 2 landing** — the turn contract is built on the in-repo orchestrator and its live checks are being run; see the Done rows. What it still owes: the `action` stream's migration onto `stream.lua` (the per-tick message queue stays on the old path), predicted-vs-actual craft completion (nothing records a prediction at enqueue yet — Phase 3 touches `crafting`), a hash-and-delta scheme for `inference_input` before N is raised above 128, and the comprehension probes (TURN §8.6), which need a model.
+- **Phase 3 in progress** — the surface. 3A builds the source-declaring readers on `remote_view` (`status`, `status_changed`, `power`, `production`), re-points the power presentation, then cuts `entity_status`, `power_samples`, `power_networks`, `agent_production_statistics`. 3B builds `inventory.await_item`, `Container.set_limit`, `entity.status`, `entity_reference`, the catalog reads on `research`/`crafting`, caller-scoped research cancel, and the craft prediction at enqueue. 3C (after 3B) deletes: blocking `craft()`, the `placement`, `entity_ops`, `verify`, `events`, `mining` accessors, the `placement_hints` module, `resources`.
+- **Phase 2 still owes**: the `action` stream's migration onto `stream.lua`; a hash-and-delta scheme for `inference_input` before N is raised; the comprehension probes (TURN §8.6), which need a model.
 - **Operational note**: two live suites that "own" ports still share the compose project (`factorio_0`), so they must run one at a time; and `fv server start` returns before the server accepts RCON auth (a readiness race seen twice today) — attach with a retry.
 - **Phase 1 owes one live check**: a human client joining a running world (spectator controller, no character, nothing altered) — `tests/live/test_scenario_boot_contract.py`, skipped until `FV_LIVE_HUMAN_CLIENT=1` with a client connected.
 
