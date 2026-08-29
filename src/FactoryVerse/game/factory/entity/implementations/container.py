@@ -91,6 +91,24 @@ class Container(BaseEntity):
             results.append(result)
         return results
 
+    def set_limit(self, slots: Optional[int]) -> Dict:
+        """Set the inventory bar — how many slots this chest accepts items into.
+
+        **For Agents**: the red bar you drag in a chest's window. ``None``
+        clears the limit. Same RCON verb the engine exposes
+        (``set_inventory_limit``), reached from the entity you clicked.
+
+        Args:
+            slots: Number of usable slots, or None for no limit
+
+        Returns:
+            The engine's result as data (``success``, ``limit``); a refusal is
+            a game-rule failure in data, never an exception.
+        """
+        rcon = self._entity_ops._rcon
+        cmd = rcon.build_command("set_inventory_limit", self.name, self.position, "chest", slots)
+        return rcon.execute_and_parse_json(cmd)
+
     def take_item(self, item_name: str, count: int) -> List["ItemStack"]:
         """Take items from the container.
 

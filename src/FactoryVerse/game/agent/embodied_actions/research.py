@@ -119,27 +119,117 @@ class ResearchAction:
             rcon_handler: RCON handler for command execution
         """
         self._rcon = rcon_handler
+        # Technologies THIS agent enqueued in this session. Research is
+        # force-scoped and shared; cancelling something you did not start is
+        # a griefing primitive (HUD plan §10), so dequeue is caller-scoped.
+        self._enqueued: set = set()
 
     def enqueue(self, technology: str) -> Dict[str, Any]:
-        """Start researching a technology.
+        """Queue a technology for research (the technology screen's queue).
 
         Args:
             technology: Technology name to research
 
         Returns:
-            Response dict with success status and technology name
+            Response dict with success status and technology name. Unknown or
+            locked technologies come back as a game-rule failure in data —
+            use ``list_technologies()`` to discover names; never probe by
+            enqueueing.
         """
         cmd = self._rcon.build_command("enqueue_research", technology)
-        return self._rcon.execute_and_parse_json(cmd)
+        response = self._rcon.execute_and_parse_json(cmd)
+        if isinstance(response, dict) and response.get("success"):
+            self._enqueued.add(technology)
+        return response
 
-    def dequeue(self) -> Dict[str, Any]:
-        """Cancel current research.
+    def dequeue(self, force: bool = False) -> Dict[str, Any]:
+        """Cancel the current research — only if you queued it.
 
-        Returns:
-            Response dict with success status
+        Research is shared force state. If the active research is not one
+        this agent enqueued in this session, this returns a game-rule failure
+        (data, not an exception) naming what is active, and cancels nothing.
+        Pass ``force=True`` to cancel anyway. Cancellation is non-destructive:
+        per-technology progress is kept.
         """
+        current = None
+        try:
+            current = self.status().current_research
+        except Exception:
+            current = None
+        if not force and current is not None and current not in self._enqueued:
+            return {
+                "success": False,
+                "game_rule_failure": True,
+                "reason": (
+                    f"active research {current!r} was not enqueued by you in this session; "
+                    f"pass force=True to cancel shared research anyway"
+                ),
+                "current_research": current,
+                "enqueued_by_you": sorted(self._enqueued),
+            }
         cmd = self._rcon.build_command("cancel_current_research")
-        return self._rcon.execute_and_parse_json(cmd)
+        response = self._rcon.execute_and_parse_json(cmd)
+        if isinstance(response, dict) and response.get("success") and current:
+            self._enqueued.discard(current)
+        return response
+
+    def list_technologies(
+        self,
+        name_filter: Optional[str] = None,
+        available: Optional[bool] = None,
+        researched: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """The technology catalog, as the research screen lists it (HUD plan §2 as amended).
+
+        A read; nothing is queued. Each entry: ``name``, ``researched``,
+        ``available`` (every prerequisite researched — can be queued now),
+        ``prerequisites``, ``science_packs`` (name → amount per unit),
+        ``unit_count``, ``unit_energy`` (seconds per unit), ``unlocks``
+        (recipe names), ``progress`` (saved, 0–1).
+
+        Args:
+            name_filter: substring match on the technology name
+            available: True → only researchable now; False → only locked or done
+            researched: True → only researched; False → only unresearched
+        """
+        cmd = self._rcon.build_command("get_technologies", False)
+        data = self._rcon.execute_and_parse_json(cmd)
+        techs = data if isinstance(data, list) else data.get("technologies", [])
+        by_name = {t.get("name"): t for t in techs}
+        out: List[Dict[str, Any]] = []
+        for t in techs:
+            name = t.get("name", "")
+            if name_filter and name_filter not in name:
+                continue
+            done = bool(t.get("researched"))
+            prereqs = list((t.get("prerequisites") or {}).keys()) if isinstance(t.get("prerequisites"), dict) \
+                else list(t.get("prerequisites") or [])
+            avail = (not done) and all(bool((by_name.get(p) or {}).get("researched")) for p in prereqs)
+            if available is not None and avail != available:
+                continue
+            if researched is not None and done != researched:
+                continue
+            packs = {}
+            for ing in t.get("research_unit_ingredients") or []:
+                if isinstance(ing, dict) and ing.get("name"):
+                    packs[ing["name"]] = ing.get("amount", 1)
+            unlocks = [
+                e.get("recipe") for e in (t.get("effects") or [])
+                if isinstance(e, dict) and e.get("type") == "unlock-recipe" and e.get("recipe")
+            ]
+            out.append({
+                "name": name,
+                "researched": done,
+                "available": avail,
+                "prerequisites": prereqs,
+                "science_packs": packs,
+                "unit_count": t.get("research_unit_count"),
+                "unit_energy": t.get("research_unit_energy"),
+                "unlocks": unlocks,
+                "progress": t.get("saved_progress") or 0.0,
+            })
+        out.sort(key=lambda x: (x["researched"], not x["available"], x["name"]))
+        return out
 
     def status(self) -> ResearchStatus:
         """Get comprehensive research status with progressive detail levels.

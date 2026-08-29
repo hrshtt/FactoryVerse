@@ -14,7 +14,17 @@ from FactoryVerse.game.factory.entity.capabilities import (
 )
 
 
-class OffshorePump(FluidMixin, RotatableMixin, BaseEntity):
+class _PumpSitesMirror:
+    """Same-named twin of ``EntityReference.sites``: where an offshore pump of
+    this type could sit near ``near``."""
+
+    def sites(self, near, radius: int = 20, max_results: int = 20):
+        from FactoryVerse.game.agent.entity_reference import EntityReference
+
+        return EntityReference(self.name, self._entity_ops._rcon).sites(near, radius, max_results)
+
+
+class OffshorePump(_PumpSitesMirror, FluidMixin, RotatableMixin, BaseEntity):
     """Offshore pump - extracts water from water tiles.
 
     **For Agents**: Must be placed adjacent to water. Outputs water

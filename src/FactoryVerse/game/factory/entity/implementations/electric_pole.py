@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from FactoryVerse.game.factory.entity.base_entity import BaseEntity
 
 if TYPE_CHECKING:
-    from FactoryVerse.game.factory.types import BoundingBox
+    from FactoryVerse.game.factory.types import BoundingBox, MapPosition
 
 
 class PoleNeighbour(BaseModel):
@@ -98,6 +98,48 @@ class ElectricPole(ElectricPoleMixin, BaseEntity):
         return BoundingBox.from_tuple(
             ((x - distance, y - distance), (x + distance, y + distance))
         )
+
+    def supply_area(self, position: Optional["MapPosition"] = None) -> "BoundingBox":
+        """The supply box this pole projects (or would project from ``position``).
+
+        Same name and geometry as the entity reference's ``supply_area`` —
+        one vocabulary (Constitution §6). Static, from the prototype.
+        """
+        from FactoryVerse.game.factory.types import BoundingBox
+
+        d = self.prototype["supply_area_distance"]
+        x, y = (position.x, position.y) if position is not None else (self.position.x, self.position.y)
+        return BoundingBox.from_tuple(((x - d, y - d), (x + d, y + d)))
+
+    def covers(self, position: Optional["MapPosition"], entity: "BaseEntity") -> bool:
+        """Does this pole (at its position, or at ``position``) power ``entity``?
+
+        Engine rule: the entity's collision box intersects the pole's supply
+        square — box against box (TRANSPORT_CONNECTIVITY_PLAN §8.4).
+        """
+        from FactoryVerse.game.agent.infra.live_batch import _collision_box, _overlap, _supply_box
+        from FactoryVerse.game.factory.prototypes import get_entity_prototypes
+
+        d = float(self.prototype["supply_area_distance"])
+        px, py = (position.x, position.y) if position is not None else (self.position.x, self.position.y)
+        ebox = _collision_box(get_entity_prototypes(), entity.name, entity.position.x, entity.position.y)
+        ox, oy = _overlap(ebox, _supply_box(px, py, d))
+        return ox > 0 and oy > 0
+
+    def wire_reach(self, position: Optional["MapPosition"], other: "BaseEntity") -> bool:
+        """Is ``other`` within wire distance of this pole (or of ``position``)?
+
+        A bound from the prototypes, not a statement of wiring — what is
+        actually wired is history and is read live from the real pole.
+        """
+        from FactoryVerse.game.factory.prototypes import get_entity_prototypes
+
+        reach = float(self.prototype["maximum_wire_distance"])
+        other_reach = float(get_entity_prototypes().get_prototype(other.name).get("maximum_wire_distance", reach))
+        px, py = (position.x, position.y) if position is not None else (self.position.x, self.position.y)
+        from FactoryVerse.game.factory.types import MapPosition as _MP
+
+        return _MP(x=px, y=py).distance(other.position) <= min(reach, other_reach)
 
     @property
     def supply_area_distance(self) -> float:

@@ -13,7 +13,18 @@ from FactoryVerse.game.factory.entity.capabilities import (
 )
 
 
-class Inserter(InserterMixin, ElectricMixin, RotatableMixin, BaseEntity):
+class _InserterPlacementMirror:
+    """Same-named twin of ``EntityReference.placements_between`` on the placed
+    inserter: where could another inserter of this type move items from
+    ``source`` into ``target``. One vocabulary (Constitution §6)."""
+
+    def placements_between(self, source: BaseEntity, target: BaseEntity):
+        from FactoryVerse.game.agent.entity_reference import EntityReference
+
+        return EntityReference(self.name, self._entity_ops._rcon).placements_between(source, target)
+
+
+class Inserter(_InserterPlacementMirror, InserterMixin, ElectricMixin, RotatableMixin, BaseEntity):
     """Electric inserter - moves items using electricity.
 
     **For Agents**: Inserters pick from one side and drop on the other.
@@ -59,7 +70,7 @@ class BulkInserter(Inserter):
     pass
 
 
-class BurnerInserter(InserterMixin, BurnerMixin, RotatableMixin, BaseEntity):
+class BurnerInserter(_InserterPlacementMirror, InserterMixin, BurnerMixin, RotatableMixin, BaseEntity):
     """Burner inserter - requires fuel to operate.
 
     **For Agents**: Use add_fuel() to refuel this inserter.

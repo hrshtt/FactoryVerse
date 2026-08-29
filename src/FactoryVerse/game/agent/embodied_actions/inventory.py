@@ -1,10 +1,35 @@
-from typing import List, Optional, Union, Literal, Dict, TYPE_CHECKING
+from typing import List, Optional, Union, Literal, Dict, Any, TYPE_CHECKING
+from dataclasses import dataclass
+import asyncio
+import time
 from FactoryVerse.game.factory.item.base import ItemStack, Item, PlaceableItem
 from FactoryVerse.game.factory.item.create_item import create_item, create_item_stack
 from ..infra.rcon_handler import RconHandler
 
 if TYPE_CHECKING:
     from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
+    from FactoryVerse.game.agent.embodied_actions.crafting import CraftingAction
+
+
+@dataclass
+class AwaitItemResult:
+    """What ``inventory.await_item`` returns — always actuals, never a raise
+    (Constitution §9). The same shape whether the wait ended by arrival, by
+    the bound, or by refusing to wait at all.
+    """
+
+    item: str
+    wanted: int
+    have: int
+    satisfied: bool
+    well_founded: bool          # was anything in the crafting queue producing this?
+    remaining_in_queue: int      # crafts of this recipe still queued at return
+    waited_ticks: int            # game ticks the wait consumed (0 if none)
+    reason: str                  # arrived | already_held | bound_reached | nothing_producing_it
+    stacks: List[ItemStack]      # the non-blocking read, as `item_stacks` would give it
+
+    def __bool__(self) -> bool:
+        return self.satisfied
 
 
 class AgentInventory:
@@ -17,6 +42,82 @@ class AgentInventory:
     def __init__(self, rcon_handler: RconHandler, placement: "PlacementAction"):
         self._rcon = rcon_handler
         self._placement = placement
+        self._crafting: Optional["CraftingAction"] = None
+
+    def _attach_crafting(self, crafting: "CraftingAction") -> None:
+        """Let ``await_item`` read the crafting queue (read only, never write)."""
+        self._crafting = crafting
+
+    def _game_tick(self) -> Optional[int]:
+        try:
+            raw = self._rcon.execute("rcon.print(game.tick)")
+            return int(str(raw).strip()) if raw is not None and str(raw).strip() else None
+        except Exception:
+            return None
+
+    def _queued_for(self, item_name: str) -> int:
+        """Crafts still queued whose recipe is named like the item (the
+        hand-craft recipe name matches the product for every recipe in
+        scope today; multi-product recipes are not covered — see notes)."""
+        if self._crafting is None:
+            return 0
+        try:
+            status = self._crafting.status()
+        except Exception:
+            return 0
+        queue = status.get("queue") if isinstance(status, dict) else getattr(status, "queue", [])
+        total = 0
+        for item in queue or []:
+            recipe = item.get("recipe") if isinstance(item, dict) else getattr(item, "recipe", None)
+            count = item.get("count") if isinstance(item, dict) else getattr(item, "count", 0)
+            if recipe == item_name:
+                total += int(count or 0)
+        return total
+
+    async def await_item(
+        self,
+        item_name: str,
+        count: int = 1,
+        timeout_ticks: int = 1800,
+        poll_seconds: float = 0.25,
+    ) -> AwaitItemResult:
+        """Wait, bounded, for ``count`` of ``item_name`` to be in inventory.
+
+        - Returns at once if already held.
+        - Refuses to wait (returns at once, ``well_founded=False``) when nothing
+          in the hand-crafting queue produces the item — a wait for something
+          nothing is producing would only burn the bound (Constitution §9).
+        - Otherwise polls the inventory until the count is met or the bound
+          in game ticks passes, then returns actuals. It never raises: the
+          craft keeps running in the world after the bound; only the wait ended.
+
+        The wait spends the same clock as the rest of the turn (§18); the
+        tick trailer on the result shows what it cost. It reads the crafting
+        queue and never writes to it.
+        """
+        wanted = max(1, int(count))
+        have = self.check_total(item_name)
+        if have >= wanted:
+            return AwaitItemResult(item_name, wanted, have, True, True, self._queued_for(item_name), 0,
+                                   "already_held", self.item_stacks)
+        queued = self._queued_for(item_name)
+        if queued <= 0:
+            return AwaitItemResult(item_name, wanted, have, False, False, 0, 0,
+                                   "nothing_producing_it", self.item_stacks)
+        start_tick = self._game_tick()
+        start_wall = time.monotonic()
+        while True:
+            await asyncio.sleep(poll_seconds)
+            have = self.check_total(item_name)
+            now_tick = self._game_tick()
+            waited = (now_tick - start_tick) if (now_tick is not None and start_tick is not None) \
+                else int((time.monotonic() - start_wall) * 60)
+            if have >= wanted:
+                return AwaitItemResult(item_name, wanted, have, True, True, self._queued_for(item_name),
+                                       waited, "arrived", self.item_stacks)
+            if waited >= timeout_ticks:
+                return AwaitItemResult(item_name, wanted, have, False, True, self._queued_for(item_name),
+                                       waited, "bound_reached", self.item_stacks)
 
     def _get_inventory_items(self) -> List[ItemStack]:
         """Get agent's main inventory contents.
