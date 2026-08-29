@@ -473,6 +473,11 @@ class FactorioServerManager:
             socat_commands.append(
                 f"socat UDP-LISTEN:{agent_port},fork,reuseaddr UDP:host.docker.internal:{agent_port}"
             )
+            # The per-agent `turn` stream rides its own port (NOTIFICATIONS plan).
+            turn_port = cfg.get_agent_turn_port(agent_idx, server_index=instance_id)
+            socat_commands.append(
+                f"socat UDP-LISTEN:{turn_port},fork,reuseaddr UDP:host.docker.internal:{turn_port}"
+            )
         # Also forward snapshot port
         socat_commands.append(
             f"socat UDP-LISTEN:{snapshot_port},fork,reuseaddr UDP:host.docker.internal:{snapshot_port}"

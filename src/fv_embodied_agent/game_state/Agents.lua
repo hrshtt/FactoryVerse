@@ -8,6 +8,7 @@ local udp = require("utils.udp")
 local utils = require("utils.utils")
 local ParamSpec = require("utils.ParamSpec")
 local custom_events = require("utils.custom_events")
+local stream = require("utils.stream")
 local M = {}
 
 -- ============================================================================
@@ -74,9 +75,9 @@ end
 --- @param spawn_position table|nil Optional spawn position {x, y}
 --- @param udp_port number|nil Optional UDP port for agent-specific payloads (defaults to 34202)
 --- @return Agent Agent instance
-function M._create_agent_instance(agent_id, color, force_name, spawn_position, udp_port)
+function M._create_agent_instance(agent_id, color, force_name, spawn_position, udp_port, turn_port)
     -- Use Agent:new() which handles all initialization
-    local agent = Agent:new(agent_id, color, force_name, spawn_position, udp_port)
+    local agent = Agent:new(agent_id, color, force_name, spawn_position, udp_port, turn_port)
     
     return agent
 end
@@ -125,8 +126,9 @@ end
 --- @param set_unique_forces boolean|nil Default false - use player force; if true, agent gets unique force
 --- @param default_common_force string|nil Force name to use if set_unique_forces=false (default: "player")
 --- @param initial_inventory table|nil Initial inventory items {item_name = count, ...}
---- @return table Created agent info {agent_id, force_name, interface_name}
-function M.create_agent(udp_port, set_unique_forces, default_common_force, initial_inventory)
+--- @param turn_port number|nil UDP port for the agent's `turn` stream (defaults to udp_port + 98)
+--- @return table Created agent info {agent_id, force_name, interface_name, udp_port, turn_port}
+function M.create_agent(udp_port, set_unique_forces, default_common_force, initial_inventory, turn_port)
     if not storage.agents then
         storage.agents = {}
     end
@@ -177,7 +179,7 @@ function M.create_agent(udp_port, set_unique_forces, default_common_force, initi
         total_agents = total_agents + 1
     end
     local color = generate_agent_color(total_agents + 1, total_agents + 1)
-    local agent = M._create_agent_instance(agent_id, color, force_name, position, udp_port)
+    local agent = M._create_agent_instance(agent_id, color, force_name, position, udp_port, turn_port)
     
     -- Add initial inventory items if provided
     if initial_inventory and type(initial_inventory) == "table" and next(initial_inventory) ~= nil then
@@ -196,6 +198,7 @@ function M.create_agent(udp_port, set_unique_forces, default_common_force, initi
         force_name = agent.force_name,
         interface_name = "agent_" .. agent.agent_id,
         udp_port = agent.udp_port,
+        turn_port = agent.turn_port,
     }
 end
 
@@ -402,6 +405,11 @@ function M.on_tick(event)
             end
         end
         process_agent_messages(agent)
+
+        -- Flush the agent's `turn` stream: stamp, write, send — once per tick.
+        if agent.turn_stream then
+            stream.flush(agent:turn_stream())
+        end
         
         -- Only log when agent actually sends messages (not on every tick)
         if M.DEBUG and agent_message_count > 0 then
@@ -514,6 +522,7 @@ function M.list_agents()
                 id = agent_id_value,
                 force = agent.force_name,
                 udp_port = agent.udp_port,
+                turn_port = agent.turn_port,
                 interface_name = "agent_" .. agent_id_value,
                 entity_valid = false,
             }
@@ -558,8 +567,9 @@ end
 --- Specifications for admin API methods
 M.AdminApiSpecs = {
     create_agent = {
-        _param_order = {"udp_port", "set_unique_forces", "default_common_force", "initial_inventory"},
+        _param_order = {"udp_port", "set_unique_forces", "default_common_force", "initial_inventory", "turn_port"},
         udp_port = {type = "number", required = false},
+        turn_port = {type = "number", required = false},
         set_unique_forces = {type = "boolean", required = false},
         default_common_force = {type = "string", required = false},
         initial_inventory = {type = "table", required = false},
@@ -584,6 +594,11 @@ M.AdminApiSpecs = {
     },
     list_agents = {
         _param_order = {},
+    },
+    stream_state = {
+        _param_order = {"agent_id", "stream_name"},
+        agent_id = {type = "number", required = true},
+        stream_name = {type = "string", required = true},
     },
     reset_research = {
         _param_order = {"force_name"},
@@ -795,8 +810,56 @@ function M.get_agent_state(agent_id)
     }
 end
 
+--- What Python asks for at attach and after any gap.
+--- @param agent_id number
+--- @param stream_name string Only "turn" exists today.
+--- @return table {port, epoch, seq, tick}
+function M.stream_state(agent_id, stream_name)
+    local agent = M.get_agent(agent_id)
+    if not agent then
+        error(string.format("stream_state: agent %s not found", tostring(agent_id)))
+    end
+    if stream_name ~= "turn" then
+        error(string.format("stream_state: unknown stream %q (only \"turn\" exists)", tostring(stream_name)))
+    end
+    return stream.state(agent:turn_stream())
+end
+
+--- Start a new epoch on every agent's streams. Called from
+--- on_configuration_changed only — the files are cleared there, and the
+--- counters must reset with them.
+--- @return number agents touched
+function M.new_epoch_all()
+    local n = 0
+    for _, agent in pairs(storage.agents or {}) do
+        if agent and agent.turn_stream then
+            stream.new_epoch(agent:turn_stream())
+            n = n + 1
+        end
+    end
+    return n
+end
+
+--- Test-only: emit a payload of roughly `bytes` bytes on an agent's turn
+--- stream, to measure the datagram ceiling (gate 1). Rides the vocabulary's
+--- `research_moved` type because it is the only turn type with free-form data.
+--- @param agent_id number
+--- @param bytes number
+--- @return table {epoch, seq_after_flush_will_be, bytes}
+function M.emit_turn_test(agent_id, bytes)
+    local agent = M.get_agent(agent_id)
+    if not agent then
+        error(string.format("emit_turn_test: agent %s not found", tostring(agent_id)))
+    end
+    local s = agent:turn_stream()
+    local filler = string.rep("x", math.max(0, (bytes or 0)))
+    stream.emit(s, "research_moved", { probe = true, bytes = bytes, filler = filler })
+    return { epoch = s.slot.epoch, next_seq = s.slot.seq + 1, bytes = bytes }
+end
+
 M.admin_api = {
     create_agent = M.create_agent,
+    stream_state = M.stream_state,
     destroy_agents = M.destroy_agents,
     update_agent_friends = M.update_agent_friends,
     update_agent_enemies = M.update_agent_enemies,
@@ -810,6 +873,7 @@ M.admin_api = {
 
 M.testing_api = {
     add_items = M.add_items,
+    emit_turn_test = M.emit_turn_test,
     clear_inventory = M.clear_inventory,
     unlock_technology = M.unlock_technology,
     set_crafting_speed = M.set_crafting_speed,

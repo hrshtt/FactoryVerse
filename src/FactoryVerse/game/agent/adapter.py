@@ -32,6 +32,7 @@ class AgentCreationResult:
     force_name: str
     interface_name: str
     udp_port: int
+    turn_port: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AgentCreationResult":
@@ -40,6 +41,7 @@ class AgentCreationResult:
             force_name=data.get("force_name", ""),
             interface_name=data.get("interface_name", ""),
             udp_port=data.get("udp_port", 0),
+            turn_port=data.get("turn_port", 0),
         )
 
 
@@ -53,6 +55,7 @@ class AgentInfo:
     udp_port: int
     entity_valid: bool
     position: Optional[Dict[str, float]] = None
+    turn_port: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AgentInfo":
@@ -63,6 +66,7 @@ class AgentInfo:
             udp_port=data.get("udp_port", 0),
             entity_valid=data.get("entity_valid", False),
             position=data.get("position"),
+            turn_port=data.get("turn_port", 0),
         )
 
 
@@ -115,6 +119,7 @@ class AgentInterface(RemoteInterfaceAdapter):
         set_unique_forces: bool = False,
         force: Optional[str] = None,
         initial_inventory: Optional[Dict[str, int]] = None,
+        turn_port: Optional[int] = None,
     ) -> AgentCreationResult:
         """Create a new agent in Factorio.
 
@@ -145,6 +150,7 @@ class AgentInterface(RemoteInterfaceAdapter):
             set_unique_forces,
             default_force,
             initial_inventory,
+            turn_port,
         )
 
         if result:
@@ -184,6 +190,17 @@ class AgentInterface(RemoteInterfaceAdapter):
         result = self._call("destroy_agents", refs, destroy_forces)
         logger.info(f"Destroyed agents: {agent_refs}")
         return result or {}
+
+    def stream_state(self, agent_id: int, stream_name: str = "turn") -> Dict[str, Any]:
+        """Ask Lua where a stream stands: {port, epoch, seq, tick}.
+
+        Python adopts this at attach and after any gap (NOTIFICATIONS plan,
+        "The Python mirror"). It never guesses a baseline from disk.
+        """
+        result = self._call("stream_state", agent_id, stream_name)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"stream_state returned {result!r}")
+        return result
 
     def list_agents(self) -> List[AgentInfo]:
         """List all agents in the game.

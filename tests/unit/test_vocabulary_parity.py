@@ -40,6 +40,7 @@ AGENT_MOD = REPO / "src" / "fv_embodied_agent"
 SNAPSHOT_MOD = REPO / "src" / "fv_snapshot"
 
 EVENT_STREAM = REPO / "src" / "FactoryVerse" / "game" / "agent" / "event_stream.py"
+NOTIFICATIONS = AGENT_MOD / "game_state" / "Notifications.lua"
 LISTENER = REPO / "src" / "FactoryVerse" / "game" / "agent" / "infra" / "async_listener.py"
 SYNC = REPO / "src" / "FactoryVerse" / "game" / "infra" / "duckdb" / "sync.py"
 REMOTE_VIEW = REPO / "src" / "FactoryVerse" / "game" / "agent" / "remote_view.py"
@@ -126,7 +127,7 @@ def vocab():
 def test_vocabulary_is_flat_data_with_two_blocks(vocab):
     assert set(vocab) == {"wire", "target"}
     assert set(vocab["wire"]) == {
-        "event_type", "notification_type", "action", "status", "op", "file_op", "file_type",
+        "event_type", "turn", "action", "status", "op", "file_op", "file_type",
     }
     assert set(vocab["target"]) == {"action", "turn", "entities", "files", "not_on_wire"}
     for block in vocab.values():
@@ -166,10 +167,23 @@ def test_file_created_is_a_queue_tag_not_a_wire_string(vocab):
     assert "file_created" not in vocab["wire"]["event_type"]
 
 
-def test_wire_notification_type_matches_lua(vocab):
-    emitted = lua_strings(r'send_(?:agent|force)_notification\([^,]+,\s*"(\w+)"', AGENT_MOD)
-    assert emitted
-    assert emitted == vocab["wire"]["notification_type"]
+def test_wire_turn_matches_lua(vocab):
+    """The turn stream's event_types are the literals Notifications.lua emits."""
+    text = NOTIFICATIONS.read_text()
+    emitted = set(re.findall(r'emit_(?:agent|force)_turn_event\([^,]+,\s*"(\w+)"', text))
+    assert emitted, "no emit sites found in Notifications.lua"
+    assert emitted == vocab["wire"]["turn"]
+    # The stream landed: wire and target agree for `turn`.
+    assert vocab["wire"]["turn"] == vocab["target"]["turn"]
+
+
+def test_turn_stream_never_sends_directly(vocab):
+    """Notifications.lua emits onto the stream; only stream.lua may send."""
+    text = NOTIFICATIONS.read_text()
+    assert "send_udp" not in text
+    assert 'require("utils.udp")' not in text
+    stream_lua = (REPO / "src" / "fv_embodied_agent" / "utils" / "stream.lua").read_text()
+    assert "helpers.send_udp" in stream_lua and "helpers.write_file" in stream_lua
 
 
 def test_wire_action_matches_lua(vocab):
@@ -223,14 +237,10 @@ def test_target_not_on_wire_is_exactly_the_names_absent_from_lua(vocab):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="event_stream.py types 5 of 7 notification_types; "
-    "research_moved / research_reversed fall through to the untyped GameEvent",
-)
 def test_notification_types_are_all_typed(vocab):
+    """Every wire.turn name has a typed GameEvent subclass (flipped 2026-08-29)."""
     typed = set()
-    for name in vocab["wire"]["notification_type"]:
+    for name in vocab["wire"]["turn"]:
         event = GameEvent.from_payload(
             {"notification_type": name, "agent_id": 1, "tick": 0, "data": {}}
         )
@@ -238,15 +248,15 @@ def test_notification_types_are_all_typed(vocab):
             typed.add(name)
     dispatch = set(re.findall(r'notification_type == "(\w+)"', EVENT_STREAM.read_text()))
     assert typed and dispatch
-    assert typed == vocab["wire"]["notification_type"]
-    assert dispatch == vocab["wire"]["notification_type"]
+    assert typed == vocab["wire"]["turn"]
+    assert dispatch == vocab["wire"]["turn"]
 
 
 def test_typed_events_never_name_a_type_off_the_wire(vocab):
     """The green half of the leg above: no typed class for a phantom type."""
     dispatch = set(re.findall(r'notification_type == "(\w+)"', EVENT_STREAM.read_text()))
     assert dispatch
-    assert dispatch <= vocab["wire"]["notification_type"]
+    assert dispatch <= vocab["wire"]["turn"]
 
 
 @pytest.mark.xfail(
@@ -309,7 +319,7 @@ def _snapshot_port_subscriptions() -> set[str]:
 def test_snapshot_port_subscriptions_match_wire(vocab):
     # The two per-agent-port event_types are consumed by the action
     # listener via a "*" subscription and are not the snapshot port's.
-    snapshot_types = vocab["wire"]["event_type"] - {"action", "notification"}
+    snapshot_types = vocab["wire"]["event_type"] - {"action"}
     subs = _snapshot_port_subscriptions()
     assert subs and snapshot_types
     assert subs == snapshot_types
@@ -317,7 +327,7 @@ def test_snapshot_port_subscriptions_match_wire(vocab):
 
 def test_snapshot_port_subscription_gap_is_exactly_as_declared(vocab):
     """Pin the shape of the gap so the xfail above cannot drift silently."""
-    snapshot_types = vocab["wire"]["event_type"] - {"action", "notification"}
+    snapshot_types = vocab["wire"]["event_type"] - {"action"}
     subs = _snapshot_port_subscriptions()
     assert subs - snapshot_types == {"ghost_operation"}
     assert snapshot_types - subs == {"snapshot_state", "chunk_charted"}

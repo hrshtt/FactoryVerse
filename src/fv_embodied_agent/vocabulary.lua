@@ -16,19 +16,20 @@
 ---           ("The design") intends. Names in target.not_on_wire exist on
 ---           no wire and in no Lua string today; the test asserts exactly
 ---           that, and asserts every other target name IS a wire literal.
----           When stream.lua lands, names move from not_on_wire into wire
----           and the corresponding assertion flips.
+---           When stream.lua lands for a stream, its names move from
+---           not_on_wire into wire and the corresponding assertion flips.
+---           The `turn` stream landed 2026-08-29: wire.turn == target.turn.
 ---
 --- Gate 5 of the plan is the set of tests over this file. Python-side legs
 --- that do not yet agree with `wire` are strict xfails naming the gap.
 
 return {
     wire = {
-        -- The top-level envelope field. Per-agent ports carry `action` and
-        -- `notification`; the snapshot port carries the rest.
+        -- The top-level envelope field on the action port (`action`) and the
+        -- snapshot port (the rest). The per-agent `turn` port carries
+        -- stream.lua envelopes whose event_type ∈ wire.turn below.
         event_type = {
             action = true,               -- fv_embodied_agent/utils/udp.lua
-            notification = true,         -- fv_embodied_agent/game_state/Notifications.lua
             entity_operation = true,     -- fv_snapshot/utils/udp_payloads.lua
             file_io = true,
             snapshot_state = true,
@@ -37,8 +38,10 @@ return {
             chunk_init_complete = true,
         },
 
-        -- data field on event_type == "notification".
-        notification_type = {
+        -- event_type on the per-agent `turn` stream (utils/stream.lua
+        -- envelope). Emitted from game_state/Notifications.lua; the stream
+        -- refuses anything else. Python re-keys it as notification_type.
+        turn = {
             research_queued = true,
             research_started = true,
             research_finished = true,

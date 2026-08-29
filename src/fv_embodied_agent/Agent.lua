@@ -86,6 +86,8 @@ Agent.__index = Agent
 -- Import custom events (must be at module load time)
 local custom_events = require("utils.custom_events")
 local udp = require("utils.udp")
+local stream = require("utils.stream")
+local vocabulary = require("vocabulary")
 Agent.on_chunk_charted = custom_events.on_chunk_charted
 Agent.on_agent_created = custom_events.on_agent_created
 Agent.on_agent_removed = custom_events.on_agent_removed
@@ -117,14 +119,36 @@ end
 -- AGENT CREATION
 -- ============================================================================
 
+--- Offset from the action-stream port to the turn-stream port
+--- (34300 - 34202). Mirrors environment/config.py agent_turn_port_base.
+Agent.TURN_PORT_OFFSET = 98
+
+--- Rebuild the handle for this agent's `turn` stream.
+--- Cheap; call on demand. The slot lives in storage, the buffer does not.
+--- @return table stream handle
+function Agent:turn_stream()
+    self.streams = self.streams or {}
+    self.streams.turn = self.streams.turn or { epoch = 0, seq = 0 }
+    if self.turn_port == nil then
+        self.turn_port = (self.udp_port or udp.UDP_PORT) + Agent.TURN_PORT_OFFSET
+    end
+    return stream.open(
+        self.streams.turn,
+        self.turn_port,
+        vocabulary.target.turn,
+        string.format("factoryverse/agent-snapshots/%d/turn.jsonl", self.agent_id)
+    )
+end
+
 --- Create a new agent instance
 --- @param agent_id number
 --- @param color table|nil RGB color {r, g, b}
 --- @param force_name string|nil Optional force name (if nil, uses agent-{agent_id})
 --- @param spawn_position table|nil Optional spawn position {x, y}
 --- @param udp_port number|nil Optional UDP port for agent-specific payloads (defaults to 34202)
+--- @param turn_port number|nil Optional UDP port for the agent's `turn` stream (defaults to udp_port + TURN_PORT_OFFSET)
 --- @return Agent
-function Agent:new(agent_id, color, force_name, spawn_position, udp_port)
+function Agent:new(agent_id, color, force_name, spawn_position, udp_port, turn_port)
     -- Initialize storage if needed
     storage.agents = storage.agents or {}
 
@@ -136,6 +160,10 @@ function Agent:new(agent_id, color, force_name, spawn_position, udp_port)
     -- Default UDP port
     local default_udp_port = udp.UDP_PORT or 34202
     local agent_udp_port = udp_port or default_udp_port
+    -- The turn stream port sits at a fixed offset from the action port so
+    -- both bases and strides in environment/config.py line up:
+    -- action = 34202 + 10·N + i, turn = 34300 + 10·N + i.
+    local agent_turn_port = turn_port or (agent_udp_port + Agent.TURN_PORT_OFFSET)
 
     -- Create agent instance with all state consolidated
     local agent = setmetatable({
@@ -143,7 +171,11 @@ function Agent:new(agent_id, color, force_name, spawn_position, udp_port)
         entity = nil,     -- Will be set in _create_entity
         force_name = nil, -- Will be set in _create_entity
         labels = {},
-        udp_port = agent_udp_port, -- UDP port for agent-specific payloads
+        udp_port = agent_udp_port, -- UDP port for agent-specific payloads (action stream)
+        turn_port = agent_turn_port, -- UDP port for the per-agent `turn` stream
+        -- Stream tracking slots (persisted). Handles are rebuilt on demand via
+        -- Agent:turn_stream(); buffers never enter storage.
+        streams = { turn = { epoch = 0, seq = 0 } },
 
         -- Consolidated activity state
         walking = {},
@@ -170,6 +202,10 @@ function Agent:new(agent_id, color, force_name, spawn_position, udp_port)
 
     -- Store agent instance
     storage.agents[agent_id] = agent
+
+    -- A stream's first epoch begins with the agent: (epoch=1, seq=0) and an
+    -- empty file. Never moved by on_load.
+    stream.new_epoch(agent:turn_stream())
 
     -- Raise agent created event
     script.raise_event(Agent.on_agent_created, {

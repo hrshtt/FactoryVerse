@@ -366,5 +366,10 @@ end)
 
 script.on_configuration_changed(function()
     log("hello from fv_embodied_agent on_configuration_changed")
+    -- Streams: counter and file reset together, here and in on_init only.
+    if Agents and Agents.new_epoch_all then
+        local n = Agents.new_epoch_all()
+        log(string.format("[stream] new epoch on %d agent stream(s)", n))
+    end
 end)
 

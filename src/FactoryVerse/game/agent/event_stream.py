@@ -75,6 +75,12 @@ class GameEvent:
     tick: int
     data: Dict[str, Any]
     timestamp: datetime = field(default_factory=datetime.now)
+    # Stream provenance (NOTIFICATIONS plan). None for events that did not
+    # arrive on a sequenced stream.
+    epoch: Optional[int] = None
+    seq: Optional[int] = None
+    source: Optional[str] = None
+    filled_from_file: bool = False
 
     @property
     def is_critical(self) -> bool:
@@ -89,13 +95,20 @@ class GameEvent:
 
     def to_dict(self) -> Dict[str, Any]:
         """Return the stable wire representation used by coding harnesses."""
-        return {
+        out = {
             "notification_type": self.notification_type,
             "agent_id": self.agent_id,
             "tick": self.tick,
             "data": self.data,
             "critical": self.is_critical,
         }
+        if self.seq is not None:
+            out["epoch"] = self.epoch
+            out["seq"] = self.seq
+            out["source"] = self.source
+            if self.filled_from_file:
+                out["filled_from_file"] = True
+        return out
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "GameEvent":
@@ -104,54 +117,35 @@ class GameEvent:
         Dispatches to typed subclasses based on notification_type.
         """
         notification_type = payload.get("notification_type", "unknown")
-        agent_id = payload.get("agent_id", 0)
-        tick = payload.get("tick", 0)
-        data = payload.get("data", {})
+        common = dict(
+            notification_type=notification_type,
+            agent_id=payload.get("agent_id", 0),
+            tick=payload.get("tick", 0),
+            data=payload.get("data", {}),
+            epoch=payload.get("epoch"),
+            seq=payload.get("seq"),
+            source=payload.get("source"),
+            filled_from_file=bool(payload.get("filled_from_file", False)),
+        )
 
-        # Dispatch to typed subclass
+        # Dispatch to typed subclass — one branch per wire.turn name.
         if notification_type == "research_finished":
-            return ResearchFinishedEvent(
-                notification_type=notification_type,
-                agent_id=agent_id,
-                tick=tick,
-                data=data,
-            )
+            return ResearchFinishedEvent(**common)
         elif notification_type == "research_started":
-            return ResearchStartedEvent(
-                notification_type=notification_type,
-                agent_id=agent_id,
-                tick=tick,
-                data=data,
-            )
+            return ResearchStartedEvent(**common)
         elif notification_type == "research_cancelled":
-            return ResearchCancelledEvent(
-                notification_type=notification_type,
-                agent_id=agent_id,
-                tick=tick,
-                data=data,
-            )
+            return ResearchCancelledEvent(**common)
         elif notification_type == "research_queued":
-            return ResearchQueuedEvent(
-                notification_type=notification_type,
-                agent_id=agent_id,
-                tick=tick,
-                data=data,
-            )
+            return ResearchQueuedEvent(**common)
+        elif notification_type == "research_moved":
+            return ResearchMovedEvent(**common)
+        elif notification_type == "research_reversed":
+            return ResearchReversedEvent(**common)
         elif notification_type == "crafting_finished":
-            return CraftingFinishedEvent(
-                notification_type=notification_type,
-                agent_id=agent_id,
-                tick=tick,
-                data=data,
-            )
+            return CraftingFinishedEvent(**common)
         else:
             # Generic event for unknown types
-            return cls(
-                notification_type=notification_type,
-                agent_id=agent_id,
-                tick=tick,
-                data=data,
-            )
+            return cls(**common)
 
 
 # =============================================================================
@@ -230,6 +224,26 @@ class ResearchQueuedEvent(GameEvent):
 
     def __str__(self) -> str:
         return f"Research Queued: {self.technology}"
+
+
+@dataclass
+class ResearchMovedEvent(GameEvent):
+    """Research queue reordered (force-scoped)."""
+
+    def __str__(self) -> str:
+        return "Research Queue Reordered"
+
+
+@dataclass
+class ResearchReversedEvent(GameEvent):
+    """Research un-researched (force-scoped)."""
+
+    @property
+    def technology(self) -> str:
+        return self.data.get("technology", "unknown")
+
+    def __str__(self) -> str:
+        return f"Research Reversed: {self.technology}"
 
 
 # =============================================================================

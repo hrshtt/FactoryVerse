@@ -1,59 +1,69 @@
 --- Notifications.lua
---- Handles game event notifications sent to agents via UDP
---- Supports research events, crafting events, and other asynchronous game events
+--- Game events that belong to the agent's `turn` stream: research lifecycle
+--- (force-scoped, fanned out per agent) and hand-crafting completion
+--- (character-scoped). Nothing here sends; everything rides utils/stream.lua
+--- and leaves at the per-tick flush with an epoch/seq stamp and a file line.
+---
+--- The action stream (per-call completions correlated by action_id) is a
+--- separate port and a separate path (Agent.message_queue → Agents.on_tick).
+--- A craft completion therefore leaves once per port: `craft_enqueue
+--- completed` on the action port, `crafting_finished` on the turn port.
 
 local M = {}
-local udp = require("utils.udp")
+local stream = require("utils.stream")
 local custom_events = require("utils.custom_events")
 
 -- ============================================================================
 -- NOTIFICATION HELPERS
 -- ============================================================================
 
---- Send notification to specific agent
+--- Emit a `turn` event onto one agent's stream.
+--- Nothing is sent here: the stream stamps, writes and sends at the next
+--- flush (Agents.on_tick), once per tick, in emit order. The envelope carries
+--- epoch/seq/tick; agent_id rides inside data.
 --- @param agent_id number Agent ID
---- @param notification_type string Type of notification (e.g., "research_finished")
---- @param data table Notification-specific data
-local function send_agent_notification(agent_id, notification_type, data)
+--- @param event_type string One of vocabulary.target.turn
+--- @param data table Event-specific data
+local function emit_agent_turn_event(agent_id, event_type, data)
     local agent = storage.agents[agent_id]
-    if not agent or not agent.udp_port then
-        log(string.format("[Notifications] Agent %d not found or no UDP port", agent_id))
-        return
+    if not agent or not agent.turn_stream then
+        log(string.format("[Notifications] Agent %s not found or has no turn stream", tostring(agent_id)))
+        return false
     end
-    
-    local payload = {
-        event_type = "notification",
-        notification_type = notification_type,
-        agent_id = agent_id,
-        tick = game.tick,
-        data = data
-    }
-    
-    udp.send_udp_notification(payload, agent.udp_port)
-    log(string.format("[Notifications] Sent %s to agent %d", notification_type, agent_id))
+    data = data or {}
+    data.agent_id = agent_id
+    local accepted = stream.emit(agent:turn_stream(), event_type, data)
+    if accepted then
+        log(string.format("[Notifications] Emitted %s for agent %d", event_type, agent_id))
+    end
+    return accepted
 end
 
---- Send notification to all agents in a force
+--- Emit a force-scoped `turn` event to every agent on the force.
+--- Research is force state; each agent gets its own datagram at its own seq.
 --- @param force LuaForce The force
---- @param notification_type string Type of notification
---- @param data table Notification-specific data
-local function send_force_notification(force, notification_type, data)
+--- @param event_type string One of vocabulary.target.turn
+--- @param data table Event-specific data (copied per agent)
+local function emit_force_turn_event(force, event_type, data)
     if not force or not force.valid then
         return
     end
-    
+
     local count = 0
     for agent_id, agent in pairs(storage.agents or {}) do
-        if agent.character and agent.character.valid and 
+        if agent.character and agent.character.valid and
            agent.character.force == force then
-            send_agent_notification(agent_id, notification_type, data)
-            count = count + 1
+            local copy = {}
+            for k, v in pairs(data or {}) do copy[k] = v end
+            if emit_agent_turn_event(agent_id, event_type, copy) then
+                count = count + 1
+            end
         end
     end
-    
+
     if count > 0 then
-        log(string.format("[Notifications] Sent %s to %d agents in force %s", 
-            notification_type, count, force.name))
+        log(string.format("[Notifications] Emitted %s to %d agents in force %s",
+            event_type, count, force.name))
     end
 end
 
@@ -98,7 +108,7 @@ function M.on_research_finished(event)
         level = tech.level
     }
     
-    send_force_notification(force, "research_finished", data)
+    emit_force_turn_event(force, "research_finished", data)
 end
 
 --- Called when research starts
@@ -117,7 +127,7 @@ function M.on_research_started(event)
         level = tech.level
     }
     
-    send_force_notification(force, "research_started", data)
+    emit_force_turn_event(force, "research_started", data)
 end
 
 --- Called when research is cancelled
@@ -133,7 +143,7 @@ function M.on_research_cancelled(event)
         player_index = event.player_index
     }
     
-    send_force_notification(force, "research_cancelled", data)
+    emit_force_turn_event(force, "research_cancelled", data)
 end
 
 --- Called when research is queued
@@ -152,7 +162,7 @@ function M.on_research_queued(event)
         level = tech.level
     }
     
-    send_force_notification(force, "research_queued", data)
+    emit_force_turn_event(force, "research_queued", data)
 end
 
 --- Called when research queue is reordered
@@ -167,7 +177,7 @@ function M.on_research_moved(event)
         player_index = event.player_index
     }
     
-    send_force_notification(force, "research_moved", data)
+    emit_force_turn_event(force, "research_moved", data)
 end
 
 --- Called when research is reversed (unresearched)
@@ -186,7 +196,7 @@ function M.on_research_reversed(event)
         level = tech.level
     }
 
-    send_force_notification(force, "research_reversed", data)
+    emit_force_turn_event(force, "research_reversed", data)
 end
 
 -- ============================================================================
@@ -211,7 +221,7 @@ function M.on_agent_crafting_completed(event)
         action_id = event.action_id,  -- Link back to original action if available
     }
 
-    send_agent_notification(agent_id, "crafting_finished", data)
+    emit_agent_turn_event(agent_id, "crafting_finished", data)
 end
 
 -- ============================================================================
