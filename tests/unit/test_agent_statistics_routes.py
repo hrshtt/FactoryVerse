@@ -1,4 +1,9 @@
-"""Offline contracts for file and DuckDB production-statistics routes."""
+"""Offline contracts for the production-statistics routes.
+
+Force production is polled and NOT a table (Constitution §10): DuckDBSource
+reads it from the same JSONL AgentSnapshotSource reads. Hand-crafted/mined
+counts are event-backed and live in agent_manual_production_statistics.
+"""
 
 from __future__ import annotations
 
@@ -73,10 +78,18 @@ async def test_boot_replay_matches_file_and_database_routes(tmp_path):
     SnapshotLoader(database.connection, tmp_path).load_all()
 
     file_source = AgentSnapshotSource(tmp_path)
-    db_source = DuckDBSource(database.connection)
+    db_source = DuckDBSource(database.connection, script_output_dir=tmp_path)
 
     assert await db_source.get_force_production(1) == await file_source.get_force_production(1)
     assert await db_source.get_manual_production(1) == await file_source.get_manual_production(1)
+
+
+@pytest.mark.asyncio
+async def test_database_route_refuses_to_fake_force_production(tmp_path):
+    database = SnapshotDatabase()
+    database.ensure_schema()
+    with pytest.raises(RuntimeError):
+        await DuckDBSource(database.connection).get_force_production(1)
 
 
 @pytest.mark.asyncio
@@ -121,7 +134,7 @@ async def test_live_file_notifications_refresh_database_route(tmp_path):
     sync._handle_file_io(
         {
             "event_type": "file_io",
-            "file_type": "agent_production_statistics",
+            "file_type": "agent_production_statistics",  # polled: ignored
             "file_path": "factoryverse/agent-snapshots/1/production-statistics.jsonl",
             "agent_id": 1,
         }
@@ -134,10 +147,10 @@ async def test_live_file_notifications_refresh_database_route(tmp_path):
             "agent_id": 1,
         }
     )
-    assert sync.flush_pending() == 2
+    assert sync.flush_pending() == 1
 
     file_source = AgentSnapshotSource(tmp_path)
-    db_source = DuckDBSource(database.connection)
+    db_source = DuckDBSource(database.connection, script_output_dir=tmp_path)
     assert await db_source.get_force_production(1) == await file_source.get_force_production(1)
     assert await db_source.get_manual_production(1) == await file_source.get_manual_production(1)
 
@@ -151,14 +164,14 @@ def test_agent_statistics_tables_are_real_and_resettable():
             "SELECT table_name FROM information_schema.tables"
         ).fetchall()
     }
-    assert "agent_production_statistics" in names
+    assert "agent_production_statistics" not in names  # polled, not a table
     assert "agent_manual_production_statistics" in names
 
     database.connection.execute(
-        "INSERT INTO agent_production_statistics VALUES (1, 1, '{}')"
+        "INSERT INTO agent_manual_production_statistics VALUES (1, 1, '{}', '{}')"
     )
     database.reset()
     assert database.connection.execute(
-        "SELECT count(*) FROM agent_production_statistics"
+        "SELECT count(*) FROM agent_manual_production_statistics"
     ).fetchone()[0] == 0
 

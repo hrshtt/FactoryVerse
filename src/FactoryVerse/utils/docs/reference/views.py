@@ -351,7 +351,7 @@ else:
         decision_points=[
             "Empty list + stale chunk_snapshot_meta tick means OLD DATA, not 'no water'",
             "Never pass a returned water-tile position to walking.walk_to()",
-            "Resolve placement_hints.find_offshore_pump_sites() before travelling or placing",
+            "Resolve entity_reference(\"offshore-pump\").sites(near=...) before travelling or placing",
         ],
     )
 
@@ -563,23 +563,70 @@ entities = remote_view.get_entities_at_anchor_tile(5, 10)
 
     registry.register_method(
         cls=RemoteView,
-        method_name="get_power_networks",
-        description="Per-network power census from the latest power sample: anchor "
-        "pole, pole/member counts, production/consumption/storage, headroom ratio, "
-        "per-prototype breakdowns, and low_power/no_power member counts.",
+        method_name="status",
+        description="Base-wide entity status summary — which problem, how many, roughly "
+        "where — read from the newest status dump on disk (source = status_dump:<tick>), "
+        "never from a table. The per-entity status seen at scale.",
+        examples=[
+            Example(
+                code="""# What is wrong right now, and where?
+summary = remote_view.status(statuses=["no_power", "low_power", "no_fuel", "no_minable_resources"])
+print(summary.source, "age", summary.age_ticks, "ticks")
+for name, group in summary.groups.items():
+    print(name, group.count, group.entities[:3], f"+{group.more} more")""",
+                decision_context="Checking the factory for problems without inspecting entities one at a time",
+                expected_outcome="Returns StatusSummary (tick None and no groups when no dump exists yet)",
+                validation_level=ValidationLevel.SYNTAX,
+            ),
+        ],
+        decision_points=[
+            "source names the dump block; age_ticks says how stale it is — a dump is a snapshot, not a live read",
+            "Poles carry no status and never appear; a fuel-starved generator still reads 'working'",
+            "Drill into one machine with entity.status (live); a pole's coverage of it is pole.covers(entity)",
+        ],
+    )
+
+    registry.register_method(
+        cls=RemoteView,
+        method_name="status_changed",
+        description="Status transitions since a tick — what became unhappy and what "
+        "recovered — by diffing two status dump blocks (source = status_dump:<from>-><to>).",
+        examples=[
+            Example(
+                code="""# What changed since I last looked?
+change = remote_view.status_changed(since_tick=12000)
+for label, transitions in change.grouped().items():
+    print(label, len(transitions), transitions[0].entity)""",
+                decision_context="Reviewing what happened to the base over a period",
+                expected_outcome="Returns StatusChange with transitions grouped by before -> after",
+                validation_level=ValidationLevel.SYNTAX,
+            ),
+        ],
+        decision_points=[
+            "The earlier block is the newest at or before since_tick; the window on disk is bounded",
+        ],
+    )
+
+    registry.register_method(
+        cls=RemoteView,
+        method_name="power",
+        description="Per-network power census from the newest power sample on disk "
+        "(source = power_dump:<tick>): anchor pole, pole/member counts, "
+        "production/consumption/storage, headroom ratio, per-prototype breakdowns, and "
+        "low_power/no_power member counts from the newest status dump.",
         examples=[
             Example(
                 code="""# Survey every electric network's supply vs demand
-report = remote_view.get_power_networks()
+report = remote_view.power()
 if report.sample_tick is None:
     print("No power sample yet")
 else:
     for net in report.networks:
         print(net.anchor_pole_name, net.production_w, net.consumption_w)
         print(f"  {net.no_power_count} no_power, {net.low_power_count} low_power")
-    print(report.freshness_note)""",
+    print(report.source, report.freshness_note)""",
                 decision_context="Checking whether the factory's networks are over/under-supplied",
-                expected_outcome="Returns PowerNetworksReport (sample_tick None if no sample ingested)",
+                expected_outcome="Returns PowerNetworksReport (sample_tick None if no sample on disk)",
                 validation_level=ValidationLevel.SYNTAX,
             ),
         ],
@@ -587,6 +634,42 @@ else:
             "Engine network_id is ephemeral (renumbers on merge/split) — the anchor pole is the durable reference",
             "headroom_ratio is production/consumption, or None when consumption is 0",
             "low_power/no_power counts use map_entity's as-of-write electric_network_id (see freshness_note)",
+        ],
+    )
+
+    registry.register_method(
+        cls=RemoteView,
+        method_name="get_power_networks",
+        description="Alias of remote_view.power() kept for older callers; prefer power().",
+        examples=[
+            Example(
+                code="""report = remote_view.get_power_networks()  # same as remote_view.power()""",
+                decision_context="Legacy name",
+                expected_outcome="Returns PowerNetworksReport",
+                validation_level=ValidationLevel.SYNTAX,
+            ),
+        ],
+    )
+
+    registry.register_method(
+        cls=RemoteView,
+        method_name="production",
+        description="Force production read live over RCON (source = live:<tick>) plus this "
+        "agent's hand-crafted and hand-mined counts from its event records; automated() "
+        "is the difference.",
+        examples=[
+            Example(
+                code="""# How much is the factory making without my hands?
+p = remote_view.production()
+print(p.source, p.automated().get("iron-plate", 0), "automated plates")
+print("hand-crafted:", p.hand_crafted)""",
+                decision_context="Measuring automation rather than total output",
+                expected_outcome="Returns ProductionReport (source 'unavailable' without an engine connection)",
+                validation_level=ValidationLevel.SYNTAX,
+            ),
+        ],
+        decision_points=[
+            "produced/consumed are cumulative force counters; diff two reads for a rate",
         ],
     )
 
@@ -609,138 +692,11 @@ print(diag.production_w, diag.consumption_w)""",
             ),
         ],
         decision_points=[
+            "Reads the newest status dump and power sample on disk (not tables); sample_tick says which sample",
             "verdict is one of working/not_covered_by_any_pole/network_has_no_generation/"
             "network_undersupplied/upstream_generator_starved/no_status_data/entity_not_found/non_electric_or_no_issue",
             "A fuel-starved generator still reports 'working' — the explanation flags this",
             "Poles report nil status; diagnosing a pole returns non_electric_or_no_issue",
-        ],
-    )
-
-    # =========================================================================
-    # VerifyView — live confirmation (the DB says WHICH; verify says IS-IT-TRUE)
-    # =========================================================================
-
-    from FactoryVerse.game.agent.verify_view import VerifyView
-
-    registry.register_class(
-        cls=VerifyView,
-        accessor_name="verify",
-        description="Live engine confirmation of power / coverage facts. The snapshot DB "
-        "answers WHICH poles/entities exist; verify answers IS IT TRUE RIGHT NOW via live "
-        "reads. Positions/statuses/network-ids are live at call time; supply distances and "
-        "collision boxes are prototype-derived (static).",
-        decision_context="Use verify before committing a build to a pole spine, or to "
-        "confirm an entity is actually powered. supply_coverage previews coverage geometry "
-        "(including an as-if-placed proposed_pole) so a fractional-tile miss is visible "
-        "BEFORE the entities go dark.",
-        notes=[
-            "Coverage is the engine rule: entity collision box intersects pole supply box",
-            "margin is signed: overlap depth if covered, shortest move (with axis) if not",
-            "supply areas render tile-aligned in ascii_map (as Factorio computes them)",
-            "No snapshot lag — reads hit the running engine directly via RCON",
-        ],
-        related_classes=["RemoteView", "PlacementHints"],
-    )
-    registry.register_required_class(VerifyView)
-
-    registry.register_method(
-        cls=VerifyView,
-        method_name="supply_coverage",
-        description="Check whether every electric consumer's collision box actually "
-        "intersects a pole's supply area, with per-entity margins and a tile-aligned "
-        "ascii map. Optionally score an as-if-placed proposed_pole (pre-placement preview).",
-        examples=[
-            Example(
-                code="""# The attempt-5 miss, made visible: a medium-pole spine at y=64.5
-# leaves a drill at y=59.5 exactly 0.15 tiles short on Y, while the
-# furnace at y=62.5 is covered.
-report = verify.supply_coverage(
-    entities=[
-        ("electric-mining-drill", MapPosition(x=5.5, y=59.5)),
-        ("electric-furnace", MapPosition(x=5.5, y=62.5)),
-    ],
-    area={"left_top": {"x": 0, "y": 55}, "right_bottom": {"x": 12, "y": 68}},
-)
-print(report.summary)
-# -> '1/2 covered | NOT covered: electric-mining-drill@(5.5,59.5) (0.15 short on Y)'
-print(report.ascii_map)
-# 59 ...d...      <- lowercase d: NOT covered
-# 61 #######      <- '#': tiles inside the medium pole's supply area
-# 62 ###F###      <- uppercase F: covered
-# 64 ###P###      <- 'P': the pole
-for c in report.entities:
-    if not c.covered:
-        print(c.entity_name, c.margin, c.margin_axis, c.detail)""",
-                decision_context="Previewing coverage geometry before a drill line commits to a pole spine",
-                expected_outcome="Returns SupplyCoverageReport; drill NOT covered (0.15 on Y), furnace covered",
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-            Example(
-                code="""# Pre-placement preview: move the pole one tile closer (proposed_pole)
-# and watch the drill flip to covered without placing anything.
-report = verify.supply_coverage(
-    entities=[("electric-mining-drill", MapPosition(x=5.5, y=59.5))],
-    area={"left_top": {"x": 0, "y": 55}, "right_bottom": {"x": 12, "y": 68}},
-    proposed_pole=("medium-electric-pole", MapPosition(x=5.5, y=63.5)),
-)
-print(report.summary, report.covered_count, "of", report.total_count)""",
-                decision_context="Choosing where to place a new pole so it actually covers the target",
-                expected_outcome="Proposed pole flips the drill to covered in the preview",
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-        ],
-        decision_points=[
-            "Pass entities explicitly, or an area to discover live consumers",
-            "proposed_pole is scored as if already placed — nothing is built",
-            "margin_axis is 'X', 'Y', or 'XY'; margin is tiles (overlap depth or shortfall)",
-        ],
-    )
-
-    registry.register_method(
-        cls=VerifyView,
-        method_name="powered",
-        description="Live power status of one or many entities, keyed 'name@(x,y)'. "
-        "powered == on an electric network AND not reporting no_power.",
-        examples=[
-            Example(
-                code="""# Confirm the drill and furnace power state right now
-checks = verify.powered([
-    ("electric-mining-drill", MapPosition(x=5.5, y=59.5)),
-    ("electric-furnace", MapPosition(x=5.5, y=62.5)),
-])
-for key, chk in checks.items():
-    print(key, chk.powered, chk.status_name, chk.electric_network_id)""",
-                decision_context="Verifying entities actually receive power after wiring a network",
-                expected_outcome="Dict of PoweredCheck; uncovered drill powered=False (no_power)",
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-        ],
-        decision_points=[
-            "A fuel-starved producer still reports 'working' — cross-check network wattages",
-            "found=False means no such entity within 0.6 tiles of the given position",
-        ],
-    )
-
-    registry.register_method(
-        cls=VerifyView,
-        method_name="connected",
-        description="Whether two entities share one live electric network right now "
-        "(same non-nil electric_network_id).",
-        examples=[
-            Example(
-                code="""# Are the EEI and the pole on the same network?
-check = verify.connected(
-    ("electric-energy-interface", MapPosition(x=2.5, y=64.5)),
-    ("medium-electric-pole", MapPosition(x=5.5, y=64.5)),
-)
-print(check.connected, check.explanation)""",
-                decision_context="Confirming a generator actually feeds the intended pole network",
-                expected_outcome="Returns ConnectedCheck with connected bool and an explanation",
-                validation_level=ValidationLevel.SYNTAX,
-            ),
-        ],
-        decision_points=[
-            "Network ids are ephemeral (renumber on merge/split) — this is a right-now fact",
         ],
     )
 

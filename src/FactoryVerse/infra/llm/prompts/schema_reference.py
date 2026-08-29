@@ -22,7 +22,6 @@ from FactoryVerse.game.infra.duckdb.schema_definitions import (
     ANALYTICS_TABLES,
     CORE_TABLES,
     COMPONENT_TABLES,
-    STATE_TABLES,
 )
 
 # Forbidden SQL keywords
@@ -283,47 +282,35 @@ def _generate_table_reference() -> str:
             doc += f"\n**Example:**\n```sql\n{table.example_query}\n```\n"
         doc += "\n"
 
-    # State tables (live/replayed power + status feeds)
-    doc += "### State Tables\n\n"
+    # What is deliberately NOT a table (Constitution §10)
+    doc += "### Not in the database: status, power, production\n\n"
     doc += (
-        "Live power and entity-status feeds. Cadence: `power_samples`/"
-        "`power_networks` are sampled every **300 ticks (~5s)**; `entity_status` "
-        "is a **full snapshot every 60 ticks (~1s)**. "
+        "Entity status, electric-network power flow and force production are "
+        "**polled simulation state** — nothing raises an event when a machine "
+        "runs short of ingredients or a network's load changes — so they are "
+        "never stored here. A stored copy would be plausibly wrong at read "
+        "time. Read them live through `remote_view`, and every answer names "
+        "its source:\n\n"
+        "- `remote_view.status()` — base-wide status summary grouped by status "
+        "value (`source = status_dump:<tick>`, with `age_ticks`).\n"
+        "- `remote_view.status_changed(since_tick)` — transitions since a tick.\n"
+        "- `remote_view.power()` — per-network production/consumption/storage "
+        "with low_power/no_power counts (`source = power_dump:<tick>`).\n"
+        "- `remote_view.production()` — force production, live over RCON "
+        "(`source = live:<tick>`), split against hand-crafted/mined.\n"
+        "- `remote_view.diagnose_power(name, position)` — one-call triage.\n\n"
         "The engine `network_id` is **EPHEMERAL** — it renumbers on network "
         "merge/split, exactly like `unit_number`; reference a network by its "
         "**anchor pole** and an entity by **name + position**, never by a raw "
         "id. `map_entity.electric_network_id` is **as-of-write** (the id at the "
-        "last entity snapshot); fresh network membership lives in "
-        "`power_networks`.\n\n"
-    )
-    for table in STATE_TABLES:
-        doc += f"#### `{table.name}`\n\n"
-        doc += f"{table.purpose}\n\n"
-        doc += "| Column | Type | Description |\n"
-        doc += "|--------|------|-------------|\n"
-        for col in table.columns:
-            doc += f"| `{col.name}` | `{col.type}` | {col.description} |\n"
-
-        if table.notes:
-            doc += f"\n{table.notes}\n"
-
-        if table.example_queries:
-            doc += "\n**Examples:**\n```sql\n"
-            doc += "\n".join(table.example_queries)
-            doc += "\n```\n"
-        elif table.example_query:
-            doc += f"\n**Example:**\n```sql\n{table.example_query}\n```\n"
-        doc += "\n"
-
-    doc += (
-        "> **Status caveats (live-learned):** poles carry no status (absent "
-        "from every dump). A starved producer — including an electric-energy "
-        "interface — still reads `working`; only consumers show `low_power`. "
-        "Status is single-valued, so a logistics status "
-        "(`full_output`, `item_ingredient_shortage`) can mask power distress. "
-        "In the flow numbers a starved network reads `production_w ≈ "
-        "consumption_w` (delivered energy), so undersupply is detected by the "
-        "`low_power` status, NOT by a wattage gap.\n\n"
+        "last entity snapshot).\n\n"
+        "> **Status caveats (live-learned):** poles carry no status. A starved "
+        "producer still reads `working`; only consumers show `low_power`. "
+        "Status is single-valued, so a logistics status (`full_output`, "
+        "`item_ingredient_shortage`) can mask power distress. A starved "
+        "network reads `production_w ≈ consumption_w` (delivered energy), so "
+        "undersupply is detected by the `low_power` status, not by a wattage "
+        "gap.\n\n"
     )
 
     doc += "---\n\n"

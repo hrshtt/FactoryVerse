@@ -6,11 +6,10 @@ but `database.py`'s `_create_tables` used `CORE_TABLES + COMPONENT_TABLES`
 only, so a declared table could go undocumented-safe OR, worse, documented
 and silently empty forever).
 
-Also asserts the 3 NEW STATE_TABLES (power_samples/power_networks/
-entity_status) are both (a) created and (b) backed by a reducer in
-analytics_ops — and that `power_statistics` cannot silently come back as a
-bare declaration without an ingestion path (regression guard: that pattern
-is exactly what got deleted in this build).
+Also guards the opposite direction (2026-08-29): the polled feeds that
+used to be tables — entity_status, power_samples, power_networks,
+agent_production_statistics, and the older power_statistics — must not come
+back as tables or reducers. They are read on demand (Constitution §10).
 
 NOTE ON PLACEMENT/NAMING: the task brief for this build named this file
 `tests/unit/test_dead_tables_and_docs.py`. That basename already exists at
@@ -102,45 +101,50 @@ class TestDocumentedGroupsAreCreated:
         )
 
 
-class TestNewStateTablesWiredEndToEnd:
-    """Task 3/C3: the 3 new STATE_TABLES must be BOTH created (the literal
-    missing line this whole bug class came from) AND have a reducer in
-    analytics_ops (C4 single-reducer rule)."""
-
-    @pytest.mark.parametrize("table", sd.STATE_TABLES, ids=lambda t: t.name)
-    def test_state_table_is_created(self, table, created_table_names):
-        assert table.name in created_table_names, (
-            f"STATE_TABLES table {table.name!r} is declared in "
-            "schema_definitions.py but database.py's _create_tables does "
-            "not create it"
-        )
-
-    def test_power_samples_and_power_networks_share_one_reducer(self):
-        assert hasattr(analytics_ops, "apply_power_sample")
-        src = inspect.getsource(analytics_ops.apply_power_sample)
-        assert "power_samples" in src
-        assert "power_networks" in src
-
-    def test_entity_status_has_reducer(self):
-        assert hasattr(analytics_ops, "apply_status_dump")
-        src = inspect.getsource(analytics_ops.apply_status_dump)
-        assert "entity_status" in src
+POLLED_TABLES = (
+    "entity_status",
+    "power_samples",
+    "power_networks",
+    "power_statistics",
+    "agent_production_statistics",
+)
+POLLED_REDUCERS = ("apply_status_dump", "apply_power_sample", "apply_agent_production_sample")
 
 
-class TestPowerStatisticsResurrectionGuard:
-    """Regression guard: `power_statistics` (the old global-network table)
-    was DELETED — superseded by power_samples/power_networks. Nobody may
-    quietly bring back a bare TableDefinition/table for it without wiring a
-    real ingestion path; that omission is exactly the bug class this build
-    fixes for power_samples/power_networks/entity_status."""
+class TestPolledFeedsAreNotTables:
+    """Constitution §10 applied retroactively (API plan §4.6, 2026-08-29):
+    entity status, power samples/networks and force production are polled —
+    nothing raises an event when they change — so they left the database.
+    Their files are read on demand through remote_view.status()/.power()/
+    .production(). Nobody may quietly bring one back as a bare
+    TableDefinition, a reducer, or a STATE_TABLES group."""
 
-    def test_power_statistics_definition_removed_from_module(self):
-        assert not hasattr(sd, "POWER_STATISTICS")
-        assert "POWER_STATISTICS" not in sd.__all__
+    @pytest.mark.parametrize("name", POLLED_TABLES)
+    def test_polled_table_is_not_declared(self, name):
+        assert name not in {t.name for t in sd.ALL_TABLES}
 
-    def test_power_statistics_not_in_any_table_collection(self):
-        names = {t.name for t in sd.ALL_TABLES}
-        assert "power_statistics" not in names
+    @pytest.mark.parametrize("name", POLLED_TABLES)
+    def test_polled_table_is_not_created(self, name, created_table_names):
+        assert name not in created_table_names
 
-    def test_power_statistics_table_does_not_exist(self, created_table_names):
-        assert "power_statistics" not in created_table_names
+    def test_no_state_tables_group(self):
+        assert not hasattr(sd, "STATE_TABLES")
+        assert "STATE_TABLES" not in sd.__all__
+
+    @pytest.mark.parametrize("reducer", POLLED_REDUCERS)
+    def test_no_reducer_for_polled_feeds(self, reducer):
+        assert not hasattr(analytics_ops, reducer)
+
+    def test_the_event_backed_analytics_table_is_created_and_reduced(self, created_table_names):
+        assert "agent_manual_production_statistics" in created_table_names
+        src = inspect.getsource(analytics_ops.apply_agent_manual_snapshot)
+        assert "agent_manual_production_statistics" in src
+
+    def test_the_readers_exist_where_the_plan_puts_them(self):
+        from FactoryVerse.game.agent import status_dump, power_dump
+        from FactoryVerse.game.agent.remote_view import RemoteView
+
+        assert hasattr(status_dump, "StatusDumpReader")
+        assert hasattr(power_dump, "PowerDumpReader")
+        for name in ("status", "status_changed", "power", "production"):
+            assert callable(getattr(RemoteView, name)), name

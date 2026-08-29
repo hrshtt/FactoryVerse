@@ -423,52 +423,52 @@ class DuckDBSource:
     Requires a DuckDB connection with loaded snapshot data.
 
     Expected tables:
-    - agent_production_statistics: Cumulative force snapshots
     - agent_manual_production_statistics: Cumulative crafting/mining snapshot
+
+    Force production is polled state and is NOT a table (Constitution §10);
+    it is read from the agent's ``production-statistics.jsonl`` under
+    ``script_output_dir`` — the same file AgentSnapshotSource reads — or,
+    live, through RCONSource. Without ``script_output_dir`` this source
+    cannot answer for force production and says so.
     """
 
-    def __init__(self, connection: "duckdb.DuckDBPyConnection"):
+    def __init__(
+        self,
+        connection: "duckdb.DuckDBPyConnection",
+        script_output_dir: Optional[Path] = None,
+    ):
         """Initialize with a DuckDB connection.
 
         Args:
             connection: Active DuckDB connection with loaded data
+            script_output_dir: script-output root holding
+                factoryverse/agent-snapshots/<id>/production-statistics.jsonl
         """
         self._conn = connection
+        self._script_output_dir = Path(script_output_dir) if script_output_dir else None
 
     async def get_force_production(self, agent_id: int) -> ProductionStats:
-        """Get force-level production statistics from DuckDB.
-
-        Queries the latest production statistics for the agent.
+        """Get force-level production statistics from the polled JSONL file.
 
         Args:
             agent_id: The agent ID to get stats for
 
         Returns:
             ProductionStats with output, input item counts, and tick
+
+        Raises:
+            RuntimeError: if no script_output_dir was given — force production
+                is not in the database, and an empty answer would be a lie.
         """
-        result = self._conn.execute(
-            """
-            SELECT statistics, tick
-            FROM agent_production_statistics
-            WHERE agent_id = ?
-            ORDER BY tick DESC
-            LIMIT 1
-            """,
-            [agent_id],
-        ).fetchone()
-        if not result:
-            return ProductionStats(output={}, input={}, tick=0)
-
-        statistics = result[0]
-        if isinstance(statistics, str):
-            statistics = json.loads(statistics)
-        statistics = statistics or {}
-
-        return ProductionStats(
-            output=statistics.get("output", {}),
-            input=statistics.get("input", {}),
-            tick=int(result[1] or 0),
+        if self._script_output_dir is None:
+            raise RuntimeError(
+                "DuckDBSource cannot read force production: it is not a table "
+                "(Constitution §10). Pass script_output_dir= or use RCONSource."
+            )
+        output, input_items, tick = _load_latest_production_stats(
+            _get_agent_snapshot_dir(self._script_output_dir, agent_id)
         )
+        return ProductionStats(output=output, input=input_items, tick=int(tick or 0))
 
     async def get_manual_production(self, agent_id: int) -> ManualStats:
         """Get manual production statistics from DuckDB.

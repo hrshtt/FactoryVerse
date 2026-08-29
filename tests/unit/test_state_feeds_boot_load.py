@@ -1,10 +1,8 @@
-"""Offline test: SnapshotLoader.load_all() boot-loads the power_networks.jsonl
-and latest status-<tick>.jsonl "state" feeds (power-impl-contracts.md Task 3,
-Task 7c), on a synthetic tmp-dir tree shaped like the real script-output
-layout (root/factoryverse/snapshots/power_networks.jsonl,
-root/factoryverse/status/status-<tick>.jsonl) — the same layout RemoteView
-hands SnapshotLoader (a script-output ROOT, not the pre-normalized
-.../factoryverse/snapshots dir).
+"""Boot load and the polled feeds (Constitution §10, API plan §4.6).
+
+On a synthetic tree shaped like the real script-output layout, the loader
+must (a) not error when the polled files exist or are absent, (b) create no
+table for them, and (c) leave them on disk for the on-demand readers.
 """
 
 from __future__ import annotations
@@ -15,130 +13,65 @@ import pytest
 
 from FactoryVerse.game.infra.duckdb.database import SnapshotDatabase
 from FactoryVerse.game.infra.duckdb.loader import SnapshotLoader
+from FactoryVerse.game.agent.remote_view import RemoteView
 
-
-POWER_LINE = {
-    "tick": 12345,
-    "networks": [
-        {
-            "network_id": 4,
-            "anchor_pole": {
-                "name": "small-electric-pole",
-                "position": {"x": 971.5, "y": 971.5},
-            },
-            "pole_count": 3,
-            "member_count": 7,
-            "production_w": 77500.0,
-            "consumption_w": 77500.0,
-            "storage_j": 0.0,
-            "production_w_by_prototype": {"electric-energy-interface": 77500.0},
-            "consumption_w_by_prototype": {"assembling-machine-1": 77500.0},
-        }
-    ],
-}
-
-STATUS_DUMP_OLD = [
-    {"meta": True, "tick": 4000, "count": 1},
-    {"name": "boiler", "status": "no_power", "x": 1.0, "y": 2.0},
-]
-
-STATUS_DUMP_NEW = [
-    {"meta": True, "tick": 5000, "count": 2},
+POWER_LINE = {"tick": 12345, "networks": [{"network_id": 4, "anchor_pole": {"name": "small-electric-pole", "position": {"x": 971.5, "y": 971.5}}, "pole_count": 3, "member_count": 7, "production_w": 77500.0, "consumption_w": 77500.0, "storage_j": 0.0, "production_w_by_prototype": {}, "consumption_w_by_prototype": {}}]}
+STATUS_DUMP = [
+    {"meta": True, "tick": 5000, "count": 1},
     {"name": "assembling-machine-1", "status": "no_power", "x": 986.5, "y": 1140.5},
-    {"name": "boiler", "status": "working", "x": 10.0, "y": 20.0},
 ]
 
 
 @pytest.fixture
 def state_feed_root(tmp_path):
-    """Real production layout: root/factoryverse/{snapshots,status}/..."""
     snapshots_dir = tmp_path / "factoryverse" / "snapshots"
     snapshots_dir.mkdir(parents=True)
     status_dir = tmp_path / "factoryverse" / "status"
     status_dir.mkdir(parents=True)
-
-    (snapshots_dir / "power_networks.jsonl").write_text(
-        json.dumps(POWER_LINE) + "\n"
-    )
-
-    # Two dump files: the loader must pick the NEWEST by tick-in-filename,
-    # not by directory iteration order or mtime.
-    with open(status_dir / "status-4000.jsonl", "w") as f:
-        for rec in STATUS_DUMP_OLD:
-            f.write(json.dumps(rec) + "\n")
+    (snapshots_dir / "power_networks.jsonl").write_text(json.dumps(POWER_LINE) + "\n")
     with open(status_dir / "status-5000.jsonl", "w") as f:
-        for rec in STATUS_DUMP_NEW:
+        for rec in STATUS_DUMP:
             f.write(json.dumps(rec) + "\n")
-
     return tmp_path
 
 
-@pytest.fixture
-def loaded(state_feed_root):
-    db = SnapshotDatabase()  # in-memory
+def _tables(con):
+    return {r[0] for r in con.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+
+
+def test_loader_ignores_polled_files_and_creates_no_table_for_them(state_feed_root):
+    db = SnapshotDatabase()
     db.ensure_schema()
-    loader = SnapshotLoader(db.connection, state_feed_root)
-    result = loader.load_all()
-    yield db.connection, result
-    db.close()
+    try:
+        SnapshotLoader(db.connection, state_feed_root).load_all()  # must not raise
+        names = _tables(db.connection)
+        for gone in ("entity_status", "power_samples", "power_networks", "agent_production_statistics"):
+            assert gone not in names
+    finally:
+        db.close()
 
 
-class TestBootLoadPowerNetworks:
-    def test_power_samples_populated(self, loaded):
-        con, _ = loaded
-        row = con.execute(
-            "SELECT tick, network_count FROM power_samples"
-        ).fetchone()
-        assert row == (12345, 1)
-
-    def test_power_networks_populated(self, loaded):
-        con, _ = loaded
-        row = con.execute(
-            "SELECT network_id, anchor_pole_name FROM power_networks"
-        ).fetchone()
-        assert row == (4, "small-electric-pole")
+def test_the_same_tree_is_readable_on_demand_with_a_declared_source(state_feed_root):
+    rv = RemoteView(snapshot_dir=state_feed_root, entity_ops=None, place_ops=None,
+                    walking_action=None, mining_action=None, udp_dispatcher=None, rcon_client=None)
+    assert rv._status_dump().current().source == "status_dump:5000"
+    assert rv._power_dump().newest().source == "power_dump:12345"
+    # Both snapshot_dir conventions resolve to the same files.
+    rv2 = RemoteView(snapshot_dir=state_feed_root / "factoryverse" / "snapshots", entity_ops=None, place_ops=None,
+                     walking_action=None, mining_action=None, udp_dispatcher=None, rcon_client=None)
+    assert rv2._status_dump().directory == rv._status_dump().directory
+    assert rv2._power_dump().path == rv._power_dump().path
 
 
-class TestBootLoadEntityStatus:
-    def test_newest_dump_wins_by_tick_in_filename(self, loaded):
-        """status-5000.jsonl must be applied, not status-4000.jsonl, even
-        though 4000 sorts/iterates first."""
-        con, _ = loaded
-        n = con.execute("SELECT COUNT(*) FROM entity_status").fetchone()[0]
-        assert n == 2
-
-        names = {
-            r[0]
-            for r in con.execute("SELECT entity_name FROM entity_status").fetchall()
-        }
-        assert names == {"assembling-machine-1", "boiler"}
-
-    def test_freshness_marker_reflects_newest_dump(self, loaded):
-        con, _ = loaded
-        row = con.execute(
-            "SELECT value FROM sync_state WHERE key = 'entity_status_last_tick'"
-        ).fetchone()
-        assert row == (5000,)
-
-
-class TestBootLoadMissingFilesAreNoOps:
-    def test_missing_power_and_status_files_do_not_error(self, tmp_path):
-        """A snapshot tree with no power_networks.jsonl / status dumps at
-        all (e.g. a brand-new save) must load without error and simply
-        leave the state tables empty."""
-        snapshots_dir = tmp_path / "factoryverse" / "snapshots"
-        snapshots_dir.mkdir(parents=True)
-
-        db = SnapshotDatabase()
-        db.ensure_schema()
-        try:
-            loader = SnapshotLoader(db.connection, tmp_path)
-            loader.load_all()  # must not raise
-            assert db.connection.execute(
-                "SELECT COUNT(*) FROM power_samples"
-            ).fetchone()[0] == 0
-            assert db.connection.execute(
-                "SELECT COUNT(*) FROM entity_status"
-            ).fetchone()[0] == 0
-        finally:
-            db.close()
+def test_missing_polled_files_do_not_error(tmp_path):
+    (tmp_path / "factoryverse" / "snapshots").mkdir(parents=True)
+    db = SnapshotDatabase()
+    db.ensure_schema()
+    try:
+        SnapshotLoader(db.connection, tmp_path).load_all()
+    finally:
+        db.close()
+    rv = RemoteView(snapshot_dir=tmp_path, entity_ops=None, place_ops=None,
+                    walking_action=None, mining_action=None, udp_dispatcher=None, rcon_client=None)
+    assert rv._status_dump().current() is None
+    assert rv._power_dump().newest() is None

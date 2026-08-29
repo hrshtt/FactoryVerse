@@ -45,6 +45,8 @@ from FactoryVerse.game.infra.duckdb.sync import SyncService
 from FactoryVerse.game.infra.duckdb.query import QueryExecutor
 from FactoryVerse.game.snapshot.types import LoadResult, SyncState
 from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
+from FactoryVerse.game.agent.status_dump import StatusBlock, StatusChange, StatusDumpReader
+from FactoryVerse.game.agent.power_dump import PowerDumpReader, PowerSample
 
 # MINE-BLOCK-1: the two tables natural resources live in. Trees and rocks are
 # entities; ore deposits are tiles whose amount decrements as they are mined.
@@ -64,17 +66,17 @@ logger = logging.getLogger(__name__)
 class PowerNetworkCensus:
     """One live electric network from the latest power sample.
 
-    Returned inside :class:`PowerNetworksReport` by
-    :meth:`RemoteView.get_power_networks`. The durable per-network reference is
-    the anchor pole (``anchor_pole_name`` + ``anchor_pole_position``); the
-    engine ``network_id`` is a per-sample handle only (it renumbers on
-    merge/split — see the power_networks table notes).
+    Returned inside :class:`PowerNetworksReport` by :meth:`RemoteView.power`.
+    The durable per-network reference is the anchor pole (``anchor_pole_name``
+    + ``anchor_pole_position``); the engine ``network_id`` is a per-sample
+    handle only (it renumbers on merge/split).
 
-    ``low_power_count`` / ``no_power_count`` are computed by joining
-    entity_status to map_entity on (name, position) to recover each entity's
-    ``electric_network_id``. That id is AS-OF the last entity write, not the
-    sample instant, so on a network that just merged/split the counts can lag
-    the wattages by up to one entity-write cycle.
+    ``low_power_count`` / ``no_power_count`` come from the newest status dump
+    (``status_dump:<tick>``) joined to map_entity on (name, position) to
+    recover each entity's ``electric_network_id``. That id is AS-OF the last
+    entity write, not the sample instant, so on a network that just
+    merged/split the counts can lag the wattages by up to one entity-write
+    cycle.
     """
 
     network_id: Optional[int]
@@ -99,19 +101,24 @@ class PowerNetworksReport:
 
     ``networks`` is ordered by anchor-pole position (stable across samples of
     an unchanged network). ``sample_tick`` is None only when no power sample
-    has been ingested yet. ``freshness_note`` documents the sample's age and
-    the as-of-write staleness of the entity_status join.
+    exists on disk yet. ``freshness_note`` documents the sample's age and the
+    as-of-write staleness of the status join. ``source`` names the sample
+    block this was read from (``power_dump:<tick>``) and ``status_source`` the
+    status block (``status_dump:<tick>``) — Constitution §11: a read that can
+    draw from either half of the map surface says which it used.
     """
 
     networks: List[PowerNetworkCensus]
     sample_tick: Optional[int]
     freshness_note: str
+    source: str = "power_dump:none"
+    status_source: str = "status_dump:none"
     # DIGEST-2: no_power entities that attribute to NO network (their
     # electric_network_id is nil — e.g. not covered by any pole, the sickest
-    # case). They appear in entity_status/diagnose_power but in no network's
+    # case). They appear in the status dump/diagnose_power but in no network's
     # per-net counts, so without this field the report (and the Task Progress
     # digest built from it) under-reports exactly the machines that are worst
-    # off. Network-independent count, straight from entity_status.
+    # off. Network-independent count, straight from the status dump.
     unattributed_no_power: int = 0
 
 
@@ -139,6 +146,68 @@ class PowerDiagnosis:
     covering_pole_name: Optional[str] = None
     covering_pole_position: Optional[Dict[str, float]] = None
     sample_tick: Optional[int] = None
+
+
+
+@dataclass(frozen=True)
+class StatusGroup:
+    """One status value seen across the base: how many, and roughly where."""
+
+    status: str
+    count: int
+    entities: List[Tuple[str, float, float]]  # (name, x, y), at most the requested number
+    more: int  # entities beyond the ones listed
+
+
+@dataclass
+class StatusSummary:
+    """The base-wide status read — the per-entity fact seen at scale.
+
+    Built from the newest status dump block on disk (``source`` =
+    ``status_dump:<tick>``), never from a database table: entity status has no
+    event backing (Constitution §10), so it is read on demand and stamped with
+    the block it came from (§11). ``age_ticks`` is how far the world has moved
+    since that block, when the current tick is readable; None otherwise.
+    """
+
+    tick: Optional[int]
+    source: str
+    groups: Dict[str, StatusGroup]
+    total: int
+    age_ticks: Optional[int] = None
+
+    def count(self, status: str) -> int:
+        group = self.groups.get(status)
+        return group.count if group else 0
+
+
+@dataclass
+class ProductionReport:
+    """Force production plus this agent's hand-crafted/hand-mined counts.
+
+    ``produced``/``consumed`` are the force's cumulative item production
+    statistics, read live over RCON (``source`` = ``live:<tick>``) — a polled
+    engine counter that is never stored in the map model. ``hand_crafted`` and
+    ``hand_mined`` come from the agent's event-driven crafting/mining records
+    (``agent_manual_production_statistics``), which are lawfully in the
+    database. Automated production is ``produced`` minus ``hand_crafted``.
+    """
+
+    tick: Optional[int]
+    source: str
+    produced: Dict[str, int]
+    consumed: Dict[str, int]
+    hand_crafted: Dict[str, int]
+    hand_mined: Dict[str, int]
+    agent_id: Optional[int] = None
+
+    def automated(self) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for name, count in self.produced.items():
+            auto = int(count) - int(self.hand_crafted.get(name, 0)) - int(self.hand_mined.get(name, 0))
+            if auto > 0:
+                out[name] = auto
+        return out
 
 
 class RemoteView:
@@ -191,6 +260,11 @@ class RemoteView:
         self._snapshot_dir = Path(snapshot_dir)
         self._udp_dispatcher = udp_dispatcher
         self._rcon_client = rcon_client
+        # On-demand readers over the dump files (Constitution §10/§11): status
+        # and power are polled simulation state and never enter the database.
+        self._status_reader: Optional[StatusDumpReader] = None
+        self._power_reader: Optional[PowerDumpReader] = None
+        self._agent_id: Optional[int] = None
         self._entity_ops = entity_ops
         self._place_ops = place_ops
         self._walking_action = walking_action
@@ -256,8 +330,8 @@ class RemoteView:
                 initial_sequence=0,  # Will be updated after load
                 db_lock=self._db_lock,
                 # Lets SyncService resolve the container-relative file_path
-                # carried by power_networks/entity_status file_io UDP
-                # payloads (power-impl-contracts.md Task 4).
+                # carried by file_io UDP payloads (trees/rocks chunk rewrites,
+                # agent crafting/mining records).
                 snapshot_dir=self._snapshot_dir,
             )
         else:
@@ -269,12 +343,9 @@ class RemoteView:
             self._snapshot_dir,
         )
 
-        # NOTE: entity_status is now a real persistent table (see
-        # schema_definitions.ENTITY_STATUS), populated via
-        # analytics_ops.apply_status_dump by both SnapshotLoader.load_all()
-        # (boot) and SyncService (live). The old on-demand status_dir/
-        # status_loader.py path is gone (Task 5) — QueryExecutor no longer
-        # takes a status_dir argument.
+        # NOTE: entity status and power flow are NOT tables. They are read on
+        # demand from the dump files through self._status_dump() /
+        # self._power_dump() (Constitution §10: no event backs them).
         self._query = QueryExecutor(
             self._database.connection,
             entity_ops=self._entity_ops,
@@ -810,7 +881,7 @@ class RemoteView:
             concluding water does not exist.
 
         Before travelling or placing, use
-        ``placement_hints.find_offshore_pump_sites`` around one of these tiles
+        ``entity_reference("offshore-pump").sites(near=...)`` around one of these tiles
         to obtain engine-validated pump anchors, directions, and standable
         approach positions.
         """
@@ -891,167 +962,320 @@ class RemoteView:
             f"{{'x','y'}} dict, or (x, y) tuple"
         )
 
-    def _latest_power_tick(self, as_of_tick: Optional[int]) -> Optional[int]:
-        """Sample tick to read: as_of_tick if given, else max(power_samples.tick)."""
-        if as_of_tick is not None:
-            return int(as_of_tick)
-        rows = self.execute_raw("SELECT max(tick) FROM power_samples")
-        if rows and rows[0][0] is not None:
-            return int(rows[0][0])
+    # -------------------------------------------------------------------------
+    # Dump readers (Constitution §10/§11): status and power are read on demand
+    # -------------------------------------------------------------------------
+
+    def _script_output_root(self) -> Path:
+        """The script-output root, whichever of the two conventions
+        ``snapshot_dir`` follows (the root, or ``<root>/factoryverse/snapshots``)."""
+        root = self._snapshot_dir
+        if root.name == "snapshots" and root.parent.name == "factoryverse":
+            return root.parent.parent
+        if root.name == "factoryverse":
+            return root.parent
+        return root
+
+    def _status_dump(self) -> StatusDumpReader:
+        """The on-demand status dump reader (harness plumbing, not an affordance)."""
+        if self._status_reader is None:
+            self._status_reader = StatusDumpReader(
+                self._script_output_root() / "factoryverse" / "status"
+            )
+        return self._status_reader
+
+    def _power_dump(self) -> PowerDumpReader:
+        """The on-demand power sample reader (harness plumbing, not an affordance)."""
+        if self._power_reader is None:
+            self._power_reader = PowerDumpReader(
+                self._script_output_root() / "factoryverse" / "snapshots" / "power_networks.jsonl"
+            )
+        return self._power_reader
+
+    def set_agent_id(self, agent_id: Optional[int]) -> None:
+        """Tell the view which agent's force to read production for."""
+        self._agent_id = int(agent_id) if agent_id is not None else None
+
+    def _power_sample(self, as_of_tick: Optional[int]) -> Optional[PowerSample]:
+        if as_of_tick is None:
+            return self._power_dump().newest()
+        return self._power_dump().at_or_before(int(as_of_tick))
+
+    def _network_ids_by_entity(self) -> Dict[Tuple[str, float, float], Optional[int]]:
+        """map_entity's as-of-write electric_network_id keyed by (name, x, y)."""
+        rows = self.query(
+            "SELECT entity_name, position_x, position_y, electric_network_id "
+            "FROM map_entity WHERE electric_network_id IS NOT NULL"
+        )
+        return {
+            (str(r["entity_name"]), float(r["position_x"]), float(r["position_y"])): r["electric_network_id"]
+            for r in rows
+        }
+
+    @staticmethod
+    def _status_of(block: Optional[StatusBlock], entity_name: str, x: float, y: float) -> Optional[str]:
+        """The entity's status in ``block`` (exact key, then a ±0.6 tolerance)."""
+        if block is None:
+            return None
+        exact = block.records.get((entity_name, float(x), float(y)))
+        if exact is not None:
+            return exact
+        for (name, ex, ey), status in block.records.items():
+            if name == entity_name and abs(ex - x) <= 0.6 and abs(ey - y) <= 0.6:
+                return status
         return None
 
-    def _power_freshness_note(self, sample_tick: int) -> str:
-        """Describe the sample's age and the entity_status join staleness.
+    def _upstream_starved(
+        self,
+        block: Optional[StatusBlock],
+        network_id: Optional[int],
+        nid_map: Dict[Tuple[str, float, float], Optional[int]],
+    ) -> List[Dict[str, Any]]:
+        """no_fuel entities on the same network (generator starvation)."""
+        if network_id is None or block is None:
+            return []
+        out: List[Dict[str, Any]] = []
+        for key, status in block.records.items():
+            if status == "no_fuel" and nid_map.get(key) == network_id:
+                out.append({"entity_name": key[0], "x": key[1], "y": key[2]})
+                if len(out) >= 5:
+                    break
+        return out
 
-        Cheap DB-only reads: newest power sample tick and the entity_status
-        freshness marker (sync_state key 'entity_status_last_tick'). No RCON.
-        """
-        newest = self.execute_raw("SELECT max(tick) FROM power_samples")
-        newest_tick = newest[0][0] if newest and newest[0][0] is not None else sample_tick
-        parts = [f"power sample at tick {sample_tick}"]
-        if newest_tick is not None and int(newest_tick) != int(sample_tick):
-            parts.append(f"newest sample is tick {int(newest_tick)} (Δ{int(newest_tick) - int(sample_tick)} ticks)")
-        status_rows = self.execute_raw(
-            "SELECT value FROM sync_state WHERE key = 'entity_status_last_tick'"
-        )
-        if status_rows and status_rows[0][0] is not None:
-            status_tick = int(status_rows[0][0])
-            parts.append(
-                f"low_power/no_power counts joined via entity_status dump at tick "
-                f"{status_tick} (Δ{status_tick - int(sample_tick)} vs sample) using "
-                f"map_entity.electric_network_id which is as-of last entity write — "
-                f"membership can lag on a just-merged/split network"
-            )
-        else:
-            parts.append("no entity_status dump ingested yet — low_power/no_power counts are 0")
-        return "; ".join(parts)
+    def status(self, max_positions: int = 5, statuses: Optional[List[str]] = None) -> StatusSummary:
+        """The base-wide status summary — which problem, how many, roughly where.
 
-    def get_power_networks(
-        self, as_of_tick: Optional[int] = None
-    ) -> PowerNetworksReport:
-        """Per-network power census from the latest power sample.
-
-        Reads the latest power_networks sample (or the sample at ``as_of_tick``)
-        and, for each live electric network, returns its anchor pole, pole /
-        member counts, production / consumption / storage, a headroom ratio
-        (production / consumption; None when consumption is 0), the per-prototype
-        production and consumption breakdowns (parsed dicts, not raw JSON), and
-        the count of low_power / no_power entities on that network.
-
-        The low_power/no_power counts come from joining entity_status to
-        map_entity on (entity_name, position) to recover each entity's
-        electric_network_id, then matching the sample's ``network_id``. That id
-        is AS OF the last entity write, not the sample instant, so on a network
-        that just merged/split the counts can lag the wattages by one
-        entity-write cycle (see ``freshness_note`` on the returned report).
+        Reads the newest status dump block on disk (``source`` says which);
+        groups every tracked entity by its status value and lists up to
+        ``max_positions`` (name, x, y) per group with the remainder counted.
+        This is the per-entity ``status`` read seen at scale: it is what a
+        person gets by looking at their factory instead of at one machine.
 
         Args:
-            as_of_tick: Read this sample tick instead of the latest.
+            max_positions: positions listed per status group (the rest is a count).
+            statuses: restrict to these status names (e.g. ["no_power", "no_fuel"]).
+
+        Returns:
+            StatusSummary. ``tick`` is None and ``groups`` empty when no dump
+            exists yet — different from "everything is working".
+
+        Example:
+            >>> summary = remote_view.status(statuses=["no_power", "no_fuel", "low_power"])
+            >>> for name, group in summary.groups.items():
+            ...     print(name, group.count, group.entities[:3])
+            >>> print(summary.source, summary.age_ticks)
+        """
+        block = self._status_dump().current()
+        if block is None:
+            return StatusSummary(tick=None, source="status_dump:none", groups={}, total=0)
+        wanted = set(statuses) if statuses else None
+        groups: Dict[str, StatusGroup] = {}
+        for status_name, keys in sorted(block.grouped().items()):
+            if wanted is not None and status_name not in wanted:
+                continue
+            groups[status_name] = StatusGroup(
+                status=status_name,
+                count=len(keys),
+                entities=list(keys[: max(0, int(max_positions))]),
+                more=max(0, len(keys) - int(max_positions)),
+            )
+        now = self._current_game_tick()
+        age = (int(now) - block.tick) if now is not None else None
+        return StatusSummary(
+            tick=block.tick,
+            source=block.source,
+            groups=groups,
+            total=len(block.records),
+            age_ticks=age,
+        )
+
+    def status_changed(self, since_tick: int) -> StatusChange:
+        """Status transitions since ``since_tick`` — what became unhappy, what recovered.
+
+        Diffs the newest dump block at or before ``since_tick`` against the
+        newest block; ``source`` names both (``status_dump:<from>-><to>``).
+        Grouped by ``before -> after`` through ``.grouped()``.
+
+        Example:
+            >>> change = remote_view.status_changed(since_tick=turn_start_tick)
+            >>> for label, transitions in change.grouped().items():
+            ...     print(label, len(transitions), transitions[0].entity)
+        """
+        return self._status_dump().changed(int(since_tick))
+
+    def power(self, as_of_tick: Optional[int] = None) -> PowerNetworksReport:
+        """Per-network power census from the newest power sample on disk.
+
+        Reads ``power_networks.jsonl`` (the 300-tick sampler) and, for each live
+        electric network, returns its anchor pole, pole / member counts,
+        production / consumption / storage, a headroom ratio (production /
+        consumption; None when consumption is 0), the per-prototype breakdowns,
+        and the count of low_power / no_power entities on that network from
+        the newest status dump. ``source`` and ``status_source`` say exactly
+        which blocks were read; ``freshness_note`` says how they relate.
+
+        The low_power/no_power counts join the status dump to map_entity on
+        (name, position) to recover each entity's electric_network_id, which
+        is AS OF the last entity write — on a network that just merged/split
+        the counts can lag the wattages by one entity-write cycle.
+
+        Args:
+            as_of_tick: Read the newest sample at or before this tick instead.
 
         Returns:
             PowerNetworksReport. ``sample_tick`` is None (and ``networks`` empty)
-            only when no power sample has been ingested yet.
+            when no sample exists at all (or none at/before ``as_of_tick``).
 
         Example:
-            >>> report = remote_view.get_power_networks()
+            >>> report = remote_view.power()
             >>> for net in report.networks:
             ...     print(net.anchor_pole_name, net.production_w, net.consumption_w)
+            >>> print(report.source, report.freshness_note)
         """
         self._ensure_query_ready()
-
-        sample_tick = self._latest_power_tick(as_of_tick)
-        if sample_tick is None:
+        sample = self._power_sample(as_of_tick)
+        if sample is None:
+            what = "no power sample on disk yet" if as_of_tick is None else f"no power sample at or before tick {int(as_of_tick)}"
             return PowerNetworksReport(
                 networks=[],
                 sample_tick=None,
-                freshness_note=(
-                    "no power sample ingested yet (power_samples is empty) — the "
-                    "sampler has not run, which is different from 'no networks'"
-                ),
+                freshness_note=f"{what} — the sampler has not written, which is different from 'no networks'",
             )
 
-        # Per-network low_power/no_power counts, one grouped pass.
-        counts: Dict[int, Tuple[int, int]] = {}
-        for r in self.query(
-            """
-            SELECT me.electric_network_id AS nid,
-                   SUM(CASE WHEN es.status_name = 'low_power' THEN 1 ELSE 0 END) AS lp,
-                   SUM(CASE WHEN es.status_name = 'no_power' THEN 1 ELSE 0 END) AS np
-            FROM entity_status es
-            JOIN map_entity me
-              ON es.entity_name = me.entity_name
-             AND es.position_x = me.position_x
-             AND es.position_y = me.position_y
-            WHERE me.electric_network_id IS NOT NULL
-            GROUP BY me.electric_network_id
-            """
-        ):
-            counts[r["nid"]] = (int(r["lp"] or 0), int(r["np"] or 0))
+        block = self._status_dump().current()
+        nid_map = self._network_ids_by_entity() if block is not None else {}
+        counts: Dict[Any, List[int]] = {}
+        unattributed = 0
+        if block is not None:
+            for key, status_name in block.records.items():
+                if status_name not in ("low_power", "no_power"):
+                    continue
+                nid = nid_map.get(key)
+                if nid is None:
+                    if status_name == "no_power":
+                        unattributed += 1
+                    continue
+                bucket = counts.setdefault(nid, [0, 0])
+                bucket[0 if status_name == "low_power" else 1] += 1
 
-        net_rows = self.query(
-            f"""
-            SELECT network_id, anchor_pole_name, anchor_pole_x, anchor_pole_y,
-                   pole_count, member_count, production_w, consumption_w, storage_j,
-                   production_by_prototype, consumption_by_prototype
-            FROM power_networks
-            WHERE tick = {int(sample_tick)}
-            ORDER BY anchor_pole_x, anchor_pole_y, network_id
-            """
-        )
+        def _anchor_xy(net: Dict[str, Any]) -> Tuple[float, float, Any]:
+            pos = (net.get("anchor_pole") or {}).get("position") or {}
+            return (float(pos.get("x", math.inf)), float(pos.get("y", math.inf)), net.get("network_id"))
 
         networks: List[PowerNetworkCensus] = []
-        for r in net_rows:
-            prod = float(r["production_w"] or 0.0)
-            cons = float(r["consumption_w"] or 0.0)
-            headroom = (prod / cons) if cons > 0 else None
-            low, no = counts.get(r["network_id"], (0, 0))
-            anchor_pos = (
-                {"x": r["anchor_pole_x"], "y": r["anchor_pole_y"]}
-                if r["anchor_pole_x"] is not None
-                else None
-            )
+        for net in sorted(sample.networks, key=_anchor_xy):
+            anchor = net.get("anchor_pole") or {}
+            anchor_pos = anchor.get("position") or None
+            prod = float(net.get("production_w") or 0.0)
+            cons = float(net.get("consumption_w") or 0.0)
+            low, no = counts.get(net.get("network_id"), [0, 0])
             networks.append(
                 PowerNetworkCensus(
-                    network_id=r["network_id"],
-                    anchor_pole_name=r["anchor_pole_name"],
-                    anchor_pole_position=anchor_pos,
-                    pole_count=int(r["pole_count"] or 0),
-                    member_count=int(r["member_count"] or 0),
+                    network_id=net.get("network_id"),
+                    anchor_pole_name=anchor.get("name"),
+                    anchor_pole_position={"x": anchor_pos["x"], "y": anchor_pos["y"]} if anchor_pos else None,
+                    pole_count=int(net.get("pole_count") or 0),
+                    member_count=int(net.get("member_count") or 0),
                     production_w=prod,
                     consumption_w=cons,
-                    storage_j=float(r["storage_j"] or 0.0),
-                    headroom_ratio=headroom,
-                    production_by_prototype=self._parse_json_dict(r["production_by_prototype"]),
-                    consumption_by_prototype=self._parse_json_dict(r["consumption_by_prototype"]),
-                    low_power_count=low,
-                    no_power_count=no,
-                    sample_tick=int(sample_tick),
+                    storage_j=float(net.get("storage_j") or 0.0),
+                    headroom_ratio=(prod / cons) if cons > 0 else None,
+                    production_by_prototype=dict(net.get("production_w_by_prototype") or {}),
+                    consumption_by_prototype=dict(net.get("consumption_w_by_prototype") or {}),
+                    low_power_count=int(low),
+                    no_power_count=int(no),
+                    sample_tick=sample.tick,
                 )
             )
 
-        # DIGEST-2: no_power entities with no network attribution (nil
-        # electric_network_id, or no map_entity row at all). These are the
-        # not-covered-by-any-pole cases — they must not vanish from the report
-        # just because the per-network join has no bucket for them.
-        orphan_rows = self.query(
-            """
-            SELECT COUNT(*) AS n
-            FROM entity_status es
-            LEFT JOIN map_entity me
-              ON es.entity_name = me.entity_name
-             AND es.position_x = me.position_x
-             AND es.position_y = me.position_y
-            WHERE es.status_name = 'no_power'
-              AND me.electric_network_id IS NULL
-            """
-        )
-        unattributed = int(orphan_rows[0]["n"] or 0) if orphan_rows else 0
-
+        parts = [f"power sample at tick {sample.tick} ({sample.source})"]
+        newest = self._power_dump().newest()
+        if newest is not None and newest.tick != sample.tick:
+            parts.append(f"newest sample is tick {newest.tick} (Δ{newest.tick - sample.tick} ticks)")
+        if block is not None:
+            parts.append(
+                f"low_power/no_power counts from {block.source} (Δ{block.tick - sample.tick} vs sample) "
+                f"using map_entity.electric_network_id which is as-of last entity write — "
+                f"membership can lag on a just-merged/split network"
+            )
+        else:
+            parts.append("no status dump on disk yet — low_power/no_power counts are 0")
         return PowerNetworksReport(
             networks=networks,
-            sample_tick=int(sample_tick),
-            freshness_note=self._power_freshness_note(int(sample_tick)),
+            sample_tick=sample.tick,
+            freshness_note="; ".join(parts),
+            source=sample.source,
+            status_source=block.source if block is not None else "status_dump:none",
             unattributed_no_power=unattributed,
+        )
+
+    def get_power_networks(self, as_of_tick: Optional[int] = None) -> PowerNetworksReport:
+        """Alias of :meth:`power` kept for existing callers; prefer ``power()``."""
+        return self.power(as_of_tick=as_of_tick)
+
+    def production(self, agent_id: Optional[int] = None) -> ProductionReport:
+        """Force production (live) plus this agent's hand-crafted/mined counts.
+
+        ``produced``/``consumed`` are read over RCON at call time
+        (``source`` = ``live:<tick>``): the engine's cumulative item production
+        statistics for the agent's force. ``hand_crafted``/``hand_mined`` come
+        from the event-driven records in ``agent_manual_production_statistics``.
+        ``automated()`` is the difference — the one quantity hand-crafting
+        cannot inflate.
+
+        Args:
+            agent_id: whose force; defaults to the agent this view was built for.
+
+        Returns:
+            ProductionReport. ``source`` is ``"unavailable"`` (with empty
+            counters) when there is no RCON connection or no agent id.
+
+        Example:
+            >>> p = remote_view.production()
+            >>> print(p.source, p.automated().get("iron-plate", 0), p.hand_crafted)
+        """
+        aid = agent_id if agent_id is not None else self._agent_id
+        produced: Dict[str, int] = {}
+        consumed: Dict[str, int] = {}
+        tick: Optional[int] = None
+        source = "unavailable"
+        if aid is not None and self._rcon_client is not None:
+            cmd = (
+                f"/silent-command local s = remote.call('agent_{int(aid)}', 'get_production_statistics') or {{}}; "
+                f"rcon.print(helpers.table_to_json({{tick = game.tick, input = s.input or {{}}, output = s.output or {{}}}}))"
+            )
+            try:
+                raw = self._rcon_client.send_command(cmd)
+                data = json.loads(raw) if raw and raw.strip() else {}
+                tick = int(data.get("tick")) if data.get("tick") is not None else None
+                produced = {str(k): int(v) for k, v in (data.get("output") or {}).items()} if isinstance(data.get("output"), dict) else {}
+                consumed = {str(k): int(v) for k, v in (data.get("input") or {}).items()} if isinstance(data.get("input"), dict) else {}
+                source = f"live:{tick}" if tick is not None else "live"
+            except Exception as e:  # engine unreachable — say so, never fake it
+                logger.warning(f"production read failed: {e}")
+                source = "unavailable"
+        hand_crafted: Dict[str, int] = {}
+        hand_mined: Dict[str, int] = {}
+        if aid is not None:
+            try:
+                self._ensure_query_ready()
+                rows = self.query(
+                    f"SELECT crafted, mined FROM agent_manual_production_statistics "
+                    f"WHERE agent_id = {int(aid)} ORDER BY tick DESC LIMIT 1"
+                )
+                if rows:
+                    hand_crafted = self._parse_json_dict(rows[0]["crafted"])
+                    hand_mined = self._parse_json_dict(rows[0]["mined"])
+            except Exception as e:
+                logger.debug(f"manual production read failed: {e}")
+        return ProductionReport(
+            tick=tick,
+            source=source,
+            produced=produced,
+            consumed=consumed,
+            hand_crafted={k: int(v) for k, v in hand_crafted.items()},
+            hand_mined={k: int(v) for k, v in hand_mined.items()},
+            agent_id=aid,
         )
 
     def _find_covering_pole(self, x: float, y: float) -> Optional[Dict[str, Any]]:
@@ -1092,41 +1316,6 @@ class RemoteView:
                     best = p
         return best
 
-    def _network_at_tick(
-        self, network_id: Optional[int], tick: int
-    ) -> Optional[Dict[str, Any]]:
-        """The power_networks row for network_id at a sample tick, or None."""
-        if network_id is None:
-            return None
-        rows = self.query(
-            f"""
-            SELECT network_id, anchor_pole_name, anchor_pole_x, anchor_pole_y,
-                   production_w, consumption_w
-            FROM power_networks
-            WHERE tick = {int(tick)} AND network_id = {int(network_id)}
-            LIMIT 1
-            """
-        )
-        return rows[0] if rows else None
-
-    def _upstream_starved(self, network_id: Optional[int]) -> List[Dict[str, Any]]:
-        """no_fuel entities on the same network (generator starvation)."""
-        if network_id is None:
-            return []
-        return self.query(
-            f"""
-            SELECT es.entity_name, es.position_x AS x, es.position_y AS y
-            FROM entity_status es
-            JOIN map_entity me
-              ON es.entity_name = me.entity_name
-             AND es.position_x = me.position_x
-             AND es.position_y = me.position_y
-            WHERE me.electric_network_id = {int(network_id)}
-              AND es.status_name = 'no_fuel'
-            LIMIT 5
-            """
-        )
-
     def diagnose_power(
         self,
         entity_name: str,
@@ -1137,13 +1326,15 @@ class RemoteView:
 
         Encodes the manual power-diagnosis walk (status → pole coverage →
         network generation → undersupply → upstream starvation) as one call.
-        Map-wide reads only (entity_status, map_entity, power_networks) — lives
-        on RemoteView because that is exactly the data it needs.
+        Map-wide reads only (the status dump, map_entity, the power sample) —
+        lives on RemoteView because that is exactly the data it needs; the
+        diagnosis names its sources (``sample_tick``; the status dump is the
+        newest block, see ``remote_view.status().source``).
 
         Walk:
           1. Locate the entity in map_entity (name + position). Absent →
              'entity_not_found'.
-          2. Read its status from entity_status. No status row → 'no_status_data'
+          2. Read its status from the newest status dump. No record → 'no_status_data'
              (or 'non_electric_or_no_issue' for a pole, which reports nil status).
           3. status 'working' → 'working' (with the caveat that a starved
              producer also reports 'working').
@@ -1158,7 +1349,7 @@ class RemoteView:
         Caveat (documented in the explanation where it applies): Factorio
         reports a single status per entity, so a low_power condition can be
         masked behind a logistics status; the network wattages are the ground
-        truth. The entity_status × map_entity join uses map_entity's as-of-write
+        truth. The status-dump × map_entity join uses map_entity's as-of-write
         electric_network_id.
 
         Args:
@@ -1179,7 +1370,10 @@ class RemoteView:
         self._ensure_query_ready()
         x, y = self._pos_xy(position)
         pos_dict = {"x": x, "y": y}
-        sample_tick = self._latest_power_tick(as_of_tick)
+        sample = self._power_sample(as_of_tick)
+        sample_tick = sample.tick if sample is not None else None
+        block = self._status_dump().current()
+        nid_map = self._network_ids_by_entity()
 
         def _mk(verdict: str, explanation: str, **kw: Any) -> PowerDiagnosis:
             return PowerDiagnosis(
@@ -1209,21 +1403,12 @@ class RemoteView:
             )
         entity_nid = me_rows[0]["electric_network_id"]
 
-        st_rows = self.query(
-            f"""
-            SELECT status_name FROM entity_status
-            WHERE entity_name = '{entity_name}'
-              AND position_x BETWEEN {x - 0.6} AND {x + 0.6}
-              AND position_y BETWEEN {y - 0.6} AND {y + 0.6}
-            LIMIT 1
-            """
-        )
-        status = st_rows[0]["status_name"] if st_rows else None
+        status = self._status_of(block, entity_name, x, y)
 
-        net = self._network_at_tick(entity_nid, sample_tick) if sample_tick is not None else None
-        prod = float(net["production_w"] or 0.0) if net else None
-        cons = float(net["consumption_w"] or 0.0) if net else None
-        starved = self._upstream_starved(entity_nid)
+        net = sample.network(entity_nid) if sample is not None else None
+        prod = float(net.get("production_w") or 0.0) if net else None
+        cons = float(net.get("consumption_w") or 0.0) if net else None
+        starved = self._upstream_starved(block, entity_nid, nid_map)
 
         def _net_fields() -> Dict[str, Any]:
             return {"network_id": entity_nid, "production_w": prod, "consumption_w": cons}
@@ -1234,8 +1419,8 @@ class RemoteView:
                 return _mk(
                     "non_electric_or_no_issue",
                     f"'{entity_name}' is an electric pole, which reports no Factorio "
-                    f"status (nil-status); poles are never in entity_status. Read the "
-                    f"network's power flow in power_networks / get_power_networks().",
+                    f"status (nil-status); poles are never in the status dump. Read the "
+                    f"network's power flow with remote_view.power().",
                     **_net_fields(),
                 )
             return _mk(
@@ -1271,10 +1456,10 @@ class RemoteView:
                 )
             cov_nid = covering["electric_network_id"]
             cov_pos = {"x": covering["position_x"], "y": covering["position_y"]}
-            cov_net = self._network_at_tick(cov_nid, sample_tick) if sample_tick is not None else None
-            cov_prod = float(cov_net["production_w"] or 0.0) if cov_net else 0.0
-            cov_cons = float(cov_net["consumption_w"] or 0.0) if cov_net else 0.0
-            cov_starved = self._upstream_starved(cov_nid)
+            cov_net = sample.network(cov_nid) if sample is not None else None
+            cov_prod = float(cov_net.get("production_w") or 0.0) if cov_net else 0.0
+            cov_cons = float(cov_net.get("consumption_w") or 0.0) if cov_net else 0.0
+            cov_starved = self._upstream_starved(block, cov_nid, nid_map)
             common = dict(
                 status_name=status,
                 network_id=cov_nid,

@@ -78,22 +78,18 @@ class FreeplayCheckpointService:
                 """
             )
             entity_counts = {str(name): int(count) for name, count in rows}
-            power_rows = tier4.remote_view.execute_raw(
-                """
-                SELECT tick, count(*), coalesce(sum(production_w), 0),
-                       coalesce(sum(consumption_w), 0), coalesce(sum(storage_j), 0)
-                FROM power_networks
-                WHERE tick = (SELECT max(tick) FROM power_samples)
-                GROUP BY tick
-                """
-            )
-            if power_rows:
+            try:
+                report = tier4.remote_view.power()
+            except Exception:
+                report = None
+            if report is not None and report.sample_tick is not None:
                 power = {
-                    "sample_tick": int(power_rows[0][0]),
-                    "network_count": int(power_rows[0][1]),
-                    "production_w": float(power_rows[0][2]),
-                    "consumption_w": float(power_rows[0][3]),
-                    "storage_j": float(power_rows[0][4]),
+                    "sample_tick": int(report.sample_tick),
+                    "source": report.source,
+                    "network_count": len(report.networks),
+                    "production_w": float(sum(n.production_w for n in report.networks)),
+                    "consumption_w": float(sum(n.consumption_w for n in report.networks)),
+                    "storage_j": float(sum(n.storage_j for n in report.networks)),
                 }
 
         score = {

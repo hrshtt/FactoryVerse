@@ -16,7 +16,6 @@ from .schema_definitions import (
     ANALYTICS_TABLES,
     COMPONENT_TABLES,
     CORE_TABLES,
-    STATE_TABLES,
     TABLE_BY_NAME,
 )
 
@@ -160,7 +159,7 @@ class SnapshotDatabase:
 
         # Every created group has a boot/live writer. Agent analytics are
         # replayed by SnapshotLoader and reduced live by SyncService.
-        all_tables = CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES + STATE_TABLES
+        all_tables = CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES
 
         # Also create sync_state table (not in schema_definitions, but needed)
         con.execute("""
@@ -229,7 +228,7 @@ class SnapshotDatabase:
         # Get table names from schema definitions
         tables = [
             table.name
-            for table in CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES + STATE_TABLES
+            for table in CORE_TABLES + COMPONENT_TABLES + ANALYTICS_TABLES
         ] + ["sync_state"]
         for table in tables:
             try:

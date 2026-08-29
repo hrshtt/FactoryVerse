@@ -41,49 +41,44 @@ def _notification(tick: int) -> dict:
     }
 
 
-def test_status_notifications_coalesce_and_recover_to_newest_retained_dump(tmp_path):
+def test_polled_file_types_are_ignored_not_enqueued(tmp_path):
+    """entity_status / power_networks / agent_production_statistics are not
+    tables (Constitution §10): their file_io notifications are dropped at
+    the door, and flushing writes nothing."""
     database, service = _service(tmp_path)
     try:
-        # status-60 has already rolled out of Lua's bounded file window while
-        # both notifications wait for the next read-triggered flush.
         _write_status(tmp_path, 120, "burner-mining-drill")
-        service._handle_file_io(_notification(60))
         service._handle_file_io(_notification(120))
-
-        assert service.flush_pending() == 2
-        assert database.connection.execute(
-            "SELECT entity_name, tick FROM entity_status"
-        ).fetchall() == [("burner-mining-drill", 120)]
+        service._handle_file_io({"event_type": "file_io", "file_type": "power_networks",
+                                 "file_path": "factoryverse/snapshots/power_networks.jsonl", "tick": 120})
+        service._handle_file_io({"event_type": "file_io", "file_type": "agent_production_statistics",
+                                 "file_path": "factoryverse/agent-snapshots/1/production-statistics.jsonl", "agent_id": 1})
+        assert service._pending_operations.qsize() == 0
+        assert service.flush_pending() == 0
+        names = {r[0] for r in database.connection.execute(
+            "SELECT table_name FROM information_schema.tables").fetchall()}
+        assert "entity_status" not in names
+        # ...and the file is still there for the on-demand reader.
+        from FactoryVerse.game.agent.status_dump import StatusDumpReader
+        assert StatusDumpReader(tmp_path / "factoryverse" / "status").current().tick == 120
     finally:
         database.close()
 
 
-def test_missing_status_artifact_does_not_erase_last_good_state(tmp_path):
+def test_chunk_init_complete_advances_the_freshness_marker(tmp_path):
+    """chunk_snapshot_meta.tick used to be boot-only while the schema notes told
+    the agent to trust it as a freshness marker. A chunk_init_complete
+    datagram now moves it."""
     database, service = _service(tmp_path)
     try:
-        _write_status(tmp_path, 60, "assembling-machine-1")
-        service._handle_file_io(_notification(60))
+        service._handle_chunk_init({"event_type": "chunk_init_complete", "chunk": {"x": 3, "y": -2}, "tick": 900})
         assert service.flush_pending() == 1
-
-        # The notified 120 dump is absent and only an older dump remains.
-        # Recovery must fail atomically instead of replacing truth with stale
-        # or empty data.
-        service._handle_file_io(_notification(120))
-        assert service.flush_pending() == 1
-        assert service._pending_operations.qsize() == 1
         assert database.connection.execute(
-            "SELECT entity_name, tick FROM entity_status"
-        ).fetchall() == [("assembling-machine-1", 60)]
-
-        # Recovery is bounded: three deferred attempts, then the last good
-        # materialization remains without a permanently poisoned queue.
+            "SELECT chunk_x, chunk_y, tick FROM chunk_snapshot_meta").fetchall() == [(3, -2, 900)]
+        service._handle_chunk_init({"event_type": "chunk_init_complete", "chunk": {"x": 3, "y": -2}, "tick": 1500})
         service.flush_pending()
-        service.flush_pending()
-        service.flush_pending()
-        assert service._pending_operations.qsize() == 0
         assert database.connection.execute(
-            "SELECT entity_name, tick FROM entity_status"
-        ).fetchall() == [("assembling-machine-1", 60)]
+            "SELECT tick FROM chunk_snapshot_meta WHERE chunk_x = 3 AND chunk_y = -2").fetchone() == (1500,)
     finally:
         database.close()
 

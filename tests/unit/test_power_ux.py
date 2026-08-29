@@ -2,20 +2,20 @@
 RemoteView.get_power_networks / diagnose_power and the Task Progress power
 digest line.
 
-No Factorio needed: a real in-memory SnapshotDatabase seeded through the
-analytics_ops reducers (the same single reducer both transports use) plus
-direct map_entity inserts (the as-of-write electric_network_id + force
-columns the census/diagnosis join on).
+No Factorio needed: the power sample and the status dump are written as the
+real files the mods produce (they are NOT tables — Constitution §10), read
+on demand by remote_view.power()/diagnose_power, joined to direct map_entity
+inserts (the as-of-write electric_network_id the census/diagnosis join on).
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from FactoryVerse.game.infra.duckdb.query import QueryExecutor
-from FactoryVerse.game.infra.duckdb import analytics_ops
 from FactoryVerse.game.agent.remote_view import RemoteView
 
 
@@ -24,9 +24,9 @@ from FactoryVerse.game.agent.remote_view import RemoteView
 # =============================================================================
 
 
-def _make_view() -> RemoteView:
+def _make_view(root: Path | None = None) -> RemoteView:
     rv = RemoteView(
-        snapshot_dir=Path("."),
+        snapshot_dir=root if root is not None else Path("."),
         entity_ops=None,
         place_ops=None,
         walking_action=None,
@@ -95,12 +95,24 @@ STATUS_DUMP = [
 ]
 
 
+def _write_feeds(root: Path, power_lines, status_dump) -> None:
+    (root / "factoryverse" / "snapshots").mkdir(parents=True, exist_ok=True)
+    (root / "factoryverse" / "status").mkdir(parents=True, exist_ok=True)
+    (root / "factoryverse" / "snapshots" / "power_networks.jsonl").write_text(
+        "".join(json.dumps(l) + "\n" for l in power_lines)
+    )
+    tick = status_dump[0]["tick"]
+    (root / "factoryverse" / "status" / f"status-{tick}.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in status_dump)
+    )
+
+
 @pytest.fixture()
-def seeded() -> RemoteView:
-    rv = _make_view()
+def seeded(tmp_path) -> RemoteView:
+    _write_feeds(tmp_path, [POWER_LINE], STATUS_DUMP)
+    rv = _make_view(tmp_path)
+    rv._feed_root = tmp_path
     con = rv._database.connection
-    analytics_ops.apply_power_sample(con, POWER_LINE)
-    analytics_ops.apply_status_dump(con, STATUS_DUMP)
     # anchor poles
     _ins_entity(con, "small-electric-pole", 10.5, 10.5, nid=4)
     _ins_entity(con, "small-electric-pole", 20.5, 20.5, nid=9)
@@ -126,20 +138,25 @@ def _net(report, nid):
 
 
 class TestCensus:
-    def test_no_sample_returns_none_tick(self):
-        rv = _make_view()
-        report = rv.get_power_networks()
+    def test_no_sample_returns_none_tick(self, tmp_path):
+        rv = _make_view(tmp_path)
+        report = rv.power()
         assert report.sample_tick is None
         assert report.networks == []
-        assert "never" in report.freshness_note or "empty" in report.freshness_note
+        assert "no power sample" in report.freshness_note
+        assert report.source == "power_dump:none"
 
     def test_all_networks_present_ordered_by_anchor(self, seeded):
-        report = seeded.get_power_networks()
+        report = seeded.power()
         assert report.sample_tick == 1000
+        assert report.source == "power_dump:1000" and report.status_source == "status_dump:1000"
         assert [n.network_id for n in report.networks] == [4, 9, 5, 7]  # ordered by anchor x
 
+    def test_get_power_networks_is_the_same_read(self, seeded):
+        assert seeded.power().source == seeded.power().source
+
     def test_working_rig_fields(self, seeded):
-        net = _net(seeded.get_power_networks(), 4)
+        net = _net(seeded.power(), 4)
         assert net.anchor_pole_name == "small-electric-pole"
         assert net.anchor_pole_position == {"x": 10.5, "y": 10.5}
         assert (net.production_w, net.consumption_w) == (77500.0, 50000.0)
@@ -149,45 +166,46 @@ class TestCensus:
         assert (net.low_power_count, net.no_power_count) == (0, 0)
 
     def test_undersupplied_rig_counts_and_headroom(self, seeded):
-        net = _net(seeded.get_power_networks(), 9)
+        net = _net(seeded.power(), 9)
         assert net.headroom_ratio == pytest.approx(0.5)
         assert net.low_power_count == 1
         assert net.no_power_count == 0
 
     def test_no_generation_rig(self, seeded):
-        net = _net(seeded.get_power_networks(), 5)
+        net = _net(seeded.power(), 5)
         assert net.production_w == 0.0
         assert net.headroom_ratio == pytest.approx(0.0)  # 0/50000
         assert net.no_power_count == 1
 
     def test_freshness_note_mentions_status_join(self, seeded):
-        note = seeded.get_power_networks().freshness_note
+        note = seeded.power().freshness_note
         assert "tick 1000" in note
         assert "as-of" in note
 
     def test_as_of_tick_param(self, seeded):
-        # requesting a tick with no rows yields an empty (but non-None) sample
-        report = seeded.get_power_networks(as_of_tick=999)
-        assert report.sample_tick == 999
+        # no sample at or before 999 on disk: say so, never fabricate a block
+        report = seeded.power(as_of_tick=999)
+        assert report.sample_tick is None
         assert report.networks == []
+        assert "at or before tick 999" in report.freshness_note
+        # at or before 1000 is the block itself
+        assert seeded.power(as_of_tick=1000).sample_tick == 1000
 
     def test_unattributed_no_power_counts_orphans(self, seeded):
         # DIGEST-2: the no_power assembler at (500.5,500.5) has nid=None —
         # it attributes to NO network and must not vanish from the report.
-        report = seeded.get_power_networks()
+        report = seeded.power()
         assert report.unattributed_no_power == 1
         # ...and it must NOT also be inside any per-network count
         assert sum(n.no_power_count for n in report.networks) == 2  # nets 5 and 7 only
 
     def test_unattributed_counts_status_without_map_entity_row(self, seeded):
         # An entity present in the status dump but absent from map_entity
-        # entirely (LEFT JOIN miss) is also an orphan.
-        con = seeded._database.connection
-        con.execute(
-            "INSERT INTO entity_status (entity_name, position_x, position_y, status_name, tick) "
-            "VALUES ('electric-mining-drill', 600.5, 600.5, 'no_power', 1000)"
-        )
-        assert seeded.get_power_networks().unattributed_no_power == 2
+        # entirely is also an orphan. The dump is re-read on every call.
+        _write_feeds(seeded._feed_root, [POWER_LINE], STATUS_DUMP + [
+            {"name": "electric-mining-drill", "status": "no_power", "x": 600.5, "y": 600.5},
+        ])
+        assert seeded.power().unattributed_no_power == 2
 
 
 # =============================================================================
@@ -256,8 +274,8 @@ def _render(rv):
 
 
 class TestDigestLine:
-    def test_omitted_when_no_sample(self):
-        assert _render(_make_view()) is None
+    def test_omitted_when_no_sample(self, tmp_path):
+        assert _render(_make_view(tmp_path)) is None
 
     def test_full_line(self, seeded):
         line = _render(seeded)
@@ -280,3 +298,41 @@ class TestDigestLine:
         from FactoryVerse.infra.llm.orchestrator import AgentOrchestrator
 
         assert AgentOrchestrator._render_power_digest_line(_Self()) is None
+
+
+
+# =============================================================================
+# status() / status_changed() — the base-wide read, source-declared
+# =============================================================================
+
+
+class TestStatusSummary:
+    def test_groups_by_status_with_positions_and_source(self, seeded):
+        summary = seeded.status(max_positions=2)
+        assert summary.source == "status_dump:1000" and summary.tick == 1000
+        assert summary.total == 6
+        assert summary.count("no_power") == 3
+        no_power = summary.groups["no_power"]
+        assert len(no_power.entities) == 2 and no_power.more == 1
+        assert summary.age_ticks is None  # no engine connection: no fake age
+
+    def test_status_filter(self, seeded):
+        summary = seeded.status(statuses=["no_fuel"])
+        assert set(summary.groups) == {"no_fuel"}
+        assert summary.groups["no_fuel"].entities == [("boiler", 42.5, 42.5)]
+
+    def test_no_dump_is_none_not_healthy(self, tmp_path):
+        summary = _make_view(tmp_path).status()
+        assert summary.tick is None and summary.groups == {} and summary.source == "status_dump:none"
+
+    def test_changed_uses_two_blocks(self, seeded):
+        root = seeded._feed_root
+        (root / "factoryverse" / "status" / "status-1600.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in [
+                {"meta": True, "tick": 1600, "count": 1},
+                {"name": "boiler", "status": "working", "x": 42.5, "y": 42.5},
+            ])
+        )
+        change = seeded.status_changed(since_tick=1000)
+        assert change.source == "status_dump:1000->1600"
+        assert "no_fuel -> working" in change.grouped()

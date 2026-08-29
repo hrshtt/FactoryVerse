@@ -138,13 +138,9 @@ class QueryExecutor:
         Validates query is read-only SELECT.
         Flushes pending writes before reading to ensure consistency.
 
-        Note: the old on-demand ``entity_status_latest``/``temp_entity_status``
-        loading path (status_loader.py) is GONE (Task 5, power-impl-contracts
-        build) — entity status now lives in the real, persistent
-        ``entity_status`` table (see schema_definitions.ENTITY_STATUS),
-        populated via analytics_ops.apply_status_dump by both the boot loader
-        and SyncService. A query against ``entity_status`` needs no special
-        handling here; it is an ordinary table like any other.
+        Note: entity status and power flow are not tables (Constitution
+        §10); read them through remote_view.status() / .power(), which name
+        the dump block they came from.
 
         Args:
             sql: SQL query string (must be SELECT)

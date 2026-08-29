@@ -284,8 +284,10 @@ def test_listener_handles_every_wire_status(vocab):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="sync.py's file_io filter handles 6 of 9 wire file_types; "
-    "resource, water, power_statistics are dropped on the floor",
+    reason="sync.py's file_io filter consumes 3 of 9 wire file_types by design: "
+    "entity_status, power_networks, power_statistics, agent_production_statistics "
+    "are polled (not tables — read on demand by remote_view.status/power/production); "
+    "resource and water are load-only chunk rewrites nobody consumes live yet",
 )
 def test_sync_file_type_filter_matches_wire(vocab):
     block = re.search(r"if file_type not in \((.*?)\):", SYNC.read_text(), re.S).group(1)
