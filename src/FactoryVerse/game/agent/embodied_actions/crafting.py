@@ -4,7 +4,8 @@ Handles all crafting-related operations with async support via RconHandler and A
 """
 
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import asyncio
 import logging
 
 from FactoryVerse.game.agent.models import AsyncActionResponse, AsyncActionCompletion
@@ -115,6 +116,20 @@ class CraftingCompleted(AsyncActionCompletion):
         return stacks
 
 
+@dataclass
+class CraftPrediction:
+    """Derived at enqueue from recipe energy at crafting speed 1, serially
+    (TURN_CONTRACT §7.1) — arithmetic, never extrapolation. The turn report
+    reads these through ``CraftingAction.take_predictions()`` and prints
+    predicted against actual."""
+
+    recipe: str
+    count: int
+    predicted_completion_tick: int
+    enqueued_tick: int
+    per_craft_ticks: float
+
+
 class CraftingAction:
     """Crafting action implementation.
 
@@ -141,52 +156,68 @@ class CraftingAction:
         self._rcon = rcon_handler
         self._listener = async_listener
         self._placement = placement
+        self._predictions: List[CraftPrediction] = []
 
-    async def craft(
-        self, recipe: str, count: int = 1, timeout: Optional[int] = None
-    ) -> List["ItemStack"]:
-        """Craft a recipe asynchronously.
+    # ---- predictions (TURN_CONTRACT §7.1) ------------------------------------
 
-        Args:
-            recipe: Recipe name to craft
-            count: Number of times to craft
-            timeout: Optional timeout in seconds
+    @property
+    def predictions(self) -> List[CraftPrediction]:
+        """Predictions recorded at enqueue and not yet handed to a report."""
+        return list(self._predictions)
 
-        Returns:
-            List of ItemStack objects crafted with placement injected
+    def take_predictions(self) -> List[CraftPrediction]:
+        """Hand the pending predictions to the turn report and clear them.
+        This is the hook the report calls once per turn."""
+        out, self._predictions = self._predictions, []
+        return out
 
-        Raises:
-            RuntimeError: If crafting fails to start or times out. The error
-                message distinguishes the failure modes (ERR-1 contract):
-                - unknown recipe (no such recipe exists; check spelling)
-                - recipe locked (exists but not researched; names the
-                  unlocking technology when known — do NOT retry, research it)
-                - missing ingredients (enumerates each as name (have N, need M))
-                - recipe not hand-craftable (needs a machine)
-                - invalid count / crafting queue full
-                These are never swallowed or defaulted (ERR-3 standard).
-        """
-        # Build and execute RCON command
-        cmd = self._rcon.build_command("craft_enqueue", recipe, count)
-        response_dict = self._rcon.execute_and_parse_json(cmd)
-        response = CraftingStarted.from_dict(response_dict)
+    @staticmethod
+    def _recipe_energy(recipe: str) -> Optional[float]:
+        """Recipe energy in seconds at speed 1, from the prototype dump."""
+        try:
+            from FactoryVerse.game.factory.prototype_data import get_prototype_manager
 
-        # Check if crafting started successfully
-        if not response.is_queued:
-            reason = response.reason or "unknown"
-            raise RuntimeError(f"Failed to start crafting: {reason}")
+            raw = get_prototype_manager().get_raw_data()
+            proto = (raw.get("recipe") or {}).get(recipe)
+            if proto is None:
+                return None
+            return float(proto.get("energy_required", 0.5))
+        except Exception:
+            return None
 
-        # Wait for completion via UDP
-        completion_dict = await self._listener.await_action(response, timeout=timeout)
-        completion = CraftingCompleted.from_dict(completion_dict)
+    def _game_tick(self) -> Optional[int]:
+        try:
+            raw = self._rcon.execute("rcon.print(game.tick)")
+            return int(str(raw).strip()) if raw is not None and str(raw).strip() else None
+        except Exception:
+            return None
 
-        # Return items as ItemStack list
-        # Always returns a list of ItemStack objects (never None, never empty dict)
-        item_stacks = completion.to_item_stacks(self._placement)
-        if not isinstance(item_stacks, list):
-            logger.error(f"CraftingCompleted.to_item_stacks() returned non-list: {type(item_stacks)}, returning empty list")
-            return []
-        return item_stacks
+    def _predict(self, recipe: str, count: int, response: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        energy = self._recipe_energy(recipe)
+        if energy is None:
+            return None
+        queued = int(response.get("count_queued", response.get("count", count)) or count)
+        per_craft = energy * 60.0
+        # Serial queue: what is already queued drains first.
+        ahead = 0.0
+        try:
+            for item in self.status().get("queue", []):
+                if item.get("recipe") == recipe and item.get("count") == queued:
+                    continue
+                e = self._recipe_energy(item.get("recipe", ""))
+                ahead += (e or 0.0) * 60.0 * int(item.get("count", 0))
+        except Exception:
+            ahead = 0.0
+        now = self._game_tick() or 0
+        total = int(round(ahead + per_craft * queued))
+        pred = CraftPrediction(recipe, queued, now + total, now, per_craft)
+        self._predictions.append(pred)
+        return {
+            "per_craft_ticks": per_craft,
+            "queue_ticks_ahead": int(round(ahead)),
+            "ticks_until_done": total,
+            "predicted_completion_tick": pred.predicted_completion_tick,
+        }
 
     def enqueue(self, recipe: str, count: int = 1) -> Dict[str, Any]:
         """Enqueue a recipe for crafting.
@@ -206,7 +237,70 @@ class CraftingAction:
                 (name + have + need) / invalid count / queue full.
         """
         cmd = self._rcon.build_command("craft_enqueue", recipe, count)
-        return self._rcon.execute_and_parse_json(cmd)
+        response = self._rcon.execute_and_parse_json(cmd)
+        if isinstance(response, dict) and response.get("success", response.get("queued", True)):
+            prediction = self._predict(recipe, count, response)
+            if prediction:
+                response = {**response, "prediction": prediction}
+        return response
+
+    def list_recipes(
+        self,
+        name_filter: Optional[str] = None,
+        hand_craftable: Optional[bool] = None,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """The recipe catalog, as the crafting screen lists it (HUD plan §2 as amended).
+
+        A read; nothing is queued. Each entry: ``name``, ``category``,
+        ``energy`` (seconds at speed 1), ``ingredients``, ``hand_craftable``
+        (a character can make it — smelting is machine-only, the classic
+        mistake), and ``craftable_now`` as an annotation (ingredients on hand),
+        never as a filter, so the catalog stays a catalog.
+
+        Args:
+            name_filter: substring match on the recipe name
+            hand_craftable: True → only hand-craftable, False → only machine-only
+            category: exact crafting category (e.g. "crafting", "smelting")
+        """
+        from FactoryVerse.game.factory.prototypes import get_recipe_prototypes
+
+        cmd = self._rcon.build_command("get_recipes", category)
+        data = self._rcon.execute_and_parse_json(cmd)
+        if isinstance(data, dict) and data.get("error"):
+            raise ValueError(f"{data['error']}; valid categories: {data.get('valid_categories')}")
+        recipes = data if isinstance(data, list) else data.get("recipes", [])
+        protos = get_recipe_prototypes()
+        inventory_counts: Dict[str, int] = {}
+        try:
+            inv = self._rcon.execute_and_parse_json(self._rcon.build_command("get_inventory_items"))
+            for stack in inv or []:
+                inventory_counts[stack["name"]] = inventory_counts.get(stack["name"], 0) + int(stack["count"])
+        except Exception:
+            inventory_counts = {}
+        out: List[Dict[str, Any]] = []
+        for r in recipes:
+            name = r.get("name", "")
+            if name_filter and name_filter not in name:
+                continue
+            hand = bool(protos.is_handcraftable(name))
+            if hand_craftable is not None and hand != hand_craftable:
+                continue
+            ingredients = r.get("ingredients") or []
+            craftable_now = hand and all(
+                inventory_counts.get(i.get("name"), 0) >= int(i.get("amount", 0))
+                for i in ingredients
+            )
+            out.append({
+                "name": name,
+                "category": r.get("category"),
+                "energy": r.get("energy"),
+                "ingredients": ingredients,
+                "hand_craftable": hand,
+                "craftable_now": craftable_now,
+            })
+        out.sort(key=lambda x: x["name"])
+        return out
 
     def dequeue(self, recipe: str, count: Optional[int] = None) -> Dict[str, Any]:
         """Cancel queued crafting.
@@ -230,10 +324,10 @@ class CraftingAction:
         Example:
             ```python
             status = crafting.status()
-            print(f"Queue size: {status['queue_size']}")
-            print(f"Progress: {status['progress']:.1%}")
-            for item in status['queue']:
-                print(f"  {item['recipe']} x{item['count']} (index {item['index']})")
+            print(f"Queue size: {status.queue_size}")
+            print(f"Progress: {status.progress:.1%}")
+            for item in status.queue:
+                print(f"  {item.recipe} x{item.count} (index {item.index})")
             ```
         """
         cmd = self._rcon.build_command("get_crafting_queue")

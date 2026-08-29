@@ -41,15 +41,10 @@ class CoverageValidator:
 
     # "ClassName.method" -> why the agent is not told about it.
     COVERAGE_EXEMPTIONS: Dict[str, str] = {
-        # Harness-internal causal barriers: wired by Tier 4, never agent-visible.
-        "MiningAction.set_resource_depletion_barrier":
-            "harness causal barrier; installed by tier4_runtime, not an agent verb",
-        "PlacementAction.set_state_barrier":
-            "harness causal barrier; API_AFFORDANCE_REDESIGN §2.1 deletes it outright",
-        # Doomed accessor: entity_ops is absorbed onto entity objects
-        # (API_AFFORDANCE_REDESIGN §2.1); rotation is the rotatable mixin's .rotate().
-        "EntityOperationsAction.rotate_entity":
-            "entity_ops accessor scheduled for deletion; rotation lives on entity.rotate()",
+        # (MiningAction / PlacementAction / EntityOperationsAction are no longer
+        # registered: their accessors were deleted 2026-08-29 and the classes
+        # are infrastructure behind resource.mine(), item.place() and the
+        # entity mixins.)
         # Harness-internal reconciliation and checkpoint machinery on RemoteView.
         "RemoteView.checkpoint_database":
             "campaign checkpoint plumbing, not a map-screen read",
@@ -65,6 +60,10 @@ class CoverageValidator:
         # a tool, never as a method; documenting it would advertise a second route.
         "RemoteView.execute_raw":
             "transport for the execute_duckdb tool; not an agent-facing method",
+        # Tier 4 tells the view whose force to read production for; the
+        # agent never calls it.
+        "RemoteView.set_agent_id":
+            "harness wiring (tier4 sets the agent id); not an agent-facing method",
     }
 
     def __init__(self, registry: Optional[DocumentationRegistry] = None):
@@ -473,66 +472,45 @@ class StaticAttributeValidator:
         "remote_view.count_entities": "int",
         "remote_view.count_ghosts": "int",
         "remote_view.get_power_networks": "PowerNetworksReport",
+        "remote_view.power": "PowerNetworksReport",
+        "remote_view.status": "StatusSummary",
+        "remote_view.status_changed": "StatusChange",
+        "remote_view.production": "ProductionReport",
         "remote_view.diagnose_power": "PowerDiagnosis",
 
-        # VerifyView (live power/coverage confirmation)
-        "verify.powered": "Dict",
-        "verify.connected": "ConnectedCheck",
-        "verify.supply_coverage": "SupplyCoverageReport",
 
         # Inventory
+        "inventory.await_item": "AwaitItemResult",
         "inventory.get_item": "PlaceableItem",
         "inventory.get_items": "List[Item]",
         "inventory.create_item_stacks": "List[ItemStack]",
         "inventory.check_total": "int",
 
-        # PlacementHints
-        # NOTE: get_connection_positions has polymorphic return type based on connection_type
-        # Default to ConnectionPosition, but refined by POLYMORPHIC_RETURN_TYPES below
-        "placement_hints.get_connection_positions": "List[ConnectionPosition]",
-        "placement_hints.find_offshore_pump_sites": "List[ConnectionPosition]",
-        "placement_hints.is_buildable": "Dict",
-        "placement_hints.get_placement_line": "GhostPlan",
-        "placement_hints.get_underground_segment": "GhostPlan",
-        "placement_hints.get_pole_line": "GhostPlan",
-        "placement_hints.get_pole_coverage_position": "Optional[MapPosition]",
-        "placement_hints.get_pole_coverage_plan": "Tuple[GhostPlan, List]",
-        "placement_hints.get_inserter_placement_positions": "List[Tuple[MapPosition, Direction]]",
-        "placement_hints.evaluate_pole_placement": "PolePlacementResult",
 
         # Crafting
-        "crafting.craft": "List[ItemStack]",
-        "crafting.status": "Dict",
+        "crafting.status": "CraftingQueueStatus",
         "crafting.enqueue": "Dict",
         "crafting.dequeue": "Dict",
 
-        # Mining
-        "mining.mine": "List[ItemStack]",
-        "mining.cancel": "MiningCancelled",
 
-        # Placement
-        # NOTE: place has polymorphic return type based on return_entity flag
-        # Default to EntityPlaced, refined by POLYMORPHIC_RETURN_TYPES below
-        "placement.place": "EntityPlaced",
-        "placement.remove_ghost": "GhostRemoved",
 
-        # EntityOperations
-        "entity_ops.inspect_entity": "Dict",
-        "entity_ops.pickup_entity": "EntityPickedUp",
-        "entity_ops.set_entity_recipe": "EntityRecipeSet",
-        "entity_ops.set_entity_filter": "EntityFilterSet",
-        "entity_ops.set_inventory_limit": "InventoryLimitSet",
-        "entity_ops.take_inventory_item": "InventoryItemTaken",
-        "entity_ops.put_inventory_item": "InventoryItemPut",
 
         # Walking
         "walking.walk_to": "MapPosition",
         "walking.walk_to_position": "MapPosition",
-        "walking.walk_to_entity": "MapPosition",
         "walking.position": "MapPosition",
         "walking.stop": "WalkingStopped",
 
+        # Crafting catalog and predictions
+        "crafting.list_recipes": "List[Dict]",
+        "crafting.enqueue": "Dict",
+        "crafting.take_predictions": "List[CraftPrediction]",
+
+        # Entity reference (planning-time, Constitution §6)
+        "entity_reference": "EntityReference",
+
         # Research
+        "research.list_technologies": "List[Dict]",
         "research.status": "ResearchStatus",
         "research.queue": "List[QueuedTechnology]",
         "research.enqueue": "Dict",
@@ -545,10 +523,6 @@ class StaticAttributeValidator:
         "remote_view.get_entities_in_tile_area": "List[BaseEntity]",
         "remote_view.get_entities_at_anchor_tile": "List[BaseEntity]",
 
-        # GhostBuilder
-        "ghost_builder.build_plan": "Dict",
-        "ghost_builder.build_ghosts": "Dict",
-        "ghost_builder.build_ghost": "bool",
 
         # Entity methods
         ".inspect": "EntityInspection",
@@ -564,6 +538,16 @@ class StaticAttributeValidator:
         # Resource-side only: entities are removed with .pickup(), not .mine()
         ".mine": "List[ItemStack]",
         ".pickup": "List[ItemStack]",
+        ".status": "LiveStatus",
+        ".can_place": "bool",
+        ".set_limit": "Dict",
+        ".supply_area": "BoundingBox",
+        ".covers": "bool",
+        ".wire_reach": "bool",
+        ".drop_position": "SourcedValue",
+        ".placements_between": "SourcedValue",
+        ".sites": "SourcedValue",
+        ".footprint": "SourcedValue",
 
         # ElectricPole accessors (DOC-GAP-1: exist in electric_pole.py,
         # previously unregistered — supply-area / wire-reach reasoning)
@@ -584,6 +568,7 @@ class StaticAttributeValidator:
         "List[QueuedTechnology]": "QueuedTechnology",
         "List[Dict]": "Dict",
         "List[Tuple[MapPosition, Direction]]": "Tuple[MapPosition, Direction]",
+        "List[CraftPrediction]": "CraftPrediction",
     }
 
     # Index access types (when accessing list[0])
@@ -591,13 +576,7 @@ class StaticAttributeValidator:
 
     # Polymorphic return types - when return type depends on argument values
     # Format: (method_pattern, arg_pattern) -> refined_return_type
-    POLYMORPHIC_RETURN_TYPES: Dict[tuple, str] = {
-        # get_connection_positions returns WireConnectionPosition for ELECTRIC_WIRE
-        ("placement_hints.get_connection_positions", "ConnectionType.ELECTRIC_WIRE"): "List[WireConnectionPosition]",
-        ("placement_hints.get_connection_positions", "ELECTRIC_WIRE"): "List[WireConnectionPosition]",
-        # place returns a full BaseEntity when return_entity=True
-        ("placement.place", "return_entity=True"): "BaseEntity",
-    }
+    POLYMORPHIC_RETURN_TYPES: Dict[tuple, str] = {}
 
     # ==========================================================================
     # EXPLICIT SKIP-LIST FOR UNMAPPED ACCESSOR CALLS (L3.1b)
@@ -641,20 +620,23 @@ class StaticAttributeValidator:
             from FactoryVerse.game.factory.entity.inspection import EntityInspection
             from FactoryVerse.game.factory.types import MapPosition, TilePosition, BoundingBox
             from FactoryVerse.game.agent.placement_hints import (
-                ConnectionPosition, WireConnectionPosition, GhostPlan, PolePlacementResult
+                ConnectionPosition, WireConnectionPosition,
             )
             from FactoryVerse.game.agent.remote_view import (
                 PowerNetworksReport, PowerNetworkCensus, PowerDiagnosis,
+                StatusSummary, StatusGroup, ProductionReport,
             )
-            from FactoryVerse.game.agent.verify_view import (
-                SupplyCoverageReport, EntityCoverage, ConnectedCheck, PoweredCheck,
-            )
+            from FactoryVerse.game.agent.status_dump import StatusChange, StatusTransition
             from FactoryVerse.game.agent.embodied_actions.research import ResearchStatus, QueuedTechnology
-            from FactoryVerse.game.agent.embodied_actions.mining import MiningCancelled
+            from FactoryVerse.game.agent.embodied_actions.inventory import AwaitItemResult
+            from FactoryVerse.game.agent.embodied_actions.crafting import CraftPrediction
+            from FactoryVerse.game.agent.entity_reference import EntityReference, SourcedValue
+            from FactoryVerse.game.factory.entity.base_entity import LiveStatus
             from FactoryVerse.game.agent.embodied_actions.walking import WalkingStopped
             from FactoryVerse.game.agent.embodied_actions.place_entity import (
                 EntityPlaced, GhostRemoved
             )
+            from FactoryVerse.game.factory.types import CraftingQueueStatus, CraftingQueueItem
             from FactoryVerse.game.agent.embodied_actions.entity_operations import (
                 EntityRecipeSet, EntityFilterSet, InventoryLimitSet,
                 InventoryItemTaken, InventoryItemPut, EntityPickedUp,
@@ -674,19 +656,24 @@ class StaticAttributeValidator:
                 "PowerNetworksReport": PowerNetworksReport,
                 "PowerNetworkCensus": PowerNetworkCensus,
                 "PowerDiagnosis": PowerDiagnosis,
-                "SupplyCoverageReport": SupplyCoverageReport,
-                "EntityCoverage": EntityCoverage,
-                "ConnectedCheck": ConnectedCheck,
-                "PoweredCheck": PoweredCheck,
+                "StatusSummary": StatusSummary,
+                "StatusGroup": StatusGroup,
+                "StatusChange": StatusChange,
+                "StatusTransition": StatusTransition,
+                "ProductionReport": ProductionReport,
                 "ConnectionPosition": ConnectionPosition,
                 "WireConnectionPosition": WireConnectionPosition,
-                "GhostPlan": GhostPlan,
-                "PolePlacementResult": PolePlacementResult,
                 "ResearchStatus": ResearchStatus,
                 "QueuedTechnology": QueuedTechnology,
-                "MiningCancelled": MiningCancelled,
+                "AwaitItemResult": AwaitItemResult,
+                "CraftPrediction": CraftPrediction,
+                "EntityReference": EntityReference,
+                "SourcedValue": SourcedValue,
+                "LiveStatus": LiveStatus,
                 "WalkingStopped": WalkingStopped,
                 "EntityPlaced": EntityPlaced,
+                "CraftingQueueStatus": CraftingQueueStatus,
+                "CraftingQueueItem": CraftingQueueItem,
                 "GhostRemoved": GhostRemoved,
                 "EntityRecipeSet": EntityRecipeSet,
                 "EntityFilterSet": EntityFilterSet,
@@ -975,8 +962,6 @@ class NamespaceCoverageValidator:
     # accessor name -> why it is deliberately untaught
     NAMESPACE_EXEMPTIONS: Dict[str, str] = {
         "agent_id": "a value, not an accessor; shown in the prompt header",
-        "resources": "alias of reachable_view kept for old scripts; deleted with the namespace cuts",
-        "events": "deleted from the namespace by API_AFFORDANCE_REDESIGN §2.5; EventStream stays as transport",
     }
 
     def __init__(self, registry: Optional[DocumentationRegistry] = None):
@@ -998,7 +983,8 @@ class NamespaceCoverageValidator:
 
         src = Path(t4.__file__).read_text()
         start = src.index("builtin_names = {")
-        end = src.index("}", src.index("\"events\"", start))
+        # The last accessor row is entity_reference (API §2.7); the dict closes after it.
+        end = src.index("}", src.index("\"entity_reference\"", start))
         block = src[start:end]
         found: Dict[str, str] = {}
         for m in re.finditer(r'^\s*"(\w+)":\s*(self\.[\w.]+)', block, re.M):
@@ -1009,8 +995,13 @@ class NamespaceCoverageValidator:
         """Return a list of problems; empty means every accessor is taught or exempt."""
         accessors = self.agent_namespace_accessors()
         problems: List[str] = []
-        if len(accessors) < 10:
-            problems.append(f"namespace parse found only {len(accessors)} accessors — parser broken?")
+        expected = {"agent_id", "walking", "inventory", "crafting", "research",
+                    "reachable_view", "remote_view", "entity_reference"}
+        if set(accessors) != expected:
+            problems.append(
+                f"namespace is {sorted(accessors)}; API_AFFORDANCE_REDESIGN §2.7 fixes it at "
+                f"{sorted(expected)} — a new accessor needs a plan amendment, not a binding"
+            )
         documented = {c.accessor_name for c in self._registry.get_all_classes()}
         for name in accessors:
             if name in documented:

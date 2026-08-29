@@ -149,9 +149,7 @@ async def test_tier4_agent_reconciliation():
     tier4_new._setup_session_dir = AsyncMock(return_value=Path("/tmp"))
     tier4_new._setup_executor = AsyncMock()
     tier4_new._load_embodied_actions = AsyncMock()
-    tier4_new._load_ghost_builder = AsyncMock()
     tier4_new._load_reachable_view = AsyncMock()
-    tier4_new._load_placement_hints = AsyncMock()
 
     await tier4_new.initialize()
 
@@ -209,9 +207,7 @@ async def test_tier4_agent_reconciliation():
     tier4_bind._setup_session_dir = AsyncMock(return_value=Path("/tmp"))
     tier4_bind._setup_executor = AsyncMock()
     tier4_bind._load_embodied_actions = AsyncMock()
-    tier4_bind._load_ghost_builder = AsyncMock()
     tier4_bind._load_reachable_view = AsyncMock()
-    tier4_bind._load_placement_hints = AsyncMock()
 
     await tier4_bind.initialize()
 
@@ -247,9 +243,7 @@ async def test_tier4_agent_reconciliation():
     tier4_recreate._setup_session_dir = AsyncMock(return_value=Path("/tmp"))
     tier4_recreate._setup_executor = AsyncMock()
     tier4_recreate._load_embodied_actions = AsyncMock()
-    tier4_recreate._load_ghost_builder = AsyncMock()
     tier4_recreate._load_reachable_view = AsyncMock()
-    tier4_recreate._load_placement_hints = AsyncMock()
 
     await tier4_recreate.initialize()
 

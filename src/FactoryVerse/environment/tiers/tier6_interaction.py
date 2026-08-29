@@ -553,6 +553,12 @@ class _RuntimeAdapter:
             logger.debug(f"crafting read failed: {e}")
             return []
 
+    def take_craft_predictions(self):
+        """Predictions the crafting action stored at enqueue (§7.1), taken once."""
+        c = getattr(self._tier4, "_crafting", None) if self._tier4 else None
+        take = getattr(c, "take_predictions", None)
+        return list(take()) if take is not None else []
+
     def map_rows(self) -> tuple:
         """(entity rows, ghost rows) keyed by name+position, from the map model."""
         rv = self.remote_view

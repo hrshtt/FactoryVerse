@@ -135,10 +135,8 @@ class Tier4Runtime(TierBase):
         self._database: Optional[Any] = None  # Raw DuckDB connection
         self._remote_view: Optional[Any] = None
         self._reachable_view: Optional[Any] = None
+        self._entity_reference: Optional[Any] = None
         self._embodied_actions: Optional[Any] = None
-        self._placement_hints: Optional[Any] = None
-        self._verify: Optional[Any] = None
-        self._ghost_builder: Optional[Any] = None
         self._modules_loaded: List[str] = []
 
         # Execution environment (Jupyter or InProcess)
@@ -245,19 +243,9 @@ class Tier4Runtime(TierBase):
         return self._embodied_actions
 
     @property
-    def placement_hints(self) -> Optional[Any]:
-        """Get PlacementHints for spatial reasoning and connection solving."""
-        return self._placement_hints
-
-    @property
-    def verify(self) -> Optional[Any]:
-        """Get VerifyView for live power/coverage confirmation."""
-        return self._verify
-
-    @property
-    def ghost_builder(self) -> Optional[Any]:
-        """Get GhostBuilder for building ghost entities."""
-        return self._ghost_builder
+    def entity_reference(self) -> Optional[Any]:
+        """The planning-time reference accessor (Constitution §6)."""
+        return self._entity_reference
 
     @property
     def notebook_path(self) -> Optional[Path]:
@@ -353,15 +341,11 @@ class Tier4Runtime(TierBase):
             await self._prepare_freeplay_snapshot()
 
             # Load modules based on variant
-            # Order matters: ghost_builder needs reachable_view and the
-            # engine-backed placement validator for commit-time revalidation.
             await self._load_embodied_actions()
             await self._load_reachable_view()
-            await self._load_placement_hints()
-            await self._load_ghost_builder()
-            await self._load_verify()
 
-            # Load EventStream for temporal perception (game events)
+            # EventStream: infrastructure the orchestrator drains at the turn
+            # boundary (API_AFFORDANCE_REDESIGN §2.5). Not agent-visible.
             await self._load_event_stream()
 
             if self.config.variant == RuntimeVariant.FULL:
@@ -915,7 +899,11 @@ class Tier4Runtime(TierBase):
         )
         self._inventory = AgentInventory(rcon_handler, self._placement)
         self._crafting = CraftingAction(rcon_handler, async_listener)
+        self._inventory._attach_crafting(self._crafting)  # await_item reads the queue, never writes
         self._research = ResearchAction(rcon_handler)
+        from FactoryVerse.game.agent.entity_reference import EntityReferenceAccessor
+
+        self._entity_reference = EntityReferenceAccessor(rcon_handler)
 
         # Store as dict for easy access
         self._embodied_actions = {
@@ -930,21 +918,6 @@ class Tier4Runtime(TierBase):
         self._modules_loaded.append("embodied_actions")
 
         logger.info("Tier 4: EmbodiedActions loaded (7 action modules)")
-
-    async def _load_ghost_builder(self) -> None:
-        """Load GhostBuilder module for building ghost entities."""
-        from FactoryVerse.game.agent.ghost_builder import GhostBuilderAction
-
-        self._ghost_builder = GhostBuilderAction(
-            movement=self._movement,
-            placement=self._placement,
-            inventory=self._inventory,
-            reachable_view=self._reachable_view,
-            validator=self._placement_hints.validator,
-        )
-        self._modules_loaded.append("ghost_builder")
-
-        logger.info("Tier 4: GhostBuilder loaded")
 
     async def _load_reachable_view(self) -> None:
         """Load ReachableView module (Lua-based entity querying)."""
@@ -969,40 +942,6 @@ class Tier4Runtime(TierBase):
         self._modules_loaded.append("reachable_view")
 
         logger.info("Tier 4: ReachableView loaded")
-
-    async def _load_placement_hints(self) -> None:
-        """Load PlacementHints module (spatial reasoning for entity placement)."""
-        from FactoryVerse.game.agent.placement_hints import PlacementHints
-
-        tier3 = self._env.tier3
-        if tier3 is None or tier3.rcon_helper is None:
-            raise RuntimeError("Tier 3 must be initialized with RCON")
-
-        # Use RconHandler for placement hints
-        from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
-
-        rcon_handler = RconHandler(tier3.rcon_helper.rcon_client, self.agent_id)
-        self._placement_hints = PlacementHints(rcon_handler)
-        self._modules_loaded.append("placement_hints")
-
-        logger.info("Tier 4: PlacementHints loaded")
-
-    async def _load_verify(self) -> None:
-        """Load VerifyView module (live power/coverage confirmation via RCON)."""
-        from FactoryVerse.game.agent.verify_view import VerifyView
-        from FactoryVerse.game.agent.infra.rcon_handler import RconHandler
-
-        tier3 = self._env.tier3
-        if tier3 is None or tier3.rcon_helper is None:
-            raise RuntimeError("Tier 3 must be initialized with RCON")
-
-        # VerifyView issues raw /sc Lua over the agent's RconHandler (same route
-        # PlacementHintsClient uses); geometry comes from the prototype pipeline.
-        rcon_handler = RconHandler(tier3.rcon_helper.rcon_client, self.agent_id)
-        self._verify = VerifyView(rcon_handler)
-        self._modules_loaded.append("verify")
-
-        logger.info("Tier 4: VerifyView loaded")
 
     async def _load_event_stream(self) -> None:
         """Load EventStream for temporal perception of game events.
@@ -1277,6 +1216,9 @@ class Tier4Runtime(TierBase):
         # Load initial data and start sync service
         # Note: load() will start the global UDP dispatcher internally
         logger.info("Tier 4: Loading RemoteView data...")
+        set_agent = getattr(self._remote_view, "set_agent_id", None)
+        if set_agent is not None:
+            set_agent(self._agent_numeric_id)  # remote_view.production() needs the force's agent
         await self._remote_view.load(wait_for_bootstrap=True, bootstrap_timeout=120.0)
         await self._remote_view.start()  # Start real-time sync via UDP
         self._mining.set_resource_depletion_barrier(
@@ -1359,9 +1301,7 @@ class Tier4Runtime(TierBase):
         self._remote_view = None
         self._reachable_view = None
         self._embodied_actions = None
-        self._placement_hints = None
-        self._verify = None
-        self._ghost_builder = None
+        self._entity_reference = None
         self._scenario_adapter = None
         self._event_stream = None
         self._agent_id = None
@@ -1400,16 +1340,15 @@ class Tier4Runtime(TierBase):
             logger.warning(f"Tier 4: Failed to save session metadata: {e}")
 
     _ALL_BUILTIN_NAMES = frozenset(
-        {"agent_id", "walking", "crafting", "mining", "research", "inventory", "placement",
-         "entity_ops", "reachable_view", "resources", "remote_view", "ghost_builder",
-         "placement_hints", "verify", "events", "rcon_client", "runtime", "scenario", "plan"}
+        {"agent_id", "walking", "inventory", "crafting", "research", "reachable_view",
+         "remote_view", "entity_reference", "rcon_client", "runtime", "scenario", "plan"}
     )
 
     # TURN_CONTRACT §6 — the planning turn's namespace is a FILTER over the one
     # assembly below, never a second assembly site. Map-scale reads, research,
     # the inventory read, the agent's id, and the plan helper; no body verbs.
     PLANNING_NAMESPACE = frozenset(
-        {"json", "asyncio", "agent_id", "remote_view", "research", "inventory", "plan",
+        {"json", "asyncio", "agent_id", "remote_view", "entity_reference", "research", "inventory", "plan",
          "MapPosition", "TilePosition", "Direction", "BoundingBox",
          "ResearchStatus", "ResearchQueueItem", "QueuedTechnology"}
     )
@@ -1459,13 +1398,11 @@ class Tier4Runtime(TierBase):
             ResearchQueueItem,
         )
 
-        # Placement planning types
+        # Connection-cue types (returned by connection_positions / sites)
         from FactoryVerse.game.agent.placement_hints import (
             ConnectionType,
             ConnectionPosition,
             WireConnectionPosition,
-            GhostPlan,
-            PolePlacementResult,
             EntityValidationError,
         )
 
@@ -1515,13 +1452,11 @@ class Tier4Runtime(TierBase):
             "Direction": Direction,
             "BoundingBox": BoundingBox,
             # =================================================================
-            # Placement planning types (ConnectionType, GhostPlan, etc.)
+            # Connection-cue types
             # =================================================================
             "ConnectionType": ConnectionType,
             "ConnectionPosition": ConnectionPosition,
             "WireConnectionPosition": WireConnectionPosition,
-            "GhostPlan": GhostPlan,
-            "PolePlacementResult": PolePlacementResult,
             "EntityValidationError": EntityValidationError,
             # =================================================================
             # Item types (Item, PlaceableItem, ItemStack)
@@ -1546,23 +1481,19 @@ class Tier4Runtime(TierBase):
             # =================================================================
             # Tier 4 components (action modules and views)
             # =================================================================
+            # Eight names, each a human gesture (API_AFFORDANCE_REDESIGN §2.7).
+            # Every verb on a thing in the world is a method of that thing; the
+            # flat modules (placement, entity_ops, mining, verify,
+            # placement_hints, events, the `resources` alias) were deleted
+            # 2026-08-29 and their mechanisms live behind the objects.
             "agent_id": self._agent_id,
             "walking": self._movement,
-            "crafting": self._crafting,
-            "mining": self._mining,
-            "research": self._research,
             "inventory": self._inventory,
-            "placement": self._placement,
-            "entity_ops": self._entity_ops,
+            "crafting": self._crafting,
+            "research": self._research,
             "reachable_view": self._reachable_view,
-            "resources": self._reachable_view,  # Alias
             "remote_view": self._remote_view,
-            "ghost_builder": self._ghost_builder,
-            "placement_hints": self._placement_hints,
-            "verify": self._verify,
-            # EventStream (temporal perception of game events)
-            # =================================================================
-            "events": self._event_stream,
+            "entity_reference": self._entity_reference,
         }
 
         # Raw transport and runtime internals are development capabilities, not
@@ -1751,7 +1682,6 @@ class Tier4Runtime(TierBase):
         # Re-initialize module instances
         await self._load_embodied_actions()
         await self._load_reachable_view()
-        await self._load_placement_hints()
         if self.config.variant == RuntimeVariant.FULL:
             await self._load_remote_view()
 

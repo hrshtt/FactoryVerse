@@ -119,11 +119,7 @@ if drill.direction == Direction.SOUTH:
                 ),
                 Example(
                     code="""# Direction in placement hints
-positions = placement_hints.get_inserter_placement_positions(
-    source_entity=chest,
-    target_entity=furnace,
-    inserter_name="inserter"
-)
+positions = entity_reference("inserter").placements_between(chest, furnace).value["positions"]
 for pos, direction in positions:
     print(f"Place at {pos} facing {direction.name}")""",
                     decision_context="Understanding insertion direction",
@@ -148,71 +144,19 @@ for pos, direction in positions:
             "CRITICAL: ITEM_DROP is for mining drills (push directly to adjacent entities); "
             "you cannot use inserters with drills as source. "
             "Inserters are NOT a connection type - use "
-            "get_inserter_placement_positions(source, target) instead.",
+            "entity_reference('inserter').placements_between(source, target) instead.",
             examples=[
                 Example(
                     code="""# Available connection types
 ConnectionType.ITEM_DROP    # Mining drill -> Chest/Belt (drills push directly, no inserters)
 ConnectionType.FLUID_PIPE   # Pipe -> Machine/Pipe
 ConnectionType.ELECTRIC_WIRE   # Pole -> Pole
-# For inserters: placement_hints.get_inserter_placement_positions(source, target)
+# For inserters: entity_reference("inserter").placements_between(source, target)
 
-# Use with get_connection_positions
-positions = placement_hints.get_connection_positions(
-    source_entity=drill,
-    target_entity_name="iron-chest",
-    connection_type=ConnectionType.ITEM_DROP
-)""",
+# Usually inferred from the pair; pass it only to force a kind
+cues = drill.connection_positions("iron-chest", connection_type=ConnectionType.ITEM_DROP)""",
                     decision_context="Choosing connection type for placement",
                     expected_outcome="ConnectionType enum member",
-                    validation_level=ValidationLevel.SYNTAX,
-                ),
-            ],
-        )
-    except ImportError:
-        pass
-
-    # =========================================================================
-    # GhostPlan (documented here as it's a key response type)
-    # =========================================================================
-
-    try:
-        from FactoryVerse.game.agent.placement_hints import GhostPlan
-        registry.register_type(
-            type_cls=GhostPlan,
-            description="A validated placement plan ready for commitment via ghost_builder. "
-            "Contains entity positions, directions, and validation status.",
-            fields={
-                "entity_name": "Name of entity to place",
-                "positions": "List of (MapPosition, Optional[Direction]) tuples",
-                "label": "Unique identifier for the plan",
-                "description": "Human-readable description",
-                "valid": "True if all positions are validated",
-            },
-            examples=[
-                Example(
-                    code="""# GhostPlan from placement_hints
-plan = placement_hints.get_placement_line(
-    entity_name="transport-belt",
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=10, y=0)
-)
-
-# Check validity
-if plan.valid:
-    print(f"Plan '{plan.label}' is ready")
-    print(f"Entity: {plan.entity_name}")
-    print(f"Positions: {len(plan.positions)}")
-
-    # Build the plan to create ghosts
-    result = await ghost_builder.build_plan(plan)
-else:
-    print("Plan has invalid positions")
-
-# Re-validate after game state changes
-plan.validate(placement_hints.validator)""",
-                    decision_context="Working with placement plans",
-                    expected_outcome="GhostPlan ready for ghost_builder.build_plan()",
                     validation_level=ValidationLevel.SYNTAX,
                 ),
             ],
@@ -229,7 +173,8 @@ plan.validate(placement_hints.validator)""",
         registry.register_type(
             type_cls=ConnectionPosition,
             description="A valid position for placing a target entity to connect to a source. "
-            "Returned by get_connection_positions().",
+            "Returned by entity.connection_positions(target_name) and "
+            "entity_reference(target_name).connection_positions(source).",
             fields={
                 "position": "MapPosition where target can be placed",
                 "direction": "Required direction for target (or None)",
@@ -241,12 +186,8 @@ plan.validate(placement_hints.validator)""",
             },
             examples=[
                 Example(
-                    code="""# ConnectionPosition from get_connection_positions
-positions = placement_hints.get_connection_positions(
-    source_entity=drill,
-    target_entity_name="iron-chest",
-    connection_type=ConnectionType.ITEM_DROP
-)
+                    code="""# ConnectionPosition from a placed drill: where would a chest receive its ore?
+positions = drill.connection_positions("iron-chest")
 
 # Positions are sorted by perpendicular_offset (best alignment first)
 if positions:

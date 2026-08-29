@@ -4,7 +4,7 @@ Documentation Reference Modules.
 This package contains co-located documentation for all public APIs:
 - actions.py: All action classes (walking, crafting, mining, etc.)
 - views.py: ReachableView and RemoteView
-- placement.py: PlacementHints and related classes
+- entity_reference.py: the planning-time reference (Constitution §6)
 - types.py: Core types (MapPosition, Direction, etc.)
 
 Documentation is registered with the global registry when these
@@ -24,14 +24,13 @@ def register_all_documentation() -> None:
     """
     from FactoryVerse.utils.docs.reference import actions
     from FactoryVerse.utils.docs.reference import views
-    from FactoryVerse.utils.docs.reference import placement
     from FactoryVerse.utils.docs.reference import types
+    from FactoryVerse.utils.docs.reference import entity_reference
 
     actions._register_actions()
     views._register_views()
-    placement._register_placement()
-    placement._register_ghost_builder()
     types._register_types()
+    entity_reference._register_entity_reference()
 
 
 __all__ = ["register_all_documentation"]

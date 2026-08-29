@@ -18,8 +18,10 @@ import pytest
 
 from FactoryVerse.game.agent.placement_hints import (
     ConnectionPosition,
-    PlacementHints,
     ConnectionPositionList,
+    _electric_wire_positions,
+    _fluid_pipe_positions,
+    _item_drop_positions,
     _pole_prototype_distances,
 )
 from FactoryVerse.game.factory.factorio_types import Direction
@@ -27,11 +29,26 @@ from FactoryVerse.game.factory.types import MapPosition
 from FactoryVerse.game.factory.prototypes import get_entity_prototypes
 
 
+class _Hints:
+    """The old accessor shape, over the module-level parser (the accessor is gone)."""
+
+    def __init__(self, client):
+        self._client = client
+
+    def _get_fluid_pipe_positions(self, source, target_name):
+        return _fluid_pipe_positions(self._client, source, target_name)
+
+    def _get_electric_wire_positions(self, source, target_name):
+        return _electric_wire_positions(self._client, source, target_name)
+
+    def _get_item_drop_positions(self, source, target_name):
+        return _item_drop_positions(self._client, source, target_name)
+
+
 def _hints_with_fluid_result(positions):
-    hints = PlacementHints.__new__(PlacementHints)  # skip RCON wiring
-    hints._client = MagicMock()
-    hints._client.get_fluid_connections.return_value = {"positions": positions}
-    return hints
+    client = MagicMock()
+    client.get_fluid_connections.return_value = {"positions": positions}
+    return _Hints(client)
 
 
 def _source():
@@ -132,8 +149,7 @@ class TestConnectionPositionListReason:
     """
 
     def _hints_with_pole_result(self, result):
-        hints = PlacementHints.__new__(PlacementHints)
-        hints._client = MagicMock()
+        hints = _Hints(MagicMock())
         hints._client.get_pole_connections.return_value = result
         return hints
 
@@ -172,8 +188,7 @@ class TestConnectionPositionListReason:
     def test_fluid_reason_surfaces_luas_own_reason(self):
         """Fluid's Lua reason (connections/init.lua) must pass through
         unmodified rather than being discarded."""
-        hints = PlacementHints.__new__(PlacementHints)
-        hints._client = MagicMock()
+        hints = _Hints(MagicMock())
         hints._client.get_fluid_connections.return_value = {
             "positions": [],
             "count": 0,
@@ -187,8 +202,7 @@ class TestConnectionPositionListReason:
 
 class TestItemDropCueParsing:
     def test_positions_parse_with_perpendicular_offset(self):
-        hints = PlacementHints.__new__(PlacementHints)
-        hints._client = MagicMock()
+        hints = _Hints(MagicMock())
         hints._client.get_item_drop_connections.return_value = {
             "positions": [
                 {"position": {"x": 496.5, "y": 69.5},

@@ -327,8 +327,6 @@ def get_preimported_types() -> List[Tuple[str, str]]:
         ConnectionType,
         ConnectionPosition,
         WireConnectionPosition,
-        GhostPlan,
-        PolePlacementResult,
         EntityValidationError,
     )
     from FactoryVerse.game.factory.item.base import Item, PlaceableItem, ItemStack
@@ -348,12 +346,10 @@ def get_preimported_types() -> List[Tuple[str, str]]:
         MapPosition,
         Direction,
         BoundingBox,
-        # Placement planning types
+        # Connection-cue types
         ConnectionType,
         ConnectionPosition,
         WireConnectionPosition,
-        GhostPlan,
-        PolePlacementResult,
         EntityValidationError,
         # Item types
         Item,

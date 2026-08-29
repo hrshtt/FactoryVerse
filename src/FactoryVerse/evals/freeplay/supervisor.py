@@ -708,17 +708,16 @@ class FreeplaySupervisor:
                 "walk_target": False,
                 "validated_offshore_pump_anchor": False,
                 "required_next_call": (
-                    "placement_hints.find_offshore_pump_sites"
+                    'entity_reference("offshore-pump").sites(near=...)'
                 ),
                 "required_walk_target": "site.approach_position",
             }
-        power_row = tier4.remote_view.execute_raw(
-            """
-            SELECT count(DISTINCT network_id)
-            FROM power_networks
-            WHERE tick = (SELECT max(tick) FROM power_networks)
-            """
-        )[0]
+        # Power flow is not a table (Constitution §10): read the newest
+        # sample through the source-declaring reader.
+        try:
+            power_row = (len(tier4.remote_view.power().networks),)
+        except Exception:
+            power_row = (0,)
         errors: list[str] = []
         if active_mods is None:
             active_mods = self._read_active_mods()

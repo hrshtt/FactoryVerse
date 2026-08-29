@@ -1,29 +1,22 @@
-"""Placement Hints Module - Spatial reasoning engine for entity placement.
+"""Placement-hints transport and the connection reads that ride it.
 
-This module provides pure, context-aware spatial reasoning for entity placement.
-It mirrors the visual feedback human players receive in Factorio (green/red tile
-highlights, rotation indicators, drag-placement lines) but exposes this as
-structured data for the LLM Agent.
+INFRASTRUCTURE, NOT AN ACCESSOR. The agent never sees a ``placement_hints``
+name: the lawful reads here (connection cues, inserter placements, offshore
+pump sites, the red/green preview) are exposed on ``entity_reference(...)``
+and on the real entity objects under identical names
+(API_AFFORDANCE_REDESIGN §2.2, Constitution §6). What was deleted with the
+accessor (2026-08-29): the set-cover pole planner, the pre-flight validators,
+``GhostPlan`` as a commit handle, the line/underground generators with their
+hardcoded distances, and the ``BELT_FLOW``/``INSERTER_REACH`` phantom enum
+members. The transport (``PlacementHintsClient``) and the pure parsers stay.
 
-Architecture:
-- PlacementHintsClient: RCON wrapper for fv_placement_hints Lua mod
-- PlacementValidator: Validates placement using the Lua mod
-- PlacementHints: Generates validated GhostPlan objects for placement
-- GhostPlan: Validated plan ready for commitment via GhostBuilder
-
-The fv_placement_hints Lua mod provides low-level primitives using engine values
-(drop_position, fluidbox, wire_connector). This Python module provides high-level
-planning algorithms that orchestrate those primitives.
-
-No Side Effects: This module never mutates game state (validation only).
+No side effects: nothing here mutates game state.
 """
 
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Dict, Any, Tuple, FrozenSet, TYPE_CHECKING
 import logging
-import uuid
-import time
 import json
 
 from FactoryVerse.game.factory.types import MapPosition, Direction
@@ -140,6 +133,23 @@ def validate_entity_for_connection(
             )
 
 
+def infer_connection_type(source_name: str, target_name: str) -> ConnectionType:
+    """The connection kind a pair implies: a drill pushes items, poles wire,
+    fluid entities pipe. Raises ``EntityValidationError`` when the pair has no
+    connection the engine knows about."""
+    if source_name in ITEM_DROP_ENTITIES:
+        return ConnectionType.ITEM_DROP
+    if source_name in ELECTRIC_POLE_ENTITIES and target_name in ELECTRIC_POLE_ENTITIES:
+        return ConnectionType.ELECTRIC_WIRE
+    if source_name in FLUID_PIPE_ENTITIES:
+        return ConnectionType.FLUID_PIPE
+    raise EntityValidationError(
+        f"{source_name!r} → {target_name!r}: no item-drop, fluid or wire connection "
+        f"exists between these; inserters bridge everything else "
+        f"(entity_reference('inserter').placements_between(a, b))"
+    )
+
+
 @dataclass
 class ConnectionPosition:
     """A valid position for placing a target entity to connect to a source entity.
@@ -247,53 +257,6 @@ class ConnectionPositionList(list):
         if not bits:
             return f"{base} (no valid positions; no metadata surfaced)"
         return f"{base} (no valid positions: {', '.join(bits)})"
-
-
-@dataclass
-class GhostPlan:
-    """A complete plan ready for commitment.
-
-    Plans are validated using PlacementValidator.validate_batch() before
-    being returned. All returned positions are pre-validated (valid=True).
-    """
-
-    entity_name: str
-    positions: List[Tuple[MapPosition, Optional[Direction]]]
-    label: str
-    description: str
-    valid: bool
-
-    def validate(self, validator: "PlacementValidator") -> bool:
-        """Re-validate all positions in the plan."""
-        positions_only = [pos for pos, _ in self.positions]
-        directions = [dir for _, dir in self.positions]
-        results = validator.validate_batch(
-            self.entity_name, positions_only, directions=directions, ghost=True
-        )
-        self.valid = all(results)
-        return self.valid
-
-
-@dataclass
-class PolePlacementResult:
-    """Result of dry-run pole placement evaluation."""
-
-    position: MapPosition
-    pole_name: str
-    supply_area_distance: float
-    entities_powered: List["BaseEntity"]
-    entities_powered_count: int
-    source_pole: Optional["BaseEntity"]
-    connects_to_source: bool
-    distance_to_source: Optional[float]
-    connected_poles: List["BaseEntity"]
-    connected_poles_count: int
-    can_receive_power: bool
-    power_path: Optional[List["BaseEntity"]]
-    power_source: Optional["BaseEntity"]
-    is_valid_placement: bool
-    placement_error: Optional[str]
-    maximum_wire_distance: float
 
 
 # =============================================================================
@@ -548,147 +511,6 @@ class PlacementHintsClient:
         )
 
 
-# =============================================================================
-# PLACEMENT VALIDATOR
-# =============================================================================
-
-
-class PlacementValidator:
-    """Validates entity placement using the fv_placement_hints Lua mod.
-
-    Role in Tiered Placement System:
-    - Tier 1 (Plan): Validates all positions in a GhostPlan before committing
-    - Tier 2 (Ghost): Ghosts are already validated
-    - Tier 3 (Built): No additional validation needed
-    """
-
-    def __init__(self, rcon_handler: "RconHandler", batch_size: int = 250):
-        """Initialize validator with RCON handler."""
-        self._client = PlacementHintsClient(rcon_handler)
-        self.batch_size = batch_size
-
-    def validate_placement(
-        self,
-        entity_name: str,
-        position: MapPosition,
-        direction: Optional[Direction] = None,
-        ghost: bool = False,
-    ) -> bool:
-        """Check if an entity can be placed at a position."""
-        try:
-            return self._client.validate_placement(entity_name, position, direction, ghost)
-        except Exception as e:
-            logger.error(f"Placement validation failed: {e}")
-            return False
-
-    def validate_batch(
-        self,
-        entity_name: str,
-        positions: List[MapPosition],
-        directions: Optional[List[Optional[Direction]]] = None,
-        ghost: bool = False,
-    ) -> List[bool]:
-        """Validate multiple positions efficiently."""
-        if not positions:
-            return []
-
-        if directions is None:
-            directions = [None] * len(positions)
-
-        if len(directions) != len(positions):
-            raise ValueError("Directions list must match positions list length")
-
-        # Split into batches if needed
-        if len(positions) > self.batch_size:
-            results = []
-            for i in range(0, len(positions), self.batch_size):
-                batch_positions = positions[i:i + self.batch_size]
-                batch_directions = directions[i:i + self.batch_size]
-                try:
-                    batch_results = self._client.validate_positions(
-                        entity_name, batch_positions, batch_directions, ghost
-                    )
-                    results.extend(batch_results)
-                except Exception as e:
-                    logger.error(f"Batch validation failed: {e}")
-                    results.extend([False] * len(batch_positions))
-            return results
-        else:
-            try:
-                return self._client.validate_positions(entity_name, positions, directions, ghost)
-            except Exception as e:
-                logger.error(f"Batch validation failed: {e}")
-                return [False] * len(positions)
-
-    def validate_line(
-        self,
-        entity_name: str,
-        start: MapPosition,
-        end: MapPosition,
-        direction: Optional[Direction] = None,
-        ghost: bool = False,
-    ) -> List[Tuple[MapPosition, bool]]:
-        """Validate positions along a line."""
-        positions = self._calculate_line_positions(start, end)
-        results = self.validate_batch(
-            entity_name, positions, directions=[direction] * len(positions), ghost=ghost
-        )
-        return list(zip(positions, results))
-
-    def validate_grid(
-        self,
-        entity_name: str,
-        top_left: MapPosition,
-        bottom_right: MapPosition,
-        direction: Optional[Direction] = None,
-        ghost: bool = False,
-    ) -> Dict[MapPosition, bool]:
-        """Validate positions in a rectangular grid."""
-        positions = []
-        for x in range(int(top_left.x), int(bottom_right.x) + 1):
-            for y in range(int(top_left.y), int(bottom_right.y) + 1):
-                positions.append(MapPosition(x=float(x), y=float(y)))
-
-        results = self.validate_batch(
-            entity_name, positions, directions=[direction] * len(positions), ghost=ghost
-        )
-        return dict(zip(positions, results))
-
-    @staticmethod
-    def _calculate_line_positions(start: MapPosition, end: MapPosition) -> List[MapPosition]:
-        """Calculate positions along a line from start to end."""
-        positions = []
-        dx = end.x - start.x
-        dy = end.y - start.y
-        abs_dx = abs(dx)
-        abs_dy = abs(dy)
-
-        if abs_dx == 0:
-            step = 1 if dy > 0 else -1
-            steps = int(round(abs_dy))
-            for index in range(steps + 1):
-                positions.append(
-                    MapPosition(x=start.x, y=start.y + index * step)
-                )
-        elif abs_dy == 0:
-            step = 1 if dx > 0 else -1
-            steps = int(round(abs_dx))
-            for index in range(steps + 1):
-                positions.append(
-                    MapPosition(x=start.x + index * step, y=start.y)
-                )
-        else:
-            max_steps = max(abs_dx, abs_dy)
-            steps = int(max_steps) + 1
-            for i in range(steps):
-                t = i / max_steps if max_steps > 0 else 0
-                x = start.x + t * dx
-                y = start.y + t * dy
-                positions.append(MapPosition(x=x, y=y))
-
-        return positions
-
-
 def _pole_prototype_distances(pole_name: str) -> Tuple[float, float]:
     """Return (maximum_wire_distance, supply_area_distance) for a pole,
     read from the prototype pipeline (PWR-HARDCODE-1 fix).
@@ -719,755 +541,343 @@ def _pole_prototype_distances(pole_name: str) -> Tuple[float, float]:
 
 
 # =============================================================================
-# PLACEMENT HINTS
+# READS — pure parsers over the transport; exposed on entity_reference and on
+# the real entity objects under identical names (Constitution §6)
 # =============================================================================
 
 
-class PlacementHints:
-    """Generates validated placement plans for entity placement.
+def offshore_pump_sites(
+    client: "PlacementHintsClient",
+    near: MapPosition,
+    radius: int = 20,
+    max_results: int = 20,
+) -> List[ConnectionPosition]:
+    """Find valid offshore-pump anchors with required orientations.
 
-    Provides pure, context-aware spatial reasoning:
-    - get_placement_line: Calculate lines of entities (belts, pipes, walls)
-    - get_connection_positions: Solve connection puzzles (pipes to machines, drills to chests)
-
-    Uses the fv_placement_hints Lua mod for connection solving (engine values)
-    and keeps high-level planning algorithms in Python.
+    Unlike ``remote_view.find_water()``, every returned pair has already
+    passed Factorio's live ``surface.can_place_entity`` check. The input
+    ``near`` position is only a search center. A returned site is an entity
+    placement anchor and may overlap water. Every result therefore includes
+    an engine-derived standable ``approach_position`` within build reach.
+    Walk there, then place at ``position`` using ``direction`` unchanged.
+    Results are ordered by anchor distance from ``near``. If one approach
+    cannot be reached from the actor's current region, try the next site.
     """
-
-    def __init__(self, rcon_handler: "RconHandler"):
-        """Initialize placement hints."""
-        self._rcon = rcon_handler
-        self._client = PlacementHintsClient(rcon_handler)
-        self._validator = PlacementValidator(rcon_handler)
-
-    @property
-    def validator(self) -> PlacementValidator:
-        """Expose validator for direct access."""
-        return self._validator
-
-    def is_buildable(
-        self,
-        left_top: MapPosition,
-        right_bottom: MapPosition,
-        entity_name: str = "wooden-chest",
-    ) -> Dict[str, Any]:
-        """Check whether an area is buildable land WITHOUT placing anything.
-
-        Terrain affordance (AFFORD-1): probes every integer tile in the area
-        with a non-mutating placement validation (engine rules, manual
-        build-check). Never use real place/pickup calls as a terrain scanner.
-
-        Args:
-            left_top: Top-left corner of the area
-            right_bottom: Bottom-right corner (exclusive)
-            entity_name: 1x1 entity used as the probe (default wooden-chest)
-
-        Returns:
-            {'all_buildable': bool, 'buildable_count': int, 'total': int,
-             'blocked_positions': [{'x','y'} up to 25]}
-
-        Raises:
-            ValueError: empty area, or area over 1600 tiles (probe sub-areas)
-        """
-        import math
-
-        x0, x1 = math.floor(left_top.x), math.ceil(right_bottom.x)
-        y0, y1 = math.floor(left_top.y), math.ceil(right_bottom.y)
-        total = (x1 - x0) * (y1 - y0)
-        if total <= 0:
-            raise ValueError(
-                f"Empty area: ({left_top.x},{left_top.y})..({right_bottom.x},{right_bottom.y})"
-            )
-        if total > 1600:
-            raise ValueError(
-                f"Area is {total} tiles; max 1600 per call — probe sub-areas"
-            )
-
-        positions = [
-            MapPosition(x=x + 0.5, y=y + 0.5)
-            for y in range(y0, y1)
-            for x in range(x0, x1)
-        ]
-        results = self._client.validate_positions(entity_name, positions)
-        blocked = [p for p, ok in zip(positions, results) if not ok]
-        return {
-            "all_buildable": not blocked,
-            "buildable_count": total - len(blocked),
-            "total": total,
-            "blocked_positions": [{"x": p.x, "y": p.y} for p in blocked[:25]],
-        }
-
-    def find_offshore_pump_sites(
-        self,
-        near: MapPosition,
-        radius: int = 20,
-        max_results: int = 20,
-    ) -> List[ConnectionPosition]:
-        """Find valid offshore-pump anchors with required orientations.
-
-        Unlike ``remote_view.find_water()``, every returned pair has already
-        passed Factorio's live ``surface.can_place_entity`` check. The input
-        ``near`` position is only a search center. A returned site is an entity
-        placement anchor and may overlap water. Every result therefore includes
-        an engine-derived standable ``approach_position`` within build reach.
-        Walk there, then place at ``position`` using ``direction`` unchanged.
-        Results are ordered by anchor distance from ``near``. If one approach
-        cannot be reached from the actor's current region, try the next site.
-        """
-        if radius < 1:
-            raise ValueError("radius must be at least 1")
-        if max_results < 1:
-            raise ValueError("max_results must be at least 1")
-        area = {
-            "left_top": {"x": near.x - radius, "y": near.y - radius},
-            "right_bottom": {"x": near.x + radius, "y": near.y + radius},
-        }
-        result = self._client.get_water_placements(
-            "offshore-pump", area, max_results=max_results
+    if radius < 1:
+        raise ValueError("radius must be at least 1")
+    if max_results < 1:
+        raise ValueError("max_results must be at least 1")
+    area = {
+        "left_top": {"x": near.x - radius, "y": near.y - radius},
+        "right_bottom": {"x": near.x + radius, "y": near.y + radius},
+    }
+    result = client.get_water_placements(
+        "offshore-pump", area, max_results=max_results
+    )
+    if result.get("error"):
+        raise ConnectionQueryError(
+            "find_offshore_pump_sites",
+            f"area centered at {near}",
+            "offshore-pump",
+            RuntimeError(str(result["error"])),
         )
-        if result.get("error"):
-            raise ConnectionQueryError(
-                "find_offshore_pump_sites",
-                f"area centered at {near}",
-                "offshore-pump",
-                RuntimeError(str(result["error"])),
-            )
 
-        candidates = [
-            candidate
-            for candidate in result.get("positions", [])
-            if candidate.get("valid", True)
-        ]
-        missing_approach = [
-            candidate for candidate in candidates if not candidate.get("approach_position")
-        ]
-        if missing_approach:
-            raise ConnectionQueryError(
-                "find_offshore_pump_sites",
-                f"area centered at {near}",
-                "offshore-pump",
-                RuntimeError(
-                    "placement-hints result omitted approach_position; "
-                    "Python and fv_placement_hints versions may differ"
-                ),
-            )
+    candidates = [
+        candidate
+        for candidate in result.get("positions", [])
+        if candidate.get("valid", True)
+    ]
+    missing_approach = [
+        candidate for candidate in candidates if not candidate.get("approach_position")
+    ]
+    if missing_approach:
+        raise ConnectionQueryError(
+            "find_offshore_pump_sites",
+            f"area centered at {near}",
+            "offshore-pump",
+            RuntimeError(
+                "placement-hints result omitted approach_position; "
+                "Python and fv_placement_hints versions may differ"
+            ),
+        )
 
-        sites = [
+    sites = [
+        ConnectionPosition(
+            position=MapPosition(
+                x=float(candidate["position"]["x"]),
+                y=float(candidate["position"]["y"]),
+            ),
+            direction=Direction(candidate["direction"]),
+            approach_position=MapPosition(
+                x=float(candidate["approach_position"]["x"]),
+                y=float(candidate["approach_position"]["y"]),
+            ),
+        )
+        for candidate in candidates
+    ]
+    sites.sort(key=lambda site: site.position.distance(near))
+    return sites
+
+
+def connection_positions(
+    client: "PlacementHintsClient",
+    source_entity: "BaseEntity",
+    target_entity_name: str,
+    connection_type: ConnectionType,
+) -> ConnectionPositionList:
+    """Return all valid positions where target can connect to source.
+
+    Uses the fv_placement_hints Lua mod which accesses engine values
+    (drop_position, fluidbox) rather than prototype calculations.
+    """
+    validate_entity_for_connection(source_entity.name, connection_type)
+
+    if connection_type == ConnectionType.ITEM_DROP:
+        return _item_drop_positions(client, source_entity, target_entity_name)
+    elif connection_type == ConnectionType.FLUID_PIPE:
+        return _fluid_pipe_positions(client, source_entity, target_entity_name)
+    elif connection_type == ConnectionType.ELECTRIC_WIRE:
+        return _electric_wire_positions(client, source_entity, target_entity_name)
+    else:
+        raise NotImplementedError(
+            f"Connection type {connection_type} is not supported by "
+            f"get_connection_positions. Supported: ITEM_DROP, FLUID_PIPE, "
+            f"ELECTRIC_WIRE. For inserters use "
+            f"inserter_placements(client, source, target)."
+        )
+
+def _item_drop_positions(
+    client: "PlacementHintsClient", source_entity: "BaseEntity", target_entity_name: str
+) -> ConnectionPositionList:
+    """Get positions where target can receive items from source.
+
+    Uses Lua mod's get_item_drop_connections which uses engine drop_position.
+    """
+    try:
+        result = client.get_item_drop_connections(
+            source_entity.name,
+            source_entity.position,
+            target_entity_name,
+            max_results=50,
+        )
+
+        positions = result.get("positions", [])
+        cues = [
             ConnectionPosition(
-                position=MapPosition(
-                    x=float(candidate["position"]["x"]),
-                    y=float(candidate["position"]["y"]),
-                ),
-                direction=Direction(candidate["direction"]),
-                approach_position=MapPosition(
-                    x=float(candidate["approach_position"]["x"]),
-                    y=float(candidate["approach_position"]["y"]),
-                ),
+                position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
+                direction=None,
+                perpendicular_offset=p.get("perpendicular_offset", 0.0),
             )
-            for candidate in candidates
+            for p in positions
+            if p.get("valid", True)
         ]
-        sites.sort(key=lambda site: site.position.distance(near))
-        return sites
+        # Lua's get_item_drop_connections never emits a `reason` (unlike
+        # fluid); synthesize one from `error` (entity-not-found /
+        # unknown-prototype cases) or count so an empty result still
+        # carries WHY (REASON-1).
+        reason = result.get("error")
+        if reason is None and not cues:
+            reason = (
+                f"no valid item-drop position for {target_entity_name} "
+                f"near {source_entity.name}'s drop_position "
+                f"(count={result.get('count', 0)}; every geometric "
+                f"candidate was blocked or none existed)"
+            )
+        return ConnectionPositionList(
+            cues,
+            reason=reason,
+            source_name=result.get("source_name"),
+            search_metadata={
+                "count": result.get("count"),
+                "target_name": result.get("target_name"),
+                "drop_position": result.get("drop_position"),
+            },
+        )
+    except Exception as e:
+        logger.error(f"get_item_drop_positions failed: {e}")
+        raise ConnectionQueryError(
+            "get_item_drop_positions", source_entity.name, target_entity_name, e
+        ) from e
 
-    # =========================================================================
-    # LINE PLANNING
-    # =========================================================================
+def _fluid_pipe_positions(
+    client: "PlacementHintsClient", source_entity: "BaseEntity", target_entity_name: str
+) -> ConnectionPositionList:
+    """Get positions where pipes can connect to source fluidbox.
 
-    def get_placement_line(
-        self,
-        entity_name: str,
-        start: MapPosition,
-        end: MapPosition,
-        width: int = 1,
-        validate: bool = True,
-    ) -> GhostPlan:
-        """Calculate a line of entities from start to end.
-
-        Infers direction from drag vector for directional entities.
-        """
-        positions = self._validator._calculate_line_positions(start, end)
-
-        if not positions:
-            raise ValueError("Start and end positions must be different")
-
-        dx = end.x - start.x
-        dy = end.y - start.y
-
-        # Infer direction from drag vector
-        direction = None
-        if abs(dx) > abs(dy):
-            direction = Direction.EAST if dx > 0 else Direction.WEST
-        elif abs(dy) > abs(dx):
-            direction = Direction.SOUTH if dy > 0 else Direction.NORTH
-        else:
-            direction = Direction.EAST
-
-        requires_direction = self._entity_requires_direction(entity_name)
-
-        if requires_direction:
-            position_pairs = [(pos, direction) for pos in positions]
-        else:
-            position_pairs = [(pos, None) for pos in positions]
-
-        label = self._generate_label(entity_name, "line")
-        description = f"Line of {len(positions)} {entity_name} from ({start.x:.1f}, {start.y:.1f}) to ({end.x:.1f}, {end.y:.1f})"
-
-        plan = GhostPlan(
-            entity_name=entity_name,
-            positions=position_pairs,
-            label=label,
-            description=description,
-            valid=False,
+    Uses Lua mod's get_fluid_connections which uses engine fluidbox.
+    """
+    try:
+        result = client.get_fluid_connections(
+            source_entity.name,
+            source_entity.position,
+            target_entity_name,
+            max_results=50,
         )
 
-        if validate:
-            plan.validate(self._validator)
-        else:
-            plan.valid = True
-
-        return plan
-
-    # =========================================================================
-    # CONNECTION SOLVING - Uses Lua mod for engine values
-    # =========================================================================
-
-    def get_connection_positions(
-        self,
-        source_entity: "BaseEntity",
-        target_entity_name: str,
-        connection_type: ConnectionType,
-    ) -> ConnectionPositionList:
-        """Return all valid positions where target can connect to source.
-
-        Uses the fv_placement_hints Lua mod which accesses engine values
-        (drop_position, fluidbox) rather than prototype calculations.
-        """
-        validate_entity_for_connection(source_entity.name, connection_type)
-
-        if connection_type == ConnectionType.ITEM_DROP:
-            return self._get_item_drop_positions(source_entity, target_entity_name)
-        elif connection_type == ConnectionType.FLUID_PIPE:
-            return self._get_fluid_pipe_positions(source_entity, target_entity_name)
-        elif connection_type == ConnectionType.ELECTRIC_WIRE:
-            return self._get_electric_wire_positions(source_entity, target_entity_name)
-        else:
-            raise NotImplementedError(
-                f"Connection type {connection_type} is not supported by "
-                f"get_connection_positions. Supported: ITEM_DROP, FLUID_PIPE, "
-                f"ELECTRIC_WIRE. For inserters use "
-                f"get_inserter_placement_positions(source, target)."
+        positions = result.get("positions", [])
+        cues = [
+            ConnectionPosition(
+                position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
+                # `is not None`: defines.direction.north == 0 is falsy —
+                # a plain truthiness check silently stripped the rotation
+                # off every north-facing cue (L4.6 finding, 2026-06-11)
+                direction=(Direction(p["direction"])
+                           if p.get("direction") is not None else None),
+                perpendicular_offset=0.0,
+                displaces_character=bool(p.get("displaces_character")),
             )
-
-    def _get_item_drop_positions(
-        self, source_entity: "BaseEntity", target_entity_name: str
-    ) -> ConnectionPositionList:
-        """Get positions where target can receive items from source.
-
-        Uses Lua mod's get_item_drop_connections which uses engine drop_position.
-        """
-        try:
-            result = self._client.get_item_drop_connections(
-                source_entity.name,
-                source_entity.position,
-                target_entity_name,
-                max_results=50,
-            )
-
-            positions = result.get("positions", [])
-            cues = [
-                ConnectionPosition(
-                    position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
-                    direction=None,
-                    perpendicular_offset=p.get("perpendicular_offset", 0.0),
-                )
-                for p in positions
-                if p.get("valid", True)
-            ]
-            # Lua's get_item_drop_connections never emits a `reason` (unlike
-            # fluid); synthesize one from `error` (entity-not-found /
-            # unknown-prototype cases) or count so an empty result still
-            # carries WHY (REASON-1).
-            reason = result.get("error")
-            if reason is None and not cues:
-                reason = (
-                    f"no valid item-drop position for {target_entity_name} "
-                    f"near {source_entity.name}'s drop_position "
-                    f"(count={result.get('count', 0)}; every geometric "
-                    f"candidate was blocked or none existed)"
-                )
-            return ConnectionPositionList(
-                cues,
-                reason=reason,
-                source_name=result.get("source_name"),
-                search_metadata={
-                    "count": result.get("count"),
-                    "target_name": result.get("target_name"),
-                    "drop_position": result.get("drop_position"),
-                },
-            )
-        except Exception as e:
-            logger.error(f"get_item_drop_positions failed: {e}")
-            raise ConnectionQueryError(
-                "get_item_drop_positions", source_entity.name, target_entity_name, e
-            ) from e
-
-    def _get_fluid_pipe_positions(
-        self, source_entity: "BaseEntity", target_entity_name: str
-    ) -> ConnectionPositionList:
-        """Get positions where pipes can connect to source fluidbox.
-
-        Uses Lua mod's get_fluid_connections which uses engine fluidbox.
-        """
-        try:
-            result = self._client.get_fluid_connections(
-                source_entity.name,
-                source_entity.position,
-                target_entity_name,
-                max_results=50,
-            )
-
-            positions = result.get("positions", [])
-            cues = [
-                ConnectionPosition(
-                    position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
-                    # `is not None`: defines.direction.north == 0 is falsy —
-                    # a plain truthiness check silently stripped the rotation
-                    # off every north-facing cue (L4.6 finding, 2026-06-11)
-                    direction=(Direction(p["direction"])
-                               if p.get("direction") is not None else None),
-                    perpendicular_offset=0.0,
-                    displaces_character=bool(p.get("displaces_character")),
-                )
-                for p in positions
-                if p.get("valid", True)
-            ]
-            # Fluid already carries a structured `reason` on zero cues
-            # (connections/init.lua:443-457) — surface it instead of
-            # discarding it.
-            return ConnectionPositionList(
-                cues,
-                reason=result.get("error") or result.get("reason"),
-                source_name=result.get("source_name"),
-                search_metadata={
-                    "count": result.get("count"),
-                    "target_name": result.get("target_name"),
-                    "blocked_candidates": result.get("blocked_candidates"),
-                },
-            )
-        except Exception as e:
-            logger.error(f"get_fluid_pipe_positions failed: {e}")
-            raise ConnectionQueryError(
-                "get_fluid_pipe_positions", source_entity.name, target_entity_name, e
-            ) from e
-
-    def _get_electric_wire_positions(
-        self, source_entity: "BaseEntity", target_entity_name: str
-    ) -> ConnectionPositionList:
-        """Get positions where a pole can connect to source pole.
-
-        Uses Lua mod's get_pole_connections which uses engine wire_connector.
-        """
-        try:
-            # Define search area around source pole
-            search_radius = 20
-            search_area = {
-                "left_top": {
-                    "x": source_entity.position.x - search_radius,
-                    "y": source_entity.position.y - search_radius,
-                },
-                "right_bottom": {
-                    "x": source_entity.position.x + search_radius,
-                    "y": source_entity.position.y + search_radius,
-                },
-            }
-
-            result = self._client.get_pole_connections(
-                source_entity.name,
-                source_entity.position,
-                target_entity_name,
-                search_area,
-                max_results=50,
-            )
-
-            positions = result.get("positions", [])
-            max_wire_distance = result.get("max_wire_distance", 9.0)
-
-            cues = [
-                WireConnectionPosition(
-                    position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
-                    direction=None,
-                    perpendicular_offset=p.get("wire_distance", 0.0),
-                    wire_distance=p.get("wire_distance", 0.0),
-                    wire_distance_utilization=p.get("wire_distance_utilization", 0.0),
-                )
-                for p in positions
-                if p.get("valid", True)
-            ]
-            # get_pole_connections never emits a `reason` field at all
-            # (unlike fluid) — synthesize one from what it DOES return
-            # (max_wire_distance + search extent + count) so a zero-cue
-            # electric-wire answer isn't a silent dead end (REASON-1).
-            reason = result.get("error")
-            if reason is None and not cues:
-                reason = (
-                    f"no valid electric-wire positions for {target_entity_name} "
-                    f"within max_wire_distance={max_wire_distance} of "
-                    f"{source_entity.name} (searched ±{search_radius} "
-                    f"tiles around source; count={result.get('count', 0)} "
-                    f"candidates passed placement check)"
-                )
-            return ConnectionPositionList(
-                cues,
-                reason=reason,
-                max_wire_distance=max_wire_distance,
-                source_name=result.get("source_name"),
-                search_metadata={
-                    "count": result.get("count"),
-                    "search_radius": search_radius,
-                },
-            )
-        except Exception as e:
-            logger.error(f"get_electric_wire_positions failed: {e}")
-            raise ConnectionQueryError(
-                "get_electric_wire_positions", source_entity.name, target_entity_name, e
-            ) from e
-
-    def get_inserter_placement_positions(
-        self,
-        source_entity: "BaseEntity",
-        target_entity: "BaseEntity",
-        inserter_name: str = "inserter",
-    ) -> List[Tuple[MapPosition, Direction]]:
-        """Find valid inserter positions to transfer items from source to target.
-
-        Uses Lua mod's get_inserter_placements which uses engine positions.
-        """
-        try:
-            result = self._client.get_inserter_placements(
-                source_entity.name,
-                source_entity.position,
-                target_entity.name,
-                target_entity.position,
-                inserter_name,
-                max_results=20,
-            )
-
-            positions = result.get("positions", [])
-            return [
-                (
-                    MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
-                    Direction(p["direction"]) if p.get("direction") else Direction.NORTH,
-                )
-                for p in positions
-                if p.get("valid", True)
-            ]
-        except Exception as e:
-            logger.error(f"get_inserter_placement_positions failed: {e}")
-            raise ConnectionQueryError(
-                "get_inserter_placement_positions",
-                source_entity.name,
-                target_entity.name,
-                e,
-            ) from e
-
-    # =========================================================================
-    # POLE PLANNING - High-level algorithms using Lua primitives
-    # =========================================================================
-
-    def get_pole_line(
-        self,
-        start: MapPosition,
-        end: MapPosition,
-        pole_name: str = "medium-electric-pole",
-        validate: bool = True,
-    ) -> GhostPlan:
-        """Plan a line of poles at maximum wire distance intervals.
-
-        Wire distance comes from the prototype pipeline (PWR-HARDCODE-1).
-        """
-        max_wire_distance, _supply_area_distance = _pole_prototype_distances(pole_name)
-
-        dx = end.x - start.x
-        dy = end.y - start.y
-        distance = (dx**2 + dy**2) ** 0.5
-
-        if distance == 0:
-            positions = [(start, None)]
-        else:
-            num_segments = max(1, int(distance / max_wire_distance) + 1)
-            positions = []
-            for i in range(num_segments + 1):
-                t = i / num_segments
-                pos = MapPosition(x=start.x + t * dx, y=start.y + t * dy)
-                positions.append((pos, None))
-
-        label = self._generate_label(pole_name, "pole_line")
-        description = f"Line of {len(positions)} {pole_name}"
-
-        plan = GhostPlan(
-            entity_name=pole_name,
-            positions=positions,
-            label=label,
-            description=description,
-            valid=False,
+            for p in positions
+            if p.get("valid", True)
+        ]
+        # Fluid already carries a structured `reason` on zero cues
+        # (connections/init.lua:443-457) — surface it instead of
+        # discarding it.
+        return ConnectionPositionList(
+            cues,
+            reason=result.get("error") or result.get("reason"),
+            source_name=result.get("source_name"),
+            search_metadata={
+                "count": result.get("count"),
+                "target_name": result.get("target_name"),
+                "blocked_candidates": result.get("blocked_candidates"),
+            },
         )
+    except Exception as e:
+        logger.error(f"get_fluid_pipe_positions failed: {e}")
+        raise ConnectionQueryError(
+            "get_fluid_pipe_positions", source_entity.name, target_entity_name, e
+        ) from e
 
-        if validate:
-            plan.validate(self._validator)
-        else:
-            plan.valid = True
+def _electric_wire_positions(
+    client: "PlacementHintsClient", source_entity: "BaseEntity", target_entity_name: str
+) -> ConnectionPositionList:
+    """Get positions where a pole can connect to source pole.
 
-        return plan
-
-    def get_pole_coverage_position(
-        self,
-        entities_to_power: List["BaseEntity"],
-        pole_name: str = "medium-electric-pole",
-    ) -> Optional[MapPosition]:
-        """Find a single pole position that covers ALL given entities."""
-        if not entities_to_power:
-            return None
-
-        _max_wire_distance, supply_distance = _pole_prototype_distances(pole_name)
-
-        min_x = min(e.position.x for e in entities_to_power)
-        max_x = max(e.position.x for e in entities_to_power)
-        min_y = min(e.position.y for e in entities_to_power)
-        max_y = max(e.position.y for e in entities_to_power)
-
-        spread_x = max_x - min_x
-        spread_y = max_y - min_y
-        supply_diameter = supply_distance * 2
-
-        if spread_x > supply_diameter or spread_y > supply_diameter:
-            return None
-
-        center = MapPosition(x=(min_x + max_x) / 2, y=(min_y + max_y) / 2)
-
-        if self._validator.validate_placement(pole_name, center, None, ghost=True):
-            return center
-
-        # Try snapping to tile center
-        snapped = MapPosition(
-            x=int(center.x) + 0.5,
-            y=int(center.y) + 0.5,
-        )
-        if self._validator.validate_placement(pole_name, snapped, None, ghost=True):
-            return snapped
-
-        return None
-
-    def get_pole_coverage_plan(
-        self,
-        entities_to_power: List["BaseEntity"],
-        pole_name: str = "medium-electric-pole",
-    ) -> Tuple[GhostPlan, List["BaseEntity"]]:
-        """Find minimum poles to cover all entities using greedy set cover."""
-        if not entities_to_power:
-            return GhostPlan(
-                entity_name=pole_name,
-                positions=[],
-                label=self._generate_label(pole_name, "coverage"),
-                description="Empty coverage plan",
-                valid=True,
-            ), []
-
-        _max_wire_distance, supply_distance = _pole_prototype_distances(pole_name)
-
-        uncovered = set(range(len(entities_to_power)))
-        pole_positions: List[Tuple[MapPosition, Optional[Direction]]] = []
-
-        while uncovered:
-            remaining = [entities_to_power[i] for i in uncovered]
-            center = MapPosition(
-                x=sum(e.position.x for e in remaining) / len(remaining),
-                y=sum(e.position.y for e in remaining) / len(remaining),
-            )
-
-            covered = set()
-            for idx in uncovered:
-                entity = entities_to_power[idx]
-                if center.distance(entity.position) <= supply_distance:
-                    covered.add(idx)
-
-            if covered and self._validator.validate_placement(pole_name, center, None, ghost=True):
-                pole_positions.append((center, None))
-                uncovered -= covered
-            else:
-                break
-
-        uncovered_entities = [entities_to_power[i] for i in uncovered]
-        label = self._generate_label(pole_name, "coverage")
-        description = f"Coverage plan: {len(pole_positions)} {pole_name}"
-
-        plan = GhostPlan(
-            entity_name=pole_name,
-            positions=pole_positions,
-            label=label,
-            description=description,
-            valid=True,
-        )
-
-        return plan, uncovered_entities
-
-    def get_underground_segment(
-        self,
-        entity_name: str,
-        start: MapPosition,
-        end: MapPosition,
-        direction: Direction,
-    ) -> GhostPlan:
-        """Plan an underground segment (belt or pipe) between two points."""
-        max_distance = {
-            "underground-belt": 4,
-            "fast-underground-belt": 6,
-            "express-underground-belt": 8,
-            "pipe-to-ground": 10,
-        }.get(entity_name, 10)
-
-        dx = end.x - start.x
-        dy = end.y - start.y
-        distance = max(abs(dx), abs(dy))
-
-        if distance > max_distance:
-            raise ValueError(
-                f"Distance {distance:.1f} exceeds max {max_distance} for {entity_name}"
-            )
-
-        opposite_dir = {
-            Direction.NORTH: Direction.SOUTH,
-            Direction.SOUTH: Direction.NORTH,
-            Direction.EAST: Direction.WEST,
-            Direction.WEST: Direction.EAST,
+    Uses Lua mod's get_pole_connections which uses engine wire_connector.
+    """
+    try:
+        # Define search area around source pole
+        search_radius = 20
+        search_area = {
+            "left_top": {
+                "x": source_entity.position.x - search_radius,
+                "y": source_entity.position.y - search_radius,
+            },
+            "right_bottom": {
+                "x": source_entity.position.x + search_radius,
+                "y": source_entity.position.y + search_radius,
+            },
         }
 
-        positions: List[Tuple[MapPosition, Optional[Direction]]] = [
-            (start, direction),
-            (end, opposite_dir.get(direction, direction)),
-        ]
-
-        label = self._generate_label(entity_name, "underground")
-        description = f"Underground {entity_name}"
-
-        plan = GhostPlan(
-            entity_name=entity_name,
-            positions=positions,
-            label=label,
-            description=description,
-            valid=False,
+        result = client.get_pole_connections(
+            source_entity.name,
+            source_entity.position,
+            target_entity_name,
+            search_area,
+            max_results=50,
         )
 
-        plan.validate(self._validator)
-        return plan
+        positions = result.get("positions", [])
+        max_wire_distance = result.get("max_wire_distance", 9.0)
 
-    # =========================================================================
-    # POLE EVALUATION
-    # =========================================================================
+        cues = [
+            WireConnectionPosition(
+                position=MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
+                direction=None,
+                perpendicular_offset=p.get("wire_distance", 0.0),
+                wire_distance=p.get("wire_distance", 0.0),
+                wire_distance_utilization=p.get("wire_distance_utilization", 0.0),
+            )
+            for p in positions
+            if p.get("valid", True)
+        ]
+        # get_pole_connections never emits a `reason` field at all
+        # (unlike fluid) — synthesize one from what it DOES return
+        # (max_wire_distance + search extent + count) so a zero-cue
+        # electric-wire answer isn't a silent dead end (REASON-1).
+        reason = result.get("error")
+        if reason is None and not cues:
+            reason = (
+                f"no valid electric-wire positions for {target_entity_name} "
+                f"within max_wire_distance={max_wire_distance} of "
+                f"{source_entity.name} (searched ±{search_radius} "
+                f"tiles around source; count={result.get('count', 0)} "
+                f"candidates passed placement check)"
+            )
+        return ConnectionPositionList(
+            cues,
+            reason=reason,
+            max_wire_distance=max_wire_distance,
+            source_name=result.get("source_name"),
+            search_metadata={
+                "count": result.get("count"),
+                "search_radius": search_radius,
+            },
+        )
+    except Exception as e:
+        logger.error(f"get_electric_wire_positions failed: {e}")
+        raise ConnectionQueryError(
+            "get_electric_wire_positions", source_entity.name, target_entity_name, e
+        ) from e
 
-    def evaluate_pole_placement(
-        self,
-        position: MapPosition,
-        pole_name: str,
-        source_pole: Optional["BaseEntity"] = None,
-        reachable_view: Optional[Any] = None,
-    ) -> PolePlacementResult:
-        """Evaluate a pole placement position without placing anything (dry run)."""
-        maximum_wire_distance, supply_area_distance = _pole_prototype_distances(pole_name)
 
-        is_valid = self._validator.validate_placement(pole_name, position, None, ghost=True)
-        placement_error = None if is_valid else "Cannot place pole at this position"
+def inserter_placements(
+    client: "PlacementHintsClient",
+    source_entity: "BaseEntity",
+    target_entity: "BaseEntity",
+    inserter_name: str = "inserter",
+) -> List[Tuple[MapPosition, Direction]]:
+    """Find valid inserter positions to transfer items from source to target.
 
-        result = PolePlacementResult(
-            position=position,
-            pole_name=pole_name,
-            supply_area_distance=supply_area_distance,
-            entities_powered=[],
-            entities_powered_count=0,
-            source_pole=source_pole,
-            connects_to_source=False,
-            distance_to_source=None,
-            connected_poles=[],
-            connected_poles_count=0,
-            can_receive_power=False,
-            power_path=None,
-            power_source=None,
-            is_valid_placement=is_valid,
-            placement_error=placement_error,
-            maximum_wire_distance=maximum_wire_distance,
+    Uses Lua mod's get_inserter_placements which uses engine positions.
+    """
+    try:
+        result = client.get_inserter_placements(
+            source_entity.name,
+            source_entity.position,
+            target_entity.name,
+            target_entity.position,
+            inserter_name,
+            max_results=20,
         )
 
-        if source_pole:
-            distance = position.distance(source_pole.position)
-            result.distance_to_source = distance
-            result.connects_to_source = distance <= maximum_wire_distance
-
-        if not is_valid or reachable_view is None:
-            return result
-
-        # Find entities within supply area
-        all_entities = reachable_view.get_entities()
-
-        entities_powered = []
-        for entity in all_entities:
-            if entity.name in ELECTRIC_POLE_ENTITIES or getattr(entity, 'is_ghost', False):
-                continue
-            if position.distance(entity.position) <= supply_area_distance:
-                entities_powered.append(entity)
-
-        result.entities_powered = entities_powered
-        result.entities_powered_count = len(entities_powered)
-
-        # Find connected poles
-        connected_poles = []
-        for entity in all_entities:
-            if entity.name in ELECTRIC_POLE_ENTITIES and not getattr(entity, 'is_ghost', False):
-                dist = position.distance(entity.position)
-                if 0.01 < dist <= maximum_wire_distance:
-                    connected_poles.append(entity)
-
-        connected_poles.sort(key=lambda p: position.distance(p.position))
-        result.connected_poles = connected_poles
-        result.connected_poles_count = len(connected_poles)
-
-        # Power path tracing would require more complex logic
-        # For now, assume can receive power if connected to any pole
-        result.can_receive_power = len(connected_poles) > 0
-
-        return result
-
-    # =========================================================================
-    # HELPERS
-    # =========================================================================
-
-    @staticmethod
-    def _entity_requires_direction(entity_name: str) -> bool:
-        """Check if entity requires a direction for placement."""
-        directional_types = [
-            "transport-belt", "fast-transport-belt", "express-transport-belt",
-            "inserter", "long-handed-inserter", "fast-inserter",
-            "assembling-machine", "stone-furnace", "steel-furnace", "electric-furnace",
-            "electric-mining-drill", "burner-mining-drill", "pumpjack",
-            "boiler", "steam-engine", "offshore-pump",
+        positions = result.get("positions", [])
+        return [
+            (
+                MapPosition(x=p["position"]["x"], y=p["position"]["y"]),
+                Direction(p["direction"]) if p.get("direction") else Direction.NORTH,
+            )
+            for p in positions
+            if p.get("valid", True)
         ]
-        return entity_name in directional_types
+    except Exception as e:
+        logger.error(f"get_inserter_placement_positions failed: {e}")
+        raise ConnectionQueryError(
+            "get_inserter_placement_positions",
+            source_entity.name,
+            target_entity.name,
+            e,
+        ) from e
 
-    @staticmethod
-    def _generate_label(entity_name: str, plan_type: str) -> str:
-        """Generate a unique label for a ghost plan."""
-        timestamp = int(time.time())
-        short_hash = str(uuid.uuid4())[:8]
-        return f"plan:{entity_name}:{plan_type}:{timestamp}:{short_hash}"
 
-    @staticmethod
-    def _rotate_vector(vec: Tuple[float, float], direction: Direction) -> Tuple[float, float]:
-        """Rotate a vector based on direction (NORTH = no rotation)."""
-        vx, vy = vec
-        if direction == Direction.NORTH:
-            return (vx, vy)
-        elif direction == Direction.EAST:
-            return (-vy, vx)
-        elif direction == Direction.SOUTH:
-            return (-vx, -vy)
-        elif direction == Direction.WEST:
-            return (vy, -vx)
-        return (vx, vy)
+__all__ = [
+    "ConnectionQueryError",
+    "ConnectionType",
+    "EntityValidationError",
+    "validate_entity_for_connection",
+    "infer_connection_type",
+    "ConnectionPosition",
+    "WireConnectionPosition",
+    "ConnectionPositionList",
+    "PlacementHintsClient",
+    "ITEM_DROP_ENTITIES",
+    "FLUID_PIPE_ENTITIES",
+    "RESOURCE_PLACEMENT_ENTITIES",
+    "WATER_PLACEMENT_ENTITIES",
+    "INSERTER_ENTITIES",
+    "ELECTRIC_POLE_ENTITIES",
+    "_pole_prototype_distances",
+    "offshore_pump_sites",
+    "connection_positions",
+    "inserter_placements",
+]

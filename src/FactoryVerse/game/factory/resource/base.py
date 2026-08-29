@@ -511,7 +511,7 @@ class BaseResource:
             WalkingUnreachableError: If resource cannot be reached
             WalkingEntityNotFoundError: If resource no longer exists
         """
-        final_position = await self._walking_action.walk_to_entity(
+        final_position = await self._walking_action._walk_to_entity(
             entity_name=self.name,
             entity_position=self.position,
             timeout=timeout,

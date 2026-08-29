@@ -612,6 +612,15 @@ class AgentOrchestrator:
                 logger.debug(f"status diff skipped: {e}")
 
         researched = after.researched_count if after else 0
+        # §7.1: predictions stored at enqueue by the crafting action, verified
+        # here against the drained crafting_finished events. Taken once per turn.
+        predictions = ()
+        take = getattr(self.runtime, "take_craft_predictions", None)
+        if take is not None:
+            try:
+                predictions = tuple(take() or ())
+            except Exception as e:
+                logger.debug(f"craft predictions unavailable: {e}")
         # Provisional rate; the assembler computes the final one from the diff.
         report = _tr.assemble(
             turn=self.turn_number,
@@ -627,6 +636,7 @@ class AgentOrchestrator:
             energy_for=self._energy_for,
             plan=self._plan_snapshot(),
             seq_gaps=seq_gaps,
+            predictions=predictions,
         )
         rate = report.production["automated_rate_per_min"]
         self._next_horizon = self.turn_config.horizon_ticks(researched, rate)

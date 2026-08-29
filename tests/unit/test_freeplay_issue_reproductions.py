@@ -54,7 +54,7 @@ async def test_reach_1_entity_walk_rejects_unvalidated_completion():
     target = MapPosition(x=0.0, y=0.0)
 
     with pytest.raises(WalkingUnreachableError) as exc_info:
-        await movement.walk_to_entity("lab", target)
+        await movement._walk_to_entity("lab", target)
 
     assert exc_info.value.failure_type == "interaction_unvalidated"
 
@@ -76,7 +76,7 @@ async def test_reach_1_entity_walk_accepts_authoritative_boundary_reach():
     """Do not replace Factorio boundary reach with a center-distance cutoff."""
     movement = MovementAction(_QueuedWalkRcon(), _BoundaryReachableWalkListener())
 
-    final = await movement.walk_to_entity("lab", MapPosition(x=0.0, y=0.0))
+    final = await movement._walk_to_entity("lab", MapPosition(x=0.0, y=0.0))
 
     assert final == MapPosition(x=10.2, y=0.0)
 
@@ -106,7 +106,7 @@ class _UnusedWalkListener:
 async def test_reach_1_immediate_entity_walk_preserves_reach_confirmation():
     movement = MovementAction(_ImmediateReachableWalkRcon(), _UnusedWalkListener())
 
-    final = await movement.walk_to_entity("lab", MapPosition(x=0.0, y=0.0))
+    final = await movement._walk_to_entity("lab", MapPosition(x=0.0, y=0.0))
 
     assert final == MapPosition(x=3.0, y=4.0)
 

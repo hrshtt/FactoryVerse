@@ -7,7 +7,6 @@ import pytest
 
 from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
 from FactoryVerse.game.agent.ghost_builder import GhostBuilderAction
-from FactoryVerse.game.agent.placement_hints import GhostPlan
 from FactoryVerse.game.agent.remote_view import RemoteView
 from FactoryVerse.game.factory.item.base import PlaceableItem
 from FactoryVerse.game.factory.types import Direction, MapPosition
@@ -189,6 +188,18 @@ def test_typed_ghost_route_keeps_north_direction_and_plan_label():
     database.close()
 
 
+class _Plan(SimpleNamespace):
+    """What survives of GhostPlan: a validated position list (GHOST §4.2).
+    ``validate`` mirrors the old commit-time revalidation the builder calls."""
+
+    def validate(self, validator):
+        results = validator.validate_batch(
+            self.entity_name, [p for p, _ in self.positions], [d for _, d in self.positions]
+        )
+        self.valid = all(results)
+        return self.valid
+
+
 class _Inventory:
     def __init__(self, count):
         self.count = count
@@ -223,7 +234,7 @@ async def test_build_plan_revalidates_at_commit_and_stale_plan_has_zero_effect()
         reachable_view=SimpleNamespace(),
         validator=validator,
     )
-    plan = GhostPlan(
+    plan = _Plan(
         entity_name="wooden-chest",
         positions=[
             (MapPosition(x=1.5, y=1.5), Direction.NORTH),
@@ -254,7 +265,7 @@ async def test_strict_build_plan_inventory_preflight_has_zero_effect():
         reachable_view=SimpleNamespace(),
         validator=validator,
     )
-    plan = GhostPlan(
+    plan = _Plan(
         entity_name="wooden-chest",
         positions=[
             (MapPosition(x=1.5, y=1.5), Direction.NORTH),

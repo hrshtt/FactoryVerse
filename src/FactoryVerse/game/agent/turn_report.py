@@ -72,14 +72,10 @@ class ClockLedger:
         return self.used + self.advanced == self.total
 
 
-@dataclass
-class CraftPrediction:
-    """A prediction stored at enqueue and verified in the report (§7.1)."""
-
-    recipe: str
-    count: int
-    predicted_completion_tick: int
-    enqueued_tick: int
+# One class for the prediction, defined where it is made (§7.1): the crafting
+# action stores it at enqueue, the report verifies it. Re-exported here so the
+# report's callers need not know where it lives.
+from FactoryVerse.game.agent.embodied_actions.crafting import CraftPrediction  # noqa: E402
 
 
 @dataclass

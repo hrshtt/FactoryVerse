@@ -63,7 +63,7 @@ class AgentRuntime:
     - runtime.reachable_view - Unified entity and resource queries
     - runtime.resources - Alias for reachable (backward compatibility)
     - runtime.research - Research actions
-    - runtime.ghost_builder - Ghost building orchestration
+    - runtime.entity_reference - planning-time reference (Constitution §6)
     - runtime.remote_view - Map-wide entity queries (DuckDB)
 
     Note: Mining is done through resource objects, not a top-level action.
@@ -100,8 +100,7 @@ class AgentRuntime:
         from FactoryVerse.game.agent.embodied_actions.inventory import AgentInventory
         from FactoryVerse.game.agent.embodied_actions.entity_operations import EntityOperationsAction
         from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
-        from FactoryVerse.game.agent.ghost_builder import GhostBuilderAction
-        from FactoryVerse.game.agent.placement_hints import PlacementHints
+        from FactoryVerse.game.agent.entity_reference import EntityReferenceAccessor
         from FactoryVerse.game.agent.reachable_view import ReachableView
 
         # Wire up actions with their dependencies
@@ -117,11 +116,6 @@ class AgentRuntime:
         self._research = ResearchAction(self._rcon)
         self._inventory = AgentInventory(self._rcon, self._placement)
 
-        # High-level orchestration actions
-        self._ghost_builder = GhostBuilderAction(
-            self._walking, self._placement, self._inventory
-        )
-
         # Unified query object for both entities and resources
         # Single ReachableView instance handles all get_entity/get_entities/get_resource/get_resources calls
         self._reachable_view = ReachableView(
@@ -132,8 +126,8 @@ class AgentRuntime:
             self._mining,
         )
 
-        # Placement hints - spatial reasoning for entity placement
-        self._placement_hints = PlacementHints(self._rcon)
+        # The planning-time reference (Constitution §6)
+        self._entity_reference = EntityReferenceAccessor(self._rcon)
 
         # RemoteView - map-wide queries via DuckDB
         from FactoryVerse.game.agent.remote_view import RemoteView
@@ -247,7 +241,7 @@ class AgentRuntime:
 
         **For Agents**: Use to craft items.
 
-        - await crafting.craft(recipe, count) - Craft items
+        - crafting.enqueue(recipe, count) - queue a hand-craft (runs while you act); await inventory.await_item(name, count) to join
         - crafting.get_craftable() - Get what you can craft
 
         Returns:
@@ -310,7 +304,7 @@ class AgentRuntime:
         """Alias for reachable_view (backward compatibility).
 
         **For Agents**: This is the same object as 'reachable_view'.
-        Use either reachable_view.get_resource() or resources.get_resource().
+        Internal alias; the agent namespace binds only `reachable_view`.
 
         Returns:
             ReachableView instance (same as reachable_view property)
@@ -344,21 +338,6 @@ class AgentRuntime:
         return self._placement
 
     @property
-    def ghost_builder(self):
-        """Ghost building orchestration.
-
-        **For Agents**: Build ghost entities by walking and placing.
-
-        - await ghost_builder.build_ghosts(ghosts, count=10) - Build multiple ghosts
-        - await ghost_builder.build_ghost(ghost) - Build a single ghost
-        - Automatically walks to each ghost and places the entity
-
-        Returns:
-            GhostBuilderAction instance
-        """
-        return self._ghost_builder
-
-    @property
     def remote_view(self):
         """Map-wide entity queries via DuckDB.
 
@@ -375,25 +354,10 @@ class AgentRuntime:
         return self._remote_view
 
     @property
-    def placement_hints(self):
-        """Spatial reasoning engine for entity placement.
-
-        **For Agents**: Use to plan and validate entity placements before committing.
-
-        Three-tier placement flow:
-        1. DRY RUN: placement_hints.get_placement_line() -> GhostPlan (validated)
-        2. PLACE: Use plan.positions to place ghosts or directly with ghost_builder.build_plan(plan)
-        3. BUILD: ghost.build() converts ghosts to real entities
-
-        - placement_hints.get_placement_line(entity, start, end) - Plan a line of entities
-        - placement_hints.get_connection_positions(source, target, type) - Find valid connection points
-        - plan.valid - Check if GhostPlan is valid
-        - plan.validate(placement_hints.validator) - Re-validate after map changes
-
-        Returns:
-            PlacementHints instance
-        """
-        return self._placement_hints
+    def entity_reference(self):
+        """``entity_reference("small-electric-pole")`` — planning-time answers
+        about a thing you would hold (footprint, can_place, covers, cues)."""
+        return self._entity_reference
 
     @property
     def agent_id(self) -> str:

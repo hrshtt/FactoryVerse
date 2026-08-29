@@ -12,7 +12,7 @@ Type System Overview:
 See factorio_types.py for the authoritative Factorio type definitions.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import (
     Self,
@@ -304,27 +304,38 @@ class CraftCompletionPayload(TypedDict, total=False):
 # =============================================================================
 
 
-class CraftingQueueItem(TypedDict):
+@dataclass
+class CraftingQueueItem:
     """Single item in crafting queue.
-    
+
     RCON Contract: RemoteInterface.lua get_crafting_queue.returns.schema.queue.item_schema
     """
 
     index: int  # 1-based position in queue
     recipe: str
     count: int
-    prerequisite: bool
+    prerequisite: bool = False
 
 
-class CraftingQueueStatus(TypedDict):
-    """Current crafting queue status.
-    
+@dataclass
+class CraftingQueueStatus:
+    """Current crafting queue status — a dataclass like ``ResearchStatus``, so
+    ``status.queue_size`` reads the same on both HUD queues (CRAFT-STATUS-1,
+    2026-08-25 forensics: the TypedDict form shipped an attribute-access
+    example that crashed).
+
     RCON Contract: RemoteInterface.lua get_crafting_queue.returns.schema
     """
 
-    queue: List[CraftingQueueItem]
-    queue_size: int
-    progress: float  # 0.0 to 1.0
+    queue: List[CraftingQueueItem] = field(default_factory=list)
+    queue_size: int = 0
+    progress: float = 0.0  # 0.0 to 1.0
+
+    def __getitem__(self, key: str):  # tolerate dict-style readers during the transition
+        return getattr(self, key)
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
 
 
 class CraftingStatus(TypedDict):

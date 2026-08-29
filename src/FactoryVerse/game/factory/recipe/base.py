@@ -148,7 +148,7 @@ class BaseRecipe(FactoryContextMixin):
 
     **For Agents**: Use this to understand what ingredients are needed for a recipe.
     If the recipe is hand-craftable (category='crafting'), it will be a
-    HandCraftableRecipe and you can call .craft() on it.
+    HandCraftableRecipe and you can call .enqueue() on it.
     """
 
     name: str
@@ -171,18 +171,14 @@ class BaseRecipe(FactoryContextMixin):
 class HandCraftableRecipe(BaseRecipe):
     """A recipe that can be crafted by the agent's own hands."""
 
-    async def craft(
-        self, count: int = 1, timeout: Optional[int] = None
-    ) -> ActionResult:
-        """Craft this recipe using the agent's hands.
+    def enqueue(self, count: int = 1) -> ActionResult:
+        """Queue this recipe on the agent's hand-crafting queue.
 
-        **For Agents**: Only works for category='crafting' recipes.
-
-        Args:
-            count: Number of times to craft
-            timeout: Optional timeout for the async action
+        **For Agents**: Only works for category='crafting' recipes. Returns at
+        once with the derived completion prediction; the items land in your
+        inventory while you act. Join with ``inventory.await_item``.
         """
-        return await self._factory.crafting.craft(self.name, count, timeout)
+        return self._factory.crafting.enqueue(self.name, count)
 
 
 class Recipes:
@@ -249,7 +245,7 @@ class Recipes:
         **For Agents**: Use crafting['recipe-name'] to get a recipe object.
         Example:
             # Hand-craft gear wheels
-            await crafting['iron-gear-wheel'].craft(5)
+            crafting["iron-gear-wheel"].enqueue(5)
 
             # Check ingredients for iron plate (cannot be handcrafted)
             ingredients = crafting['iron-plate'].ingredients

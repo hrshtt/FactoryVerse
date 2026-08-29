@@ -20,18 +20,14 @@ These are available in the agent runtime:
 
 | Accessor | Class | Purpose |
 |----------|-------|---------|
+| `reachable_view` | ReachableView | Query interface for nearby entities and resources within agent's interaction range |
+| `remote_view` | RemoteView | DuckDB-backed map queries for entities across the entire map |
 | `walking` | MovementAction | Handles agent walking and pathfinding |
 | `crafting` | CraftingAction | Handles hand-crafting operations |
 | `research` | ResearchAction | Handles technology research |
 | `inventory` | AgentInventory | Query and shape agent inventory contents |
-| `mining` | MiningAction | Handles hand-mining of resources (ore, coal, stone) |
-| `placement` | PlacementAction | Places entities and ghosts on the map and removes ghosts |
-| `entity_ops` | EntityOperationsAction | Low-level entity configuration and inventory operations: set recipes, filters and limits, transfer items, inspect state, and pick up entities |
-| `reachable_view` | ReachableView | Query interface for nearby entities and resources within agent's interaction range |
-| `remote_view` | RemoteView | DuckDB-backed map queries for entities across the entire map |
-| `verify` | VerifyView | Live engine confirmation of power / coverage facts |
-| `placement_hints` | PlacementHints | Spatial reasoning engine for entity placement |
-| `ghost_builder` | GhostBuilderAction | Orchestrates ghost placement and building |
+| `entity_reference` | EntityReferenceAccessor | Hold an entity type on your cursor without placing it |
+| `entity_reference(...)` | EntityReference | The object entity_reference(name) returns |
 
 ## Pre-Imported Types
 
@@ -46,12 +42,10 @@ You can use them directly without importing.
 | `CraftingQueueStatus` | `FactoryVerse.game.factory.types` |
 | `Direction` | `FactoryVerse.game.factory.factorio_types` |
 | `EntityValidationError` | `FactoryVerse.game.agent.placement_hints` |
-| `GhostPlan` | `FactoryVerse.game.agent.placement_hints` |
 | `Item` | `FactoryVerse.game.factory.item.base` |
 | `ItemStack` | `FactoryVerse.game.factory.item.base` |
 | `MapPosition` | `FactoryVerse.game.factory.types` |
 | `PlaceableItem` | `FactoryVerse.game.factory.item.base` |
-| `PolePlacementResult` | `FactoryVerse.game.agent.placement_hints` |
 | `QueuedTechnology` | `FactoryVerse.game.agent.embodied_actions.research` |
 | `ResearchQueueItem` | `FactoryVerse.game.factory.types` |
 | `ResearchStatus` | `FactoryVerse.game.agent.embodied_actions.research` |
@@ -63,75 +57,6 @@ You can use them directly without importing.
 
 
 ## Quick Reference
-
-### `walking`
-
-Handles agent walking and pathfinding. All walking is asynchronous - methods return when the agent reaches the destination or fails.
-
-**Methods:**
-- `async walk_to(goal: MapPosition, strict_goal: bool = ..., options: Optional[Dict] = ..., timeout: Optional[int] = ...)`
-- `stop()`
-- `async walk_to_entity(entity_name: str, entity_position: MapPosition, timeout: Optional[int] = ...)`
-- `current_position: MapPosition`
-
-### `crafting`
-
-Handles hand-crafting operations. Craft recipes asynchronously with queue management.
-
-**Methods:**
-- `async craft(recipe: str, count: int = ..., timeout: Optional[int] = ...)`
-- `enqueue(recipe: str, count: int = ...)`
-- `dequeue(recipe: str, count: Optional[int] = ...)`
-- `status()`
-
-### `research`
-
-Handles technology research. Queue technologies and monitor progress.
-
-**Methods:**
-- `enqueue(technology: str)`
-- `dequeue()`
-- `status()`
-- `get_queue()`
-
-### `inventory`
-
-Query and shape agent inventory contents. Provides methods to check counts and create ItemStack objects for placement.
-
-**Methods:**
-- `check_total(item_name: str)`
-- `get_item(item_name: str)`
-- `create_item_stacks(item_name: str, count: Union[int, Literal[half, full]], number_of_stacks: Union[int, Literal[max]] = ..., strict: bool = ...)`
-- `item_stacks: List[ItemStack]`
-
-### `mining`
-
-Handles hand-mining of resources (ore, coal, stone). Mining is asynchronous - mine() returns when the requested items are obtained.
-
-**Methods:**
-- `async mine(resource_name: str, max_count: Optional[int] = ..., position: Optional[MapPosition] = ..., timeout: Optional[int] = ...)`
-- `cancel()`
-
-### `placement`
-
-Places entities and ghosts on the map and removes ghosts. Placement is synchronous - results are returned immediately.
-
-**Methods:**
-- `place(entity_name: PlaceableItemName, position: Union[Dict[str, float], MapPosition], direction: Optional[Direction] = ..., ghost: bool = ..., label: Optional[str] = ..., return_entity: bool = ...)`
-- `remove_ghost(entity_name: str, position: Union[Dict[str, float], MapPosition])`
-
-### `entity_ops`
-
-Low-level entity configuration and inventory operations: set recipes, filters and limits, transfer items, inspect state, and pick up entities.
-
-**Methods:**
-- `set_entity_recipe(entity_name: str, recipe_name: Optional[str] = ..., position: Optional[MapPosition] = ...)`
-- `set_entity_filter(entity_name: str, position: MapPosition, inventory_type: str, filter_index: Optional[int] = ..., filter_item: Optional[str] = ...)`
-- `set_inventory_limit(entity_name: str, inventory_type: str, limit: Optional[int] = ..., position: Optional[MapPosition] = ...)`
-- `take_inventory_item(entity_name: str, inventory_type: str, item_name: str, count: Optional[int] = ..., position: Optional[MapPosition] = ...)`
-- `put_inventory_item(entity_name: str, inventory_type: str, items: Union[ItemStack, List[ItemStack]], position: Optional[MapPosition] = ...)`
-- `inspect_entity(entity_name: str, position: MapPosition)`
-- `pickup_entity(entity_name: str, position: Optional[MapPosition] = ...)`
 
 ### `reachable_view`
 
@@ -160,43 +85,73 @@ DuckDB-backed map queries for entities across the entire map. Provides read-only
 - `get_entity_at_tile(tile_x: int, tile_y: int)`
 - `get_entities_in_tile_area(min_tile_x: int, min_tile_y: int, max_tile_x: int, max_tile_y: int, entity_name: Optional[str] = ...)`
 - `get_entities_at_anchor_tile(tile_x: int, tile_y: int)`
+- `status(max_positions: int = ..., statuses: Optional[List[str]] = ...)`
+- `status_changed(since_tick: int)`
+- `power(as_of_tick: Optional[int] = ...)`
 - `get_power_networks(as_of_tick: Optional[int] = ...)`
+- `production(agent_id: Optional[int] = ...)`
 - `diagnose_power(entity_name: str, position: Any, as_of_tick: Optional[int] = ...)`
 
-### `verify`
+### `walking`
 
-Live engine confirmation of power / coverage facts. The snapshot DB answers WHICH poles/entities exist; verify answers IS IT TRUE RIGHT NOW via live reads. Positions/statuses/network-ids are live at call time; supply distances and collision boxes are prototype-derived (static).
-
-**Methods:**
-- `supply_coverage(entities: Optional[List[Target]] = ..., area: Optional[Dict[str, Any]] = ..., proposed_pole: Optional[Tuple[str, Any]] = ...)`
-- `powered(targets: Union[Target, List[Target]])`
-- `connected(a: Target, b: Target)`
-
-### `placement_hints`
-
-Spatial reasoning engine for entity placement. Generates validated GhostPlan objects for lines, connections, and pole coverage. No side effects - validation only.
+Handles agent walking and pathfinding. All walking is asynchronous - methods return when the agent reaches the destination or fails.
 
 **Methods:**
-- `get_placement_line(entity_name: str, start: MapPosition, end: MapPosition, width: int = ..., validate: bool = ...)`
-- `is_buildable(left_top: MapPosition, right_bottom: MapPosition, entity_name: str = ...)`
-- `find_offshore_pump_sites(near: MapPosition, radius: int = ..., max_results: int = ...)`
-- `get_connection_positions(source_entity: BaseEntity, target_entity_name: str, connection_type: ConnectionType)`
-- `get_inserter_placement_positions(source_entity: BaseEntity, target_entity: BaseEntity, inserter_name: str = ...)`
-- `get_pole_line(start: MapPosition, end: MapPosition, pole_name: str = ..., validate: bool = ...)`
-- `get_pole_coverage_position(entities_to_power: List[BaseEntity], pole_name: str = ...)`
-- `get_pole_coverage_plan(entities_to_power: List[BaseEntity], pole_name: str = ...)`
-- `get_underground_segment(entity_name: str, start: MapPosition, end: MapPosition, direction: Direction)`
-- `evaluate_pole_placement(position: MapPosition, pole_name: str, source_pole: Optional[BaseEntity] = ..., reachable_view: Optional[Any] = ...)`
-- `validator: PlacementValidator`
+- `async walk_to(goal: MapPosition, strict_goal: bool = ..., options: Optional[Dict] = ..., timeout: Optional[int] = ...)`
+- `stop()`
+- `current_position: MapPosition`
 
-### `ghost_builder`
+### `crafting`
 
-Orchestrates ghost placement and building. Converts GhostPlan objects into placed ghosts, then builds them into real entities.
+Handles hand-crafting operations. Craft recipes asynchronously with queue management.
 
 **Methods:**
-- `async build_ghosts(ghosts: List[BaseEntity], count: int = ..., strict: bool = ...)`
-- `async build_ghost(ghost: BaseEntity)`
-- `async build_plan(plan: GhostPlan, strict: bool = ...)`
+- `enqueue(recipe: str, count: int = ...)`
+- `dequeue(recipe: str, count: Optional[int] = ...)`
+- `status()`
+- `list_recipes(name_filter: Optional[str] = ..., hand_craftable: Optional[bool] = ..., category: Optional[str] = ...)`
+- `take_predictions()`
+- `predictions: List[CraftPrediction]`
+
+### `research`
+
+Handles technology research. Queue technologies and monitor progress.
+
+**Methods:**
+- `enqueue(technology: str)`
+- `dequeue(force: bool = ...)`
+- `status()`
+- `get_queue()`
+- `list_technologies(name_filter: Optional[str] = ..., available: Optional[bool] = ..., researched: Optional[bool] = ...)`
+
+### `inventory`
+
+Query and shape agent inventory contents. Provides methods to check counts and create ItemStack objects for placement.
+
+**Methods:**
+- `check_total(item_name: str)`
+- `get_item(item_name: str)`
+- `create_item_stacks(item_name: str, count: Union[int, Literal[half, full]], number_of_stacks: Union[int, Literal[max]] = ..., strict: bool = ...)`
+- `async await_item(item_name: str, count: int = ..., timeout_ticks: int = ..., poll_seconds: float = ...)`
+- `item_stacks: List[ItemStack]`
+
+### `entity_reference`
+
+Hold an entity type on your cursor without placing it. entity_reference("small-electric-pole") returns a read-only reference that answers what the placement preview would show: footprint, whether it can go here, the supply overlay a pole would project, a drill's drop arrow, where an inserter could sit between two machines, where an offshore pump could sit. It cannot place anything and holds no inventory — placing still goes through inventory.get_item(name).place().
+
+### `entity_reference(...)`
+
+The object entity_reference(name) returns. Read-only planning answers for one entity type.
+
+**Methods:**
+- `footprint(position: MapPosition, direction: Optional[Direction] = ...)`
+- `can_place(position: MapPosition, direction: Optional[Direction] = ...)`
+- `supply_area(position: MapPosition)`
+- `covers(position: MapPosition, entity: 'BaseEntity')`
+- `wire_reach(position: MapPosition, other: 'BaseEntity')`
+- `drop_position(position: MapPosition, direction: Direction = ...)`
+- `placements_between(source: 'BaseEntity', target: 'BaseEntity')`
+- `sites(near: MapPosition, radius: int = ..., max_results: int = ...)`
 
 
 ## Action Classes
@@ -289,43 +244,6 @@ if result.position:
 
 
 
-#### `walking.walk_to_entity`
-
-```python
-async walk_to_entity(entity_name: str, entity_position: MapPosition, timeout: Optional[int] = ...) -> MapPosition
-```
-
-Walk to an entity with fallback approach tiles. Tries candidate tiles around the entity until a path succeeds.
-
-**Decision Points:**
-- Use entity.walk_to() when you already hold an entity object
-- Use walk_to_entity(name, position) when working from raw query results
-
-**Examples:**
-
-*Navigating to an entity when only its name and position are known:*
-
-```python
-# Walk to a furnace (approach tiles handled automatically)
-pos = await walking.walk_to_entity(
-    "stone-furnace", MapPosition(x=10.5, y=10.5)
-)
-print(f"Arrived at {pos}")
-```
-
-→ Agent stands adjacent to the entity, returns final MapPosition
-
-Alternatives: Prefer entity.walk_to() on entity objects - it wraps this method
-
-
-**Error Handling:**
-
-- **`WalkingEntityNotFoundError`**: No entity with that name exists at the given position
-  - Resolution: Verify entity_name + position via remote_view/reachable_view first
-- **`WalkingUnreachableError`**: All approach paths around the entity are blocked
-  - Resolution: Clear obstructions or approach from a different area
-
-
 #### `walking.current_position`
 
 ```python
@@ -361,60 +279,6 @@ Handles hand-crafting operations. Craft recipes asynchronously with queue manage
 - Crafting is async - waits for items to be produced
 - Returns ItemStack objects with placement capability
 - Check recipe availability via status() before crafting
-
-#### `crafting.craft`
-
-```python
-async craft(recipe: str, count: int = ..., timeout: Optional[int] = ...) -> List[ItemStack]
-```
-
-Craft a recipe asynchronously. Waits for completion and returns crafted items.
-
-**Decision Points:**
-- Use craft() for blocking crafting with results
-- Use enqueue() for fire-and-forget crafting
-
-**Examples:**
-
-*Crafting intermediate products for later use:*
-
-Preconditions: Has required ingredients in inventory
-
-```python
-# Craft iron gear wheels
-items = await crafting.craft("iron-gear-wheel", count=5)
-print(f"Crafted {len(items)} stacks")
-for stack in items:
-    print(f"  {stack.name} x{stack.count}")
-```
-
-→ Returns list of ItemStack objects
-
-*Crafting items for placement:*
-
-```python
-# Craft placeable items
-items = await crafting.craft("stone-furnace", count=3)
-# Access the PlaceableItem from the stack via indexing
-furnace_stack = items[0]
-# Place via: furnace_stack[0].place(position, direction)
-# Or via: furnace_stack.item.place(position, direction)
-```
-
-→ Returns ItemStack - access item via [0] or .item for placement
-
-
-**Error Handling:**
-
-- **`RuntimeError`**: Unknown recipe — the name does not exist
-  - Resolution: Check spelling; recipe names usually match the product item (e.g. 'iron-gear-wheel')
-- **`RuntimeError`**: Recipe locked — exists but not unlocked for your force (message names the unlocking technology when known)
-  - Resolution: Research the named technology first. Do NOT retry crafting: no amount of ingredients makes a locked recipe craftable
-- **`RuntimeError`**: Missing ingredients — message enumerates each as name (have N, need M)
-  - Resolution: Acquire or craft the listed missing ingredients, then retry
-- **`RuntimeError`**: Invalid count, crafting queue full, or recipe not hand-craftable (needs a machine)
-  - Resolution: Use a positive integer count; let the queue drain or craft_dequeue(); use set_entity_recipe() on a machine for non-hand recipes
-
 
 #### `crafting.enqueue`
 
@@ -489,6 +353,70 @@ for item in status.queue:
 
 
 
+#### `crafting.list_recipes`
+
+```python
+list_recipes(name_filter: Optional[str] = ..., hand_craftable: Optional[bool] = ..., category: Optional[str] = ...) -> List[Dict[str, Any]]
+```
+
+The recipe catalog as the crafting screen lists it. A read — nothing is queued. hand_craftable tells you whether a character can make it (smelting is machine-only); craftable_now is an annotation, not a filter.
+
+**Examples:**
+
+*Finding what you can hand-craft from what you hold:*
+
+```python
+for r in crafting.list_recipes(name_filter="iron", hand_craftable=True):
+    print(r["name"], r["ingredients"], "now" if r["craftable_now"] else "")
+```
+
+→ A list of dicts sorted by name
+
+
+
+#### `crafting.take_predictions`
+
+```python
+take_predictions() -> List[CraftPrediction]
+```
+
+Hand the completion predictions recorded at enqueue to the turn report and clear them. The report calls this once per turn; you do not need to.
+
+**Examples:**
+
+*Harness use; the turn report does this for you:*
+
+```python
+pending = crafting.take_predictions()
+print(len(pending), "predictions handed to the report")
+```
+
+→ The pending CraftPrediction list, now cleared
+
+
+
+#### `crafting.predictions`
+
+```python
+predictions: List[CraftPrediction]
+```
+
+The completion predictions recorded at enqueue (recipe energy at speed 1, summed serially) that no turn report has consumed yet.
+
+**Examples:**
+
+*Seeing when queued crafts will finish, in game ticks:*
+
+```python
+crafting.enqueue("iron-gear-wheel", count=5)
+for p in crafting.predictions:
+    print(p.recipe, p.count, "done by tick", p.predicted_completion_tick)
+```
+
+→ A list of CraftPrediction
+
+
+
 
 ### ResearchAction
 
@@ -531,7 +459,7 @@ if result.get("success"):
 #### `research.dequeue`
 
 ```python
-dequeue() -> Dict[str, Any]
+dequeue(force: bool = ...) -> Dict[str, Any]
 ```
 
 Cancel current research.
@@ -602,6 +530,27 @@ for item in queue.get('queue', []):
 
 
 
+#### `research.list_technologies`
+
+```python
+list_technologies(name_filter: Optional[str] = ..., available: Optional[bool] = ..., researched: Optional[bool] = ...) -> List[Dict[str, Any]]
+```
+
+The technology catalog as the research screen lists it. A read — nothing is queued. available means every prerequisite is researched and it can be queued now. Use this to discover names; never discover by enqueueing.
+
+**Examples:**
+
+*Choosing the next research:*
+
+```python
+for t in research.list_technologies(available=True):
+    print(t["name"], t["science_packs"], t["unit_count"], "unlocks", t["unlocks"])
+```
+
+→ A list of dicts: available first, then locked, then researched
+
+
+
 
 ### AgentInventory
 
@@ -633,9 +582,9 @@ Get total count of an item across all stacks.
 count = inventory.check_total("iron-plate")
 print(f"Iron plates: {count}")
 
-# Check before crafting
+# Check before queueing a craft
 if inventory.check_total("iron-plate") >= 10:
-    await crafting.craft("iron-gear-wheel", count=5)
+    crafting.enqueue("iron-gear-wheel", count=5)
 ```
 
 → Returns total count as integer
@@ -723,6 +672,36 @@ except ValueError as e:
 
 
 
+#### `inventory.await_item`
+
+```python
+async await_item(item_name: str, count: int = ..., timeout_ticks: int = ..., poll_seconds: float = ...) -> AwaitItemResult
+```
+
+Wait, bounded, for an item to be in your inventory. Returns at once if held; refuses at once if nothing in your crafting queue produces it; otherwise waits up to timeout_ticks and returns actuals — never raises. The wait spends the turn's clock like anything else.
+
+**Decision Points:**
+- Prefer the state-join: check inventory.check_total() at the start of the block that needs the items
+- Use await_item when the craft is short and you will place the items this turn
+- A long craft outlasts the bound: end the turn and the items arrive while the world runs
+
+**Examples:**
+
+*Needing crafted items in this same turn before placing them:*
+
+```python
+crafting.enqueue("iron-gear-wheel", count=5)
+got = await inventory.await_item("iron-gear-wheel", count=5, timeout_ticks=600)
+if got:
+    print("have", got.have)
+else:
+    print(got.reason, "have", got.have, "still queued", got.remaining_in_queue)
+```
+
+→ AwaitItemResult; truthy when satisfied
+
+
+
 #### `inventory.item_stacks`
 
 ```python
@@ -742,460 +721,6 @@ for stack in inventory.item_stacks:
 ```
 
 → Returns list of all ItemStack objects
-
-
-
-
-### MiningAction
-
-**Accessor:** `mining`
-
-Handles hand-mining of resources (ore, coal, stone). Mining is asynchronous - mine() returns when the requested items are obtained.
-
-**When to use:** Use mining to gather raw resources by hand before automation exists, or to top up small amounts of a resource.
-
-**Notes:**
-- Mining is async - the call returns when items are in the agent's inventory
-- max_count is capped at 25 items per call for safety
-- Resource must be within reach - walk to the patch first
-- Returned ItemStacks have placement injected (placeable items can .place())
-
-#### `mining.mine`
-
-```python
-async mine(resource_name: str, max_count: Optional[int] = ..., position: Optional[MapPosition] = ..., timeout: Optional[int] = ...) -> List[ItemStack]
-```
-
-Mine a resource asynchronously. Waits for completion and returns mined items.
-
-**Decision Points:**
-- Use max_count=None to deplete the resource (still capped at 25 per call)
-- Walk to the patch first - mining requires the resource within reach
-
-**Examples:**
-
-*Gathering raw resources by hand:*
-
-Preconditions: Resource patch is within reach of the agent
-
-```python
-# Mine iron ore from a nearby patch
-stacks = await mining.mine("iron-ore", max_count=10)
-for stack in stacks:
-    print(f"Mined {stack.name} x{stack.count}")
-```
-
-→ Returns list of ItemStack objects with mined items
-
-*Mining a specific resource tile rather than the nearest one:*
-
-Preconditions: Position holds the named resource and is within reach
-
-```python
-# Mine at a specific position (e.g., a tile found via views)
-stacks = await mining.mine(
-    "coal",
-    max_count=5,
-    position=MapPosition(x=12.5, y=8.5),
-)
-total = sum(stack.count for stack in stacks)
-print(f"Mined {total} coal")
-```
-
-→ Mines at the given position, returns ItemStack list
-
-
-**Error Handling:**
-
-- **`RuntimeError`**: Mining fails to start (resource not found / out of reach) or times out
-  - Resolution: Walk closer to the resource patch and verify the resource name
-
-
-#### `mining.cancel`
-
-```python
-cancel() -> MiningCancelled
-```
-
-Cancel the current mining action.
-
-**Decision Points:**
-- Items mined before cancellation stay in the agent's inventory
-
-**Examples:**
-
-*Interrupting mining (e.g., priorities changed mid-action):*
-
-```python
-# Stop an in-progress mining action
-result = mining.cancel()
-if result.was_active:
-    print(f"Cancelled mining, items obtained: {result.items_obtained}")
-```
-
-→ Returns MiningCancelled with any items already obtained
-
-
-
-
-### PlacementAction
-
-**Accessor:** `placement`
-
-Places entities and ghosts on the map and removes ghosts. Placement is synchronous - results are returned immediately.
-
-**When to use:** Use placement for direct entity/ghost placement at known positions. For planned multi-entity layouts, prefer placement_hints + ghost_builder.
-
-**Notes:**
-- Placement requires the item in the agent's inventory (unless ghost=True)
-- Target position must be within reach and buildable
-- Ghosts are tracked by fv_snapshot - query via remote_view.get_ghosts()
-- Prefer item.place() on ItemStack/PlaceableItem objects when you hold them
-
-#### `placement.place`
-
-```python
-place(entity_name: PlaceableItemName, position: Union[Dict[str, float], MapPosition], direction: Optional[Direction] = ..., ghost: bool = ..., label: Optional[str] = ..., return_entity: bool = ...) -> Union[EntityPlaced, BaseEntity]
-```
-
-Place an entity or ghost on the map. Optionally returns a full BaseEntity.
-
-**Decision Points:**
-- Use ghost=True to plan placement without consuming items
-- Use return_entity=True when you need to configure the entity immediately
-- Use label= to group placed entities for later SQL queries
-
-**Examples:**
-
-*Placing a single entity at a known buildable position:*
-
-Preconditions: Item is in agent inventory, Position is within reach and buildable
-
-```python
-# Place a furnace facing north
-result = placement.place(
-    "stone-furnace",
-    MapPosition(x=10.5, y=10.5),
-    direction=Direction.NORTH,
-)
-if result.success:
-    print(f"Placed at {result.placed_position}")
-```
-
-→ Returns EntityPlaced with position and metadata
-
-*Planning a build without consuming items yet:*
-
-```python
-# Place a labeled ghost for later construction
-result = placement.place(
-    "transport-belt",
-    {"x": 5.5, "y": 6.5},
-    ghost=True,
-    label="main-bus",
-)
-print(f"Ghost placed: {result.is_ghost}")
-# Query later: remote_view.get_ghosts("SELECT * FROM ghost WHERE label = 'main-bus'")
-```
-
-→ Ghost entity placed, tracked in DuckDB ghost table
-
-*Needing to configure/inspect the entity right after placement:*
-
-```python
-# Place and get a full entity object back for immediate configuration
-pos = MapPosition(x=8.5, y=8.5)
-chest = placement.place("iron-chest", pos, return_entity=True)
-print(f"Placed {chest.name} at {chest.position}")
-```
-
-→ Returns BaseEntity with full REACHABLE access
-
-
-**Error Handling:**
-
-- **`RuntimeError`**: Placement fails (position blocked, out of reach, item missing)
-  - Resolution: Check buildability via placement_hints/reachable_view and inventory counts
-
-
-#### `placement.remove_ghost`
-
-```python
-remove_ghost(entity_name: str, position: Union[Dict[str, float], MapPosition]) -> GhostRemoved
-```
-
-Remove a ghost entity from the map.
-
-**Decision Points:**
-- Reference ghosts by entity_name + position (never unit_number)
-
-**Examples:**
-
-*Cleaning up ghosts after a plan changes:*
-
-```python
-# Remove a misplaced ghost
-result = placement.remove_ghost("transport-belt", {"x": 5.5, "y": 6.5})
-if result.success:
-    print(f"Removed ghost at {result.removed_position}")
-```
-
-→ Ghost removed, ghost table updated by fv_snapshot
-
-
-
-
-### EntityOperationsAction
-
-**Accessor:** `entity_ops`
-
-Low-level entity configuration and inventory operations: set recipes, filters and limits, transfer items, inspect state, and pick up entities.
-
-**When to use:** Use entity_ops for direct entity manipulation by name + position. When you hold an entity object from reachable_view, prefer its own methods (entity.set_recipe(), entity.inspect(), ...) which wrap these.
-
-**Notes:**
-- All operations are synchronous and require the entity within reach
-- Entities are referenced by entity_name + position (never unit_number)
-- position=None resolves to the nearest matching entity within reach
-
-#### `entity_ops.set_entity_recipe`
-
-```python
-set_entity_recipe(entity_name: str, recipe_name: Optional[str] = ..., position: Optional[MapPosition] = ...) -> EntityRecipeSet
-```
-
-Set or clear the recipe on a crafting machine.
-
-**Decision Points:**
-- Prefer entity.set_recipe() when you already hold the entity object
-
-**Examples:**
-
-*Configuring a crafting machine after placement:*
-
-Preconditions: Machine is within reach, Recipe is unlocked and valid for the machine
-
-```python
-# Configure an assembler to make iron gear wheels
-result = entity_ops.set_entity_recipe(
-    "assembling-machine-1",
-    "iron-gear-wheel",
-    position=MapPosition(x=12.5, y=4.5),
-)
-if result.success:
-    print(f"Recipe set: {result.recipe_name}")
-```
-
-→ Returns EntityRecipeSet with the configured recipe
-
-*Repurposing a machine (clear before setting a new recipe):*
-
-```python
-# Clear a machine's recipe
-result = entity_ops.set_entity_recipe("assembling-machine-1", None)
-```
-
-→ Recipe is cleared
-
-
-
-#### `entity_ops.set_entity_filter`
-
-```python
-set_entity_filter(entity_name: str, position: MapPosition, inventory_type: str, filter_index: Optional[int] = ..., filter_item: Optional[str] = ...) -> EntityFilterSet
-```
-
-Set or clear an inventory filter on an entity (e.g., filter inserter).
-
-**Decision Points:**
-- Pass filter_item=None to clear a filter slot
-
-**Examples:**
-
-*Restricting which items an inserter handles:*
-
-Preconditions: Entity supports filters, Entity is within reach
-
-```python
-# Make a filter inserter only move iron plates
-result = entity_ops.set_entity_filter(
-    "fast-inserter",
-    MapPosition(x=3.5, y=2.5),
-    inventory_type="main",
-    filter_index=1,
-    filter_item="iron-plate",
-)
-print(f"Filter set: {result.filter_item}")
-```
-
-→ Returns EntityFilterSet with the applied filter
-
-
-
-#### `entity_ops.set_inventory_limit`
-
-```python
-set_inventory_limit(entity_name: str, inventory_type: str, limit: Optional[int] = ..., position: Optional[MapPosition] = ...) -> InventoryLimitSet
-```
-
-Set the inventory bar limit (red bar) on a container.
-
-**Decision Points:**
-- Pass limit=None to remove the limit
-
-**Examples:**
-
-*Preventing containers from absorbing too many items:*
-
-```python
-# Limit a chest to 10 slots to avoid over-buffering
-result = entity_ops.set_inventory_limit(
-    "iron-chest",
-    inventory_type="main",
-    limit=10,
-)
-if result.success:
-    print(f"Limit set to {result.limit} slots")
-```
-
-→ Returns InventoryLimitSet with the applied limit
-
-
-
-#### `entity_ops.take_inventory_item`
-
-```python
-take_inventory_item(entity_name: str, inventory_type: str, item_name: str, count: Optional[int] = ..., position: Optional[MapPosition] = ...) -> InventoryItemTaken
-```
-
-Take items from an entity's inventory into the agent's inventory.
-
-**Decision Points:**
-- Omit count to take all available items
-- Check result.is_partial - transfers can be smaller than requested
-
-**Examples:**
-
-*Collecting outputs from machines or chests:*
-
-Preconditions: Entity is within reach, Items exist in the named inventory
-
-```python
-# Collect smelted plates from a furnace
-result = entity_ops.take_inventory_item(
-    "stone-furnace",
-    inventory_type="output",
-    item_name="iron-plate",
-)
-print(f"Took {result.count} iron plates")
-if result.is_partial:
-    print("Agent inventory could not fit everything")
-```
-
-→ Returns InventoryItemTaken with actual count transferred
-
-
-
-#### `entity_ops.put_inventory_item`
-
-```python
-put_inventory_item(entity_name: str, inventory_type: str, items: Union[ItemStack, List[ItemStack]], position: Optional[MapPosition] = ...) -> Union[InventoryItemPut, List[InventoryItemPut]]
-```
-
-Put items from the agent's inventory into an entity's inventory.
-
-**Decision Points:**
-- Pass a list of ItemStacks to perform multiple transfers in sequence
-- Check result.is_partial - partial inserts SUCCEED with count < requested_count; result.message says the rest returned to your inventory
-
-**Examples:**
-
-*Loading machines with fuel or ingredients:*
-
-Preconditions: Items are in agent inventory, Entity is within reach
-
-```python
-# Fuel a furnace with coal from the agent's inventory
-stacks = inventory.create_item_stacks("coal", count=10)
-result = entity_ops.put_inventory_item(
-    "stone-furnace",
-    inventory_type="fuel",
-    items=stacks[0],
-)
-print(f"Inserted {result.count} coal")
-```
-
-→ Returns InventoryItemPut with actual count transferred
-
-
-**Error Handling:**
-
-- **`RuntimeError`**: Invalid inventory_type name (valid: 'auto', 'fuel', 'input', 'chest', 'output', 'modules')
-  - Resolution: Use one of the listed names; 'auto' lets the engine route fuel/ingredients automatically
-- **`RuntimeError`**: Target inventory cannot accept ANY of the item (full, or item not allowed there) — fails before anything moves
-  - Resolution: Free space with take_inventory_item() or pick a different inventory_type
-- **`RuntimeError`**: Insufficient items in agent inventory (message states have/need) or entity not found / out of reach
-  - Resolution: Acquire more items, fix entity_name/position, or walk closer
-
-
-#### `entity_ops.inspect_entity`
-
-```python
-inspect_entity(entity_name: str, position: MapPosition) -> Dict[str, Any]
-```
-
-Get comprehensive volatile state for an entity as a raw dict.
-
-**Decision Points:**
-- Prefer entity.inspect() via reachable_view - it returns typed EntityInspection
-- Use this raw form only when working outside the typed entity layer
-
-**Examples:**
-
-*Reading raw entity state when no typed entity object is at hand:*
-
-Preconditions: Entity is within reach
-
-```python
-# Inspect a furnace's full state
-state = entity_ops.inspect_entity(
-    "stone-furnace", MapPosition(x=10.5, y=10.5)
-)
-print(f"Status: {state.get('status')}")
-```
-
-→ Returns raw dict with entity state (structure varies by type)
-
-
-
-#### `entity_ops.pickup_entity`
-
-```python
-pickup_entity(entity_name: str, position: Optional[MapPosition] = ...) -> EntityPickedUp
-```
-
-Pick up a placed entity from the map into the agent's inventory.
-
-**Decision Points:**
-- Entity inventories are extracted along with the entity itself
-- Prefer entity.pickup() when you already hold the entity object
-
-**Examples:**
-
-*Removing/relocating placed entities:*
-
-Preconditions: Entity is within reach and can be picked up
-
-```python
-# Pick up a misplaced chest (contents come along)
-result = entity_ops.pickup_entity(
-    "iron-chest", position=MapPosition(x=8.5, y=8.5)
-)
-if result.has_items:
-    print(f"Extracted: {result.extracted_items}")
-```
-
-→ Entity removed from map, item + contents in agent inventory
 
 
 
@@ -1539,7 +1064,7 @@ Find water-tile centers on the map as search hints. Results are not walkable des
 **Decision Points:**
 - Empty list + stale chunk_snapshot_meta tick means OLD DATA, not 'no water'
 - Never pass a returned water-tile position to walking.walk_to()
-- Resolve placement_hints.find_offshore_pump_sites() before travelling or placing
+- Resolve entity_reference("offshore-pump").sites(near=...) before travelling or placing
 
 **Examples:**
 
@@ -1824,13 +1349,68 @@ entities = remote_view.get_entities_at_anchor_tile(5, 10)
 
 
 
-#### `remote_view.get_power_networks`
+#### `remote_view.status`
 
 ```python
-get_power_networks(as_of_tick: Optional[int] = ...) -> PowerNetworksReport
+status(max_positions: int = ..., statuses: Optional[List[str]] = ...) -> StatusSummary
 ```
 
-Per-network power census from the latest power sample: anchor pole, pole/member counts, production/consumption/storage, headroom ratio, per-prototype breakdowns, and low_power/no_power member counts.
+Base-wide entity status summary — which problem, how many, roughly where — read from the newest status dump on disk (source = status_dump:<tick>), never from a table. The per-entity status seen at scale.
+
+**Decision Points:**
+- source names the dump block; age_ticks says how stale it is — a dump is a snapshot, not a live read
+- Poles carry no status and never appear; a fuel-starved generator still reads 'working'
+- Drill into one machine with entity.status (live); a pole's coverage of it is pole.covers(entity)
+
+**Examples:**
+
+*Checking the factory for problems without inspecting entities one at a time:*
+
+```python
+# What is wrong right now, and where?
+summary = remote_view.status(statuses=["no_power", "low_power", "no_fuel", "no_minable_resources"])
+print(summary.source, "age", summary.age_ticks, "ticks")
+for name, group in summary.groups.items():
+    print(name, group.count, group.entities[:3], f"+{group.more} more")
+```
+
+→ Returns StatusSummary (tick None and no groups when no dump exists yet)
+
+
+
+#### `remote_view.status_changed`
+
+```python
+status_changed(since_tick: int) -> StatusChange
+```
+
+Status transitions since a tick — what became unhappy and what recovered — by diffing two status dump blocks (source = status_dump:<from>-><to>).
+
+**Decision Points:**
+- The earlier block is the newest at or before since_tick; the window on disk is bounded
+
+**Examples:**
+
+*Reviewing what happened to the base over a period:*
+
+```python
+# What changed since I last looked?
+change = remote_view.status_changed(since_tick=12000)
+for label, transitions in change.grouped().items():
+    print(label, len(transitions), transitions[0].entity)
+```
+
+→ Returns StatusChange with transitions grouped by before -> after
+
+
+
+#### `remote_view.power`
+
+```python
+power(as_of_tick: Optional[int] = ...) -> PowerNetworksReport
+```
+
+Per-network power census from the newest power sample on disk (source = power_dump:<tick>): anchor pole, pole/member counts, production/consumption/storage, headroom ratio, per-prototype breakdowns, and low_power/no_power member counts from the newest status dump.
 
 **Decision Points:**
 - Engine network_id is ephemeral (renumbers on merge/split) — the anchor pole is the durable reference
@@ -1843,17 +1423,63 @@ Per-network power census from the latest power sample: anchor pole, pole/member 
 
 ```python
 # Survey every electric network's supply vs demand
-report = remote_view.get_power_networks()
+report = remote_view.power()
 if report.sample_tick is None:
     print("No power sample yet")
 else:
     for net in report.networks:
         print(net.anchor_pole_name, net.production_w, net.consumption_w)
         print(f"  {net.no_power_count} no_power, {net.low_power_count} low_power")
-    print(report.freshness_note)
+    print(report.source, report.freshness_note)
 ```
 
-→ Returns PowerNetworksReport (sample_tick None if no sample ingested)
+→ Returns PowerNetworksReport (sample_tick None if no sample on disk)
+
+
+
+#### `remote_view.get_power_networks`
+
+```python
+get_power_networks(as_of_tick: Optional[int] = ...) -> PowerNetworksReport
+```
+
+Alias of remote_view.power() kept for older callers; prefer power().
+
+**Examples:**
+
+*Legacy name:*
+
+```python
+report = remote_view.get_power_networks()  # same as remote_view.power()
+```
+
+→ Returns PowerNetworksReport
+
+
+
+#### `remote_view.production`
+
+```python
+production(agent_id: Optional[int] = ...) -> ProductionReport
+```
+
+Force production read live over RCON (source = live:<tick>) plus this agent's hand-crafted and hand-mined counts from its event records; automated() is the difference.
+
+**Decision Points:**
+- produced/consumed are cumulative force counters; diff two reads for a rate
+
+**Examples:**
+
+*Measuring automation rather than total output:*
+
+```python
+# How much is the factory making without my hands?
+p = remote_view.production()
+print(p.source, p.automated().get("iron-plate", 0), "automated plates")
+print("hand-crafted:", p.hand_crafted)
+```
+
+→ Returns ProductionReport (source 'unavailable' without an engine connection)
 
 
 
@@ -1866,6 +1492,7 @@ diagnose_power(entity_name: str, position: Any, as_of_tick: Optional[int] = ...)
 Diagnose why an entity is unpowered (or confirm it is fine) in one call: status -> pole coverage -> network generation -> undersupply -> upstream generator starvation.
 
 **Decision Points:**
+- Reads the newest status dump and power sample on disk (not tables); sample_tick says which sample
 - verdict is one of working/not_covered_by_any_pole/network_has_no_generation/network_undersupplied/upstream_generator_starved/no_status_data/entity_not_found/non_electric_or_no_issue
 - A fuel-starved generator still reports 'working' — the explanation flags this
 - Poles report nil status; diagnosing a pole returns non_electric_or_no_issue
@@ -1887,838 +1514,207 @@ print(diag.production_w, diag.consumption_w)
 
 
 
-### VerifyView
-
-**Accessor:** `verify`
-
-Live engine confirmation of power / coverage facts. The snapshot DB answers WHICH poles/entities exist; verify answers IS IT TRUE RIGHT NOW via live reads. Positions/statuses/network-ids are live at call time; supply distances and collision boxes are prototype-derived (static).
-
-**When to use:** Use verify before committing a build to a pole spine, or to confirm an entity is actually powered. supply_coverage previews coverage geometry (including an as-if-placed proposed_pole) so a fractional-tile miss is visible BEFORE the entities go dark.
-
-**Notes:**
-- Coverage is the engine rule: entity collision box intersects pole supply box
-- margin is signed: overlap depth if covered, shortest move (with axis) if not
-- supply areas render tile-aligned in ascii_map (as Factorio computes them)
-- No snapshot lag — reads hit the running engine directly via RCON
-
-#### `verify.supply_coverage`
-
-```python
-supply_coverage(entities: Optional[List[Target]] = ..., area: Optional[Dict[str, Any]] = ..., proposed_pole: Optional[Tuple[str, Any]] = ...) -> SupplyCoverageReport
-```
-
-Check whether every electric consumer's collision box actually intersects a pole's supply area, with per-entity margins and a tile-aligned ascii map. Optionally score an as-if-placed proposed_pole (pre-placement preview).
-
-**Decision Points:**
-- Pass entities explicitly, or an area to discover live consumers
-- proposed_pole is scored as if already placed — nothing is built
-- margin_axis is 'X', 'Y', or 'XY'; margin is tiles (overlap depth or shortfall)
-
-**Examples:**
-
-*Previewing coverage geometry before a drill line commits to a pole spine:*
-
-```python
-# The attempt-5 miss, made visible: a medium-pole spine at y=64.5
-# leaves a drill at y=59.5 exactly 0.15 tiles short on Y, while the
-# furnace at y=62.5 is covered.
-report = verify.supply_coverage(
-    entities=[
-        ("electric-mining-drill", MapPosition(x=5.5, y=59.5)),
-        ("electric-furnace", MapPosition(x=5.5, y=62.5)),
-    ],
-    area={"left_top": {"x": 0, "y": 55}, "right_bottom": {"x": 12, "y": 68}},
-)
-print(report.summary)
-# -> '1/2 covered | NOT covered: electric-mining-drill@(5.5,59.5) (0.15 short on Y)'
-print(report.ascii_map)
-# 59 ...d...      <- lowercase d: NOT covered
-# 61 #######      <- '#': tiles inside the medium pole's supply area
-# 62 ###F###      <- uppercase F: covered
-# 64 ###P###      <- 'P': the pole
-for c in report.entities:
-    if not c.covered:
-        print(c.entity_name, c.margin, c.margin_axis, c.detail)
-```
-
-→ Returns SupplyCoverageReport; drill NOT covered (0.15 on Y), furnace covered
-
-*Choosing where to place a new pole so it actually covers the target:*
-
-```python
-# Pre-placement preview: move the pole one tile closer (proposed_pole)
-# and watch the drill flip to covered without placing anything.
-report = verify.supply_coverage(
-    entities=[("electric-mining-drill", MapPosition(x=5.5, y=59.5))],
-    area={"left_top": {"x": 0, "y": 55}, "right_bottom": {"x": 12, "y": 68}},
-    proposed_pole=("medium-electric-pole", MapPosition(x=5.5, y=63.5)),
-)
-print(report.summary, report.covered_count, "of", report.total_count)
-```
-
-→ Proposed pole flips the drill to covered in the preview
-
-
-
-#### `verify.powered`
-
-```python
-powered(targets: Union[Target, List[Target]]) -> Dict[str, PoweredCheck]
-```
-
-Live power status of one or many entities, keyed 'name@(x,y)'. powered == on an electric network AND not reporting no_power.
-
-**Decision Points:**
-- A fuel-starved producer still reports 'working' — cross-check network wattages
-- found=False means no such entity within 0.6 tiles of the given position
-
-**Examples:**
-
-*Verifying entities actually receive power after wiring a network:*
-
-```python
-# Confirm the drill and furnace power state right now
-checks = verify.powered([
-    ("electric-mining-drill", MapPosition(x=5.5, y=59.5)),
-    ("electric-furnace", MapPosition(x=5.5, y=62.5)),
-])
-for key, chk in checks.items():
-    print(key, chk.powered, chk.status_name, chk.electric_network_id)
-```
-
-→ Dict of PoweredCheck; uncovered drill powered=False (no_power)
-
-
-
-#### `verify.connected`
-
-```python
-connected(a: Target, b: Target) -> ConnectedCheck
-```
-
-Whether two entities share one live electric network right now (same non-nil electric_network_id).
-
-**Decision Points:**
-- Network ids are ephemeral (renumber on merge/split) — this is a right-now fact
-
-**Examples:**
-
-*Confirming a generator actually feeds the intended pole network:*
-
-```python
-# Are the EEI and the pole on the same network?
-check = verify.connected(
-    ("electric-energy-interface", MapPosition(x=2.5, y=64.5)),
-    ("medium-electric-pole", MapPosition(x=5.5, y=64.5)),
-)
-print(check.connected, check.explanation)
-```
-
-→ Returns ConnectedCheck with connected bool and an explanation
-
-
-
-
 
 ## Placement & Spatial Reasoning
 
-### PlacementHints
+### EntityReferenceAccessor
 
-**Accessor:** `placement_hints`
+**Accessor:** `entity_reference`
 
-Spatial reasoning engine for entity placement. Generates validated GhostPlan objects for lines, connections, and pole coverage. No side effects - validation only.
+Hold an entity type on your cursor without placing it. entity_reference("small-electric-pole") returns a read-only reference that answers what the placement preview would show: footprint, whether it can go here, the supply overlay a pole would project, a drill's drop arrow, where an inserter could sit between two machines, where an offshore pump could sit. It cannot place anything and holds no inventory — placing still goes through inventory.get_item(name).place().
 
-**When to use:** Use placement_hints to plan entity layouts before placement. Get validated positions for belts, pipes, poles, and connection puzzles (drill→furnace, inserter placement).
+**When to use:** Use it while planning, before you own the item or have walked anywhere: the same questions you would answer by holding the item and looking at the preview. Every answer says where it came from: 'prototype' (static data) or 'live' (an engine check right now). Anything about a machine's contents, status or network needs the real entity, not a reference.
 
 **Notes:**
-- Pure computation - never mutates game state
-- Uses Lua mod for engine values (drop_position, fluidbox, wire_connector)
-- Returns GhostPlan objects ready for ghost_builder.build_plan()
-- Validates positions against current game state
+- Read-only: no method here changes the world
+- Every method name also exists on the real entity class, so what you learn here transfers
+- can_place() checks the engine's own placement rule live but not reach or inventory
+- covers() uses the engine's box-against-box rule; a corner of a 3x3 machine inside the square counts
 
-#### `placement_hints.get_placement_line`
+
+### EntityReference
+
+**Accessor:** `entity_reference(...)`
+
+The object entity_reference(name) returns. Read-only planning answers for one entity type.
+
+**When to use:** Ask it the preview questions; ask the real entity everything else.
+
+**Notes:**
+- Results are SourcedValue: the value plus .source ('prototype' or 'live')
+
+#### `entity_reference(...).footprint`
 
 ```python
-get_placement_line(entity_name: str, start: MapPosition, end: MapPosition, width: int = ..., validate: bool = ...) -> GhostPlan
+footprint(position: MapPosition, direction: Optional[Direction] = ...) -> SourcedValue
 ```
 
-Calculate a line of entities from start to end with inferred direction.
-
-**Decision Points:**
-- Direction is inferred from drag vector (horizontal→EAST/WEST, vertical→NORTH/SOUTH)
-- Use validate=False to skip validation (faster but may have invalid positions)
-- plan.validate(validator) can re-validate after state changes
+Tiles this entity would occupy at a position and facing (source: prototype).
 
 **Examples:**
 
-*Planning belt/pipe lines:*
+*Checking how much room a machine takes before walking over:*
 
 ```python
-# Plan a belt line from (0,0) to (10,0)
-plan = placement_hints.get_placement_line(
-    entity_name="transport-belt",
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=10, y=0)
-)
-print(f"Planned {len(plan.positions)} belts")
-print(f"Valid: {plan.valid}")
-
-# Commit plan to create ghosts
-if plan.valid:
-    await ghost_builder.build_plan(plan)
+ref = entity_reference("stone-furnace")
+tiles = ref.footprint(MapPosition(x=10, y=10))
+print(len(tiles), tiles.source)  # 4 prototype
 ```
 
-→ Returns GhostPlan with validated positions
+→ A list of TilePosition, with .source == 'prototype'
 
-*Planning fluid transport lines:*
+
+
+#### `entity_reference(...).can_place`
 
 ```python
-# Plan a pipe line
-pipe_plan = placement_hints.get_placement_line(
-    entity_name="pipe",
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=0, y=20),
-    validate=True  # Default, validates all positions
-)
-# Check for invalid positions
-invalid_count = sum(1 for pos, dir in pipe_plan.positions if not pipe_plan.valid)
-print(f"Invalid positions: {invalid_count}")
+can_place(position: MapPosition, direction: Optional[Direction] = ...) -> SourcedValue
 ```
 
-→ Returns validated pipe positions
-
-
-
-#### `placement_hints.is_buildable`
-
-```python
-is_buildable(left_top: MapPosition, right_bottom: MapPosition, entity_name: str = ...) -> Dict[str, Any]
-```
-
-Check whether an area is buildable land WITHOUT placing anything (non-mutating engine validation). Never place/pickup entities to probe terrain.
-
-**Decision Points:**
-- Max 1600 tiles per call - probe sub-areas for bigger regions
-- Blocked tiles include water, cliffs, existing entities and out-of-map
-- Use find_water() to locate water; this method tells you where you CANNOT build
+Could this be placed here right now? The engine's red/green preview, read live. Reach and inventory are not checked — the reference holds nothing.
 
 **Examples:**
 
-*Validating a build site before committing a layout:*
+*Testing a spot before committing to walk there and place:*
 
 ```python
-# Is this 10x10 site clear for a factory block?
-result = placement_hints.is_buildable(
-    left_top=MapPosition(x=20, y=20),
-    right_bottom=MapPosition(x=30, y=30),
-)
-if result["all_buildable"]:
-    print("Site is clear")
-else:
-    print(f"{result['buildable_count']}/{result['total']} tiles buildable")
-    print(f"Blocked at: {result['blocked_positions'][:5]}")
+ref = entity_reference("burner-mining-drill")
+ok = ref.can_place(MapPosition(x=34.5, y=-90.5), Direction.NORTH)
+if ok:
+    drill = inventory.get_item("burner-mining-drill").place(MapPosition(x=34.5, y=-90.5), Direction.NORTH)
 ```
 
-→ Dict with all_buildable, buildable_count, total, blocked_positions
-
-
-
-#### `placement_hints.find_offshore_pump_sites`
-
-```python
-find_offshore_pump_sites(near: MapPosition, radius: int = ..., max_results: int = ...) -> List[ConnectionPosition]
-```
-
-Find live engine-validated offshore-pump anchors. Each result contains the placement position, required direction, and an engine-derived standable approach position within build reach; these are not merely nearby water tiles. Results are ordered nearest-anchor first.
-
-**Decision Points:**
-- remote_view.find_water() returns water tiles, not pump anchors
-- Water-tile hints are not walking targets; resolve sites before travelling
-- Walk to site.approach_position, never site.position
-- Place at site.position and use site.direction unchanged
-- If walking cannot reach one approach position, try the next returned site
-- Increase radius or choose another water cluster only when the result is empty
-
-**Examples:**
-
-*Placing an offshore pump without guessing shoreline anchors:*
-
-```python
-water = remote_view.find_water(near=MapPosition(x=0, y=0), radius=80)
-sites = placement_hints.find_offshore_pump_sites(
-    near=MapPosition(x=water[0]["x"], y=water[0]["y"]),
-    radius=20,
-    max_results=20,
-)
-if not sites:
-    raise RuntimeError("No validated offshore-pump site in the searched area")
-site = sites[0]
-# site.position can overlap water. Walk only to the supplied standable land
-# position, then place at the anchor with its validated direction unchanged.
-await walking.walk_to(site.approach_position, strict_goal=False)
-pump = inventory.get_item("offshore-pump")
-pump.place(site.position, site.direction)
-```
-
-→ Returns nearest-first validated anchor, direction, and standable-approach candidates
-
-
-
-#### `placement_hints.get_connection_positions`
-
-```python
-get_connection_positions(source_entity: BaseEntity, target_entity_name: str, connection_type: ConnectionType) -> ConnectionPositionList
-```
-
-Find valid positions where target entity can connect to source entity.
-
-**Decision Points:**
-- ITEM_DROP: mining-drill → furnace/chest/belt (furnace is most common - direct output, no inserter needed!)
-- FLUID_PIPE: fluid machines (boiler, pump, etc.) → pipe → Returns ConnectionPosition
-- ELECTRIC_WIRE: electric poles → electric poles → Returns WireConnectionPosition
-- Lower perpendicular_offset = better alignment with source entity
-- For ELECTRIC_WIRE, use wire_distance_utilization to optimize pole spacing
-- The returned list is a ConnectionPositionList: still indexable/iterable like a plain list, but an empty result also carries `.reason` (why zero candidates), and for ELECTRIC_WIRE `.max_wire_distance` — check these instead of treating [] as an unexplained dead end (REASON-1)
-
-**Examples:**
-
-*Placing furnace to receive drill output directly (most efficient):*
-
-```python
-# ITEM_DROP: Place furnace directly at drill's drop position
-# No inserter needed - drill outputs directly into furnace!
-
-drill = reachable_view.get_entity("burner-mining-drill")
-positions = placement_hints.get_connection_positions(
-    source_entity=drill,
-    target_entity_name="stone-furnace",
-    connection_type=ConnectionType.ITEM_DROP
-)
-
-if positions:
-    # Positions sorted by perpendicular_offset (lower = better aligned)
-    best = positions[0]
-    print(f"Furnace position: {best.position}")
-
-    # Place furnace at drill's drop position - it receives ore directly
-    item = inventory.get_item("stone-furnace")
-    item.place(best.position, best.direction)
-    # Furnace will automatically receive ore from drill - no inserter needed!
-```
-
-→ Returns List[ConnectionPosition] - furnace receives ore without inserters
-
-*Connecting fluid network to machines (FLUID_PIPE):*
-
-```python
-# FLUID_PIPE: Returns List[ConnectionPosition]
-# Direction is required for pipe connections
-
-boiler = reachable_view.get_entity("boiler")
-positions = placement_hints.get_connection_positions(
-    source_entity=boiler,
-    target_entity_name="pipe",
-    connection_type=ConnectionType.FLUID_PIPE
-)
-
-for pos in positions:
-    # Direction indicates which way pipe should face
-    print(f"Pipe at {pos.position}, direction: {pos.direction}")
-
-# Place first pipe
-if positions:
-    item = inventory.get_item("pipe")
-    item.place(positions[0].position, positions[0].direction)
-```
-
-→ Returns List[ConnectionPosition] with required directions
-
-*Extending power network (ELECTRIC_WIRE returns WireConnectionPosition):*
-
-```python
-# ELECTRIC_WIRE: Returns List[WireConnectionPosition]
-# WireConnectionPosition extends ConnectionPosition with:
-#   - wire_distance: float (actual distance in tiles)
-#   - wire_distance_utilization: float (0.0-1.0, ratio of max distance)
-
-pole = reachable_view.get_entity("medium-electric-pole")
-wire_positions = placement_hints.get_connection_positions(
-    source_entity=pole,
-    target_entity_name="medium-electric-pole",
-    connection_type=ConnectionType.ELECTRIC_WIRE
-)
-
-# WireConnectionPosition has extra wire-specific fields
-for pos in wire_positions:
-    print(f"Position: {pos.position}")
-    print(f"  Wire distance: {pos.wire_distance:.1f} tiles")
-    print(f"  Utilization: {pos.wire_distance_utilization:.1%}")
-    # e.g., distance=7.2, utilization=0.8 means 80% of 9.0 tile max
-
-# Choose position that uses ~70-80% of wire distance (efficient spacing)
-optimal = [p for p in wire_positions if 0.7 <= p.wire_distance_utilization <= 0.85]
-if optimal:
-    item = inventory.get_item("medium-electric-pole")
-    item.place(optimal[0].position)
-```
-
-→ Returns List[WireConnectionPosition] with distance metrics
+→ SourcedValue(True/False, source='live')
 
 
 **Error Handling:**
 
-- **`EntityValidationError`**: Source entity doesn't support the connection type
-  - Resolution: Check entity type - only drills support ITEM_DROP, only poles support ELECTRIC_WIRE, etc.
+- **`RuntimeError`**: The reference was created without a live engine
+  - Resolution: Only happens offline; in a run every reference is live
 
 
-#### `placement_hints.get_inserter_placement_positions`
+#### `entity_reference(...).supply_area`
 
 ```python
-get_inserter_placement_positions(source_entity: BaseEntity, target_entity: BaseEntity, inserter_name: str = ...) -> List[Tuple[MapPosition, Direction]]
+supply_area(position: MapPosition) -> SourcedValue
 ```
 
-Find valid inserter positions to transfer items between two entities.
-
-**Decision Points:**
-- Inserter direction points toward drop-off (target)
-- Different inserter types have different reach
-- Consider stack inserters for higher throughput
+The supply box a pole would project from a position (source: prototype). Poles only.
 
 **Examples:**
 
-*Automating item transfer between entities:*
+*Seeing the overlay before placing a pole:*
 
 ```python
-# Find inserter position from chest to furnace
-chest = reachable_view.get_entity("iron-chest")
+pole = entity_reference("small-electric-pole")
+box = pole.supply_area(MapPosition(x=0, y=0))
+print(box)
+```
+
+→ A BoundingBox centre ± supply_area_distance
+
+
+
+#### `entity_reference(...).covers`
+
+```python
+covers(position: MapPosition, entity: 'BaseEntity') -> SourcedValue
+```
+
+Would a pole at this position power that entity? Box-against-box, the engine's rule. Poles only.
+
+**Examples:**
+
+*Choosing where a pole goes so a machine is inside its area:*
+
+```python
+pole = entity_reference("small-electric-pole")
+drill = reachable_view.get_entity("electric-mining-drill")
+if drill and pole.covers(MapPosition(x=drill.position.x + 3, y=drill.position.y), drill):
+    print("a pole 3 tiles east would power the drill")
+```
+
+→ SourcedValue(True/False, source='prototype')
+
+
+
+#### `entity_reference(...).wire_reach`
+
+```python
+wire_reach(position: MapPosition, other: 'BaseEntity') -> SourcedValue
+```
+
+Would a pole here be within wire distance of that pole? A bound, not a promise of wiring. Poles only.
+
+
+#### `entity_reference(...).drop_position`
+
+```python
+drop_position(position: MapPosition, direction: Direction = ...) -> SourcedValue
+```
+
+Where a drill at this position and facing drops its output — the arrow on the cursor. Drills only.
+
+**Examples:**
+
+*Deciding where the chest or belt goes before placing the drill:*
+
+```python
+drill = entity_reference("burner-mining-drill")
+drop = drill.drop_position(MapPosition(x=34.5, y=-90.5), Direction.NORTH)
+print(drop)  # the tile a chest or belt must occupy
+```
+
+→ SourcedValue(MapPosition, source='prototype')
+
+
+
+#### `entity_reference(...).placements_between`
+
+```python
+placements_between(source: 'BaseEntity', target: 'BaseEntity') -> SourcedValue
+```
+
+Positions and facings where this inserter would move items from one placed entity into another. Both entities must exist. Zero candidates come back with a reason, never as an error. Inserters only.
+
+**Examples:**
+
+*Linking two machines with an inserter:*
+
+```python
+chest = reachable_view.get_entity("wooden-chest")
 furnace = reachable_view.get_entity("stone-furnace")
-
-positions = placement_hints.get_inserter_placement_positions(
-    source_entity=chest,
-    target_entity=furnace,
-    inserter_name="inserter"
-)
-
-if positions:
-    pos, direction = positions[0]
-    print(f"Place inserter at {pos} facing {direction}")
-
-    # Create and place inserter
-    item = inventory.get_item("inserter")
-    if item:
-        item.place(pos, direction)
+answer = entity_reference("inserter").placements_between(chest, furnace)
+for position, direction in answer["positions"]:
+    print(position, direction)
+if not answer["positions"]:
+    print("why:", answer["reason"])
 ```
 
-→ Returns list of (MapPosition, Direction) tuples
+→ SourcedValue({'positions': [(MapPosition, Direction), ...], 'reason': str|None}, source='live')
 
-*Using long-reach inserters for larger gaps:*
+
+
+#### `entity_reference(...).sites`
 
 ```python
-# Find long-handed inserter positions (longer reach)
-positions = placement_hints.get_inserter_placement_positions(
-    source_entity=chest,
-    target_entity=furnace,
-    inserter_name="long-handed-inserter"
-)
-# Long-handed inserters can reach further, more options
+sites(near: MapPosition, radius: int = ..., max_results: int = ...) -> SourcedValue
 ```
 
-→ Returns positions with appropriate reach
-
-
-
-#### `placement_hints.get_pole_line`
-
-```python
-get_pole_line(start: MapPosition, end: MapPosition, pole_name: str = ..., validate: bool = ...) -> GhostPlan
-```
-
-Plan a line of electric poles at maximum wire distance intervals.
-
-**Decision Points:**
-- Pole spacing based on max wire distance (small=7.5, medium=9, big=30, substation=18)
-- Big poles are good for long distance, small/medium for local distribution
+Where an offshore pump could sit near a position, with its required facing and a standable approach position. Offshore pumps only.
 
 **Examples:**
 
-*Running power line across distance:*
+*Finding water to start power:*
 
 ```python
-# Plan pole line from start to end
-plan = placement_hints.get_pole_line(
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=50, y=0),
-    pole_name="medium-electric-pole"
-)
-
-print(f"Need {len(plan.positions)} poles")
-# Poles are spaced at max wire distance (9 for medium poles)
-
-if plan.valid:
-    await ghost_builder.build_plan(plan)
+sites = entity_reference("offshore-pump").sites(walking.position, radius=30)
+for site in sites:
+    print(site.position, site.direction, site.approach_position)
 ```
 
-→ Returns GhostPlan with optimally spaced poles
+→ SourcedValue(list of ConnectionPosition, source='live')
 
-*Optimizing power line cost:*
-
-```python
-# Compare pole types for coverage
-for pole_type in ["small-electric-pole", "medium-electric-pole", "big-electric-pole"]:
-    plan = placement_hints.get_pole_line(
-        start=MapPosition(x=0, y=0),
-        end=MapPosition(x=100, y=0),
-        pole_name=pole_type,
-        validate=False  # Skip validation for comparison
-    )
-    print(f"{pole_type}: {len(plan.positions)} poles needed")
-```
-
-→ Shows pole count comparison
-
-
-
-#### `placement_hints.get_pole_coverage_position`
-
-```python
-get_pole_coverage_position(entities_to_power: List[BaseEntity], pole_name: str = ...) -> Optional[MapPosition]
-```
-
-Find a single pole position that covers ALL given entities.
-
-**Decision Points:**
-- Returns None if entities spread beyond supply diameter
-- Substations have largest supply area (9 tile radius)
-- Consider get_pole_coverage_plan() for multiple poles
-
-**Examples:**
-
-*Minimizing poles for compact areas:*
-
-```python
-# Find pole position to power multiple machines
-machines = reachable_view.get_entities("assembling-machine-1")
-
-pos = placement_hints.get_pole_coverage_position(
-    entities_to_power=machines,
-    pole_name="medium-electric-pole"
-)
-
-if pos:
-    print(f"Place pole at {pos} to cover all machines")
-else:
-    print("Entities too spread out for single pole")
-```
-
-→ Returns MapPosition or None if impossible
-
-
-
-#### `placement_hints.get_pole_coverage_plan`
-
-```python
-get_pole_coverage_plan(entities_to_power: List[BaseEntity], pole_name: str = ...) -> Tuple[GhostPlan, List[BaseEntity]]
-```
-
-Find minimum poles to cover all entities using greedy set cover algorithm.
-
-**Decision Points:**
-- Greedy algorithm - not globally optimal but good enough
-- Returns uncovered entities if some can't be reached
-- Consider splitting into smaller groups if many uncovered
-
-**Examples:**
-
-*Optimal pole placement for arbitrary layouts:*
-
-```python
-# Plan poles to power scattered entities
-entities = reachable_view.get_entities()
-electric_entities = [e for e in entities if hasattr(e, 'electric_network_id')]
-
-plan, uncovered = placement_hints.get_pole_coverage_plan(
-    entities_to_power=electric_entities,
-    pole_name="medium-electric-pole"
-)
-
-print(f"Need {len(plan.positions)} poles")
-if uncovered:
-    print(f"Warning: {len(uncovered)} entities cannot be covered")
-
-if plan.valid:
-    await ghost_builder.build_plan(plan)
-```
-
-→ Returns (GhostPlan, list of uncovered entities)
-
-
-
-#### `placement_hints.get_underground_segment`
-
-```python
-get_underground_segment(entity_name: str, start: MapPosition, end: MapPosition, direction: Direction) -> GhostPlan
-```
-
-Plan an underground belt or pipe segment between two points.
-
-**Decision Points:**
-- Max distances: underground-belt=4, fast=6, express=8, pipe-to-ground=10
-- Exit direction is automatically set to opposite of entry
-
-**Examples:**
-
-*Bypassing obstacles with underground transport:*
-
-```python
-# Plan underground belt to cross obstacle
-plan = placement_hints.get_underground_segment(
-    entity_name="underground-belt",
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=4, y=0),
-    direction=Direction.EAST
-)
-
-# Plan includes entry and exit belts with correct directions
-print(f"Entry at {plan.positions[0]}")
-print(f"Exit at {plan.positions[1]}")
-```
-
-→ Returns GhostPlan with entry/exit positions
-
-
-**Error Handling:**
-
-- **`ValueError`**: Distance exceeds underground max distance
-  - Resolution: Use shorter segments or upgrade belt tier
-
-
-#### `placement_hints.evaluate_pole_placement`
-
-```python
-evaluate_pole_placement(position: MapPosition, pole_name: str, source_pole: Optional[BaseEntity] = ..., reachable_view: Optional[Any] = ...) -> PolePlacementResult
-```
-
-Dry-run evaluation of a pole placement position (no actual placement).
-
-**Decision Points:**
-- No side effects - purely evaluates position
-- Useful for comparing multiple candidate positions
-- Checks wire connectivity, power coverage, and placement validity
-
-**Examples:**
-
-*Evaluating pole positions before commitment:*
-
-```python
-# Evaluate a potential pole position
-result = placement_hints.evaluate_pole_placement(
-    position=MapPosition(x=10, y=10),
-    pole_name="medium-electric-pole",
-    source_pole=existing_pole,  # Optional: check wire connection
-    reachable_view=reachable_view  # Optional: check entity coverage
-)
-
-print(f"Valid placement: {result.is_valid_placement}")
-print(f"Entities powered: {result.entities_powered_count}")
-print(f"Connects to source: {result.connects_to_source}")
-print(f"Distance to source: {result.distance_to_source}")
-```
-
-→ Returns PolePlacementResult with detailed metrics
-
-
-
-#### `placement_hints.validator`
-
-```python
-validator: PlacementValidator
-```
-
-Access the PlacementValidator for direct validation operations.
-
-**Decision Points:**
-- Use validator directly for custom validation logic
-- Batch validation is more efficient than individual calls
-- ghost=True validates for ghost placement (different collision rules)
-
-**Examples:**
-
-*Single position validation:*
-
-```python
-# Validate a single position
-valid = placement_hints.validator.validate_placement(
-    entity_name="stone-furnace",
-    position=MapPosition(x=5, y=5),
-    direction=Direction.NORTH,
-    ghost=True
-)
-print(f"Can place furnace: {valid}")
-```
-
-→ Returns PlacementValidator instance
-
-*Efficient batch validation:*
-
-```python
-# Batch validate positions
-positions = [MapPosition(x=i, y=0) for i in range(10)]
-results = placement_hints.validator.validate_batch(
-    entity_name="transport-belt",
-    positions=positions,
-    directions=[Direction.EAST] * 10,
-    ghost=True
-)
-
-valid_count = sum(results)
-print(f"{valid_count}/{len(results)} positions valid")
-```
-
-→ Returns list of booleans
-
-
-
-
-### GhostBuilderAction
-
-**Accessor:** `ghost_builder`
-
-Orchestrates ghost placement and building. Converts GhostPlan objects into placed ghosts, then builds them into real entities.
-
-**When to use:** Use ghost_builder to commit validated GhostPlan objects from placement_hints. Also use for building existing ghost entities on the map.
-
-**Notes:**
-- Works with both GhostPlan objects and ghost entities from queries
-- Handles walking to positions automatically
-- Use strict=True to validate inventory before building
-
-#### `ghost_builder.build_ghosts`
-
-```python
-async build_ghosts(ghosts: List[BaseEntity], count: int = ..., strict: bool = ...) -> Dict[str, Any]
-```
-
-Build ghost entities in bulk by walking to each and placing real entities.
-
-**Decision Points:**
-- Use count to limit how many ghosts to build in one call
-- Use strict=True to fail fast if inventory is insufficient
-- Works with ghosts from reachable_view, remote_view, or any source
-
-**Examples:**
-
-*Building existing ghost entities:*
-
-```python
-# Get ghosts and build them
-ghosts = reachable_view.get_ghosts()
-result = await ghost_builder.build_ghosts(ghosts, count=10)
-
-print(f"Built: {result['built_count']}")
-print(f"Failed: {result['failed_count']}")
-```
-
-→ Returns dict with built_count, failed_count, built_ghosts, failed_ghosts
-
-*Building ghosts with inventory validation:*
-
-```python
-# Build with strict inventory validation
-ghosts = remote_view.get_ghosts("SELECT * FROM ghost WHERE ghost_name = 'transport-belt'")
-result = await ghost_builder.build_ghosts(ghosts, strict=True)
-
-if "error" in result:
-    print(f"Insufficient items: {result['error']}")
-else:
-    print(f"Built {result['built_count']} belts")
-```
-
-→ Returns error if items missing, otherwise builds
-
-
-
-#### `ghost_builder.build_ghost`
-
-```python
-async build_ghost(ghost: BaseEntity) -> bool
-```
-
-Build a single ghost entity. Convenience wrapper for build_ghosts.
-
-**Decision Points:**
-- Use for single ghost when you only need one
-- Use build_ghosts() for multiple ghosts (more efficient)
-
-**Examples:**
-
-*Building a single specific ghost:*
-
-```python
-# Build a single ghost
-ghost = reachable_view.get_ghosts("stone-furnace")[0]
-success = await ghost_builder.build_ghost(ghost)
-if success:
-    print("Furnace ghost built!")
-```
-
-→ Returns True if successfully built, False otherwise
-
-
-
-#### `ghost_builder.build_plan`
-
-```python
-async build_plan(plan: GhostPlan, strict: bool = ...) -> Dict[str, Any]
-```
-
-Build a GhostPlan by placing ghosts at all positions.
-
-**Decision Points:**
-- Always check plan.valid before calling build_plan
-- Use strict=True for early failure on inventory issues
-- This is the main way to commit placement_hints results
-
-**Examples:**
-
-*Committing a GhostPlan from placement_hints:*
-
-```python
-# Commit a validated placement plan
-plan = placement_hints.get_placement_line(
-    "transport-belt",
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=10, y=0)
-)
-
-if plan.valid:
-    result = await ghost_builder.build_plan(plan)
-    print(f"Placed {result.get('placed_count', 0)} ghosts")
-```
-
-→ Places ghosts at all plan positions
-
-*Building plan with inventory check:*
-
-```python
-# Build plan with strict validation
-plan = placement_hints.get_pole_line(
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=50, y=0),
-    pole_name="medium-electric-pole"
-)
-
-result = await ghost_builder.build_plan(plan, strict=True)
-if "error" in result:
-    print(f"Cannot build: {result['error']}")
-```
-
-→ Validates inventory before placing
-
-
-**Error Handling:**
-
-- **`KeyError`**: GhostPlan is invalid (validation failed)
-  - Resolution: Re-validate the plan or use a fresh plan from placement_hints
 
 
 
@@ -3044,11 +2040,7 @@ if drill.direction == Direction.SOUTH:
 
 ```python
 # Direction in placement hints
-positions = placement_hints.get_inserter_placement_positions(
-    source_entity=chest,
-    target_entity=furnace,
-    inserter_name="inserter"
-)
+positions = entity_reference("inserter").placements_between(chest, furnace).value["positions"]
 for pos, direction in positions:
     print(f"Place at {pos} facing {direction.name}")
 ```
@@ -3058,7 +2050,7 @@ for pos, direction in positions:
 
 ### ConnectionType
 
-Connection types for solving entity placement puzzles. Each type represents a different way entities can connect (item drop, fluid, wire). CRITICAL: ITEM_DROP is for mining drills (push directly to adjacent entities); you cannot use inserters with drills as source. Inserters are NOT a connection type - use get_inserter_placement_positions(source, target) instead.
+Connection types for solving entity placement puzzles. Each type represents a different way entities can connect (item drop, fluid, wire). CRITICAL: ITEM_DROP is for mining drills (push directly to adjacent entities); you cannot use inserters with drills as source. Inserters are NOT a connection type - use entity_reference('inserter').placements_between(source, target) instead.
 
 **Values:**
 - `ITEM_DROP` = item_drop
@@ -3074,63 +2066,18 @@ Connection types for solving entity placement puzzles. Each type represents a di
 ConnectionType.ITEM_DROP    # Mining drill -> Chest/Belt (drills push directly, no inserters)
 ConnectionType.FLUID_PIPE   # Pipe -> Machine/Pipe
 ConnectionType.ELECTRIC_WIRE   # Pole -> Pole
-# For inserters: placement_hints.get_inserter_placement_positions(source, target)
+# For inserters: entity_reference("inserter").placements_between(source, target)
 
-# Use with get_connection_positions
-positions = placement_hints.get_connection_positions(
-    source_entity=drill,
-    target_entity_name="iron-chest",
-    connection_type=ConnectionType.ITEM_DROP
-)
+# Usually inferred from the pair; pass it only to force a kind
+cues = drill.connection_positions("iron-chest", connection_type=ConnectionType.ITEM_DROP)
 ```
 
 → ConnectionType enum member
 
 
-### GhostPlan
-
-A validated placement plan ready for commitment via ghost_builder. Contains entity positions, directions, and validation status.
-
-**Fields:**
-- `entity_name`: Name of entity to place
-- `positions`: List of (MapPosition, Optional[Direction]) tuples
-- `label`: Unique identifier for the plan
-- `description`: Human-readable description
-- `valid`: True if all positions are validated
-
-**Examples:**
-
-*Working with placement plans:*
-
-```python
-# GhostPlan from placement_hints
-plan = placement_hints.get_placement_line(
-    entity_name="transport-belt",
-    start=MapPosition(x=0, y=0),
-    end=MapPosition(x=10, y=0)
-)
-
-# Check validity
-if plan.valid:
-    print(f"Plan '{plan.label}' is ready")
-    print(f"Entity: {plan.entity_name}")
-    print(f"Positions: {len(plan.positions)}")
-
-    # Build the plan to create ghosts
-    result = await ghost_builder.build_plan(plan)
-else:
-    print("Plan has invalid positions")
-
-# Re-validate after game state changes
-plan.validate(placement_hints.validator)
-```
-
-→ GhostPlan ready for ghost_builder.build_plan()
-
-
 ### ConnectionPosition
 
-A valid position for placing a target entity to connect to a source. Returned by get_connection_positions().
+A valid position for placing a target entity to connect to a source. Returned by entity.connection_positions(target_name) and entity_reference(target_name).connection_positions(source).
 
 **Fields:**
 - `position`: MapPosition where target can be placed
@@ -3143,12 +2090,8 @@ A valid position for placing a target entity to connect to a source. Returned by
 *Understanding connection results:*
 
 ```python
-# ConnectionPosition from get_connection_positions
-positions = placement_hints.get_connection_positions(
-    source_entity=drill,
-    target_entity_name="iron-chest",
-    connection_type=ConnectionType.ITEM_DROP
-)
+# ConnectionPosition from a placed drill: where would a chest receive its ore?
+positions = drill.connection_positions("iron-chest")
 
 # Positions are sorted by perpendicular_offset (best alignment first)
 if positions:
@@ -3165,4 +2108,4 @@ if positions:
 
 ---
 
-*Generated from registry on 2026-08-29 11:36:40*
+*Generated from registry on 2026-08-29 12:02:05*

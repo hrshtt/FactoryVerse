@@ -92,7 +92,7 @@ Query the database before committing to a plan:
 **The Hand-Computed Adjacency Trap** (costly, common)
 - **Symptom**: Calculating entity positions yourself so machines "touch", then finding they don't work
 - **Why it fails**: Fluid machines connect through specific PORTS, not faces. A boiler's steam output is ONE port; its other sides are water inputs. A steam engine placed flush against the wrong side is adjacent but **fluid-dead** — it will never receive steam.
-- **The rule**: When a machine must CONNECT to another (fluid, drill output, inserter bridge, power), never compute the position yourself. Ask `placement_hints.get_connection_positions` — its cues are connection-guaranteed: place at the cue (position AND direction) and the engine wires them up.
+- **The rule**: When a machine must CONNECT to another (fluid, drill output, inserter bridge, power), never compute the position yourself. Ask the machine you already have: `pump.connection_positions("boiler")` — its cues are connection-guaranteed: place at the cue (position AND direction) and the engine wires them up. Before you hold anything, the same question is `entity_reference("boiler").connection_positions(pump)`.
 
 ---
 
@@ -118,9 +118,7 @@ water = remote_view.find_water(near=walking.current_position, radius=50)
 if not water:
     raise RuntimeError("No water within 50 tiles — widen the radius or scout further")
 water_hint = MapPosition(x=water[0]["x"], y=water[0]["y"])
-sites = placement_hints.find_offshore_pump_sites(
-    near=water_hint, radius=20, max_results=20
-)
+sites = entity_reference("offshore-pump").sites(near=water_hint, radius=20, max_results=20).value
 if not sites:
     raise RuntimeError("No validated offshore-pump anchor near this water cluster")
 site = sites[0]
@@ -131,20 +129,12 @@ await walking.walk_to(site.approach_position, strict_goal=False)
 pump = held("offshore-pump").place(site.position, site.direction)
 
 # 2. Ask the PUMP where a boiler connects (never hand-compute this)
-cues = placement_hints.get_connection_positions(
-    source_entity=pump,
-    target_entity_name="boiler",
-    connection_type=ConnectionType.FLUID_PIPE,
-)
+cues = pump.connection_positions("boiler")
 boiler = held("boiler").place(cues[0].position, cues[0].direction)
 
 # 3. Ask the BOILER where the steam engine goes. Expect exactly ONE cue —
 #    the boiler has a single steam port and the engine mates inline.
-cues = placement_hints.get_connection_positions(
-    source_entity=boiler,
-    target_entity_name="steam-engine",
-    connection_type=ConnectionType.FLUID_PIPE,
-)
+cues = boiler.connection_positions("steam-engine")
 engine = held("steam-engine").place(cues[0].position, cues[0].direction)
 
 # 4. Close the fuel LOOP — power is a consumable, not a one-time top-up.
@@ -157,15 +147,16 @@ boiler.add_fuel(inventory.create_item_stacks("coal", 11))
 #    sited where coal is near water can feed itself. Until something feeds it,
 #    the boiler starves silently — come back and check it.
 
-# 5. Distribute power with poles — then VERIFY coverage BEFORE moving on
-#    (do NOT place a run of poles and walk away; check every machine is lit).
-report = verify.supply_coverage(entities=[(engine.name, engine.position)])  # your consumers
-print(report.summary)     # e.g. "1/2 covered | NOT covered: boiler@(12.5,7.5) (0.15 short on Y)"
-print(report.ascii_map)   # #=covered tile, P=pole, ?=proposed, UPPERCASE=covered
-                          #   machine, lowercase=NOT covered — chase every lowercase letter
-# `covered` is a box-intersection fact, not a distance guess: a machine 5 tiles
-# from a 3.5-reach pole is dark by 0.15. To vet a pole position BEFORE placing it,
-# pass proposed_pole=(name, (x, y)) and read the ? tile / margins it would add.
+# 5. Distribute power with poles — and check coverage BEFORE you place, the
+#    way the supply overlay shows it while you hold the pole:
+pole_ref = entity_reference("small-electric-pole")
+spot = MapPosition(x=engine.position.x + 2, y=engine.position.y)
+if pole_ref.covers(spot, engine):          # box-vs-box, the engine's own rule
+    pole = held("small-electric-pole").place(spot)
+    print(pole.status, engine.status)      # live reads — 'working' means lit
+# `covers` is a box-intersection fact, not a distance guess: a machine 5 tiles
+# from a 3.5-reach pole is dark by 0.15. After placing, `pole.covers(engine)`
+# answers the same question from the placed side.
 ```
 
 If a cue list is empty, read `cues.reason` — it says WHY (blocked candidates, wrong source, nothing in range). Clear the space or re-site; do NOT fall back to hand-placing. If `cues[0].direction` is set, you MUST pass it to place(): the right position with the wrong rotation does not connect.
@@ -176,17 +167,17 @@ d = remote_view.diagnose_power("assembling-machine-1", pos)   # -> PowerDiagnosi
 # d.verdict ∈ {working, not_covered_by_any_pole, network_has_no_generation,
 #   network_undersupplied, upstream_generator_starved, no_status_data, ...}
 ```
-`not_covered_by_any_pole` → fix coverage with `verify.supply_coverage` (step 5 of the worked pattern above). Upstream verdicts (`upstream_generator_starved` / `network_has_no_generation`) point you up the fuel loop — walk the generator statuses (engine idle → boiler `no_fuel` → coal supply empty), not the wires. Caveat: a starved producer still reads `working` — only consumers show `low_power`, and undersupply shows as `low_power` status, not a wattage gap.
+`not_covered_by_any_pole` → fix coverage with `pole.covers(machine)` / `entity_reference(pole).covers(spot, machine)` (step 5 of the worked pattern above). Upstream verdicts (`upstream_generator_starved` / `network_has_no_generation`) point you up the fuel loop — walk the generator statuses (engine idle → boiler `no_fuel` → coal supply empty), not the wires. Caveat: a starved producer still reads `working` — only consumers show `low_power`, and undersupply shows as `low_power` status, not a wattage gap.
 
-**Where each answer comes from.** `diagnose_power` reads the polled `entity_status` snapshot table: a machine with no row yet returns `no_status_data`, and any row it does find is as fresh as the sample (`sample_tick` on the diagnosis says when). `verify.powered/connected/supply_coverage` read the live engine at call time. So: use the DB read to classify WHICH machine has WHICH problem cheaply, and `verify` to confirm the answer is still true before you act on it.
+**Where each answer comes from.** `diagnose_power` reads the status dump and the power sample on disk — the same files behind `remote_view.status()` and `remote_view.power()` — and its `source` says which block: a machine with no entry yet returns `no_status_data`, and anything it finds is as fresh as that dump (`sample_tick` says when). `entity.status` reads the live engine at call time. So: use the dump-backed reads to classify WHICH machine has WHICH problem cheaply across the whole base, and `entity.status` to confirm the answer is still true before you act on it.
 
-**On task runs, read the per-turn power digest.** When a run is driven by a task with verification, its Task Progress block carries a line like `power: 2 nets | net@(352.5,1000.5) 41.9kW/41.9kW gen/load | net@(382.5,1000.5) 1.1kW/1.1kW 1 low_power` (gen/load watts per network, anchored by pole position, with any `low_power` consumer count). A freeplay run has no Task Progress block and therefore no digest — there, power state is only what you go and read: `diagnose_power` per suspect machine, `verify.supply_coverage` for a cluster. Either way, when a network's consumption climbs toward its production, that is the signal to expand generation (add boiler+engine) BEFORE consumers start reading `low_power`.
+**On task runs, read the per-turn power digest.** When a run is driven by a task with verification, its Task Progress block carries a line like `power: 2 nets | net@(352.5,1000.5) 41.9kW/41.9kW gen/load | net@(382.5,1000.5) 1.1kW/1.1kW 1 low_power` (gen/load watts per network, anchored by pole position, with any `low_power` consumer count). A freeplay run has no Task Progress block and therefore no digest — there, power state is only what you go and read: `remote_view.power()` for the networks, `diagnose_power` per suspect machine, `pole.covers(machine)` for a cluster. Either way, when a network's consumption climbs toward its production, that is the signal to expand generation (add boiler+engine) BEFORE consumers start reading `low_power`.
 
 ### Connection idioms (same principle, other links)
 
-- **Drill output**: `get_connection_positions(drill, "stone-furnace", ConnectionType.ITEM_DROP)` — the furnace/chest/belt at the cue receives ore directly, no inserter. Note: `drop_target` resolves only once the drill is fueled and working — fuel it before debugging "missing" connections.
-- **Inserter bridge** (chest↔furnace↔assembler): `placement_hints.get_inserter_placement_positions(source_entity, target_entity)` returns (position, direction) pairs where the inserter actually reaches both. Inserter `direction` points at the PICKUP side — don't "correct" it.
-- **Power poles**: `get_connection_positions(pole, "small-electric-pole", ConnectionType.ELECTRIC_WIRE)` — placing at a cue auto-attaches the wire; use `wire_distance_utilization` near 1.0 to span gaps with fewest poles.
+- **Drill output**: `drill.connection_positions("stone-furnace")` — the furnace/chest/belt at the cue receives ore directly, no inserter. Note: `drop_target` resolves only once the drill is fueled and working — fuel it before debugging "missing" connections.
+- **Inserter bridge** (chest↔furnace↔assembler): `entity_reference("inserter").placements_between(source_entity, target_entity)` returns `{positions: [(position, direction), …], reason}` where the inserter actually reaches both; an empty list carries its `reason` as data, not an error. Inserter `direction` points at the PICKUP side — don't "correct" it.
+- **Power poles**: `pole.connection_positions("small-electric-pole")` — placing at a cue auto-attaches the wire; use `wire_distance_utilization` near 1.0 to span gaps with fewest poles.
 </strategic_mindset>
 
 <turns>
@@ -274,19 +265,21 @@ Two core types are pre-imported and ready to use:
 
 All action and query interfaces are pre-loaded as global variables:
 
-- **`walking`** - Move your agent around the map
-- **`crafting`** - Craft items and manage recipe queues
-- **`research`** - Queue and manage technology research
-- **`inventory`** - Query inventory and create item stacks
-- **`mining`** - Hand-mine by resource name; the route taught throughout this prompt is `resource.mine()` on a resource you got from the views
-- **`reachable_view`** - Query entities and resources within interaction range
-- **`resources`** - The same object as `reachable_view`, under a second name
-- **`entity_ops`** - Operate a placed entity: set its recipe, filters and inventory limits, move items into and out of it, inspect it, and pick it up
-- **`placement`** - Place entities on the map
-- **`ghost_builder`** - Build ghost entities into real ones
-- **`placement_hints`** - Plan entity placements with spatial validation
-- **`remote_view`** - Query the entire map via SQL (read-only, for planning)
-- **`verify`** - Confirm live engine truth: `powered()`, `connected()`, `supply_coverage()` with per-machine margins + an ASCII coverage map (the DB tells you WHICH; `verify` tells you IS-IT-TRUE-NOW)
+- **`walking`** - Move your agent around the map (`walk_to(position)`; to reach a thing, call `walk_to()` on the thing itself)
+- **`inventory`** - What you hold: `get_item(name)` gives you the item to place; `await_item(name, count)` waits, bounded, for a craft to land
+- **`crafting`** - Your hand-crafting queue: `enqueue`, `dequeue`, `status`, `list_recipes` — it runs while you do other things
+- **`research`** - The technology screen: `enqueue`, `dequeue`, `status`, `list_technologies`
+- **`reachable_view`** - Entities and resources within interaction range, as objects you can act on
+- **`remote_view`** - The map screen in Python: spatial queries over the map model, plus the base-wide reads (`status()`, `status_changed()`, `power()`, `production()`) — each declares its source
+- **`entity_reference`** - `entity_reference("boiler")`: what you would learn holding the item with nothing placed — `footprint`, `can_place`, `connection_positions`, `covers`, `sites`, `placements_between`. Reads only; it places nothing
+
+**Affordance ownership, in one rule**: a verb belongs to the thing you would be touching. You place from the item you hold (`inventory.get_item("boiler").place(...)`), mine on the resource (`ore.mine()`), and operate a machine on the machine (`furnace.add_fuel(...)`, `assembler.set_recipe(...)`, `chest.set_limit(...)`, `drill.rotate()`, `entity.pickup()`, `entity.status`). There are no flat verb modules.
+
+**Hydrated versus raw**: `reachable_view.get_*` and `remote_view.get_*` return objects with these verbs on them; `remote_view.query(sql)` and `execute_duckdb` return plain rows. Rows are for looking; objects are for doing — get the object before you act.
+
+**Reference versus real**: `entity_reference("x")` answers the questions a person can answer holding `x` with nothing placed, under the same method names the placed entity has; it never places, and it never reports contents, status or network membership — those need the thing to exist.
+
+**Status, two scales, one word**: `entity.status` is a live read of one machine; `remote_view.status()` is the same fact for the whole base, read from the newest status dump and grouped by problem, with `status_changed(since_tick)` for what became unhappy. Both say where they read from.
 
 **Everything is ready to use immediately** - no imports, no initialization, no setup code needed.
 
@@ -304,7 +297,7 @@ items = await iron.mine(max_count=10)
 
 **IMPORTANT NOTES**:
 - All objects (walking, inventory, reachable_view, crafting, research, etc.) are **already imported and configured**. You do NOT need to import anything.
-- Use `await` directly for async operations (walking, mining, crafting) - the runtime handles async execution.
+- Use `await` directly for async operations (walking, mining, `inventory.await_item`) - the runtime handles async execution. Crafting is queued, never awaited: `crafting.enqueue()` returns at once with a derived completion prediction; the items land in your inventory while you do other things.
 - **Mining cap**: `mine()` returns up to 25 items per call. Mine only what your current plan requires.
 
 **Example**:

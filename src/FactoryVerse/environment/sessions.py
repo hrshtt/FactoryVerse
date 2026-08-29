@@ -13,7 +13,7 @@ Usage:
     >>>
     >>> # Access components
     >>> env.tier3.rcon.send_command('/c print("hello")')
-    >>> await env.tier4.placement_hints.get_placement_line(...)
+    >>> env.tier4.entity_reference("transport-belt").can_place(...)
     >>>
     >>> # Destroy when done
     >>> await destroy_session("dev_1")
@@ -230,9 +230,7 @@ def get_session_components(session_id: str) -> Dict[str, Any]:
         components["database"] = env.tier4.database
         components["remote_view"] = env.tier4.remote_view
         components["reachable_view"] = env.tier4.reachable_view
-        components["placement_hints"] = env.tier4.placement_hints
-        components["ghost_builder"] = env.tier4.ghost_builder
-        components["events"] = env.tier4.events  # EventStream for temporal perception
+        components["entity_reference"] = env.tier4.entity_reference
 
         # Embodied actions (if available) - stored as dict in tier4
         ea = env.tier4.embodied_actions
@@ -242,10 +240,6 @@ def get_session_components(session_id: str) -> Dict[str, Any]:
             components["crafting"] = ea.get("crafting")
             components["research"] = ea.get("research")
             components["inventory"] = ea.get("inventory")
-            components["placement"] = ea.get("placement")
-            components["entity_ops"] = ea.get("entity_ops")
-            components["resources"] = ea.get("mining")  # mining is resources
-            components["mining"] = ea.get("mining")
 
         # Runtime for backward compat
         components["runtime"] = ea

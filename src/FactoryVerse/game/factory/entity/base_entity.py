@@ -90,6 +90,26 @@ class EntityPosition(MapPosition):
         return EntityPosition(x=new_x, y=new_y)
 
 
+class LiveStatus(str):
+    """An entity's symbolic status name, read live, with its source.
+
+    Compares equal to the plain name (``entity.status == "no_fuel"``) and
+    carries ``source`` (``"live:<tick>"``) and ``value`` (the engine integer).
+    """
+
+    source: str
+    value: Optional[int]
+
+    def __new__(cls, name: str, value: Optional[int], source: str):
+        obj = str.__new__(cls, name)
+        obj.value = value
+        obj.source = source
+        return obj
+
+    def __repr__(self) -> str:
+        return f"{str.__repr__(self)}  # source={self.source}"
+
+
 class BaseEntity:
     """Base class for all entity implementations.
 
@@ -198,7 +218,7 @@ class BaseEntity:
             WalkingUnreachableError: If entity cannot be reached
             WalkingEntityNotFoundError: If entity no longer exists
         """
-        final_position = await self._walking_action.walk_to_entity(
+        final_position = await self._walking_action._walk_to_entity(
             entity_name=self.name,
             entity_position=self.position,
             timeout=timeout,
@@ -458,6 +478,63 @@ class BaseEntity:
     def view(self) -> EntityView:
         """Whether this entity handle is REMOTE or REACHABLE."""
         return self._view
+
+    @property
+    def status(self) -> "LiveStatus":
+        """The entity's status name, read live — one roundtrip (Constitution §11).
+
+        What you see hovering the machine: ``"working"``, ``"no_fuel"``,
+        ``"no_power"``, ``"full_output"`` … as ``defines.entity_status`` names
+        it. Never cached; ``status.source`` says which tick it was read at.
+        Ghosts have no status.
+        """
+        if self._is_ghost:
+            return LiveStatus("ghost", None, "static")
+        raw = self._entity_ops.inspect_entity(self.name, self.position)
+        value = raw.get("status")
+        tick = raw.get("tick")
+        source = f"live:{tick}" if tick is not None else "live"
+        if value is None:
+            return LiveStatus("unknown", None, source)
+        if isinstance(value, str):
+            return LiveStatus(value.lower(), None, source)
+        try:
+            return LiveStatus(EntityStatus(int(value)).name.lower(), int(value), source)
+        except (ValueError, TypeError):
+            return LiveStatus(f"unmapped_{value}", value, source)
+
+    def can_place(
+        self, position: MapPosition, direction: Optional[Direction] = None
+    ) -> bool:
+        """Could an entity of this type be placed at ``position`` right now?
+
+        The engine's red/green preview (``can_place_entity``, manual build
+        check), read live. The same question the entity reference answers
+        before anything is held; here it is asked from a placed twin.
+        """
+        from FactoryVerse.game.agent.placement_hints import PlacementHintsClient
+
+        return bool(
+            PlacementHintsClient(self._entity_ops._rcon).validate_placement(
+                self.name, position, direction, ghost=False
+            )
+        )
+
+    def connection_positions(self, target_name: str, connection_type=None):
+        """Where a ``target_name`` would sit so that it connects to this
+        placed entity — the cue a person sees holding that item next to this
+        machine. Source: live engine values (drop_position, fluidbox,
+        wire_connector). Mirrors ``entity_reference(target_name)
+        .connection_positions(self)`` under the same name (Constitution §6).
+        """
+        from FactoryVerse.game.agent.placement_hints import (
+            PlacementHintsClient,
+            connection_positions,
+            infer_connection_type,
+        )
+
+        ct = connection_type or infer_connection_type(self.name, target_name)
+        return connection_positions(PlacementHintsClient(self._entity_ops._rcon), self, target_name, ct)
 
     def __getattribute__(self, name: str):
         """Filter method access based on view and ghost status."""

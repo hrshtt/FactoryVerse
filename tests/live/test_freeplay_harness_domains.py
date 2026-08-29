@@ -51,10 +51,8 @@ def open_chest_positions(count, min_distance=2, max_distance=6, ghost=False):
             distance = math.hypot(dx, dy)
             if min_distance <= distance <= max_distance:
                 candidates.append(MapPosition(base_x + dx + 0.5, base_y + dy + 0.5))
-    validity = placement_hints.validator.validate_batch(
-        "wooden-chest", candidates, [Direction.NORTH] * len(candidates), ghost=ghost
-    )
-    result = [position for position, valid in zip(candidates, validity) if valid]
+    ref = entity_reference("wooden-chest")
+    result = [position for position in candidates if ref.can_place(position, Direction.NORTH)]
     if len(result) < count:
         raise AssertionError(f"needed {count} open chest positions, found {len(result)}")
     return result[:count]
@@ -266,8 +264,10 @@ async def test_production_statistics_match_file_and_database_routes(live_harness
         host,
         """
 import json
-stacks = await crafting.craft("iron-gear-wheel", count=2, timeout=30)
-print(json.dumps({"crafted": {stack.name: stack.count for stack in stacks}}, sort_keys=True))
+before = inventory.check_total("iron-gear-wheel")
+crafting.enqueue("iron-gear-wheel", count=2)
+got = await inventory.await_item("iron-gear-wheel", count=before + 2, timeout_ticks=1800)
+print(json.dumps({"crafted": {"iron-gear-wheel": got.have - before}}, sort_keys=True))
 """,
         "production-craft",
     )
@@ -472,6 +472,7 @@ print(json.dumps({
     assert converted["real_rows"][0]["label"] == "pytest:far-storage-intent"
 
 
+@pytest.mark.skip(reason="ghost_builder surface deleted 2026-08-29 (API §2.4, GHOST §4); Phase 4 removes the module and rewrites this as the composed idiom")
 async def test_build_plan_commit_boundaries_and_non_strict_partial_state(live_harness):
     supervisor, host = live_harness
     tier3 = supervisor.environment.tier3
@@ -617,6 +618,7 @@ print(json.dumps({
     assert real_position != ghost_position
 
 
+@pytest.mark.skip(reason="ghost_builder surface deleted 2026-08-29 (API §2.4, GHOST §4); Phase 4 removes the module and rewrites this as the composed idiom")
 async def test_planning_is_pure_and_persisted_python_skill_commits_later(live_harness):
     """Python may preserve intent; only the later embodied commit mutates."""
     supervisor, host = live_harness

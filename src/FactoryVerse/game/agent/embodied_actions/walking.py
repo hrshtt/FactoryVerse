@@ -4,7 +4,7 @@ Handles all walking-related operations: walk to position, walk to entity, stop w
 
 Walking Modes:
 - Position-only: walk_to(goal) - walks to a map position
-- Entity-aware: walk_to_entity(name, position) - walks to entity with fallback logic
+- Entity-aware: _walk_to_entity(name, position) - internal; reached as entity.walk_to() / resource.walk_to()
 """
 
 from dataclasses import dataclass, field
@@ -199,7 +199,7 @@ class MovementAction:
 
     Owns all walking logic:
     - walk_to(): Walk to a target position
-    - walk_to_entity(): Walk to an entity with fallback logic (internal)
+    - _walk_to_entity(): Walk to an entity with fallback logic (internal; the objects delegate here)
     - stop(): Stop current walking action
 
     All methods return structured dataclass response types for type safety.
@@ -247,13 +247,18 @@ class MovementAction:
             timeout=timeout,
         )
 
-    async def walk_to_entity(
+    async def _walk_to_entity(
         self,
         entity_name: str,
         entity_position: MapPosition,
         timeout: Optional[int] = None,
     ) -> MapPosition:
-        """Walk to an entity with fallback logic.
+        """Walk to an entity with fallback logic — INTERNAL.
+
+        The agent-visible route is ``entity.walk_to()`` / ``resource.walk_to()``
+        (API_AFFORDANCE_REDESIGN §2.1): the object promotes its view on arrival,
+        which this flat form cannot do because it holds no object. Deleted from
+        the namespace 2026-08-29; kept as the mechanism the objects delegate to.
 
         Uses entity-aware walking: computes candidate approach tiles around
         the entity and tries each until path succeeds or all exhausted.

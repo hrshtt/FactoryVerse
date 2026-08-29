@@ -1,6 +1,6 @@
 # FactoryVerse Schema Reference
 
-> Auto-generated on 2026-08-29 11:36
+> Auto-generated on 2026-08-29 12:02
 
 This document describes the DuckDB database schema used for map-wide queries via `remote_view`.
 The database is read-only from the LLM's perspective - data is synchronized from the game automatically.
@@ -181,7 +181,7 @@ Core entity table containing all placed entities on the map
 | `bbox_min_y` | `DOUBLE` | Bounding box minimum Y |
 | `bbox_max_x` | `DOUBLE` | Bounding box maximum X |
 | `bbox_max_y` | `DOUBLE` | Bounding box maximum Y |
-| `electric_network_id` | `INTEGER` | Electric network this entity belonged to as of last entity write; fresh network membership lives in power_networks (engine network ids renumber on merge/split) |
+| `electric_network_id` | `INTEGER` | Electric network this entity belonged to as of last entity write; fresh network membership is a live read — remote_view.power() over the sampler file (engine network ids renumber on merge/split) |
 | `force` | `VARCHAR` | Force name owning this entity (player, cell_N) |
 | `agent_id` | `INTEGER` | ID of agent that placed this entity (if any) |
 | `player_id` | `INTEGER` | ID of player that placed this entity (if any) |
@@ -191,7 +191,7 @@ Core entity table containing all placed entities on the map
 | `tile_x` | `INTEGER` | X of the tile containing the entity centre (floor(position_x)); written on every upsert |
 | `tile_y` | `INTEGER` | Y of the tile containing the entity centre (floor(position_y)); written on every upsert |
 
-electric_network_id: as of last entity write; fresh network membership lives in power_networks (engine network ids renumber on merge/split).
+electric_network_id: as of last entity write; fresh network membership is a live read (remote_view.power(); engine network ids renumber on merge/split). Entity status and power flow are NOT tables — read them with remote_view.status() / remote_view.power().
 
 **Example:**
 ```sql
@@ -231,7 +231,9 @@ Ore deposits (iron-ore, copper-ore, coal, stone, uranium-ore)
 | `position_y` | `DOUBLE` | Y coordinate |
 | `chunk_x` | `INTEGER` | Chunk X coordinate |
 | `chunk_y` | `INTEGER` | Chunk Y coordinate |
-| `amount` | `INTEGER` | Remaining ore amount in this tile |
+| `amount` | `INTEGER` | Ore amount in this tile WHEN THE CHUNK WAS CHARTED. Mining decrements it in the engine without an event, so this value only goes stale; read a live count with reachable_view / resource.inspect() before relying on it |
+
+Load-only (Constitution §10): rows enter when a chunk is charted. `amount` is the charting-time value and is never updated in place — the engine raises no event per mined unit; only full depletion (on_resource_depleted) rewrites the chunk's resource file, and that rewrite is not consumed live. Use the table to find deposits, not to count what is left.
 
 **Example:**
 ```sql
@@ -289,7 +291,7 @@ Per-chunk snapshot freshness: the game tick at which each chunk's init files wer
 | `chunk_y` | `INTEGER` | Chunk Y coordinate |
 | `tick` | `BIGINT` | Game tick when the chunk's init files were written |
 
-Written by fv_snapshot as a kind=chunk_meta first line in every init JSONL. A max(tick) far behind the current game tick means the map snapshot is stale — treat query results as old data, not as the absence of things.
+Written by fv_snapshot as a kind=chunk_meta first line in every init JSONL, and advanced during a session whenever a chunk's init files are rewritten (chunk_init_complete). Entity rows update live regardless (event-backed); this tick is the last FULL rewrite of the chunk, so it bounds the age of load-only facts such as resource_tile.amount, not of map_entity.
 
 **Example:**
 ```sql
@@ -380,23 +382,6 @@ Assembling machine data
 
 Cumulative production statistics synchronized from the game. `statistics`, `crafted`, and `mined` are JSON objects stored as VARCHAR and can be inspected with DuckDB JSON functions.
 
-#### `agent_production_statistics`
-
-Per-agent surface-scoped force production statistics over time (machine flow)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `agent_id` | `INTEGER` | Agent ID |
-| `tick` | `INTEGER` | Game tick when statistics were recorded |
-| `statistics` | `VARCHAR` | JSON: {input: produced item counts entering the flow, output: consumed item counts leaving the flow} |
-
-Force input/output is the surface-scoped machine flow. Character crafting and mining are recorded separately in agent_manual_production_statistics; do not subtract them from input.
-
-**Example:**
-```sql
-SELECT agent_id, tick, json(statistics) FROM agent_production_statistics WHERE agent_id = 1 ORDER BY tick DESC LIMIT 10
-```
-
 #### `agent_manual_production_statistics`
 
 Per-agent manual production statistics (hand-crafted and hand-mined items only)
@@ -418,72 +403,19 @@ SELECT tick, json(crafted), json(mined) FROM agent_manual_production_statistics 
 -- machine_produced[item] = statistics.input[item]
 ```
 
-### State Tables
+### Not in the database: status, power, production
 
-Live power and entity-status feeds. Cadence: `power_samples`/`power_networks` are sampled every **300 ticks (~5s)**; `entity_status` is a **full snapshot every 60 ticks (~1s)**. The engine `network_id` is **EPHEMERAL** — it renumbers on network merge/split, exactly like `unit_number`; reference a network by its **anchor pole** and an entity by **name + position**, never by a raw id. `map_entity.electric_network_id` is **as-of-write** (the id at the last entity snapshot); fresh network membership lives in `power_networks`.
+Entity status, electric-network power flow and force production are **polled simulation state** — nothing raises an event when a machine runs short of ingredients or a network's load changes — so they are never stored here. A stored copy would be plausibly wrong at read time. Read them live through `remote_view`, and every answer names its source:
 
-#### `power_samples`
+- `remote_view.status()` — base-wide status summary grouped by status value (`source = status_dump:<tick>`, with `age_ticks`).
+- `remote_view.status_changed(since_tick)` — transitions since a tick.
+- `remote_view.power()` — per-network production/consumption/storage with low_power/no_power counts (`source = power_dump:<tick>`).
+- `remote_view.production()` — force production, live over RCON (`source = live:<tick>`), split against hand-crafted/mined.
+- `remote_view.diagnose_power(name, position)` — one-call triage.
 
-One row per ingested power-network sample window — heartbeat visibility for power_networks history (includes windows with zero live networks, so 'no rows at all' means the sampler never ran, not that there are no networks)
+The engine `network_id` is **EPHEMERAL** — it renumbers on network merge/split, exactly like `unit_number`; reference a network by its **anchor pole** and an entity by **name + position**, never by a raw id. `map_entity.electric_network_id` is **as-of-write** (the id at the last entity snapshot).
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `tick` | `INTEGER` | Game tick this sample window was taken (Power.lua nth_tick(300), MAINTENANCE phase only) |
-| `network_count` | `INTEGER` | Number of live electric networks observed in this window (0 is a valid heartbeat value, not a missing-data marker) |
-
-Written exclusively by analytics_ops.apply_power_sample, one row per ingested power_networks.jsonl line (including zero-network heartbeats). Distinguishes 'sampler running, zero networks right now' from 'sampler never ran' — the latter has no rows here at all.
-
-**Example:**
-```sql
-SELECT * FROM power_samples ORDER BY tick DESC LIMIT 10
-```
-
-#### `power_networks`
-
-History of per-electric-network power stats, sampled every 300 ticks (5s) during MAINTENANCE. Engine network_id is EPHEMERAL (renumbers on network split/merge) — anchor_pole is the durable reference for a given network across samples
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `tick` | `INTEGER` | Sample tick this row belongs to (see power_samples) |
-| `network_id` | `INTEGER` | Engine electric_network_id AT THIS SAMPLE ONLY — renumbers arbitrarily on network split/merge; do not treat as a durable network identity across ticks |
-| `anchor_pole_name` | `VARCHAR` | Entity name of this network's anchor pole (the pole with lexicographically smallest (x, y) in the network) — the durable per-network reference |
-| `anchor_pole_x` | `DOUBLE` | Anchor pole X position |
-| `anchor_pole_y` | `DOUBLE` | Anchor pole Y position |
-| `pole_count` | `INTEGER` | Number of poles in this network |
-| `member_count` | `INTEGER` | Number of tracked-force entities whose electric_network_id matched this network at sample time |
-| `production_w` | `DOUBLE` | Total production, watts (summed across producer prototypes) |
-| `consumption_w` | `DOUBLE` | Total consumption, watts (summed across consumer prototypes) |
-| `storage_j` | `DOUBLE` | Best-effort stored energy, joules (sum of accumulator `energy` among this network's members; 0.0 when none) |
-| `production_by_prototype` | `JSON` | JSON: {prototype_name: watts} production breakdown |
-| `consumption_by_prototype` | `JSON` | JSON: {prototype_name: watts} consumption breakdown |
-
-This is a HISTORY table (no primary key — every sample's rows are kept); 'current' state is the set of rows at max(tick). network_id is a per-sample handle only (ephemeral) — to track one physical network across samples, join on (anchor_pole_name, anchor_pole_x, anchor_pole_y) instead.
-
-**Example:**
-```sql
-SELECT * FROM power_networks WHERE tick = (SELECT max(tick) FROM power_samples)
-```
-
-#### `entity_status`
-
-Latest-wins snapshot of every tracked entity's Factorio status (e.g. no_power, working, low_power) from the most recently ingested full status dump
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `entity_name` | `VARCHAR` | Factorio internal entity name |
-| `position_x` | `DOUBLE` | X coordinate |
-| `position_y` | `DOUBLE` | Y coordinate |
-| `status_name` | `VARCHAR` | Symbolic status name (defines.entity_status reverse lookup, e.g. 'no_power', 'working', 'low_power') |
-| `tick` | `INTEGER` | Game tick of the status dump this row came from |
-
-FULL REPLACE semantics: every ingested dump is a complete statement of current statuses, so ingestion deletes all rows then inserts the dump's rows (analytics_ops.apply_status_dump). Entities with no status (e.g. poles) are naturally absent from every dump — absence here does not mean 'destroyed', see map_entity for that. Freshness marker: sync_state key 'entity_status_last_tick' records the tick of the last applied dump (observable even for an all-meta, zero-entity dump).
-
-**Example:**
-```sql
-SELECT * FROM entity_status WHERE status_name IN ('no_power', 'low_power')
-```
-
-> **Status caveats (live-learned):** poles carry no status (absent from every dump). A starved producer — including an electric-energy interface — still reads `working`; only consumers show `low_power`. Status is single-valued, so a logistics status (`full_output`, `item_ingredient_shortage`) can mask power distress. In the flow numbers a starved network reads `production_w ≈ consumption_w` (delivered energy), so undersupply is detected by the `low_power` status, NOT by a wattage gap.
+> **Status caveats (live-learned):** poles carry no status. A starved producer still reads `working`; only consumers show `low_power`. Status is single-valued, so a logistics status (`full_output`, `item_ingredient_shortage`) can mask power distress. A starved network reads `production_w ≈ consumption_w` (delivered energy), so undersupply is detected by the `low_power` status, not by a wattage gap.
 
 ---
 

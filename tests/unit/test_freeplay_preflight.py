@@ -36,9 +36,11 @@ class _RemoteView:
             ]
         if "FROM water_tile" in query and "LIMIT 1" in query:
             return [(12.0, 13.0)]
-        if "power_networks" in query:
-            return [(0,)]
         return [(1, 1, 0, 0)]
+
+    def power(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(networks=[], sample_tick=None, source="power_dump:none")
 
 
 class _Tier3:
@@ -121,7 +123,7 @@ def test_preflight_ignores_noncombat_enemy_force_entities():
         "usage": "search_hint_only",
         "walk_target": False,
         "validated_offshore_pump_anchor": False,
-        "required_next_call": "placement_hints.find_offshore_pump_sites",
+        "required_next_call": 'entity_reference("offshore-pump").sites(near=...)',
         "required_walk_target": "site.approach_position",
     }
 

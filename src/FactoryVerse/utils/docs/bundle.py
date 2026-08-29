@@ -90,19 +90,11 @@ def write_reference_bundle(
 
     routes = {
         "move, navigate, walk": "api/walking.md",
-        "mine, resource action": "api/mining.md",
-        "craft, recipe": "api/crafting.md",
-        "inventory, item stacks": "api/inventory.md",
-        "place, build entity": "api/placement.md",
-        "inspect, fuel, transfer, recipe operations": "api/entity_ops.md",
-        "nearby, reachable": "api/reachable_view.md",
-        "map, SQL, resource search, water tiles": "api/remote_view.md",
-        "validate live state": "api/verify.md",
-        "validated offshore-pump anchor and direction": (
-            "api/placement_hints/find-offshore-pump-sites.md"
-        ),
-        "spatial layout and connections": "api/placement_hints.md",
-        "commit a validated placement plan": "api/ghost_builder.md",
+        "craft, recipe, hand-crafting queue": "api/crafting.md",
+        "inventory, item stacks, await_item": "api/inventory.md",
+        "nearby, reachable, entities as objects": "api/reachable_view.md",
+        "map, SQL, resource search, water tiles, base-wide status/power/production": "api/remote_view.md",
+        "hold an item: footprint, can_place, connection cues, coverage, pump sites": "api/entity_reference.md",
         "research state and queue": "api/research.md",
     }
     index_lines = [
