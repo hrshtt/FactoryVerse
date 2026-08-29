@@ -5,7 +5,7 @@ harness's honesty budget: anything stated here that is not true of the live
 execution path is a lie the agent cannot check. Constitution §8 — what the
 arguments cannot promise, the surface must say.
 
-Tool NAMES are frozen (`execute_dsl`, `execute_duckdb`, `respond`): trajectory
+Tool NAMES are frozen (`execute_dsl`, `execute_duckdb`, `respond`, `end_turn`): trajectory
 comparability across runs depends on them.
 
 This module deliberately imports nothing from FactoryVerse. Every runtime that
@@ -19,6 +19,9 @@ __all__ = [
     "EXECUTE_DSL_DESCRIPTION",
     "EXECUTE_DUCKDB_DESCRIPTION",
     "RESPOND_DESCRIPTION",
+    "END_TURN_DESCRIPTION",
+    "PLANNING_DSL_DESCRIPTION",
+    "end_turn_description",
     "READ_ONLY_PREFIXES",
     "check_read_only",
     "leading_keyword",
@@ -55,6 +58,42 @@ RESPOND_DESCRIPTION = (
     "Send a text message to the user. Use this to answer or report; it does "
     "nothing in the game world."
 )
+
+# TURN_CONTRACT §3.3: says what it does and what sets the horizon — never the
+# coefficients. The horizon's inputs are things we want the agent to do; the
+# constants are an experimental condition (TurnConfig), not a game rule.
+END_TURN_DESCRIPTION = (
+    "End your turn. The world then advances until this turn's horizon is "
+    "complete, and your next turn opens with a report of everything that "
+    "changed while it ran — production, what appeared and disappeared, "
+    "machine status transitions, research, your crafting queue, your "
+    "inventory, and every event in order. The clock also runs while you "
+    "think and act inside a turn; end_turn only advances the remainder. The "
+    "horizon grows with research and with automated production (machines, "
+    "not hands). Current horizon: {horizon} ticks ({minutes}). Nothing you "
+    "started is still in flight when you call this; the world's own "
+    "processes keep running."
+)
+
+PLANNING_DSL_DESCRIPTION = (
+    "PLANNING TURN. Run Python over the map-scale reads only: remote_view "
+    "(the map surface), research (queue, status, catalog), inventory (read), "
+    "agent_id, and plan (plan.set(text), plan.set_goals([...]), plan.read()). "
+    "No body verbs exist in this turn — walking, crafting, placement and the "
+    "reachable view are not loaded and raise NameError. The namespace "
+    "persists into gameplay turns. This turn advances no world time: "
+    "end_turn returns immediately with a report."
+)
+
+
+def end_turn_description(horizon_ticks: Optional[int]) -> str:
+    """The end_turn description with the current horizon filled in."""
+    if horizon_ticks is None:
+        return END_TURN_DESCRIPTION.format(horizon="unknown", minutes="planning turn: 0")
+    minutes = horizon_ticks / 3600.0
+    return END_TURN_DESCRIPTION.format(
+        horizon=horizon_ticks, minutes=f"{minutes:.1f} game-minutes"
+    )
 
 
 # Statement keywords the tool description promises. Enforcement lives beside
@@ -176,20 +215,34 @@ def _function_tool(name: str, description: str, param: str, param_description: s
     }
 
 
-def get_tool_definitions(mode: str = "autonomous") -> List[Dict[str, Any]]:
+def get_tool_definitions(
+    mode: str = "autonomous",
+    *,
+    horizon_ticks: Optional[int] = None,
+    turn_mode: str = "gameplay",
+    include_end_turn: bool = True,
+) -> List[Dict[str, Any]]:
     """OpenAI-compatible tool definitions for the agent-facing tool surface.
 
     Args:
-        mode: 'autonomous' (execute_dsl + execute_duckdb) or 'assisted'
-            (adds `respond`).
+        mode: 'autonomous' (execute_dsl + execute_duckdb + end_turn) or
+            'assisted' (adds `respond`).
+        horizon_ticks: the current turn's horizon, shown in end_turn's
+            description (None in a planning turn, which advances nothing).
+        turn_mode: 'gameplay' (full namespace) or 'planning' (map-scale
+            reads, research, plan helper; no body verbs) — TURN_CONTRACT §6.
+        include_end_turn: False only for legacy single-shot callers.
 
     Returns:
         A fresh list of tool definitions (callers may mutate their copy).
     """
+    dsl_description = (
+        PLANNING_DSL_DESCRIPTION if turn_mode == "planning" else EXECUTE_DSL_DESCRIPTION
+    )
     tools = [
         _function_tool(
             "execute_dsl",
-            EXECUTE_DSL_DESCRIPTION,
+            dsl_description,
             "code",
             "Python source to run in the persistent namespace.",
         ),
@@ -200,6 +253,20 @@ def get_tool_definitions(mode: str = "autonomous") -> List[Dict[str, Any]]:
             "A single read-only SQL statement (DuckDB dialect).",
         ),
     ]
+
+    if include_end_turn:
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "end_turn",
+                    "description": end_turn_description(
+                        None if turn_mode == "planning" else horizon_ticks
+                    ),
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        )
 
     if mode == "assisted":
         tools.append(

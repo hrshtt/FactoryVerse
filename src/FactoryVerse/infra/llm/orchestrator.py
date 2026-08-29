@@ -16,6 +16,7 @@ from FactoryVerse.infra.llm.context.validator import ToolValidator
 from FactoryVerse.infra.llm.context.progress_dedupe import ProgressDeduper
 from FactoryVerse.infra.output.console import ConsoleOutput
 from FactoryVerse.infra.session.trajectory import TrajectoryWriter
+from FactoryVerse.game.agent import turn_report as _tr
 
 if TYPE_CHECKING:
     from FactoryVerse.game.tasks.base import TaskConfig, VerificationResult
@@ -45,8 +46,8 @@ class RuntimeProtocol(Protocol):
         """Return message as response."""
         ...
 
-    def get_tool_definitions(self, mode: str = "autonomous") -> list:
-        """Get tool definitions for LLM."""
+    def get_tool_definitions(self, mode: str = "autonomous", **kwargs: Any) -> list:
+        """Get tool definitions for LLM (kwargs: horizon_ticks, turn_mode)."""
         ...
 
     def execute_code(self, code: str, compress_output: bool = False) -> str:
@@ -80,6 +81,7 @@ class AgentOrchestrator:
         mode: str = "autonomous",
         task_config: Optional["TaskConfig"] = None,
         verification_callback: Optional[VerificationCallback] = None,
+        turn_config: Optional[Any] = None,
     ):
         """
         Initialize orchestrator.
@@ -120,6 +122,20 @@ class AgentOrchestrator:
         # repeats become one-line pointers.
         self._progress_deduper = ProgressDeduper(refresh_every=10)
 
+        # --- The turn contract (TURN_CONTRACT §3–§6) -----------------------
+        if turn_config is None:
+            from FactoryVerse.environment.config import TurnConfig
+
+            turn_config = TurnConfig()
+        self.turn_config = turn_config
+        # The first turn is a planning turn (§6): report as input, map-scale
+        # reads and research as namespace, end_turn advancing nothing.
+        self.turn_mode: str = "planning"
+        self._next_horizon: int = turn_config.t_min
+        self._pending_report_text: Optional[str] = None
+        self._last_report: Optional[_tr.TurnReport] = None
+        self._last_events: list = []
+
         # Load system prompt
         try:
             with open(system_prompt_path, "r") as f:
@@ -131,6 +147,10 @@ class AgentOrchestrator:
         self.messages: list[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
         ]
+        # The record stores the prompt once; every inference_input references it.
+        self._system_prompt_sha256: Optional[str] = None
+        if self.trajectory:
+            self._system_prompt_sha256 = self.trajectory.system_prompt(system_prompt)
 
         # Initialize chat log
         if self.chat_log_path:
@@ -251,198 +271,152 @@ class AgentOrchestrator:
 
     async def run_turn(self, user_message: str) -> str:
         """
-        Run one agent turn.
+        Run one turn under the turn contract (TURN_CONTRACT §3):
 
-        Args:
-            user_message: User's message
+        - the pending turn report (the observation) is the first thing in the
+          model's input; ``user_message`` follows it if non-empty;
+        - N tool calls of attention (``turn_config.attention_calls``); the
+          turn ends on ``end_turn``, a text reply, ``respond``, verification,
+          or the attention cap — every exit is named on the record;
+        - nothing is injected inside the turn: events are drained once at the
+          boundary, into the next report;
+        - ``end_turn`` fast-forwards ``max(0, T − ticks used)`` (zero in a
+          planning turn), then the report is assembled.
 
         Returns:
-            Agent's text response
-
-        Raises:
-            RuntimeError: If max_turns limit has been reached
+            Agent's text response (or the turn's closing line)
         """
-        # Check if we've reached max_turns
         if not self.has_turns_remaining():
             error_msg = f"Max turns limit reached ({self.max_turns} turns). Cannot execute more turns."
             logger.warning(error_msg)
             return error_msg
 
-        # Log user message
-        self._log_to_chat(f"**User:** {user_message}\n\n")
-        self.console.user_message(user_message)
-        if self.trajectory:
-            self.trajectory.user_message(user_message, turn=self.turn_number)
+        mode = self.turn_mode
+        if hasattr(self.runtime, "turn_mode"):
+            self.runtime.turn_mode = mode
+        plan_store = getattr(self.runtime, "plan_store", None)
+        if plan_store is not None and hasattr(plan_store, "bind_turn"):
+            plan_store.bind_turn(self.turn_number)
 
-        # Add user message
-        self.messages.append({"role": "user", "content": user_message})
+        # The report is the observation (§21): delivered as input, never fetched.
+        parts = []
+        if self._pending_report_text:
+            parts.append(self._pending_report_text)
+        elif self.turn_number == 0:
+            parts.append(self._opening_line())
+        if user_message:
+            parts.append(user_message)
+        message = "\n\n".join(parts)
+        self._pending_report_text = None
+
+        self._log_to_chat(f"**User:** {message}\n\n")
+        self.console.user_message(message)
+        if self.trajectory:
+            self.trajectory.user_message(message, turn=self.turn_number)
+        self.messages.append({"role": "user", "content": message})
+
+        horizon = 0 if mode == "planning" else self._next_horizon
+        # The turn starts at the previous turn's boundary tick (read while the
+        # engine was paused), so the ticks that ran between the unpause and
+        # this inference are this turn's thinking, not nobody's (§17).
+        turn_start_tick = getattr(self, "_next_turn_start_tick", None)
+        if turn_start_tick is None:
+            turn_start_tick = self._game_tick()
+        self._next_turn_start_tick = None
+        before = self._snapshot(turn_start_tick)
 
         tool_calls_executed = 0
+        execution_ticks = 0
         tool_results = []
+        ended_by: Optional[str] = None
+        response_text = ""
 
-        # Loop until agent responds with text (max 10 iterations)
-        for iteration in range(1, 11):
-            logger.info(
-                f"Turn {self.turn_number}: Calling LLM (iteration {iteration})..."
-            )
+        for iteration in range(1, self.turn_config.inference_sanity_cap + 1):
+            logger.info(f"Turn {self.turn_number}: Calling LLM (iteration {iteration})...")
             self.console.llm_thinking(iteration)
-
-            # Check and compress context if needed
             self._check_and_compress_context()
 
-            # Call LLM - using new abstraction that returns ChatCompletionResult
-            result = self.llm_client.chat_completion(
-                messages=self.messages,
-                tools=self.runtime.get_tool_definitions(mode=self.mode),
-            )
+            tools = self._tools_for(horizon if mode != "planning" else None, mode)
 
+            if self.trajectory:
+                self.trajectory.inference_input(
+                    turn=self.turn_number,
+                    iteration=iteration,
+                    messages=self.messages,
+                    tools=tools,
+                    game_tick=self._game_tick(),
+                    system_prompt_sha256=self._system_prompt_sha256,
+                )
+
+            result = self.llm_client.chat_completion(messages=self.messages, tools=tools)
             response: ChatMessage = result.message
+            response_dict = response.to_dict()
+            self.messages.append(response_dict)
+            if self.trajectory:
+                self.trajectory.inference_output(
+                    turn=self.turn_number,
+                    iteration=iteration,
+                    message=response_dict,
+                    finish_reason=getattr(result, "finish_reason", None),
+                    model=getattr(result, "model", None),
+                )
+            self._record_usage(result, response)
 
-            # Add response to messages (convert ChatMessage to dict)
-            self.messages.append(response.to_dict())
-
-            # Record token usage (with fallback)
-            usage_data = None
-            if result.usage:
-                usage_data = {
-                    "prompt_tokens": result.usage.prompt_tokens,
-                    "completion_tokens": result.usage.completion_tokens,
-                    "total_tokens": result.usage.total_tokens,
-                }
-                # OBS-2 observability: record cache hits when reported;
-                # absent key = gateway doesn't report, not "cache failed"
-                if result.usage.cached_prompt_tokens is not None:
-                    usage_data["cached_prompt_tokens"] = (
-                        result.usage.cached_prompt_tokens
-                    )
-            else:
-                try:
-                    usage_data = self._calculate_fallback_usage(
-                        self.messages[
-                            :-1
-                        ],  # Prompt messages (excluding just added response)
-                        response.content or "",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to calculate fallback token usage: {e}")
-
-            if usage_data:
-                # Write to trajectory file if available
-                if self.trajectory:
-                    self.trajectory.completion_stats(
-                        turn=self.turn_number, usage=usage_data
-                    )
-
-                # Update in-memory trajectory manager for live viewer
-                self.trajectory_manager.add_completion_stats(usage_data)
-
-            # If no tool calls, return text response
             if not response.has_tool_calls:
                 logger.info(f"Turn {self.turn_number}: Agent responded with text")
-
-                # Check if response has content
                 if not response.content or response.content.strip() == "":
-                    logger.warning(
-                        f"Turn {self.turn_number}: LLM returned empty content!"
-                    )
+                    logger.warning(f"Turn {self.turn_number}: LLM returned empty content!")
                     response_text = "I apologize, I don't have a response. Could you rephrase your request?"
                 else:
                     response_text = response.content
-
                 self._log_to_chat(f"**Agent:** {response_text}\n\n")
                 self._log_to_chat("---\n\n")
                 self.console.assistant_response(response_text, self.turn_number)
                 if self.trajectory:
-                    self.trajectory.assistant_response(
-                        response_text, turn=self.turn_number
-                    )
+                    self.trajectory.assistant_response(response_text, turn=self.turn_number)
+                ended_by = "text_response"
+                break
 
-                # Check for notifications after agent response (in case any arrived during LLM processing)
-                await self._add_notifications_to_messages()
-
-                self.console.turn_complete(self.turn_number)
-                if self.trajectory:
-                    self.trajectory.turn_complete(turn=self.turn_number)
-
-                self.turn_number += 1
-                return response_text
-
-            # Execute tool calls
             tool_calls = response.tool_calls or []
-            logger.info(
-                f"Turn {self.turn_number}: Executing {len(tool_calls)} tool calls..."
-            )
-
-            # Log tool calls to chat BEFORE execution
+            logger.info(f"Turn {self.turn_number}: Executing {len(tool_calls)} tool calls...")
             self._log_to_chat("<details>\n<summary>Tool calls</summary>\n\n")
 
             for tool_call in tool_calls:
                 tool_name = tool_call.name
                 call_id = tool_call.id
-
                 logger.info(f"  Tool: {tool_name}")
                 self.console.tool_call_start(tool_name, iteration)
                 if self.trajectory:
-                    self.trajectory.tool_start(
-                        tool_name, turn=self.turn_number, iteration=iteration
-                    )
+                    self.trajectory.tool_start(tool_name, turn=self.turn_number, iteration=iteration)
 
+                arguments: Dict[str, Any] = {}
                 try:
-                    # Parse arguments from the ToolCall
-                    arguments = tool_call.parse_arguments()
+                    arguments = tool_call.parse_arguments() or {}
+                    self._log_tool_call(tool_name, arguments)
 
-                    # Log the tool call BEFORE execution
-                    if tool_name == "execute_dsl":
-                        self._log_to_chat(
-                            f"**{tool_name}:**\n```python\n{arguments.get('code', '')}\n```\n\n"
-                        )
-                        self.console.tool_call_code(
-                            arguments.get("code", ""), language="python"
-                        )
-                        if self.trajectory:
-                            self.trajectory.tool_code(
-                                arguments.get("code", ""),
-                                turn=self.turn_number,
-                                lang="python",
-                            )
-                    elif tool_name == "execute_duckdb":
-                        self._log_to_chat(
-                            f"**{tool_name}:**\n```sql\n{arguments.get('query', '')}\n```\n\n"
-                        )
-                        self.console.tool_call_code(
-                            arguments.get("query", ""), language="sql"
-                        )
-                        if self.trajectory:
-                            self.trajectory.tool_code(
-                                arguments.get("query", ""),
-                                turn=self.turn_number,
-                                lang="sql",
-                            )
-                    else:
-                        self._log_to_chat(
-                            f"**{tool_name}:** {json.dumps(arguments, indent=2)}\n\n"
-                        )
-
-                    # Validate
-                    validation = self.tool_validator.validate_tool_call(
-                        tool_name, arguments
-                    )
-
-                    if not validation.valid:
-                        exec_result = f"❌ Validation error: {validation.error}"
+                    if ended_by is not None:
+                        # A call after end_turn in the same batch: the turn is
+                        # over; say so rather than silently running it.
+                        exec_result = "❌ The turn already ended (end_turn was called earlier in this batch)."
                         status = ActionStatus.FAILURE
+                    elif tool_name == "end_turn":
+                        exec_result = self._end_turn_result(mode, horizon, turn_start_tick)
+                        status = ActionStatus.SUCCESS
+                        ended_by = "end_turn"
                     else:
-                        # Execute tool - parsed_arguments is guaranteed non-None when valid
-                        parsed_args = validation.parsed_arguments or {}
-                        exec_result, status = await self._execute_tool(
-                            tool_name, parsed_args
-                        )
-                        tool_calls_executed += 1
+                        validation = self.tool_validator.validate_tool_call(tool_name, arguments)
+                        if not validation.valid:
+                            exec_result = f"❌ Validation error: {validation.error}"
+                            status = ActionStatus.FAILURE
+                        else:
+                            parsed_args = validation.parsed_arguments or {}
+                            exec_result, status = await self._execute_tool(tool_name, parsed_args)
+                            tool_calls_executed += 1
+                            span = getattr(self.runtime, "last_tick_span", None) or {}
+                            if span.get("before") is not None and span.get("after") is not None:
+                                execution_ticks += int(span["after"]) - int(span["before"])
 
-                    # Log FULL result to chat.md (no truncation)
                     self._log_to_chat(f"**Result:**\n```\n{exec_result}\n```\n\n")
-
-                    # Display result on console (console can truncate for readability)
                     is_error = (
                         exec_result.startswith("❌")
                         or exec_result.startswith("Error:")
@@ -450,13 +424,15 @@ class AgentOrchestrator:
                     )
                     self.console.tool_result(exec_result, is_error=is_error)
                     if self.trajectory:
+                        span = getattr(self.runtime, "last_tick_span", None) or {}
                         self.trajectory.tool_result(
-                            exec_result, turn=self.turn_number, success=not is_error
+                            exec_result,
+                            turn=self.turn_number,
+                            success=not is_error,
+                            game_tick_before=span.get("before") if tool_name != "end_turn" else None,
+                            game_tick_after=span.get("after") if tool_name != "end_turn" else None,
                         )
-
-                    # Track for final summary (use full result, not truncated)
                     tool_results.append({"tool": tool_name, "result": exec_result})
-
                 except json.JSONDecodeError as e:
                     exec_result = f"❌ Invalid JSON arguments: {str(e)}"
                     status = ActionStatus.FAILURE
@@ -468,95 +444,328 @@ class AgentOrchestrator:
                     self._log_to_chat(f"**Error:** {exec_result}\n\n")
                     self.console.tool_result(exec_result, is_error=True)
 
-                # Track in trajectory
                 self.trajectory_manager.add_action(
                     tool_name=tool_name,
-                    arguments=arguments if "arguments" in locals() else {},
+                    arguments=arguments,
                     result=exec_result,
                     compressed_result=exec_result,
                     turn_number=self.turn_number,
                     status=status,
                     metadata={"tool_call_id": call_id},
                 )
-
-                # Add tool response to messages
-                self.messages.append(
-                    {"role": "tool", "tool_call_id": call_id, "content": exec_result}
-                )
-
+                self.messages.append({"role": "tool", "tool_call_id": call_id, "content": exec_result})
                 logger.info(
-                    f"  Result: {exec_result[:100]}..."
-                    if len(exec_result) > 100
-                    else f"  Result: {exec_result}"
+                    f"  Result: {exec_result[:100]}..." if len(exec_result) > 100 else f"  Result: {exec_result}"
                 )
 
-            # Close tool calls section in chat log
+                if ended_by is None and tool_calls_executed >= self.turn_config.attention_calls:
+                    ended_by = "attention_cap"
+
             self._log_to_chat("</details>\n\n")
 
-            # Notifications are drained AFTER every tool result is appended,
-            # never between them. They enter as a user message, and a user
-            # message interleaved among tool messages breaks the provider
-            # contract that each tool_call_id is answered immediately after the
-            # assistant message that requested it:
-            #   assistant(tool_calls=[A,B]) -> tool(A) -> user(...) -> tool(B)
-            # is rejected with "insufficient tool messages following tool_calls
-            # message", killing the run. Draining here also matches what the
-            # system prompt tells the agent — that events arrive between turns.
-            await self._add_notifications_to_messages()
-
-            # Check task verification after tool execution
-            # This runs the verification callback and injects progress into conversation
+            # Task verification still runs inside the turn (it is the task's
+            # own gate, not a world event) and may end the run.
             verification_msg = await self._check_task_verification()
             if verification_msg:
-                # OBS-2: dedupe verbatim repeats — the agent sees the full block
-                # whenever content changes (or on periodic refresh), otherwise a
-                # one-line pointer to the turn carrying the last full block.
-                rendered_progress = self._progress_deduper.render(
-                    verification_msg, turn=self.turn_number
-                )
-                # Add verification progress as user message so agent sees it
+                rendered_progress = self._progress_deduper.render(verification_msg, turn=self.turn_number)
                 self.messages.append({"role": "user", "content": rendered_progress})
-                # chat.md mirrors what the LLM actually saw
                 self._log_to_chat(f"**Task Progress:**\n```\n{rendered_progress}\n```\n\n")
                 self._log_to_chat("---\n\n")
-
-                # Always display the FULL verification progress on console
-                # This gives visibility into task progress during the run
                 self.console.system_notification(verification_msg)
-
                 if self._task_completed:
                     logger.info("AgentOrchestrator: Task completed via verification")
-                    self.console.turn_complete(self.turn_number)
-                    self.turn_number += 1
-                    return "Task completed successfully!"
-                else:
-                    logger.debug(f"Task verification in progress: {self._last_verification_result}")
+                    ended_by = "verification"
+                    response_text = "Task completed successfully!"
 
-            # Special handling for respond tool - if used, return immediately
-            if any(tc.name == "respond" for tc in tool_calls):
-                # Find the respond tool result
+            if ended_by is None and any(tc.name == "respond" for tc in tool_calls):
                 for tool_result in tool_results:
                     if tool_result["tool"] == "respond":
                         response_text = tool_result["result"]
-
-                        # Log agent response
                         self._log_to_chat(f"**Agent:** {response_text}\n\n")
                         self._log_to_chat("---\n\n")
                         self.console.assistant_response(response_text, self.turn_number)
+                        ended_by = "respond"
+                        break
 
-                        # Check for notifications
-                        await self._add_notifications_to_messages()
+            if ended_by is not None:
+                break
+        else:
+            logger.warning(f"Turn {self.turn_number}: inference sanity cap reached")
+            self.console.max_iterations_warning(self.turn_number)
+            ended_by = "inference_cap"
+            response_text = "Inference cap reached without ending the turn."
 
-                        self.console.turn_complete(self.turn_number)
-                        self.turn_number += 1
-                        return response_text
+        if ended_by == "attention_cap":
+            self.console.max_iterations_warning(self.turn_number)
+            response_text = response_text or "Attention budget spent; the turn ended."
 
-        # Max iterations reached
-        logger.warning(f"Turn {self.turn_number}: Reached max iterations")
-        self.console.max_iterations_warning(self.turn_number)
+        await self._close_turn(
+            mode=mode,
+            ended_by=ended_by or "unknown",
+            horizon=horizon,
+            turn_start_tick=turn_start_tick,
+            before=before,
+            execution_ticks=execution_ticks,
+        )
+        return response_text or f"Turn ended ({ended_by})."
+
+    # ------------------------------------------------------------------
+    # Turn boundary
+    # ------------------------------------------------------------------
+
+    def _opening_line(self) -> str:
+        return (
+            f"# Turn 1 — {self.turn_mode.upper()} turn\n\n"
+            "This is a planning turn: read the map and the research state, set "
+            "your plan with plan.set(...) and plan.set_goals([...]), queue "
+            "research if you wish, then call end_turn. Gameplay turns follow; "
+            "each opens with a report of what changed."
+            if self.turn_mode == "planning"
+            else f"# Turn 1 — GAMEPLAY turn (horizon {self._next_horizon} ticks)"
+        )
+
+    def _tools_for(self, horizon: Optional[int], mode: str) -> list:
+        try:
+            return self.runtime.get_tool_definitions(mode=self.mode, horizon_ticks=horizon, turn_mode=mode)
+        except TypeError:
+            # A runtime with the old one-argument signature.
+            return self.runtime.get_tool_definitions(mode=self.mode)
+
+    def _end_turn_result(self, mode: str, horizon: int, turn_start_tick: Optional[int]) -> str:
+        now = self._game_tick()
+        used = (now - turn_start_tick) if (now is not None and turn_start_tick is not None) else None
+        if mode == "planning":
+            return "Turn ended. Planning turn: no world time advances. Your report follows."
+        if used is None:
+            return "Turn ended. The world advances to the horizon; your report follows."
+        remaining = max(0, horizon - used)
+        return (
+            f"Turn ended at tick {now}: you used {used} of {horizon} ticks; the world "
+            f"now advances the remaining {remaining}. Your report follows."
+        )
+
+    async def _close_turn(
+        self,
+        *,
+        mode: str,
+        ended_by: str,
+        horizon: int,
+        turn_start_tick: Optional[int],
+        before: Optional[_tr.TurnSnapshot],
+        execution_ticks: int,
+    ) -> None:
+        """Fast-forward, drain once, assemble the report, pick the next mode."""
+        end_tick = self._game_tick()
+        advanced = 0
+        boundary_tick: Optional[int] = None
+        if mode != "planning" and end_tick is not None and turn_start_tick is not None:
+            target = turn_start_tick + horizon
+            # Prefer the frozen form: pause first, then compute the remainder
+            # on the paused tick, so no tick runs between "the turn ended" and
+            # "the advance began" (§17). Fall back to the pre-computed form
+            # for runtimes that only offer advance_world.
+            advance_to = getattr(self.runtime, "advance_world_to", None)
+            advance = getattr(self.runtime, "advance_world", None)
+            try:
+                result = None
+                if advance_to is not None:
+                    result = advance_to(target)
+                elif advance is not None:
+                    wanted = max(0, horizon - (end_tick - turn_start_tick))
+                    result = advance(wanted) if wanted > 0 else None
+                if result is not None:
+                    advanced = int(getattr(result, "advanced", result))
+                    boundary_tick = getattr(result, "end_tick", None)
+                    frozen_start = getattr(result, "start_tick", None)
+                    if frozen_start is not None:
+                        end_tick = frozen_start  # the turn ended when the world froze
+            except Exception as e:
+                logger.error(f"fast-forward failed: {e}")
+                advanced = 0
+        # The boundary tick was read while paused; it is the report's tick and
+        # the next turn's start. Only when nothing advanced do we read live.
+        final_tick = boundary_tick if boundary_tick is not None else self._game_tick()
+        self._next_turn_start_tick = final_tick
+
+        # The one drain per turn (§21): everything that fired during the turn
+        # and the advance, in order, into the report's Events section.
+        events = await self._drain_events()
+        self._last_events = events
+        seq_gaps = [e.to_dict() for e in events if getattr(e, "notification_type", None) == "sequence_gap" and hasattr(e, "to_dict")]
+
+        after = self._snapshot(final_tick)
+        clock = _tr.ClockLedger(
+            turn_start_tick=turn_start_tick or 0,
+            end_turn_tick=end_tick if end_tick is not None else (turn_start_tick or 0),
+            advanced=advanced,
+            final_tick=final_tick if final_tick is not None else (end_tick or turn_start_tick or 0),
+            execution_ticks=execution_ticks,
+            horizon=horizon,
+        )
+
+        status_change = None
+        reader = getattr(self.runtime, "status_reader", None)
+        if reader is not None and turn_start_tick is not None:
+            try:
+                status_change = reader.changed(turn_start_tick)
+            except Exception as e:
+                logger.debug(f"status diff skipped: {e}")
+
+        researched = after.researched_count if after else 0
+        # Provisional rate; the assembler computes the final one from the diff.
+        report = _tr.assemble(
+            turn=self.turn_number,
+            mode=mode,
+            ended_by=ended_by,
+            clock=clock,
+            before=before or self._empty_snapshot(turn_start_tick or 0),
+            after=after or self._empty_snapshot(clock.final_tick),
+            events=events,
+            status_change=status_change,
+            next_horizon=self._next_horizon,
+            next_inputs={},
+            energy_for=self._energy_for,
+            plan=self._plan_snapshot(),
+            seq_gaps=seq_gaps,
+        )
+        rate = report.production["automated_rate_per_min"]
+        self._next_horizon = self.turn_config.horizon_ticks(researched, rate)
+        report.horizon = {
+            "next_ticks": self._next_horizon,
+            "inputs": {
+                "research_tier": self.turn_config.research_tier(researched),
+                "researched_count": researched,
+                "automated_rate_per_min": rate,
+            },
+        }
+        # Next mode (§6): planning after a research completion, else gameplay.
+        research_done = any(getattr(e, "notification_type", None) == "research_finished" for e in events)
+        self.turn_mode = "planning" if research_done else "gameplay"
+        report_dict = report.to_dict()
+        report_dict["next_mode"] = self.turn_mode
+        rendered = _tr.render(report).replace(
+            f"# Turn {self.turn_number + 1} — {mode.upper()} turn",
+            f"# Turn {self.turn_number + 2} — {self.turn_mode.upper()} turn",
+            1,
+        )
+        self._last_report = report
+        self._pending_report_text = rendered
+
+        if self.trajectory:
+            self.trajectory.turn_report(turn=self.turn_number, report=report_dict, rendered=rendered)
+            if events:
+                self.trajectory.notification(
+                    rendered,
+                    turn=self.turn_number,
+                    index=None,
+                    events=[_event_payload(e) for e in events],
+                )
+            self.trajectory.turn_complete(turn=self.turn_number, ended_by=ended_by)
+        self._log_to_chat(f"**Turn report (next turn's input):**\n```\n{rendered}\n```\n\n---\n\n")
+        if hasattr(self.console, "system_notification"):
+            self.console.system_notification(
+                f"turn {self.turn_number} ended by {ended_by}: used {clock.used}, advanced {advanced}, "
+                f"next horizon {self._next_horizon} ({self.turn_mode})"
+            )
         self.console.turn_complete(self.turn_number)
         self.turn_number += 1
-        return "Max iterations reached. Please try a simpler request."
+
+    def _snapshot(self, tick: Optional[int]) -> Optional[_tr.TurnSnapshot]:
+        """Capture the report's inputs; None when the runtime has no reads."""
+        rt = self.runtime
+        if not hasattr(rt, "production_statistics"):
+            return None
+        try:
+            ents, ghosts = rt.map_rows() if hasattr(rt, "map_rows") else ({}, {})
+            return _tr.TurnSnapshot(
+                tick=tick or 0,
+                production=rt.production_statistics(),
+                inventory=rt.inventory_counts() if hasattr(rt, "inventory_counts") else {},
+                map_rows=ents,
+                ghost_rows=ghosts,
+                research=rt.research_status() if hasattr(rt, "research_status") else {},
+                crafting_queue=rt.crafting_queue() if hasattr(rt, "crafting_queue") else [],
+                researched_count=rt.researched_count() if hasattr(rt, "researched_count") else 0,
+            )
+        except Exception as e:
+            logger.warning(f"turn snapshot failed: {e}")
+            return None
+
+    @staticmethod
+    def _empty_snapshot(tick: int) -> _tr.TurnSnapshot:
+        return _tr.TurnSnapshot(tick=tick, production={"input": {}, "output": {}}, inventory={},
+                                map_rows={}, ghost_rows={}, research={}, crafting_queue=[], researched_count=0)
+
+    def _energy_for(self, recipe: str) -> Optional[float]:
+        fn = getattr(self.runtime, "recipe_energy", None)
+        if fn is None:
+            return None
+        try:
+            return fn(recipe)
+        except Exception:
+            return None
+
+    def _plan_snapshot(self) -> Optional[Dict[str, Any]]:
+        store = getattr(self.runtime, "plan_store", None)
+        if store is None or not hasattr(store, "read"):
+            return None
+        try:
+            return store.read()
+        except Exception:
+            return None
+
+    @property
+    def last_report(self) -> Optional[_tr.TurnReport]:
+        return self._last_report
+
+    def _record_usage(self, result: Any, response: ChatMessage) -> None:
+        usage_data = None
+        if result.usage:
+            usage_data = {
+                "prompt_tokens": result.usage.prompt_tokens,
+                "completion_tokens": result.usage.completion_tokens,
+                "total_tokens": result.usage.total_tokens,
+            }
+            if result.usage.cached_prompt_tokens is not None:
+                usage_data["cached_prompt_tokens"] = result.usage.cached_prompt_tokens
+        else:
+            try:
+                usage_data = self._calculate_fallback_usage(self.messages[:-1], response.content or "")
+            except Exception as e:
+                logger.warning(f"Failed to calculate fallback token usage: {e}")
+        if usage_data:
+            if self.trajectory:
+                self.trajectory.completion_stats(turn=self.turn_number, usage=usage_data)
+            self.trajectory_manager.add_completion_stats(usage_data)
+
+    def _log_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> None:
+        if tool_name == "execute_dsl":
+            self._log_to_chat(f"**{tool_name}:**\n```python\n{arguments.get('code', '')}\n```\n\n")
+            self.console.tool_call_code(arguments.get("code", ""), language="python")
+            if self.trajectory:
+                self.trajectory.tool_code(arguments.get("code", ""), turn=self.turn_number, lang="python")
+        elif tool_name == "execute_duckdb":
+            self._log_to_chat(f"**{tool_name}:**\n```sql\n{arguments.get('query', '')}\n```\n\n")
+            self.console.tool_call_code(arguments.get("query", ""), language="sql")
+            if self.trajectory:
+                self.trajectory.tool_code(arguments.get("query", ""), turn=self.turn_number, lang="sql")
+        else:
+            self._log_to_chat(f"**{tool_name}:** {json.dumps(arguments, indent=2)}\n\n")
+
+    def _game_tick(self) -> Optional[int]:
+        """Current game tick via the runtime, or None when there is no engine.
+
+        Never a fake number: a record with no tick is honest; a record with
+        a made-up tick is a lie about time.
+        """
+        getter = getattr(self.runtime, "get_game_tick", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception as e:  # engine unreachable — say nothing
+            logger.debug(f"game tick unavailable: {e}")
+            return None
 
     def _log_to_chat(self, message: str):
         """Append message to chat log file."""
@@ -946,6 +1155,13 @@ class AgentOrchestrator:
 
         # Add as user message so LLM sees it (system messages are filtered in some APIs)
         self.messages.append({"role": "user", "content": system_notif_msg})
+        if self.trajectory:
+            self.trajectory.notification(
+                system_notif_msg,
+                turn=self.turn_number,
+                index=len(self.messages) - 1,
+                events=[_event_payload(e) for e in events],
+            )
 
         # Log to chat
         self._log_to_chat(f"**Game Events:**\n{combined_notif}\n\n")
@@ -1121,6 +1337,14 @@ class AgentOrchestrator:
         new_count = len(self.messages)
 
         logger.info(f"Context compressed: {old_count} -> {new_count} messages")
+        if self.trajectory:
+            self.trajectory.context_compressed(
+                turn=self.turn_number,
+                before_count=old_count,
+                after_count=new_count,
+                removed=old_messages,
+                summary=summary_message,
+            )
 
         # Log to chat if enabled
         if self.chat_log_path:
@@ -1159,6 +1383,19 @@ class AgentOrchestrator:
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
         }
+
+
+def _event_payload(event: Any) -> Any:
+    """Serialise a drained event for the record: typed events know how."""
+    to_dict = getattr(event, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    if isinstance(event, dict):
+        return event
+    return repr(event)
 
 
 # Backwards compatible alias

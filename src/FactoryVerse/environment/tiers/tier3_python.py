@@ -3,6 +3,7 @@
 Orchestrates RCON connection and UDP listeners for Python<->Factorio communication.
 """
 
+from dataclasses import dataclass
 import json
 import logging
 from typing import Optional, Any, TYPE_CHECKING
@@ -18,6 +19,18 @@ if TYPE_CHECKING:
     from factorio_rcon import RCONClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WorldAdvance:
+    """Result of ``advance_world``: exact count and the paused boundary ticks."""
+
+    advanced: int
+    start_tick: int
+    end_tick: int
+
+    def __int__(self) -> int:  # backwards-compatible with callers that want the count
+        return self.advanced
 
 
 class Tier3Python(TierBase):
@@ -527,6 +540,7 @@ class Tier3Python(TierBase):
                 "interface_name": a.interface_name,
                 "force": a.force,
                 "udp_port": a.udp_port,
+                "turn_port": a.turn_port,
                 "entity_valid": a.entity_valid,
                 "position": a.position,
             }
@@ -572,6 +586,70 @@ class Tier3Python(TierBase):
         result = self._rcon.send_command("/c rcon.print(game.tick)")
         return int(result.strip()) if result else 0
 
+    # Engine speed used only while draining a fast-forward; restored after.
+    FAST_FORWARD_SPEED = 64.0
+
+    def advance_world_to(self, target_tick: int, **kw) -> "WorldAdvance":
+        """Pause, then advance to exactly ``target_tick`` (no-op if already
+        past it). The remainder is computed on the frozen tick, so nothing
+        runs between "the turn ended" and "the advance began" (§17)."""
+        return self.advance_world(0, target_tick=int(target_tick), **kw)
+
+    def advance_world(self, ticks: int, *, target_tick: Optional[int] = None, poll_interval: float = 0.05, timeout: float = 900.0) -> "WorldAdvance":
+        """Fast-forward the engine by exactly ``ticks`` and return a
+        ``WorldAdvance`` — the actual count plus the paused start and end ticks
+        (TURN_CONTRACT §3.3, §17).
+
+        The end tick is read while the engine is still paused, and it is the
+        turn boundary: the report is stamped with it and the next turn starts
+        at it. Anything that runs after the unpause belongs to the next turn's
+        thinking. Re-reading the tick after this call returns would attribute
+        those ticks to nobody — the defect §17 names.
+
+        Mechanism, measured on factoriotools/factorio:2.0.76 (arm64/box64
+        Docker, 2026-08-29): ``game.tick_paused = true`` + ``game.ticks_to_run
+        = K`` runs exactly K entity updates then holds, at the engine's update
+        rate — 45 t/s at speed 1 on that box, 186 t/s with ``game.speed = 64``
+        (CPU-bound; 3600 ticks ≈ 19 s wall). ``game.speed`` alone advances an
+        unpredictable count (371–409 ticks in 2 s at 8–64×), so it is only the
+        accelerator here, never the counter. Pausing first and reading the tick
+        while paused is what makes the count exact; both fields are restored
+        afterwards so the in-turn clock stays human-shaped.
+
+        Returns 0 immediately for ``ticks <= 0``. Never raises on a partial
+        advance: the actual count is the return value (§9 — a bound returns
+        actuals).
+        """
+        if not self._rcon:
+            raise RuntimeError("RCON not connected")
+        if ticks <= 0 and target_tick is None:
+            now = self.get_game_tick()
+            return WorldAdvance(0, now, now)
+        import time as _time
+
+        speed = self.run_lua("return game.speed")
+        self.run_lua("game.tick_paused = true")
+        start = self.get_game_tick()
+        if target_tick is not None:
+            ticks = max(0, int(target_tick) - int(start))
+        try:
+            if ticks <= 0:
+                end = start
+                return WorldAdvance(0, start, end)
+            self.run_lua(
+                f"game.speed = {self.FAST_FORWARD_SPEED}; game.ticks_to_run = {int(ticks)}"
+            )
+            deadline = _time.time() + timeout
+            while _time.time() < deadline:
+                remaining = self.run_lua("return game.ticks_to_run")
+                if not remaining:
+                    break
+                _time.sleep(poll_interval)
+            end = self.get_game_tick()
+        finally:
+            self.run_lua(f"game.speed = {float(speed or 1.0)}; game.tick_paused = false")
+        return WorldAdvance(end - start, start, end)
+
     def destroy_game_agents(
         self, agent_ids: list[int], remove_forces: bool = False
     ) -> dict:
@@ -596,6 +674,7 @@ class Tier3Python(TierBase):
         set_unique_forces: bool = False,
         default_common_force: str = "player",
         initial_inventory: dict[str, int] | None = None,
+        turn_port: int | None = None,
     ) -> dict:
         """Create a new agent in Factorio with correct parameter mapping.
 
@@ -616,6 +695,7 @@ class Tier3Python(TierBase):
             set_unique_forces=set_unique_forces,
             force=default_common_force,
             initial_inventory=initial_inventory,
+            turn_port=turn_port,
         )
         logger.info(f"Tier 3: Created agent: {result}")
         return {
@@ -623,7 +703,14 @@ class Tier3Python(TierBase):
             "force_name": result.force_name,
             "interface_name": result.interface_name,
             "udp_port": result.udp_port,
+            "turn_port": result.turn_port,
         }
+
+    def stream_state(self, agent_numeric_id: int, stream_name: str = "turn") -> dict:
+        """Where an agent's stream stands in Lua: {port, epoch, seq, tick}."""
+        if not self._agent_api:
+            raise RuntimeError("RCON not connected")
+        return self._agent_api.stream_state(agent_numeric_id, stream_name)
 
     # =========================================================================
     # Helper Methods

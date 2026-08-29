@@ -121,6 +121,8 @@ async def test_tier4_agent_reconciliation():
     mock_env.config.infra_config = MagicMock()
     expected_udp_port = 34202  # Expected port from get_agent_port(0, 0) for server_0
     mock_env.config.infra_config.get_agent_port = MagicMock(return_value=expected_udp_port)
+    expected_turn_port = 34300  # the agent's `turn` stream port, same stride
+    mock_env.config.infra_config.get_agent_turn_port = MagicMock(return_value=expected_turn_port)
 
     # Mock Tier 3 with new Lua query methods (SSOT pattern)
     mock_registry = MagicMock()
@@ -162,6 +164,7 @@ async def test_tier4_agent_reconciliation():
         set_unique_forces=False,
         default_common_force="player",
         initial_inventory=None,
+        turn_port=expected_turn_port,
     )
 
     # Check registration happened in Python registry
@@ -187,6 +190,7 @@ async def test_tier4_agent_reconciliation():
             "id": 1,
             "interface_name": "test_agent",
             "udp_port": expected_udp_port,
+            "turn_port": expected_turn_port,
             "entity_valid": True,
             "position": {"x": 0, "y": 0},
         }
@@ -257,4 +261,5 @@ async def test_tier4_agent_reconciliation():
         set_unique_forces=False,
         default_common_force="player",
         initial_inventory=None,
+        turn_port=expected_turn_port,
     )

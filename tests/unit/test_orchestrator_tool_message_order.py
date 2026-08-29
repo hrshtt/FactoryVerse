@@ -13,6 +13,11 @@ used to run inside the per-tool-call loop, so any turn where the model emitted
 two tool calls and an event landed between them killed the run. Observed live:
 a freeplay run died on its second turn, 14 seconds in.
 
+Under the turn contract (2026-08-29) the drain runs once per turn, at the
+boundary, into the turn report — so inside a turn nothing is injected at all
+(tests/unit/test_turn_contract.py pins that). The helper below is what the
+boundary uses, and this file keeps pinning the provider's ordering rule on it.
+
 These tests exercise the ordering rule directly against the message list the
 orchestrator builds, so the invariant is pinned without needing a provider.
 """
@@ -47,6 +52,8 @@ def assert_tool_calls_are_answered_contiguously(messages: List[Dict[str, Any]]) 
 def _orchestrator() -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch.messages = []
+    orch.trajectory = None
+    orch.turn_number = 0
     return orch
 
 

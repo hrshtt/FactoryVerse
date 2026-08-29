@@ -36,6 +36,28 @@ class EventType(str, Enum):
     COMPLETION_STATS = "completion_stats"
     RUN_END = "run_end"
     VERIFICATION_CHECK = "verification_check"
+    # Turn-contract record (2026-08-29): what the model SAW, not only what it did.
+    # A reader must be able to rebuild the exact input of every inference from
+    # this file alone (TURN_CONTRACT §1.2, §8 gate 2).
+    SYSTEM_PROMPT = "system_prompt"
+    INFERENCE_INPUT = "inference_input"
+    INFERENCE_OUTPUT = "inference_output"
+    CONTEXT_COMPRESSED = "context_compressed"
+    # The observation at the start of a turn (TURN_CONTRACT §4): the full
+    # structured report plus the exact text injected as the model's input.
+    TURN_REPORT = "turn_report"
+
+
+def sha256_text(text: str) -> str:
+    """Stable content hash used to reference large, repeated blobs."""
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def sha256_json(obj: Any) -> str:
+    """Hash of a JSON-serialisable object with sorted keys."""
+    return sha256_text(json.dumps(obj, sort_keys=True, default=str))
 
 
 @dataclass
@@ -108,6 +130,7 @@ class TrajectoryWriter:
         self.path = Path(trajectory_path)
         self._lock = threading.Lock()
         self._current_turn = 0
+        self._seen_tool_hashes: set = set()
 
     def _write(self, event_type: str, **data) -> None:
         """Write event to trajectory file (thread-safe)."""
@@ -137,9 +160,100 @@ class TrajectoryWriter:
         """Write assistant response event."""
         self._write(EventType.ASSISTANT_RESPONSE, content=content, turn=turn)
 
-    def turn_complete(self, turn: int) -> None:
-        """Write turn complete event."""
-        self._write(EventType.TURN_COMPLETE, turn=turn)
+    def turn_complete(self, turn: int, ended_by: Optional[str] = None) -> None:
+        """Write turn complete event.
+
+        ``ended_by`` names why the turn ended: ``text_response``, ``respond``,
+        ``verification`` or ``iteration_cap``. The cap used to be invisible in
+        the record; a turn that ran out of iterations looked like one that
+        finished.
+        """
+        self._write(EventType.TURN_COMPLETE, turn=turn, ended_by=ended_by)
+
+    # What the model saw — the input side of the record
+
+    def system_prompt(self, content: str) -> str:
+        """Store the system prompt once; inference_input references it by hash.
+
+        Returns the sha256 so the caller can stamp later events with it.
+        """
+        digest = sha256_text(content)
+        self._write(EventType.SYSTEM_PROMPT, sha256=digest, content=content)
+        return digest
+
+    def inference_input(
+        self,
+        turn: int,
+        iteration: int,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        game_tick: Optional[int],
+        system_prompt_sha256: Optional[str] = None,
+    ) -> None:
+        """Write the full message list the model is about to receive.
+
+        The system message is replaced by a reference to the stored prompt
+        (``{"role": "system", "sha256": ...}``) so the file does not repeat
+        ~130 KB per inference; every other message is verbatim. ``tools`` is
+        stored by hash and, on first sight, verbatim.
+        """
+        recorded: List[Dict[str, Any]] = []
+        for m in messages:
+            if m.get("role") == "system" and system_prompt_sha256 and m.get("content") is not None and sha256_text(m["content"]) == system_prompt_sha256:
+                recorded.append({"role": "system", "sha256": system_prompt_sha256})
+            else:
+                recorded.append(m)
+        tools_sha = sha256_json(tools) if tools is not None else None
+        first_sight = tools_sha is not None and tools_sha not in self._seen_tool_hashes
+        if first_sight:
+            self._seen_tool_hashes.add(tools_sha)
+        self._write(
+            EventType.INFERENCE_INPUT,
+            turn=turn,
+            iteration=iteration,
+            game_tick=game_tick,
+            system_prompt_sha256=system_prompt_sha256,
+            tools_sha256=tools_sha,
+            tools=tools if first_sight else None,
+            n_messages=len(messages),
+            messages=recorded,
+        )
+
+    def inference_output(
+        self,
+        turn: int,
+        iteration: int,
+        message: Dict[str, Any],
+        finish_reason: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
+        """Write the raw assistant message as appended to the history."""
+        self._write(
+            EventType.INFERENCE_OUTPUT,
+            turn=turn,
+            iteration=iteration,
+            message=message,
+            finish_reason=finish_reason,
+            model=model,
+        )
+
+    def context_compressed(
+        self,
+        turn: int,
+        before_count: int,
+        after_count: int,
+        removed: List[Dict[str, Any]],
+        summary: Dict[str, Any],
+    ) -> None:
+        """Write a compression event with the removed messages verbatim."""
+        self._write(
+            EventType.CONTEXT_COMPRESSED,
+            turn=turn,
+            before_count=before_count,
+            after_count=after_count,
+            removed=removed,
+            summary=summary,
+        )
 
     # Tool events
 
@@ -153,17 +267,51 @@ class TrajectoryWriter:
         """Write tool code event."""
         self._write(EventType.TOOL_CODE, code=code, turn=turn, lang=lang)
 
-    def tool_result(self, result: str, turn: int, success: bool = True) -> None:
-        """Write tool result event."""
-        self._write(EventType.TOOL_RESULT, result=result, turn=turn, success=success)
+    def tool_result(
+        self,
+        result: str,
+        turn: int,
+        success: bool = True,
+        game_tick_before: Optional[int] = None,
+        game_tick_after: Optional[int] = None,
+    ) -> None:
+        """Write tool result event, stamped with the game ticks around the call."""
+        self._write(
+            EventType.TOOL_RESULT,
+            result=result,
+            turn=turn,
+            success=success,
+            game_tick_before=game_tick_before,
+            game_tick_after=game_tick_after,
+        )
+
+    def turn_report(self, turn: int, report: Dict[str, Any], rendered: str) -> None:
+        """Write the turn report: structured data and the injected text."""
+        self._write(EventType.TURN_REPORT, turn=turn, report=report, rendered=rendered)
 
     # Other events
 
     def notification(
-        self, message: str, turn: int, data: Optional[Dict] = None
+        self,
+        message: str,
+        turn: int,
+        data: Optional[Dict] = None,
+        index: Optional[int] = None,
+        events: Optional[List[Any]] = None,
     ) -> None:
-        """Write notification event."""
-        self._write(EventType.NOTIFICATION, message=message, turn=turn, data=data or {})
+        """Write notification event.
+
+        ``index`` is the position in the message list where the injected
+        message landed; ``events`` are the drained payloads.
+        """
+        self._write(
+            EventType.NOTIFICATION,
+            message=message,
+            turn=turn,
+            data=data or {},
+            index=index,
+            events=events,
+        )
 
     def thinking(self, turn: int, iteration: int) -> None:
         """Write thinking event."""
@@ -361,6 +509,40 @@ class TrajectoryReader:
                     turn.notifications.append(event.data.get("message", ""))
 
         return turns
+
+    def reconstruct_inference_input(
+        self, turn: int, iteration: int
+    ) -> Optional[Dict[str, Any]]:
+        """Rebuild exactly what the model received for one inference.
+
+        Returns ``{"messages": [...], "tools": [...] | None, "game_tick": ...}``
+        with the system prompt content restored from the ``system_prompt``
+        event and the tool schema restored from the first ``inference_input``
+        that carried it. ``None`` if that inference is not in the record.
+        """
+        prompts: Dict[str, str] = {}
+        tools_by_hash: Dict[str, Any] = {}
+        for event in self.read_all():
+            if event.type == EventType.SYSTEM_PROMPT:
+                prompts[event.data["sha256"]] = event.data["content"]
+            elif event.type == EventType.INFERENCE_INPUT:
+                sha = event.data.get("tools_sha256")
+                if sha and event.data.get("tools") is not None:
+                    tools_by_hash[sha] = event.data["tools"]
+                if event.data.get("turn") == turn and event.data.get("iteration") == iteration:
+                    messages = []
+                    for m in event.data["messages"]:
+                        if m.get("role") == "system" and "sha256" in m:
+                            messages.append({"role": "system", "content": prompts[m["sha256"]]})
+                        else:
+                            messages.append(m)
+                    tools = tools_by_hash.get(sha) if sha else None
+                    return {
+                        "messages": messages,
+                        "tools": tools,
+                        "game_tick": event.data.get("game_tick"),
+                    }
+        return None
 
     def get_session_info(self) -> Optional[Dict[str, Any]]:
         """Get session metadata from start event.

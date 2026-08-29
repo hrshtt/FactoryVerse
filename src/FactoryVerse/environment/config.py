@@ -187,6 +187,10 @@ class FactoryVerseConfig(BaseSettings):
     agent_port_base: int = Field(
         default=34202, description="Base UDP port for agent action notifications"
     )
+    agent_turn_port_base: int = Field(
+        default=34300,
+        description="Base UDP port for the per-agent `turn` stream (server N, agent i: base + 10·N + i)",
+    )
     snapshot_port_base: int = Field(
         default=34400, description="Base UDP port for snapshot/sync notifications (server N uses base + N)"
     )
@@ -432,6 +436,25 @@ class FactoryVerseConfig(BaseSettings):
         else:
             # Client mode: simple increment from base
             return self.agent_port_base + agent_index
+
+    def get_agent_turn_port(self, agent_index: int, server_index: Optional[int] = None) -> int:
+        """UDP port for an agent's `turn` stream (NOTIFICATIONS plan, running values).
+
+        Same stride as the action port: `34300 + N·10 + i` on server N, `34300 + i`
+        on the client. The Lua default (`Agent.TURN_PORT_OFFSET = 98`) yields the
+        same number from the action port, so both sides agree without a hand-off.
+        """
+        if agent_index >= self.max_agents:
+            raise ValueError(
+                f"Agent index {agent_index} exceeds max_agents {self.max_agents}"
+            )
+        if server_index is not None:
+            return self.agent_turn_port_base + (server_index * self.max_agents) + agent_index
+        return self.agent_turn_port_base + agent_index
+
+    def get_agent_turn_port_range(self, server_index: Optional[int] = None) -> List[int]:
+        """All turn-stream ports for a server or the client."""
+        return [self.get_agent_turn_port(i, server_index) for i in range(self.max_agents)]
 
     def get_agent_port_range(self, server_index: Optional[int] = None) -> List[int]:
         """Get list of agent ports for a server or client.
@@ -912,8 +935,79 @@ class SpecificationConfig(BaseModel):
     )
 
 
+class TurnConfig(BaseModel):
+    """The turn contract's constants (TURN_CONTRACT §3, §5).
+
+    Every number here is an experimental condition, not a game rule: it is
+    hashed into the run record (`sha256()`) and never shown to the agent.
+    The agent is told the *inputs* that set its horizon (research tier and
+    automated production rate) and the resulting horizon — never these.
+
+    S2 CONDITION (working sketch, 2026-08-29): T = clamp(
+        tier_base_ticks[tier] * (1 + min(rate / rate_scale, rate_cap)),
+        t_min, t_max). Monotone in both inputs, clamped, frozen per run.
+    """
+
+    attention_calls: int = Field(
+        default=128,
+        description="N: tool calls per turn. Reaching it ends the turn as if end_turn was called.",
+    )
+    inference_sanity_cap: int = Field(
+        default=256,
+        description=(
+            "Inferences per turn after which the turn is force-ended. Not a "
+            "budget — a guard so a model that never calls a tool cannot spin."
+        ),
+    )
+    t_min: int = Field(default=3600, description="Smallest horizon in ticks (1 game-minute).")
+    t_max: int = Field(default=36000, description="Largest horizon in ticks (10 game-minutes).")
+    tier_buckets: List[int] = Field(
+        default=[3, 8, 15, 25],
+        description=(
+            "Researched-technology counts at which the research tier steps: "
+            "tier = number of bucket edges <= researched count."
+        ),
+    )
+    tier_base_ticks: List[int] = Field(
+        default=[3600, 6000, 9000, 14400, 21600],
+        description="Base horizon per research tier (len = len(tier_buckets) + 1).",
+    )
+    rate_scale: float = Field(
+        default=60.0,
+        description="Automated items per game-minute that doubles the base horizon.",
+    )
+    rate_cap: float = Field(
+        default=1.0,
+        description="Cap on the rate multiplier term (1.0 => at most 2x base).",
+    )
+
+    def research_tier(self, researched_count: int) -> int:
+        return sum(1 for edge in self.tier_buckets if researched_count >= edge)
+
+    def horizon_ticks(self, researched_count: int, automated_rate_per_min: float) -> int:
+        """The next turn's horizon from the two declared inputs."""
+        tier = self.research_tier(researched_count)
+        base = self.tier_base_ticks[min(tier, len(self.tier_base_ticks) - 1)]
+        rate = max(0.0, float(automated_rate_per_min))
+        mult = 1.0 + min(rate / self.rate_scale, self.rate_cap) if self.rate_scale > 0 else 1.0
+        return int(max(self.t_min, min(self.t_max, round(base * mult))))
+
+    def sha256(self) -> str:
+        import hashlib
+        import json as _json
+
+        return hashlib.sha256(
+            _json.dumps(self.model_dump(), sort_keys=True).encode()
+        ).hexdigest()
+
+
 class InteractionConfig(BaseModel):
     """Tier 6: LLM interaction configuration."""
+
+    turn: TurnConfig = Field(
+        default_factory=TurnConfig,
+        description="Turn contract constants (hashed into the record, never shown).",
+    )
 
     mode: InteractionMode = Field(
         default=InteractionMode.AUTONOMOUS, description="Interaction mode"

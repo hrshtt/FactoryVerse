@@ -156,6 +156,8 @@ class Tier4Runtime(TierBase):
 
         # Persistent user namespace for code execution (survives across blocks)
         self._user_namespace: dict = {}
+        # The planning turn's plan helper (TURN_CONTRACT §6); bound by tier 6.
+        self._plan_store: Optional[Any] = None
 
         # Monotonic counter giving each executed block a unique code filename
         self._exec_sequence: int = 0
@@ -628,6 +630,52 @@ class Tier4Runtime(TierBase):
 
         return infra_config.get_agent_port(agent_index, server_index)
 
+    def _calculate_agent_turn_port(self, agent_id: str) -> int:
+        """UDP port for the agent's `turn` stream (same stride as the action port)."""
+        tier3 = self._env.tier3
+        infra_config = self._env.config.infra_config
+        try:
+            agent_index = int(agent_id.split("_")[1]) - 1
+        except (ValueError, IndexError):
+            agent_index = 0
+        server_index = None
+        if tier3 and tier3.instance and tier3.instance.startswith("server_"):
+            try:
+                server_index = int(tier3.instance.split("_")[1])
+            except (ValueError, IndexError):
+                pass
+        return infra_config.get_agent_turn_port(agent_index, server_index)
+
+    def _turn_stream_file(self) -> Optional[Path]:
+        """The agent's turn.jsonl under this instance's script-output, if resolvable."""
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.instance is None or self._agent_numeric_id is None:
+            return None
+        try:
+            base = self._env.config.infra_config.get_script_output_dir(tier3.instance)
+        except Exception:
+            return None
+        return base / "factoryverse" / "agent-snapshots" / str(self._agent_numeric_id) / "turn.jsonl"
+
+    async def _start_turn_stream(self, turn_port: int) -> None:
+        """Bind the turn port and adopt Lua's (epoch, seq) — the honest attach."""
+        from FactoryVerse.game.agent.infra.turn_stream import TurnStreamListener, queue_deliverer
+
+        tier3 = self._env.tier3
+        if tier3 is None or tier3._action_listener is None or self._agent_numeric_id is None:
+            logger.warning("Tier 4: turn stream not started (no listener or agent id)")
+            return
+        numeric_id = self._agent_numeric_id
+        listener = TurnStreamListener(
+            port=turn_port,
+            file_path=self._turn_stream_file(),
+            state_source=lambda: tier3.stream_state(numeric_id, "turn"),
+            deliver=queue_deliverer(tier3._action_listener.notification_queue),
+        )
+        listener.start()
+        self._turn_stream = listener
+        self._modules_loaded.append("turn_stream")
+
     async def _reconcile_and_create_agent(self) -> None:
         """Reconcile agent state: Query Lua first, then decide action.
 
@@ -650,6 +698,7 @@ class Tier4Runtime(TierBase):
         # Get requested agent ID and calculate UDP port
         requested_id = self.config.agent_id or "agent_1"
         udp_port = self._calculate_agent_udp_port(requested_id)
+        turn_port = self._calculate_agent_turn_port(requested_id)
 
         # Step 1: Query Lua for existing agents (SSOT)
         game_agents = tier3.list_game_agents()
@@ -661,9 +710,10 @@ class Tier4Runtime(TierBase):
         if existing:
             # Agent exists in Factorio - check if we can bind or need to recreate
             existing_port = existing.get("udp_port")
+            existing_turn_port = existing.get("turn_port")
             entity_valid = existing.get("entity_valid", True)
 
-            if entity_valid and existing_port == udp_port:
+            if entity_valid and existing_port == udp_port and existing_turn_port == turn_port:
                 # Case 1: BIND - Agent is valid with correct port
                 # Use Lua's interface_name (may differ from requested_id)
                 lua_interface = existing.get("interface_name")
@@ -681,6 +731,8 @@ class Tier4Runtime(TierBase):
                     reason.append("entity invalid")
                 if existing_port != udp_port:
                     reason.append(f"port mismatch ({existing_port} != {udp_port})")
+                if existing_turn_port != turn_port:
+                    reason.append(f"turn port mismatch ({existing_turn_port} != {turn_port})")
 
                 logger.info(
                     f"Tier 4: Recreating agent '{requested_id}' ({', '.join(reason)})"
@@ -697,6 +749,7 @@ class Tier4Runtime(TierBase):
                     set_unique_forces=False,
                     default_common_force="player",
                     initial_inventory=self.config.initial_inventory,
+                    turn_port=turn_port,
                 )
                 # Use Lua's assigned interface_name (agent_{numeric_id})
                 if result and result.get("interface_name"):
@@ -711,6 +764,7 @@ class Tier4Runtime(TierBase):
                 set_unique_forces=False,
                 default_common_force="player",
                 initial_inventory=self.config.initial_inventory,
+                turn_port=turn_port,
             )
             # Use Lua's assigned interface_name (agent_{numeric_id})
             if result and result.get("interface_name"):
@@ -749,6 +803,9 @@ class Tier4Runtime(TierBase):
 
         self._modules_loaded.append("agent")
         logger.info(f"Tier 4: Agent '{self._agent_id}' ready on UDP port {udp_port}")
+
+        # The agent's `turn` stream: bind its port and adopt Lua's (epoch, seq).
+        await self._start_turn_stream(turn_port)
 
     async def _prepare_freeplay_snapshot(self, timeout: float = 300.0) -> None:
         """Re-snapshot all tracked freeplay chunks before loading DuckDB."""
@@ -1080,7 +1137,7 @@ class Tier4Runtime(TierBase):
                 status = map_api.get_snapshot_status()
                 system_phase = status.system_phase
 
-                if system_phase == "MAINTENANCE":
+                if system_phase in ("MAINTENANCE", "EMPTY"):
                     # Bootstrap complete!
                     logger.info(
                         f"Tier 4: Snapshot bootstrap complete! "
@@ -1289,6 +1346,15 @@ class Tier4Runtime(TierBase):
             self._snapshot_database = None
             self._database = None
 
+        # Stop the turn stream listener (it owns a socket thread)
+        turn_stream = getattr(self, "_turn_stream", None)
+        if turn_stream is not None:
+            try:
+                turn_stream.stop()
+            except Exception:
+                pass
+            self._turn_stream = None
+
         # Clear module references
         self._remote_view = None
         self._reachable_view = None
@@ -1333,8 +1399,33 @@ class Tier4Runtime(TierBase):
         except Exception as e:
             logger.warning(f"Tier 4: Failed to save session metadata: {e}")
 
-    async def execute_code(self, code: str, compress_output: bool = False) -> str:
+    _ALL_BUILTIN_NAMES = frozenset(
+        {"agent_id", "walking", "crafting", "mining", "research", "inventory", "placement",
+         "entity_ops", "reachable_view", "resources", "remote_view", "ghost_builder",
+         "placement_hints", "verify", "events", "rcon_client", "runtime", "scenario", "plan"}
+    )
+
+    # TURN_CONTRACT §6 — the planning turn's namespace is a FILTER over the one
+    # assembly below, never a second assembly site. Map-scale reads, research,
+    # the inventory read, the agent's id, and the plan helper; no body verbs.
+    PLANNING_NAMESPACE = frozenset(
+        {"json", "asyncio", "agent_id", "remote_view", "research", "inventory", "plan",
+         "MapPosition", "TilePosition", "Direction", "BoundingBox",
+         "ResearchStatus", "ResearchQueueItem", "QueuedTechnology"}
+    )
+
+    def set_plan_store(self, store: Any) -> None:
+        """Bind the planning turn's plan helper (TURN_CONTRACT §6)."""
+        self._plan_store = store
+
+    async def execute_code(
+        self, code: str, compress_output: bool = False, mode: str = "gameplay"
+    ) -> str:
         """Execute Python code using in-process execution with notebook logging.
+
+        ``mode``: "gameplay" binds the full namespace; "planning" binds only
+        ``PLANNING_NAMESPACE`` (a body verb then raises NameError, which is the
+        honest refusal — the verb does not exist in this turn).
 
         Code runs in the current process using exec() with access to Tier 4 modules
         (walking, crafting, mining, etc.). If JUPYTER mode is configured,
@@ -1485,6 +1576,15 @@ class Tier4Runtime(TierBase):
                     "scenario": self._scenario_adapter,
                 }
             )
+        if self._plan_store is not None:
+            builtin_names["plan"] = self._plan_store
+        if mode == "planning":
+            builtin_names = {k: v for k, v in builtin_names.items() if k in self.PLANNING_NAMESPACE}
+            # Body verbs defined by earlier gameplay blocks must not leak in
+            # through the persistent user namespace either.
+            for name in list(namespace):
+                if name in self._ALL_BUILTIN_NAMES and name not in self.PLANNING_NAMESPACE:
+                    namespace.pop(name, None)
         namespace.update(builtin_names)
 
         # Capture stdout

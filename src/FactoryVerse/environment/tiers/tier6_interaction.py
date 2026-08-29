@@ -13,6 +13,7 @@ from ..tool_definitions import (
     get_tool_definitions as _shared_tool_definitions,
     leading_keyword,
 )
+from ..config import TurnConfig
 from .base import TierBase, Tier, TierInitializationError
 
 if TYPE_CHECKING:
@@ -194,6 +195,16 @@ class Tier6Interaction(TierBase):
         if self._llm_client is None:
             raise RuntimeError("LLM Client not initialized")
 
+        # The planning turn's plan helper lives in the session dir and is
+        # bound into tier 4's namespace as `plan` (TURN_CONTRACT §6).
+        from FactoryVerse.game.agent.turn_report import PlanStore
+
+        plan_path = (tier4.session_dir / "plan.json") if tier4 and tier4.session_dir else None
+        plan_store = PlanStore(plan_path)
+        if tier4 and hasattr(tier4, "set_plan_store"):
+            tier4.set_plan_store(plan_store)
+        runtime.plan_store = plan_store
+
         self._orchestrator = AgentOrchestrator(
             llm_client=self._llm_client,
             runtime=runtime,
@@ -204,7 +215,16 @@ class Tier6Interaction(TierBase):
             max_context_tokens=self.config.max_context_tokens,
             mode=mode,
             initial_state_path=str(tier4.initial_state_path) if tier4 and tier4.initial_state_path else None,
+            turn_config=self.config.turn,
         )
+        if self._trajectory_writer is not None and hasattr(self._trajectory_writer, "_write"):
+            # The constants are an experimental condition: on the record by hash.
+            try:
+                self._trajectory_writer._write(  # type: ignore[attr-defined]
+                    "turn_config", turn=0, sha256=self.config.turn.sha256(), config=self.config.turn.model_dump()
+                )
+            except Exception as e:  # never kill a run over a record line
+                logger.debug(f"turn_config record skipped: {e}")
 
         if self.config.max_turns:
             self._orchestrator.set_max_turns(self.config.max_turns)
@@ -304,7 +324,8 @@ class Tier6Interaction(TierBase):
             try:
                 await self._orchestrator.run_turn(message)
 
-                # In autonomous mode, agent continues with empty user message
+                # From the second turn on, the turn report IS the message
+                # (TURN_CONTRACT §21); the orchestrator prepends it itself.
                 message = ""
 
             except Exception as e:
@@ -428,6 +449,183 @@ class _RuntimeAdapter:
     def __init__(self, tier3, tier4):
         self._tier3 = tier3
         self._tier4 = tier4
+        # Tick span of the most recent tool call: {"before", "after"} or None.
+        # The orchestrator copies it onto the tool_result record.
+        self.last_tick_span: Optional[Dict[str, int]] = None
+        # TURN_CONTRACT §6: which namespace execute_dsl binds this turn.
+        self.turn_mode: str = "gameplay"
+        self.plan_store: Any = None
+        self._status_reader: Any = None
+        self._energy_cache: Dict[str, Optional[float]] = {}
+
+    # ------------------------------------------------------------------
+    # Turn contract (TURN_CONTRACT §3–§5): the reads the report is made of
+    # ------------------------------------------------------------------
+
+    def advance_world(self, ticks: int):
+        """Fast-forward by exactly ``ticks``; returns a ``WorldAdvance`` (count
+        plus the paused start/end ticks) or None when there is no engine."""
+        if not self._tier3 or ticks <= 0:
+            return None
+        return self._tier3.advance_world(ticks)
+
+    def advance_world_to(self, target_tick: int):
+        """Pause, then advance to exactly ``target_tick``; None without an engine."""
+        if not self._tier3:
+            return None
+        return self._tier3.advance_world_to(target_tick)
+
+    def _agent_interface(self) -> Optional[str]:
+        return getattr(self._tier4, "agent_id", None) if self._tier4 else None
+
+    def _lua(self, code: str) -> Any:
+        if not self._tier3:
+            return None
+        try:
+            return self._tier3.run_lua(code)
+        except Exception as e:
+            logger.debug(f"turn read failed ({code[:60]}): {e}")
+            return None
+
+    def production_statistics(self) -> Dict[str, Dict[str, int]]:
+        """Force item production statistics — `input`/`output` counts (live)."""
+        iface = self._agent_interface()
+        if not iface:
+            return {"input": {}, "output": {}}
+        data = self._lua(f"return remote.call('{iface}', 'get_production_statistics')") or {}
+        return {
+            "input": dict(data.get("input") or {}),
+            "output": dict(data.get("output") or {}),
+        }
+
+    def researched_count(self) -> int:
+        """Number of researched technologies on the agent's force (live)."""
+        iface = self._agent_interface()
+        if not iface:
+            return 0
+        n = self._lua(
+            "local agents = remote.call('agent', 'list_agents') or {} "
+            f"for _, a in pairs(agents) do if a.interface_name == '{iface}' then "
+            "local f = game.forces[a.force]; local n = 0 "
+            "for _, t in pairs(f.technologies) do if t.researched then n = n + 1 end end "
+            "return n end end return 0"
+        )
+        return int(n or 0)
+
+    def inventory_counts(self) -> Dict[str, int]:
+        inv = getattr(self._tier4, "inventory", None) if self._tier4 else None
+        if inv is None:
+            inv = getattr(self._tier4, "_inventory", None) if self._tier4 else None
+        if inv is None:
+            return {}
+        try:
+            out: Dict[str, int] = {}
+            for stack in inv.item_stacks:
+                out[stack.name] = out.get(stack.name, 0) + int(stack.count)
+            return out
+        except Exception as e:
+            logger.debug(f"inventory read failed: {e}")
+            return {}
+
+    def research_status(self) -> Dict[str, Any]:
+        r = getattr(self._tier4, "_research", None) if self._tier4 else None
+        if r is None:
+            return {}
+        try:
+            st = r.status()
+            return {
+                "current_research": st.current_research,
+                "progress": st.progress,
+                "queue_length": st.queue_length,
+                "queue": [q.name for q in st.queue],
+            }
+        except Exception as e:
+            logger.debug(f"research read failed: {e}")
+            return {}
+
+    def crafting_queue(self) -> List[Dict[str, Any]]:
+        c = getattr(self._tier4, "_crafting", None) if self._tier4 else None
+        if c is None:
+            return []
+        try:
+            return list(c.status().get("queue") or [])
+        except Exception as e:
+            logger.debug(f"crafting read failed: {e}")
+            return []
+
+    def map_rows(self) -> tuple:
+        """(entity rows, ghost rows) keyed by name+position, from the map model."""
+        rv = self.remote_view
+        if rv is None or not getattr(rv, "is_loaded", False):
+            return {}, {}
+        from FactoryVerse.game.agent.turn_report import index_rows
+
+        try:
+            ents = rv.query("SELECT entity_name, position_x, position_y, direction FROM map_entity")
+            ghosts = rv.query("SELECT ghost_name, position_x, position_y, direction FROM ghost")
+        except Exception as e:
+            logger.debug(f"map diff read failed: {e}")
+            return {}, {}
+        return index_rows(ents, "entity_name"), index_rows(ghosts, "ghost_name")
+
+    @property
+    def status_reader(self):
+        """The raw status-dump reader (API plan §4.2), or None offline."""
+        if self._status_reader is None and self._tier3 is not None:
+            try:
+                from FactoryVerse.game.agent.status_dump import StatusDumpReader
+                from FactoryVerse.environment.config import FactoryVerseConfig
+
+                base = FactoryVerseConfig().get_script_output_dir(self._tier3.instance or "client")
+                self._status_reader = StatusDumpReader(base / "factoryverse" / "status")
+            except Exception as e:
+                logger.debug(f"status reader unavailable: {e}")
+        return self._status_reader
+
+    def recipe_energy(self, recipe: str) -> Optional[float]:
+        """Recipe energy in seconds from the prototype data (None if unknown)."""
+        if recipe in self._energy_cache:
+            return self._energy_cache[recipe]
+        value: Optional[float] = None
+        try:
+            from FactoryVerse.game.factory.prototype_data import get_prototype_manager
+
+            raw = get_prototype_manager().get_raw_data()
+            proto = (raw.get("recipe") or {}).get(recipe)
+            if proto is not None:
+                value = float(proto.get("energy_required", 0.5))
+        except Exception:
+            value = None
+        self._energy_cache[recipe] = value
+        return value
+
+    def get_game_tick(self) -> Optional[int]:
+        """Current game tick, or None when there is no engine to ask.
+
+        Never a fake number (TURN_CONTRACT §4 Clock): a missing tick is an
+        honest gap in the record; an invented one blames time on the wrong
+        thing.
+        """
+        if not self._tier3:
+            return None
+        try:
+            return int(self._tier3.get_game_tick())
+        except Exception:
+            return None
+
+    def _stamp(self, before: Optional[int], text: str) -> str:
+        """Append the visible clock trailer and remember the span.
+
+        ``[tick 1200→1260, +60]`` is the HUD plan's rule 1 — a clock the
+        model can subtract from — and it costs one RCON call after the call
+        (plus one before). With no engine the trailer is omitted.
+        """
+        after = self.get_game_tick() if before is not None else None
+        if before is None or after is None:
+            self.last_tick_span = None
+            return text
+        self.last_tick_span = {"before": before, "after": after}
+        return f"{text}\n[tick {before}→{after}, +{after - before}]"
 
     @property
     def remote_view(self):
@@ -480,7 +678,9 @@ class _RuntimeAdapter:
         The FactoryVerse DSL is Python code using the agent API
         (walking, crafting, reachable_view, etc.), not Lua.
         """
-        return await self.execute_code(code, compress_output=True)
+        before = self.get_game_tick()
+        text = await self.execute_code(code, compress_output=True, mode=self.turn_mode)
+        return self._stamp(before, text)
 
     def execute_duckdb(
         self, query: str, metadata: Optional[Dict[str, Any]] = None
@@ -503,17 +703,19 @@ class _RuntimeAdapter:
         """
         refusal = check_read_only(query)
         if refusal is not None:
+            self.last_tick_span = None
             return refusal
 
+        before = self.get_game_tick()
         try:
             columns, rows, total = self._fetch_duckdb_rows(query)
         except _NoDatabase:
-            return "Database not available"
+            return self._stamp(before, "Database not available")
         except Exception as exc:  # surfaced as data: the model cannot catch it
             detail = str(exc)
             if len(detail) > 1000:
                 detail = detail[:1000] + "…"
-            return f"Query error: {type(exc).__name__}: {detail}"
+            return self._stamp(before, f"Query error: {type(exc).__name__}: {detail}")
 
         rendered = _render_query_result(columns, rows, total)
 
@@ -526,7 +728,7 @@ class _RuntimeAdapter:
             max_rows=self._DUCKDB_MAX_ROWS + 4,
             max_chars=self._DUCKDB_MAX_CHARS,
         )
-        return compressed.text
+        return self._stamp(before, compressed.text)
 
     def _fetch_duckdb_rows(self, query: str):
         """Return (column_names_or_None, rows, total_row_count).
@@ -576,15 +778,25 @@ class _RuntimeAdapter:
         """Return chat response."""
         return message
 
-    def get_tool_definitions(self, mode: str = "autonomous") -> List[Dict[str, Any]]:
+    def get_tool_definitions(
+        self,
+        mode: str = "autonomous",
+        *,
+        horizon_ticks: Optional[int] = None,
+        turn_mode: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Get tool definitions for the LLM.
 
         Defined once in ``environment.tool_definitions`` — this is the live
         path, and it used to carry the thinnest of three divergent copies.
         """
-        return _shared_tool_definitions(mode=mode)
+        return _shared_tool_definitions(
+            mode=mode, horizon_ticks=horizon_ticks, turn_mode=turn_mode or self.turn_mode
+        )
 
-    async def execute_code(self, code: str, compress_output: bool = False) -> str:
+    async def execute_code(
+        self, code: str, compress_output: bool = False, mode: str = "gameplay"
+    ) -> str:
         """Execute Python code and return output.
 
         Uses Tier 4's execute_code method which provides:
@@ -595,7 +807,13 @@ class _RuntimeAdapter:
         Note: For async code (with 'await'), Tier 4 wraps and awaits directly.
         """
         if self._tier4:
-            return await self._tier4.execute_code(code, compress_output=compress_output)
+            try:
+                return await self._tier4.execute_code(
+                    code, compress_output=compress_output, mode=mode
+                )
+            except TypeError:
+                # Older tier4 signature (tests' fakes): no mode parameter.
+                return await self._tier4.execute_code(code, compress_output=compress_output)
 
         # Fallback if Tier 4 not available (shouldn't happen in normal use)
         return "Error: Tier 4 (Runtime) not initialized"
