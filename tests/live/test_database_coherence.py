@@ -62,12 +62,12 @@ DATABASE_TABLE_COVERAGE = {
     "transport_belt": "test_live_entity_updates_all_derived_tables",
     "mining_drill": "test_live_entity_updates_all_derived_tables",
     "assembler": "test_live_entity_updates_all_derived_tables",
-    "agent_production_statistics": "test_agent_statistics_feeds_advance",
     "agent_manual_production_statistics": "test_agent_statistics_feeds_advance",
-    "power_samples": "test_power_and_status_feeds_advance",
-    "power_networks": "test_power_and_status_feeds_advance",
-    "entity_status": "test_power_and_status_feeds_advance",
 }
+# Not tables (Constitution §10 — no event backs them; cut 2026-08-29, API §4.6):
+# status, power and force production are read on demand through remote_view
+# and stamped with their source. Their live contracts are the two feed tests
+# below, which now exercise the readers rather than a reducer.
 
 
 @pytest.fixture(scope="module")
@@ -542,18 +542,24 @@ async def test_resource_entity_removal_matches_engine(coherent_game):
 
 
 async def test_agent_statistics_feeds_advance(coherent_game):
+    """Hand-crafting reaches the event-backed manual table AND the live
+    force-production read on remote_view (source-declared, never a table)."""
     tier3 = coherent_game["tier3"]
     view = coherent_game["remote_view"]
+    view.set_agent_id(1)
     before = view.query(
         "SELECT coalesce(max(tick), 0) AS tick FROM agent_manual_production_statistics"
     )[0]["tick"]
+    before_force = view.production(agent_id=1)
+    assert before_force.source.startswith("live:"), before_force.source
+    # Measured on 2.0.76 (2026-08-29): hand-crafted products never enter force
+    # production statistics; only their ingredients are consumed there.
+    before_plates_consumed = before_force.consumed.get("iron-plate", 0)
+    before_hand = before_force.hand_crafted.get("iron-gear-wheel", 0)
     tier3.run_lua(
         "remote.call('admin', 'add_items', 1, {['iron-plate']=2}); return true"
     )
 
-    # The public async craft path is exercised elsewhere.  Starting it through
-    # the same remote interface is enough here: this contract is specifically
-    # about both statistics files reaching their DuckDB reducers.
     started = tier3.run_lua(
         "return remote.call('agent_1', 'craft_enqueue', 'iron-gear-wheel', 1)"
     )
@@ -569,23 +575,27 @@ async def test_agent_statistics_feeds_advance(coherent_game):
         and json.loads(rows[0]["crafted"]).get("iron-gear-wheel", 0) >= 1,
         timeout=15,
     )
+    assert manual and json.loads(manual[0]["crafted"])["iron-gear-wheel"] >= 1
+
     force = await _eventually(
-        lambda: view.query(
-            "SELECT tick, statistics FROM agent_production_statistics "
-            "WHERE agent_id=1 ORDER BY tick DESC LIMIT 1"
-        ),
+        lambda: view.production(agent_id=1),
+        lambda report: report.hand_crafted.get("iron-gear-wheel", 0) > before_hand,
         timeout=15,
     )
-    assert manual and json.loads(manual[0]["crafted"])["iron-gear-wheel"] >= 1
-    assert force
+    assert force.source.startswith("live:"), force
+    assert force.produced.get("iron-gear-wheel", 0) == 0, force  # hand crafts are not force production
+    assert force.consumed.get("iron-plate", 0) >= before_plates_consumed + 2, force
+    assert force.hand_crafted.get("iron-gear-wheel", 0) > before_hand, force
+    assert force.automated() == {k: v for k, v in force.produced.items() if v > 0}, force
 
 
 async def test_power_and_status_feeds_advance(coherent_game):
+    """A new pole and assembler show up in the power sample and the status
+    dump, read through remote_view.power() / remote_view.status() with their
+    source declared — not through any table."""
     tier3 = coherent_game["tier3"]
     view = coherent_game["remote_view"]
-    before_power = view.query(
-        "SELECT coalesce(max(tick), 0) AS tick FROM power_samples"
-    )[0]["tick"]
+    before_power = view.power().sample_tick or 0
 
     assembler_position = _find_open_position(tier3, "assembling-machine-1", offset=6)
     pole_position = _find_open_position(tier3, "small-electric-pole", offset=2)
@@ -612,35 +622,39 @@ async def test_power_and_status_feeds_advance(coherent_game):
         """
     )
     try:
-        power_sample = await _eventually(
-            lambda: view.query(
-                "SELECT tick, network_count FROM power_samples "
-                "ORDER BY tick DESC LIMIT 1"
-            ),
-            lambda rows: bool(rows) and rows[0]["tick"] > before_power,
-            timeout=15,
+        power = await _eventually(
+            lambda: view.power(),
+            lambda report: (report.sample_tick or 0) > before_power
+            and any(n.network_id == created["network_id"] for n in report.networks),
+            timeout=20,
         )
-        network = await _eventually(
-            lambda: view.query(
-                "SELECT * FROM power_networks "
-                f"WHERE anchor_pole_x={created['pole']['x']} "
-                f"AND anchor_pole_y={created['pole']['y']} "
-                "ORDER BY tick DESC LIMIT 1"
-            ),
-            timeout=15,
-        )
+        assert power.source.startswith("power_dump:"), power.source
+        assert (power.sample_tick or 0) > before_power, power
+        network = next(n for n in power.networks if n.network_id == created["network_id"])
+        assert network.pole_count >= 1, network
+        assert network.anchor_pole_position is not None, network
+
+        def _status_row(summary):
+            for group in summary.groups.values():
+                for name, x, y in group.entities:
+                    if (
+                        name == "assembling-machine-1"
+                        and abs(x - created["assembler"]["x"]) < 1e-6
+                        and abs(y - created["assembler"]["y"]) < 1e-6
+                    ):
+                        return group.status
+            return None
+
         status = await _eventually(
-            lambda: view.query(
-                "SELECT status_name, tick FROM entity_status "
-                "WHERE entity_name='assembling-machine-1' "
-                f"AND position_x={created['assembler']['x']} "
-                f"AND position_y={created['assembler']['y']}"
-            ),
-            timeout=15,
+            lambda: view.status(max_positions=100000),
+            lambda summary: (summary.tick or 0) >= created["tick"]
+            and _status_row(summary) is not None,
+            timeout=20,
         )
-        assert power_sample and power_sample[0]["network_count"] >= 1
-        assert network and network[0]["network_id"] == created["network_id"]
-        assert status and status[0]["tick"] >= created["tick"]
+        assert status.source.startswith("status_dump:"), status.source
+        assert (status.tick or 0) >= created["tick"], status
+        assert _status_row(status) is not None, status
+        assert status.total >= 1
     finally:
         _destroy_at(tier3, "assembling-machine-1", created["assembler"])
         _destroy_at(tier3, "small-electric-pole", created["pole"])

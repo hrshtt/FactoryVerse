@@ -205,38 +205,46 @@ print(json.dumps(history, sort_keys=True))
 
 
 async def test_research_completion_push_exposes_recipes_and_effects(live_harness):
+    """A research completion reaches the agent's turn stream — the file every
+    datagram is appended to before it is sent (NOTIFICATIONS design) — with
+    the unlocked recipes and effects the engine reported."""
     supervisor, host = live_harness
-    await _execute_json(
-        host,
-        "events_seen = await events.drain(timeout=0)\n"
-        "print(__import__('json').dumps({'drained': len(events_seen)}))",
-        "research-drain",
-    )
+    environment = supervisor.environment
+    tier3 = environment.tier3
+    script_output = environment.config.infra_config.get_script_output_dir(tier3.instance)
+    turn_file = script_output / "factoryverse" / "agent-snapshots" / "1" / "turn.jsonl"
 
-    unlocked = supervisor.environment.tier3.run_lua(
+    def _finished(tech: str):
+        if not turn_file.exists():
+            return None
+        for line in turn_file.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                env = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # torn tail line
+            if env.get("event_type") == "research_finished" and env.get("data", {}).get("technology") == tech:
+                return env
+        return None
+
+    assert _finished("automation") is None, "fixture already researched automation"
+    unlocked = tier3.run_lua(
         "return remote.call('admin', 'unlock_technology', 1, 'automation')"
     )
     assert unlocked["success"] is True
 
-    event = await _execute_json(
-        host,
-        """
-import json
-event = await events.wait_for(
-    "research_finished",
-    predicate=lambda candidate: candidate.technology == "automation",
-    timeout=15,
-)
-print(json.dumps({
-    "technology": event.technology,
-    "unlocked_recipes": event.unlocked_recipes,
-    "effects": event.effects,
-    "level": event.level,
-}, sort_keys=True))
-""",
-        "research-wait",
-    )
-
+    envelope = None
+    for _ in range(300):
+        envelope = _finished("automation")
+        if envelope:
+            break
+        await asyncio.sleep(0.05)
+    assert envelope, "research_finished never reached turn.jsonl within 15s"
+    # The envelope is the stream unit's: epoch/seq/tick stamped once.
+    assert envelope["epoch"] >= 1 and envelope["seq"] >= 1 and envelope["tick"] > 0, envelope
+    event = envelope["data"]
     assert event["technology"] == "automation"
     assert set(event["unlocked_recipes"]) == set(unlocked["unlocked_recipes"])
     effect_recipes = {
@@ -246,6 +254,18 @@ print(json.dumps({
     }
     assert effect_recipes == set(event["unlocked_recipes"])
 
+    # And the catalog read on the surviving surface reflects it (CATALOG-1).
+    catalog = await _execute_json(
+        host,
+        """
+import json
+techs = research.list_technologies(name_filter="automation")
+print(json.dumps({"researched": [t["name"] for t in techs if t.get("researched")]}, sort_keys=True))
+""",
+        "research-catalog",
+    )
+    assert "automation" in catalog["researched"], catalog
+
 
 async def test_production_statistics_match_file_and_database_routes(live_harness):
     supervisor, host = live_harness
@@ -254,7 +274,7 @@ async def test_production_statistics_match_file_and_database_routes(live_harness
     tier4 = environment.tier4
     script_output = environment.config.infra_config.get_script_output_dir(tier3.instance)
     file_source = AgentSnapshotSource(script_output)
-    db_source = DuckDBSource(tier4.remote_view._database.connection)
+    db_source = DuckDBSource(tier4.remote_view._database.connection, script_output_dir=script_output)
 
     before_force = await file_source.get_force_production(1)
     before_manual = await file_source.get_manual_production(1)
@@ -289,24 +309,31 @@ print(json.dumps({"crafted": {"iron-gear-wheel": got.have - before}}, sort_keys=
             "production JSONL feeds did not expose two crafted iron gears within 10s"
         )
 
-    # Any actor DB read must flush queued file_io reductions before returning.
-    db_rows = await _execute_json(
+    # The force production read is live and says so; hand-crafted comes from
+    # the event-backed manual table. No production table exists (API §4.6).
+    report = await _execute_json(
         host,
         """
 import json
-rows = remote_view.query('''
-    SELECT agent_id, tick FROM agent_production_statistics
-    WHERE agent_id = 1 ORDER BY tick DESC LIMIT 1
-''')
+r = remote_view.production()
 manual_rows = remote_view.query('''
     SELECT agent_id, tick FROM agent_manual_production_statistics
     WHERE agent_id = 1 ORDER BY tick DESC LIMIT 1
 ''')
-print(json.dumps({"force": rows, "manual": manual_rows}, sort_keys=True))
+print(json.dumps({
+    "source": r.source,
+    "produced_gears": r.produced.get("iron-gear-wheel", 0),
+    "hand_gears": r.hand_crafted.get("iron-gear-wheel", 0),
+    "manual": manual_rows,
+}, sort_keys=True))
 """,
-        "production-db-flush",
+        "production-live-read",
     )
-    assert db_rows["force"] and db_rows["manual"]
+    assert report["source"].startswith("live:"), report
+    assert report["manual"], report
+    # Measured on 2.0.76 (2026-08-29): hand-crafted products are not force
+    # production; the event-backed manual series carries them.
+    assert report["produced_gears"] == 0 and report["hand_gears"] >= 2, report
 
     assert await db_source.get_force_production(1) == file_force
     assert await db_source.get_manual_production(1) == file_manual
@@ -448,7 +475,19 @@ print(json.dumps({
         """
 import json
 ghosts = remote_view.get_ghosts(f"SELECT * FROM ghost WHERE label = '{ghost_label}'")
-result = await ghost_builder.build_ghosts(ghosts, strict=True)
+built = 0
+failed = 0
+chest_item = inventory.get_item("wooden-chest")
+for g in ghosts:
+    # The map-write idiom (GHOST §6): walk there and place the real entity over
+    # the ghost; placement.lua replaces the ghost and inherits its label.
+    await walking.walk_to(g.position)
+    try:
+        chest_item.place(g.position)
+        built += 1
+    except RuntimeError:
+        failed += 1
+result = {"built_count": built, "failed_count": failed}
 real_rows = remote_view.query(f'''
     SELECT entity_name, position_x, position_y, label
     FROM map_entity WHERE label = '{ghost_label}'
@@ -472,258 +511,9 @@ print(json.dumps({
     assert converted["real_rows"][0]["label"] == "pytest:far-storage-intent"
 
 
-@pytest.mark.skip(reason="ghost_builder surface deleted 2026-08-29 (API §2.4, GHOST §4); Phase 4 removes the module and rewrites this as the composed idiom")
-async def test_build_plan_commit_boundaries_and_non_strict_partial_state(live_harness):
-    supervisor, host = live_harness
-    tier3 = supervisor.environment.tier3
-
-    # Strict inventory failure must occur before validation, ghost placement,
-    # movement, or any other map mutation.
-    tier3.run_lua(
-        "remote.call('admin', 'clear_inventory', 1); "
-        "remote.call('admin', 'add_items', 1, {['wooden-chest']=1}); return true"
-    )
-    strict = await _execute_json(
-        host,
-        OPEN_CHEST_POSITIONS_CODE
-        + """
-import json
-strict_positions = open_chest_positions(2, min_distance=3, max_distance=7, ghost=True)
-strict_label = "pytest:strict-preflight"
-strict_plan = GhostPlan(
-    "wooden-chest",
-    [(position, Direction.NORTH) for position in strict_positions],
-    strict_label,
-    "strict inventory preflight",
-    True,
-)
-strict_origin = walking.current_position
-strict_result = await ghost_builder.build_plan(strict_plan, strict=True)
-strict_after = walking.current_position
-strict_ghosts = remote_view.query(f"SELECT * FROM ghost WHERE label = '{strict_label}'")
-strict_reals = remote_view.query(f"SELECT * FROM map_entity WHERE label = '{strict_label}'")
-print(json.dumps({
-    "result": {key: value for key, value in strict_result.items() if not isinstance(value, list)},
-    "same_position": [strict_origin.x, strict_origin.y] == [strict_after.x, strict_after.y],
-    "ghosts": len(strict_ghosts),
-    "reals": len(strict_reals),
-    "inventory": inventory.check_total("wooden-chest"),
-}, sort_keys=True))
-""",
-        "building-strict-plan",
-    )
-    assert strict["result"]["placed_count"] == 0
-    assert "insufficient" in strict["result"]["error"].lower()
-    assert strict["same_position"] is True
-    assert strict["ghosts"] == strict["reals"] == 0
-    assert strict["inventory"] == 1
-
-    # Cache a valid plan, then occupy its position before commit. Commit-time
-    # validation must reject it without leaving plan ghosts or real entities.
-    tier3.run_lua(
-        "remote.call('admin', 'clear_inventory', 1); "
-        "remote.call('admin', 'add_items', 1, {['wooden-chest']=1}); return true"
-    )
-    prepared = await _execute_json(
-        host,
-        """
-import json
-stale_position = open_chest_positions(1, min_distance=2, max_distance=6)[0]
-stale_label = "pytest:stale-plan"
-stale_plan = GhostPlan(
-    "wooden-chest", [(stale_position, Direction.NORTH)], stale_label,
-    "plan made stale by a real obstruction", True,
-)
-blocker = inventory.get_item("wooden-chest")
-blocker.place(stale_position)
-print(json.dumps({"planned_valid": stale_plan.valid, "inventory": inventory.check_total("wooden-chest")}))
-""",
-        "building-stale-plan-prepare",
-    )
-    assert prepared == {"planned_valid": True, "inventory": 0}
-    tier3.run_lua(
-        "remote.call('admin', 'add_items', 1, {['wooden-chest']=1}); return true"
-    )
-    stale = await _execute_json(
-        host,
-        """
-import json
-stale_result = await ghost_builder.build_plan(stale_plan, strict=True)
-stale_ghosts = remote_view.query(f"SELECT * FROM ghost WHERE label = '{stale_label}'")
-stale_reals = remote_view.query(f"SELECT * FROM map_entity WHERE label = '{stale_label}'")
-at_position = remote_view.query(f'''
-    SELECT count(*) AS count FROM map_entity
-    WHERE entity_name = 'wooden-chest'
-      AND position_x = {stale_position.x} AND position_y = {stale_position.y}
-''')
-print(json.dumps({
-    "result": {key: value for key, value in stale_result.items() if not isinstance(value, list)},
-    "ghosts": len(stale_ghosts),
-    "plan_reals": len(stale_reals),
-    "entities_at_position": at_position[0]["count"],
-    "inventory": inventory.check_total("wooden-chest"),
-}, sort_keys=True))
-""",
-        "building-stale-plan-commit",
-    )
-    assert stale["result"]["placed_count"] == 0
-    assert "revalidation" in stale["result"]["error"].lower()
-    assert stale["ghosts"] == stale["plan_reals"] == 0
-    assert stale["entities_at_position"] == 1
-    assert stale["inventory"] == 1
-
-    # Non-strict mode deliberately permits a partial commit, but its result and
-    # final database state must identify the exact completed/remainder split.
-    tier3.run_lua(
-        "remote.call('admin', 'clear_inventory', 1); "
-        "remote.call('admin', 'add_items', 1, {['wooden-chest']=1}); return true"
-    )
-    partial = await _execute_json(
-        host,
-        """
-import json
-partial_positions = open_chest_positions(2, min_distance=2, max_distance=6, ghost=True)
-partial_label = "pytest:non-strict-partial"
-partial_plan = GhostPlan(
-    "wooden-chest",
-    [(position, Direction.NORTH) for position in partial_positions],
-    partial_label,
-    "one item for two planned entities",
-    True,
-)
-partial_result = await ghost_builder.build_plan(partial_plan, strict=False)
-partial_reals = remote_view.query(f'''
-    SELECT position_x, position_y, label FROM map_entity WHERE label = '{partial_label}'
-''')
-partial_ghosts = remote_view.query(f'''
-    SELECT position_x, position_y, label FROM ghost WHERE label = '{partial_label}'
-''')
-print(json.dumps({
-    "result": partial_result,
-    "reals": partial_reals,
-    "ghosts": partial_ghosts,
-    "inventory": inventory.check_total("wooden-chest"),
-}, sort_keys=True))
-""",
-        "building-partial-plan",
-    )
-    assert partial["result"]["placed_count"] == 2
-    assert partial["result"]["built_count"] == 1
-    assert partial["result"]["failed_count"] == 1
-    assert len(partial["reals"]) == 1
-    assert len(partial["ghosts"]) == 1
-    assert partial["inventory"] == 0
-    real_position = (partial["reals"][0]["position_x"], partial["reals"][0]["position_y"])
-    ghost_position = (partial["ghosts"][0]["position_x"], partial["ghosts"][0]["position_y"])
-    assert real_position != ghost_position
-
-
-@pytest.mark.skip(reason="ghost_builder surface deleted 2026-08-29 (API §2.4, GHOST §4); Phase 4 removes the module and rewrites this as the composed idiom")
-async def test_planning_is_pure_and_persisted_python_skill_commits_later(live_harness):
-    """Python may preserve intent; only the later embodied commit mutates."""
-    supervisor, host = live_harness
-    tier3 = supervisor.environment.tier3
-    tier3.run_lua(
-        "remote.call('admin', 'clear_inventory', 1); "
-        "remote.call('admin', 'add_items', 1, {['transport-belt']=2}); return true"
-    )
-
-    planned = await _execute_json(
-        host,
-        """
-import json, math
-
-def find_open_belt_line(length=2):
-    origin = walking.current_position
-    base_x, base_y = math.floor(origin.x), math.floor(origin.y)
-    offsets = sorted(
-        ((dx, dy) for dx in range(-3, 4) for dy in range(-3, 4)),
-        key=lambda offset: math.hypot(*offset),
-    )
-    for dx, dy in offsets:
-        positions = [
-            MapPosition(base_x + dx + offset + 0.5, base_y + dy + 0.5)
-            for offset in range(length)
-        ]
-        valid = placement_hints.validator.validate_batch(
-            "transport-belt",
-            positions,
-            [Direction.EAST] * length,
-            ghost=True,
-        )
-        if all(valid):
-            return positions
-    raise AssertionError("no open two-belt line found near the agent")
-
-belt_positions = find_open_belt_line()
-planning_origin = walking.current_position
-inventory_before_plan = inventory.check_total("transport-belt")
-saved_belt_plan = placement_hints.get_placement_line(
-    "transport-belt", belt_positions[0], belt_positions[-1], validate=True
-)
-
-async def commit_saved_belt_plan():
-    return await ghost_builder.build_plan(saved_belt_plan, strict=True)
-
-inventory_after_plan = inventory.check_total("transport-belt")
-planning_after = walking.current_position
-planned_reals = remote_view.query(
-    f"SELECT * FROM map_entity WHERE label = '{saved_belt_plan.label}'"
-)
-planned_ghosts = remote_view.query(
-    f"SELECT * FROM ghost WHERE label = '{saved_belt_plan.label}'"
-)
-print(json.dumps({
-    "valid": saved_belt_plan.valid,
-    "positions": len(saved_belt_plan.positions),
-    "inventory_before": inventory_before_plan,
-    "inventory_after": inventory_after_plan,
-    "same_position": [planning_origin.x, planning_origin.y] == [planning_after.x, planning_after.y],
-    "reals": len(planned_reals),
-    "ghosts": len(planned_ghosts),
-}, sort_keys=True))
-""",
-        "building-pure-plan",
-    )
-    assert planned == {
-        "ghosts": 0,
-        "inventory_after": 2,
-        "inventory_before": 2,
-        "positions": 2,
-        "reals": 0,
-        "same_position": True,
-        "valid": True,
-    }
-
-    committed = await _execute_json(
-        host,
-        """
-import json
-commit_result = await commit_saved_belt_plan()
-committed_reals = remote_view.query(f'''
-    SELECT entity_name, position_x, position_y, direction, label
-    FROM map_entity WHERE label = '{saved_belt_plan.label}'
-    ORDER BY position_x, position_y
-''')
-committed_ghosts = remote_view.query(
-    f"SELECT * FROM ghost WHERE label = '{saved_belt_plan.label}'"
-)
-print(json.dumps({
-    "result": commit_result,
-    "reals": committed_reals,
-    "ghosts": len(committed_ghosts),
-    "inventory": inventory.check_total("transport-belt"),
-}, sort_keys=True))
-""",
-        "building-persisted-skill-commit",
-    )
-    assert committed["result"]["placed_count"] == 2
-    assert committed["result"]["built_count"] == 2
-    assert committed["result"]["failed_count"] == 0
-    assert committed["ghosts"] == 0
-    assert committed["inventory"] == 0
-    assert len(committed["reals"]) == 2
-    assert {row["entity_name"] for row in committed["reals"]} == {"transport-belt"}
+# The two build_plan / planning-commit contracts that lived here were deleted
+# 2026-08-29 with ghost_builder (API §2.4, GHOST §4): the executor verb is gone
+# and the composed idiom (walk, build over the ghost) is exercised above.
 
 
 async def test_offshore_pump_site_supplies_actionable_approach_position(live_harness):
@@ -747,9 +537,9 @@ if not water_hints:
 sites = []
 for hint in water_hints:
     center = MapPosition(x=hint["x"], y=hint["y"])
-    sites = placement_hints.find_offshore_pump_sites(
+    sites = entity_reference("offshore-pump").sites(
         near=center, radius=20, max_results=20
-    )
+    ).value
     if sites:
         break
 if not sites:

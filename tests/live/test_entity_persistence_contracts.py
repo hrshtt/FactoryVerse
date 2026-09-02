@@ -273,6 +273,24 @@ def _engine_cell_state(tier3, rig: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _status_rows(view, entity_name: str, position: dict[str, float]) -> list[dict[str, Any]]:
+    summary = view.status(max_positions=100000)
+    assert summary.source.startswith("status_dump:"), summary.source
+    rows = []
+    for group in summary.groups.values():
+        for name, x, y in group.entities:
+            if (
+                name == entity_name
+                and abs(x - position["x"]) < 1e-6
+                and abs(y - position["y"]) < 1e-6
+            ):
+                rows.append({
+                    "entity_name": name, "position_x": x, "position_y": y,
+                    "status_name": group.status, "tick": summary.tick,
+                })
+    return rows
+
+
 def _database_cell_state(view, rig: dict[str, Any]) -> dict[str, Any]:
     drill = rig["drill"]
     chest = rig["chest"]
@@ -300,10 +318,10 @@ def _database_cell_state(view, rig: dict[str, Any]) -> dict[str, Any]:
             "SELECT entity_name, position_x, position_y, direction, mining_target "
             f"FROM mining_drill WHERE {drill_key}"
         ),
-        "status": view.query(
-            "SELECT entity_name, position_x, position_y, status_name, tick "
-            f"FROM entity_status WHERE {drill_key}"
-        ),
+        # Status has no event backing and is not a table (Constitution §10):
+        # read it from the newest status dump block through remote_view.status()
+        # and keep the same row shape the old query produced.
+        "status": _status_rows(view, drill["name"], drill["position"]),
         "seed_resource": view.query(
             "SELECT name, position_x, position_y, amount FROM resource_tile "
             f"WHERE name={_sql_literal(seed['name'])} "
