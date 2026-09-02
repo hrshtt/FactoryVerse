@@ -25,13 +25,63 @@ Decisions that shape the order (2026-08-29): hand crafting and research stay in 
 
 ---
 
-## What we are up to (2026-08-29)
+## What we are up to (2026-09-02)
 
-- **Phase 4 in progress** — transport and ghosts. 4A (Python): `belt_to_ground_type` into `transport_belt`, the derived `transport.line()`/`lines()`/`shares_line_with()` over event-backed geometry, the fixture decomposition as a live check, `ghost_builder` deleted. 4B (Lua): `belt.contents` live read, the remaining adjacency keys out of the serializer, pole `wired_to()`/`can_wire_to()` live, `place_line`.
-- **Phase 3 live certification running**: DB coherence, entity persistence, freeplay harness domains against fresh Docker servers with the eight-name surface.
-- **Phase 2 still owes**: the `action` stream's migration onto `stream.lua`; a hash-and-delta scheme for `inference_input` before N is raised; the comprehension probes (TURN §8.6), which need a model.
-- **Operational note**: two live suites that "own" ports still share the compose project (`factorio_0`), so they must run one at a time; and `fv server start` returns before the server accepts RCON auth (a readiness race seen twice today) — attach with a retry.
-- **Phase 1 owes one live check**: a human client joining a running world (spectator controller, no character, nothing altered) — `tests/live/test_scenario_boot_contract.py`, skipped until `FV_LIVE_HUMAN_CLIENT=1` with a client connected.
+**Phase 4 is blocked on a lying floor. Read this before doing anything else.**
+
+### The blocker — the snapshot pipeline reports healthy over an empty disk
+
+`tests/live/test_transport_fixture.py` boots the `iron-saturated` fixture, asks the
+mod for its boot report, and then loads the host-side snapshot directory. In the
+same run the mod reports **427 chunks charted, 427 snapshotted, ≥380 entities
+tracked** while the loader reads **0 entities, 0 chunks**. The host directory holds
+only `power_networks.jsonl` — no per-chunk `entities-init.jsonl` exists.
+
+Requesting the boot pass explicitly (`remote.call("map","boot")`, added for this)
+changes nothing, because `boot_reconcile_charted_chunks` only queues chunks whose
+storage entry says they still need snapshotting. **"Snapshotted" is a claim about
+mod storage, and it is being read as a claim about files on disk.** Those are
+different facts, and on a resumed save they routinely disagree.
+
+**The second-order damage is worse than the failing test.**
+`tests/live/test_snapshot_boot_contract.py` took **68.7 s** when it certified this
+layer on 2026-08-29 (registering 397 chunks, ingesting 404 entities) and now passes
+in **3.37 s**, because the save's own bookkeeping satisfies every assertion without
+a single file being written. It is green and it is testing nothing — §14 verbatim,
+in the check that guards the floor everything else in Phase 4 stands on.
+
+**Probable cause, and a warning about the fixture.** Until the copy-before-boot fix
+in `0cd396e`, a server booted from a named save autosaved back over it. The mtime on
+`.fv-output/server_0/saves/iron-saturated.zip` moved during this session, so the
+fixture very likely now carries the post-snapshot storage that makes the check
+vacuous — the instrument was damaged by the defect it was being used to find. The
+ground truth in `TRANSPORT_CONNECTIVITY_PLAN.md` §1.1 (four components, 142/55/55/32,
+the merge at (39.5, 58.5)) was measured against the pristine save. **Re-creating or
+re-verifying the fixture is part of this work**, not a preliminary to it.
+
+**Shape of the fix** (not designed, not executed): the boot pass must verify its own
+output rather than trust its bookkeeping — reconcile `snapshot_tick` /
+`has_tracked_entities` against the files the mod can actually see, and treat a chunk
+whose file is missing as needing a snapshot regardless of what storage says. This is
+the same class as the defect Phase 1B fixed (`chunk_lookup` populated only by an
+event that never fires on a pre-charted world) one level up: there, storage was empty
+when the world was full; here, storage is full when the disk is empty.
+
+### Also in flight
+
+- **Phase 4B (not started)** — the Lua half: `belt.contents` live read, the remaining
+  adjacency keys out of the serializer (`underground_neighbour`, `connected_poles`,
+  inserter/miner `pickup_target`/`drop_target` — all still read by Python today),
+  pole `wired_to()` / `can_wire_to()` as live reads, `place_line`.
+- **Phase 2 still owes**: the `action` stream's migration onto `stream.lua`; a
+  hash-and-delta scheme for `inference_input` before N is raised above 128; the
+  comprehension probes (TURN §8.6), which need a model.
+- **Phase 1 owes one live check**: a human client joining a running world (spectator
+  controller, no character, nothing altered) — skipped until `FV_LIVE_HUMAN_CLIENT=1`
+  with a client connected.
+- **Operational notes**: live suites share the compose project (`factorio_0`), so they
+  run one at a time; `fv server start` returns before RCON accepts authentication —
+  attach with a bounded retry (the pattern is in `tests/live/test_turn_contract.py`).
 
 ---
 
@@ -54,23 +104,51 @@ Decisions that shape the order (2026-08-29): hand crafting and research stay in 
 | 2026-08-29 | Phase 2B — `stream.lua` (side-effect-free unit: open/emit/flush/new_epoch/state, envelope `{epoch,seq,tick,event_type,data}`); the seven `turn` types leave only on the per-agent `turn` port (`34300 + 10·N + i`), one file append + one datagram per item per tick; `crafting_finished` no longer leaves twice; Python `TurnStreamListener` adopts `(epoch, seq)` from `stream_state` at attach, accepts only the next seq, fills gaps from `turn.jsonl` and marks them; `research_moved`/`research_reversed` typed | `28f5b2d` | `tests/unit/test_turn_stream.py`, vocabulary xfails 4→3. **Live (2026-08-29):** `tests/live/test_turn_stream.py` 4 passed on 2.0.76 — datagram ceiling measured at ~8 KiB (`MAX_DATAGRAM_BYTES = 8000`), inversion gone (gate 6), a dropped datagram is announced and filled from the file (gate 7), attach at seq N accepts N+1 and treats N+5 as a gap (gate 8) |
 | 2026-08-29 | Phase 2C — `end_turn` tool; exact fast-forward via `tick_paused` + `ticks_to_run` at speed 64 (`Tier3Python.advance_world`); `TurnConfig` (N=128 attention calls, T∈[3600, 36000], tier buckets, rate term; hashed into the record, absent from the prompt); the turn report as the first input of the next turn (clock, horizon, plan, production automated/hand, map diff, status transitions from `status_dump.changed`, research, crafting, inventory, events with epoch:seq); one drain per turn after the advance; planning/gameplay modes with a filtered namespace, planning after every `research_finished`; prompt teaches turns and the "between turns" claim is now true | `9ea484a` | `tests/unit/test_turn_contract.py` (10): ledger reconciles, attention cap, planning refuses body verbs and advances 0, one drain per turn, report thresholds. **Live (2026-08-29):** `tests/live/test_turn_contract.py` 3 passed — 600 and 3600 ticks land exactly (~186 t/s), and the ledger reconciles to the horizon once the remainder is computed on the frozen tick and the paused boundary is the next turn's start (two earlier runs put 2–6 ticks on nobody's ledger; that is now a unit test) |
 
-| 2026-08-29 | Phase 3A — `remote_view.status()`, `status_changed()`, `power()`, `production()` read the dump files / the engine and declare their source; power presentation re-pointed; `entity_status`, `power_samples`, `power_networks`, `agent_production_statistics` cut with reducers, boot loads and sync keys; `chunk_snapshot_meta.tick` advances live; `resource_tile.amount` documented as charting-time | `9b9daa9` | `tests/unit/test_dump_readers.py`, `test_state_tables_wired.py` (no polled table may exist), `test_power_ux.py`; DDL↔doc parity green. **Live: pending** (suites running) |
+| 2026-08-29 | Phase 3A — `remote_view.status()`, `status_changed()`, `power()`, `production()` read the dump files / the engine and declare their source; power presentation re-pointed; `entity_status`, `power_samples`, `power_networks`, `agent_production_statistics` cut with reducers, boot loads and sync keys; `chunk_snapshot_meta.tick` advances live; `resource_tile.amount` documented as charting-time | `9b9daa9` | `tests/unit/test_dump_readers.py`, `test_state_tables_wired.py` (no polled table may exist), `test_power_ux.py`; DDL↔doc parity green. **Live (2026-08-29):** the re-scoped suites pass — DB coherence 13/13, entity persistence 2/2, freeplay harness 8/8 |
 | 2026-08-29 | Phase 3B — `inventory.await_item` (bounded, well-founded, actuals), `Container.set_limit`, `entity.status` (live, sourced), `entity_reference(name)` (read-only subset under identical names; parity test per family), `research.list_technologies` / `crafting.list_recipes` (CATALOG-1 closed), caller-scoped `research.dequeue`, craft prediction at enqueue | `d266efd` | `tests/unit/test_entity_reference.py` (26) |
 | 2026-08-29 | Phase 3C — deleted from the namespace: `walking.walk_to_entity`, `placement`, `entity_ops`, `mining`, `resources`, `verify`, `placement_hints`, `events`, blocking `crafting.craft()`; mechanisms kept behind the objects (`infra/live_batch.py`, pure placement-hint parsers); the namespace is exactly eight names and both direction checks assert it; `CraftingQueueStatus` is a dataclass (CRAFT-STATUS-1 closed); predictions flow into the report; prompt teaches the four idioms; docs regenerated | `51a07c0` | `tests/unit/test_docs_honesty.py` (namespace == the eight), `test_live_batch.py`, battery 485 passed |
 
-Battery after Phase 3: 485 passed, 1 skipped, 3 xfailed (strict).
+| 2026-08-29 | Live suites re-scoped to the eight-name surface: status/power/production through the readers, placement through `item.place()` and `entity_reference().can_place`, crafting through `enqueue` + `await_item`, research completion read off the turn stream file, ghost conversion as the composed idiom; two contracts driving the deleted executor removed | `52170d0` | The suites themselves — and they earned their keep by finding the four defects below |
+| 2026-08-29 | Four defects the live runs found: force production read inverted (`input_counts` is production — measured); the power sampler dead in the new `EMPTY` phase; the boot gate counting a non-combat character as an enemy; a server booting from a named save autosaving over it. Plus a fail-closed guard when mod storage and the host snapshot disk disagree | `0cd396e` | `tests/live/test_database_coherence.py` 13/13 and `test_freeplay_harness_domains.py` 8/8 after the fixes; the production semantics were settled by a probe, recorded in the commit |
+| 2026-08-29 | Phase 4A — `belt_to_ground_type` and `loader_type` promoted into `transport_belt`; `transport.line()` / `lines()` / `shares_line_with()` derived at read time, never stored; `belt.line()` as the per-entity mirror; `ghost_builder` withdrawn on progression grounds; belts and ghosts taught in the prompt | `5f97896` (deletion misfiled in `0cd396e`) | `tests/unit/test_transport.py` (11), including the neighbour-invalidation case stored adjacency cannot pass. **Live: BLOCKED** — see the blocker above |
 
-Still in the serializer because Python reads them (go with Phase 4): `belt_data.underground_neighbour`, `pole_data.connected_poles`, inserter/miner `pickup_target`/`drop_target`. Known dead code left in place: `infra/services/agent_service.py` (no importer). `footprint_tiles.is_ghost` kept — `remote_view` reads it, but ghosts write no footprint tiles (Phase 3 decides).
+Battery after Phase 4A: 494 passed, 1 skipped, 3 xfailed (strict).
+
+Still in the serializer because Python reads them (go with Phase 4): `belt_data.underground_neighbour`, `pole_data.connected_poles`, inserter/miner `pickup_target`/`drop_target`. Known dead code left in place: `infra/services/agent_service.py` (no importer). `footprint_tiles.is_ghost` kept — `remote_view` branches on it to route lookups to the `ghost` table, but ghosts write no footprint tiles, so that branch is dead by data. Undecided; it belongs with the ghost work.
 
 ---
 
 ## What we will do
 
-In order. Each phase starts when the previous one's check column has no "pending".
+In order. Each item starts when the one before it has no "pending" or "BLOCKED" in
+its check column.
 
-1. **Finish Phase 1** and certify it live: scenario-matches-manifest, fresh boot differs by seed, zero enemies in the §7 fixed area, joining human has no character and alters nothing, fixture ingests ≥ 400 entities at boot.
-2. **Phase 2 — the turn.** First the two gates that precede any clock work: a nonce printed by a program must appear in the next inference's input; the trajectory records the full model input, every notification, and every context compression. Then tick stamps on `execute_dsl`, `stream.lua` behind the `turn` stream, drain only at the turn boundary, `end_turn` with fast-forward, the report, the planning/gameplay mode split. Open question recorded in TURN §6: the planning-mode namespace is an assumption until it is exercised.
-3. **Phase 3 — the surface.** Build before deleting: dump readers on `remote_view` (status current/changed, power, production), re-point the power presentation, then cut `entity_status`, `power_samples`, `power_networks`, `agent_production_statistics`. `await_item`, `Container.set_limit`, `entity_reference`, catalog reads. Then delete: blocking `craft()`, the `placement`, `entity_ops`, `verify`, `events`, `mining` accessors, `placement_hints._call()`'s error-key raise, `resources` alias. Regenerate the reference after each.
-4. **Phase 4 — transport and ghosts**, each behind the fixture check.
-5. **Phase 5 — names.**
-6. **Then** the first eval run under the new contract, with the comprehension probes the plans list, and the belt baseline on a task with a forced ore→smelter gap (TRANSPORT §9.8). External harness transports are rebuilt only after that run.
+1. **Unblock the floor.** Make the snapshot boot pass verify its own output instead
+   of trusting its bookkeeping, re-establish a trustworthy `iron-saturated` fixture,
+   and make `test_snapshot_boot_contract.py` fail on a world it did not actually
+   ingest — it must not be able to pass in three seconds again. Then run
+   `test_transport_fixture.py` and certify the belt derivation against the four
+   named components.
+2. **Phase 4B — the Lua half of transport.** `belt.contents` as a live read (the
+   commented-out `get_contents()` with the comment claiming the method does not
+   exist, thirty lines from a file that calls it); the remaining adjacency keys out
+   of the serializer once their Python readers move to the derived reads; pole
+   `wired_to()` / `can_wire_to()` as live reads, never derived (§1.2 — geometry
+   over-connects on 12 of 44 poles); `place_line` on the item, behind the drag
+   differential §9.3 asks for; fluid last, because it is unproven and the fixture
+   has no pipes.
+3. **Phase 5 — names.** The tier rename and `execute_dsl → execute_python`, as one
+   mechanical commit with deprecated aliases for a cycle.
+4. **Close what earlier phases owe**: the `action` stream onto `stream.lua`; the
+   human-join live check; a hash-and-delta scheme for `inference_input` before N
+   rises above 128.
+5. **Then the first eval run under the new contract** — the comprehension probes each
+   plan lists (they need a model, and they are cheap), then the belt baseline on a
+   task with a forced ore→smelter gap (TRANSPORT §9.8), unprompted then prompted.
+   External harness transports are rebuilt only after that run.
+
+**A standing caution for whoever picks this up.** Three times in this work a check
+was green while the thing it named was not happening: the documentation coverage
+report, the status walk that ignored its own argument, and now the snapshot boot
+contract. Each was found by asking what the check would do if the layer under it did
+nothing at all. Ask that question of any green you are about to build on.
