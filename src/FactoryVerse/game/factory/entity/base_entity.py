@@ -179,7 +179,7 @@ class BaseEntity:
         self._view = view
         self._prototype_cache: Optional[Dict[str, Any]] = None
         # Common snapshot identity carried by both generic entities and
-        # specialized subclasses. GhostBuilder uses these fields to preserve
+        # specialized subclasses. Ghost-to-real conversion uses these fields to preserve
         # plan direction and label through ghost -> real commitment.
         self.direction = kwargs.get("direction")
         self.label = kwargs.get("label")

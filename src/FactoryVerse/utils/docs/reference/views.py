@@ -563,6 +563,37 @@ entities = remote_view.get_entities_at_anchor_tile(5, 10)
 
     registry.register_method(
         cls=RemoteView,
+        method_name="transport",
+        description="Belt topology derived from the map model at call time: "
+        "remote_view.transport.lines() lists every belt component (count, heads fed by "
+        "nothing, tails feeding nothing, merge points fed by two belts); .line(belt_or_position) "
+        "returns the component containing one belt; .shares_line_with(a, b). Structure, "
+        "computed from (position, direction, belt_to_ground_type) — never stored, so it is "
+        "fresh by construction; source = map_entity:seq<n>. Per-belt mirror: belt.line().",
+        examples=[
+            Example(
+                code="""# Did my belt run connect end to end, and where does it merge?
+for line in remote_view.transport.lines():
+    print(line.count, "belts; heads", line.heads, "tails", line.tails, "merges", line.merges, line.source)
+first = remote_view.get_entity("SELECT * FROM map_entity WHERE entity_name = 'transport-belt' ORDER BY position_x LIMIT 1")
+if first is not None:
+    component = remote_view.transport.line(first)   # same read as first.line()
+    print(component.count, component.tails)""",
+                decision_context="Verifying a belt run after placing it, or reading the base's transport structure",
+                expected_outcome="BeltLine components; a gap in a run shows as two components, a side-load as one component with two heads and a merge",
+                validation_level=ValidationLevel.SYNTAX,
+            ),
+        ],
+        decision_points=[
+            "A gapped run is two components: fix the gap, then read again",
+            "Two belts facing each other are not connected; a belt pointing into the side of another side-loads it (a merge)",
+            "Underground pairs are bridged from belt_to_ground_type; a tunnel longer than the prototype's max_distance is two components",
+            "What is ON the belt is simulation, not structure: that is a live read, not this one",
+        ],
+    )
+
+    registry.register_method(
+        cls=RemoteView,
         method_name="status",
         description="Base-wide entity status summary — which problem, how many, roughly "
         "where — read from the newest status dump on disk (source = status_dump:<tick>), "

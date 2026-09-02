@@ -361,7 +361,6 @@ class ExampleValidator:
             "entity_ops": getattr(runtime, "entity_ops", None),
             "reachable_view": getattr(runtime, "reachable_view", None),
             "remote_view": getattr(runtime, "remote_view", None),
-            "ghost_builder": getattr(runtime, "ghost_builder", None),
             "placement_hints": getattr(runtime, "placement_hints", None),
         }
 
@@ -474,6 +473,7 @@ class StaticAttributeValidator:
         "remote_view.get_power_networks": "PowerNetworksReport",
         "remote_view.power": "PowerNetworksReport",
         "remote_view.status": "StatusSummary",
+        "remote_view.transport": "TransportReads",
         "remote_view.status_changed": "StatusChange",
         "remote_view.production": "ProductionReport",
         "remote_view.diagnose_power": "PowerDiagnosis",
@@ -627,6 +627,7 @@ class StaticAttributeValidator:
                 StatusSummary, StatusGroup, ProductionReport,
             )
             from FactoryVerse.game.agent.status_dump import StatusChange, StatusTransition
+            from FactoryVerse.game.agent.transport import TransportReads, BeltLine
             from FactoryVerse.game.agent.embodied_actions.research import ResearchStatus, QueuedTechnology
             from FactoryVerse.game.agent.embodied_actions.inventory import AwaitItemResult
             from FactoryVerse.game.agent.embodied_actions.crafting import CraftPrediction
@@ -660,6 +661,8 @@ class StaticAttributeValidator:
                 "StatusGroup": StatusGroup,
                 "StatusChange": StatusChange,
                 "StatusTransition": StatusTransition,
+                "TransportReads": TransportReads,
+                "BeltLine": BeltLine,
                 "ProductionReport": ProductionReport,
                 "ConnectionPosition": ConnectionPosition,
                 "WireConnectionPosition": WireConnectionPosition,

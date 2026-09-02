@@ -47,6 +47,7 @@ from FactoryVerse.game.snapshot.types import LoadResult, SyncState
 from FactoryVerse.infra.udp_dispatcher import get_udp_dispatcher
 from FactoryVerse.game.agent.status_dump import StatusBlock, StatusChange, StatusDumpReader
 from FactoryVerse.game.agent.power_dump import PowerDumpReader, PowerSample
+from FactoryVerse.game.agent.transport import TransportReads, BeltLine
 
 # MINE-BLOCK-1: the two tables natural resources live in. Trees and rocks are
 # entities; ore deposits are tiles whose amount decrements as they are mined.
@@ -821,7 +822,7 @@ class RemoteView:
             ... ''')
         """
         self._ensure_query_ready()
-        return self._query.get_entities(sql)
+        return [self._attach_reads(e) for e in self._query.get_entities(sql)]
 
     def get_entity(self, sql: str) -> Optional["BaseEntity"]:
         """Execute SQL with LIMIT 1, return single entity.
@@ -835,7 +836,7 @@ class RemoteView:
             Single BaseEntity with REMOTE view or None
         """
         self._ensure_query_ready()
-        return self._query.get_entity(sql)
+        return self._attach_reads(self._query.get_entity(sql))
 
     def get_resources(self, sql: str) -> List["BaseResource"]:
         """Execute SQL, return resource instances with REMOTE view.
@@ -1045,6 +1046,40 @@ class RemoteView:
                 if len(out) >= 5:
                     break
         return out
+
+    @property
+    def transport(self) -> TransportReads:
+        """Belt topology derived from the map model at call time (structure).
+
+        ``remote_view.transport.lines()`` lists every belt component with its
+        heads, tails and merge points; ``.line(entity_or_position)`` returns
+        the one containing a belt; ``.shares_line_with(a, b)``. Derived from
+        ``(position, direction, belt_to_ground_type)`` — event-backed columns
+        — and never stored, so it is fresh by construction; ``source`` names
+        the map model's last applied sequence. The same read on one belt is
+        ``belt.line()``.
+
+        Example:
+            >>> for line in remote_view.transport.lines():
+            ...     print(line.count, line.heads, line.tails, line.merges, line.source)
+            >>> first = remote_view.get_entity("SELECT * FROM map_entity WHERE entity_name='transport-belt' LIMIT 1")
+            >>> remote_view.transport.line(first).count
+        """
+        if getattr(self, "_transport_reads", None) is None:
+            self._transport_reads = TransportReads(
+                lambda: self._database.connection,
+                lambda: f"map_entity:seq{self._database.get_last_sequence()}",
+            )
+        return self._transport_reads
+
+    def _attach_reads(self, entity):
+        """Hand a hydrated entity the derived reads it mirrors under the same root."""
+        if entity is not None and hasattr(entity, "_get_belt_state"):
+            try:
+                entity._transport = self.transport
+            except Exception:  # noqa: BLE001
+                pass
+        return entity
 
     def status(self, max_positions: int = 5, statuses: Optional[List[str]] = None) -> StatusSummary:
         """The base-wide status summary — which problem, how many, roughly where.

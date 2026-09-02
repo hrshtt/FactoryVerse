@@ -178,6 +178,25 @@ d = remote_view.diagnose_power("assembling-machine-1", pos)   # -> PowerDiagnosi
 - **Drill output**: `drill.connection_positions("stone-furnace")` — the furnace/chest/belt at the cue receives ore directly, no inserter. Note: `drop_target` resolves only once the drill is fueled and working — fuel it before debugging "missing" connections.
 - **Inserter bridge** (chest↔furnace↔assembler): `entity_reference("inserter").placements_between(source_entity, target_entity)` returns `{positions: [(position, direction), …], reason}` where the inserter actually reaches both; an empty list carries its `reason` as data, not an error. Inserter `direction` points at the PICKUP side — don't "correct" it.
 - **Power poles**: `pole.connection_positions("small-electric-pole")` — placing at a cue auto-attaches the wire; use `wire_distance_utilization` near 1.0 to span gaps with fewest poles.
+
+### Belts — carrying items across a distance
+
+**Three kinds of fact, three places to read them.** Structure (where things are, which way they face, how belts chain) is queryable from the map model; simulation (what is on a belt, a machine's status, power satisfaction) is read live; and every read says which one it used (`source`). A read never tells you what to conclude — it tells you what you would see.
+
+**Worked pattern — drill to furnace over a gap:**
+1. Cue the drill's output onto a belt tile: `drill.connection_positions("transport-belt")` gives the tile and direction the ore drops onto.
+2. Pre-check the run before you hold a belt: `ref = entity_reference("transport-belt")`; for each tile of the straight leg, `ref.can_place(tile, direction)` — a red tile now beats a failed place later.
+3. Place the leg: `belt = inventory.get_item("transport-belt")`; walk within reach and `belt.place(tile, direction)` tile by tile (the loop is yours — each placement is a decision you can stop at).
+4. **Verify the component**: `remote_view.transport.line(first_tile).count` must equal the tiles you placed, with one tail at the consumer end. A gap shows as two components; fix the gap, read again.
+5. Bridge into the consumer: `entity_reference("inserter").placements_between(belt_end, furnace)` and place the inserter at a returned position and direction.
+
+**Direction semantics, two sentences.** A belt faces the direction items flow; a corner is two perpendicular legs meeting, and the engine curves them — you specify geometry, never curves. An underground pair is an entrance and an exit facing the *same* way, at most the prototype's reach apart (`belt_to_ground_type` = `input` then `output`); a belt pointing into the side of another belt side-loads it, which shows in `transport.line()` as a merge point.
+
+**The distance cue.** When your ore, your smelting and your power sit far apart and you keep walking between them, that is a logistics problem, not a walking problem: connect them with belts and inserters, or move one of them.
+
+### Ghosts — plans on the map
+
+Ghosts are the map-view write surface: `item.place_ghost(position, direction, label=...)` needs no reach and no inventory, is visible to everyone in the `ghost` table (`SELECT ghost_name, position_x, position_y, label, placed_by FROM ghost` is the intent ledger — what is pending, where, labelled how, since when), and becomes real only when you walk to its position (`walking.walk_to(ghost.position)`) and place the real item over it (`item.place(ghost.position, direction)`), which replaces the matching ghost and inherits its label. There is no executor: a ghost is a plan, not a reservation, and nothing builds it for you. Remove a plan with `ghost.remove()`.
 </strategic_mindset>
 
 <turns>

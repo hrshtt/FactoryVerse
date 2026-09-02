@@ -183,7 +183,7 @@ class MarkdownGenerator:
         classes = self._registry.get_all_classes()
         placement_classes = [
             c for c in classes
-            if c.accessor_name in ("placement_hints", "ghost_builder", "entity_reference", "entity_reference(...)")
+            if c.accessor_name in ("entity_reference", "entity_reference(...)")
         ]
 
         if not placement_classes:

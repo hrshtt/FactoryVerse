@@ -316,7 +316,6 @@ _modules_to_reload = [
     'FactoryVerse.agent.embodied_actions.inventory',
     'FactoryVerse.agent.embodied_actions.entity_operations',
     'FactoryVerse.agent.embodied_actions.place_entity',
-    'FactoryVerse.agent.ghost_builder',
     'FactoryVerse.agent.placement_hints',
     'FactoryVerse.agent.reachable_view',
     'FactoryVerse.agent.remote_view',

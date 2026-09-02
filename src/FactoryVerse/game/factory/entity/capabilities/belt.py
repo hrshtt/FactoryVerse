@@ -48,6 +48,26 @@ class BeltMixin:
     """
 
     is_ghost: bool
+    _transport = None  # injected by RemoteView when the entity is hydrated
+
+    def line(self):
+        """The belt component this belt is part of — derived from the map
+        model's geometry at call time, never stored (structure, not
+        simulation). Same read as ``remote_view.transport.line(self)``; the
+        aggregate is ``remote_view.transport.lines()``. Returns a BeltLine
+        (heads, tails, merges, count, source) or None when this belt is not
+        in the map model yet.
+
+        Raises RuntimeError if the entity was not hydrated through
+        remote_view (reachable-view objects carry no map-model handle).
+        """
+        reads = getattr(self, "_transport", None)
+        if reads is None:
+            raise RuntimeError(
+                "belt.line() needs the map model: fetch this belt through remote_view "
+                "(remote_view.get_entity(...)) or call remote_view.transport.line(position)"
+            )
+        return reads.line(self)
 
     def _get_belt_state(self, inspection_data: dict) -> BeltState:
         """Get belt state from inspection data.

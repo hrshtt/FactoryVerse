@@ -168,13 +168,19 @@ def _upsert_entity_derivatives(db, entity_data: Dict[str, Any]) -> None:
         "loader-1x1",
         "linked-belt",
     ):
+        belt_data = entity_data.get("belt_data") or {}
         db.execute(
             """
             INSERT OR REPLACE INTO transport_belt
-            (entity_name, position_x, position_y, direction, belt_speed)
-            VALUES (?, ?, ?, ?, ?)
+            (entity_name, position_x, position_y, direction, belt_speed,
+             belt_to_ground_type, loader_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [entity_name, pos_x, pos_y, direction, entity_data.get("belt_speed")],
+            [
+                entity_name, pos_x, pos_y, direction, entity_data.get("belt_speed"),
+                belt_data.get("belt_to_ground_type") or entity_data.get("belt_to_ground_type"),
+                belt_data.get("loader_type") or entity_data.get("loader_type"),
+            ],
         )
     elif entity_type == "mining-drill":
         db.execute(

@@ -13,7 +13,6 @@ Note:
 - Mining is not a top-level action. Resources have a .mine() method.
   MiningAction is internal infrastructure used by resource objects.
 - Ghost building and placement hints are now at agent level:
-  - FactoryVerse.agent.ghost_builder (GhostBuilderAction)
   - FactoryVerse.agent.placement_hints (PlacementHints, GhostPlan, etc.)
 """
 

@@ -601,6 +601,22 @@ TRANSPORT_BELT = TableDefinition(
             nullable=True,
             description="Belt speed",
         ),
+        ColumnDefinition(
+            name="belt_to_ground_type",
+            type="VARCHAR",
+            nullable=True,
+            description=(
+                "For underground belts: 'input' (the entrance) or 'output' (the exit). "
+                "NULL for every other belt. Event-backed (set at placement, flipped by "
+                "rotation); the one column that lets a belt line be derived across a tunnel"
+            ),
+        ),
+        ColumnDefinition(
+            name="loader_type",
+            type="VARCHAR",
+            nullable=True,
+            description="For loaders: 'input' or 'output'. NULL otherwise",
+        ),
     ],
 )
 

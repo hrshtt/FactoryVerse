@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from FactoryVerse.game.agent.embodied_actions.place_entity import PlacementAction
-from FactoryVerse.game.agent.ghost_builder import GhostBuilderAction
 from FactoryVerse.game.agent.remote_view import RemoteView
 from FactoryVerse.game.factory.item.base import PlaceableItem
 from FactoryVerse.game.factory.types import Direction, MapPosition
@@ -212,74 +211,3 @@ class _Inventory:
         return [SimpleNamespace(name="wooden-chest", count=self.count)]
 
 
-class _Validator:
-    def __init__(self, results):
-        self.results = results
-        self.calls = []
-
-    def validate_batch(self, entity_name, positions, directions=None, ghost=False):
-        self.calls.append((entity_name, positions, directions, ghost))
-        return self.results
-
-
-@pytest.mark.asyncio
-async def test_build_plan_revalidates_at_commit_and_stale_plan_has_zero_effect():
-    movement = SimpleNamespace(walk_to=lambda *_args, **_kwargs: None)
-    placement = _PlacementRecorder()
-    validator = _Validator([True, False])
-    builder = GhostBuilderAction(
-        movement,
-        placement,
-        _Inventory(2),
-        reachable_view=SimpleNamespace(),
-        validator=validator,
-    )
-    plan = _Plan(
-        entity_name="wooden-chest",
-        positions=[
-            (MapPosition(x=1.5, y=1.5), Direction.NORTH),
-            (MapPosition(x=2.5, y=1.5), Direction.NORTH),
-        ],
-        label="storage-line",
-        description="two storage chests",
-        valid=True,
-    )
-
-    result = await builder.build_plan(plan, strict=True)
-
-    assert result["placed_count"] == 0
-    assert result["built_count"] == 0
-    assert "revalidation" in result["error"].lower()
-    assert len(validator.calls) == 1
-    assert placement.calls == []
-
-
-@pytest.mark.asyncio
-async def test_strict_build_plan_inventory_preflight_has_zero_effect():
-    placement = _PlacementRecorder()
-    validator = _Validator([True, True])
-    builder = GhostBuilderAction(
-        SimpleNamespace(),
-        placement,
-        _Inventory(1),
-        reachable_view=SimpleNamespace(),
-        validator=validator,
-    )
-    plan = _Plan(
-        entity_name="wooden-chest",
-        positions=[
-            (MapPosition(x=1.5, y=1.5), Direction.NORTH),
-            (MapPosition(x=2.5, y=1.5), Direction.NORTH),
-        ],
-        label="storage-line",
-        description="two storage chests",
-        valid=True,
-    )
-
-    result = await builder.build_plan(plan, strict=True)
-
-    assert result["placed_count"] == 0
-    assert result["built_count"] == 0
-    assert "insufficient" in result["error"].lower()
-    assert validator.calls == []
-    assert placement.calls == []
