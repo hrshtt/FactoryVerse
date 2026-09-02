@@ -144,8 +144,11 @@ def boot_errors(
         if any(base.get(k) not in (0, 0.0) for k in ("frequency", "size")):
             errors.append(f"enemy-base autoplace is not zero: {base}")
         enemies = probe.get("enemies") or {}
-        if (enemies.get("total") or 0) > 0:
-            errors.append(f"enemy entities exist: {enemies}")
+        # Gate on combat entities; `total` counts every enemy-force entity,
+        # including a non-combat character the harness may create on purpose.
+        hostile = sum(int(enemies.get(k) or 0) for k in ("spawners", "worms", "units"))
+        if hostile > 0:
+            errors.append(f"hostile enemy entities exist: {enemies}")
     observer = probe.get("observer")
     if observer is None:
         errors.append("observer policy is unreadable: no 'spectator' remote interface")

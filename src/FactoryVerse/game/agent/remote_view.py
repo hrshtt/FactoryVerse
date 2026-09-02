@@ -202,12 +202,16 @@ class ProductionReport:
     agent_id: Optional[int] = None
 
     def automated(self) -> Dict[str, int]:
-        out: Dict[str, int] = {}
-        for name, count in self.produced.items():
-            auto = int(count) - int(self.hand_crafted.get(name, 0)) - int(self.hand_mined.get(name, 0))
-            if auto > 0:
-                out[name] = auto
-        return out
+        """Machine-made production.
+
+        Measured on 2.0.76 (2026-08-29, probe in the record): hand-crafted
+        products never enter force item production statistics — only their
+        ingredients show up under ``consumed``. So ``produced`` is already
+        automated-only, and ``hand_crafted``/``hand_mined`` are separate,
+        additive series from the event-backed manual records. Nothing is
+        subtracted.
+        """
+        return {name: int(count) for name, count in self.produced.items() if int(count) > 0}
 
 
 class RemoteView:
@@ -1248,8 +1252,11 @@ class RemoteView:
                 raw = self._rcon_client.send_command(cmd)
                 data = json.loads(raw) if raw and raw.strip() else {}
                 tick = int(data.get("tick")) if data.get("tick") is not None else None
-                produced = {str(k): int(v) for k, v in (data.get("output") or {}).items()} if isinstance(data.get("output"), dict) else {}
-                consumed = {str(k): int(v) for k, v in (data.get("input") or {}).items()} if isinstance(data.get("input"), dict) else {}
+                # LuaFlowStatistics: input_counts is production ("the left side of
+                # the GUI"), output_counts is consumption. Live-verified 2026-08-29:
+                # one gear from two plates showed up as input={gear:1}, output={plate:2}.
+                produced = {str(k): int(v) for k, v in (data.get("input") or {}).items()} if isinstance(data.get("input"), dict) else {}
+                consumed = {str(k): int(v) for k, v in (data.get("output") or {}).items()} if isinstance(data.get("output"), dict) else {}
                 source = f"live:{tick}" if tick is not None else "live"
             except Exception as e:  # engine unreachable — say so, never fake it
                 logger.warning(f"production read failed: {e}")

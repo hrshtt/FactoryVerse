@@ -338,6 +338,7 @@ class Tier4Runtime(TierBase):
             # writer to be fully idle before either DuckDB loader can admit the
             # actor.  This also makes native-save resume independent of stale
             # or missing host-side snapshot files.
+            await self._reconcile_snapshot_disk()
             await self._prepare_freeplay_snapshot()
 
             # Load modules based on variant
@@ -790,6 +791,56 @@ class Tier4Runtime(TierBase):
 
         # The agent's `turn` stream: bind its port and adopt Lua's (epoch, seq).
         await self._start_turn_stream(turn_port)
+
+    async def _reconcile_snapshot_disk(self, timeout: float = 300.0) -> None:
+        """If the mod's storage says chunks are snapshotted but the host-side
+        snapshot directory holds no chunk files, ask the mod to run its boot
+        pass (``remote.call("map","boot")``) and wait for the queue to drain.
+
+        Found live 2026-08-29: a save carries its snapshot bookkeeping, the
+        host directory does not; loading the save gives on_load only, so the
+        files are never rewritten and the loader reads an empty world as a
+        healthy one (Constitution §15).
+        """
+        tier3 = self._env.tier3
+        if tier3 is None or tier3.map_api is None:
+            return
+        try:
+            report = tier3.run_lua('return remote.call("map", "get_boot_report")') or {}
+        except Exception as e:  # older mod without the probe — nothing to reconcile
+            logger.debug("get_boot_report unavailable: %s", e)
+            return
+        tracker = (report.get("tracker") or {}) if isinstance(report, dict) else {}
+        snapshotted = int(tracker.get("snapshotted") or 0)
+        if snapshotted <= 0:
+            return
+        snapshot_dir = None
+        try:
+            snapshot_dir = self._env.config.tier1.get_snapshot_dir(tier3.instance) if tier3.instance else None
+        except Exception:
+            snapshot_dir = None
+        if snapshot_dir is None:
+            return
+        host_chunks = sum(1 for _ in Path(snapshot_dir).rglob("entities-init.jsonl"))
+        if host_chunks > 0:
+            return
+        logger.warning(
+            "Tier 4: mod storage says %d chunks snapshotted but %s holds no chunk files — requesting the boot pass",
+            snapshotted, snapshot_dir,
+        )
+        tier3.run_lua('return remote.call("map", "boot", "host_disk_empty")')
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            report = tier3.run_lua('return remote.call("map", "get_boot_report")') or {}
+            queue = (report.get("queue") or {}) if isinstance(report, dict) else {}
+            if int(queue.get("pending") or 0) == 0 and report.get("phase") != "INITIAL_SNAPSHOTTING":
+                break
+            await asyncio.sleep(1.0)
+        host_chunks = sum(1 for _ in Path(snapshot_dir).rglob("entities-init.jsonl"))
+        if host_chunks == 0:
+            raise RuntimeError(
+                f"snapshot boot pass ran but {snapshot_dir} still holds no chunk files (report={report})"
+            )
 
     async def _prepare_freeplay_snapshot(self, timeout: float = 300.0) -> None:
         """Re-snapshot all tracked freeplay chunks before loading DuckDB."""

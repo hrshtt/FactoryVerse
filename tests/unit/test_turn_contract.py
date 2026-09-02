@@ -89,7 +89,7 @@ class _Runtime:
         self.turn_mode = "gameplay"
         self.plan_store = turn_report.PlanStore(None)
         self.advances: List[int] = []
-        self.production = {"input": {}, "output": {"iron-plate": 100}}
+        self.production = {"input": {"iron-plate": 100}, "output": {}}
         self.inventory = {"iron-plate": 10}
         self.entities: Dict = {}
         self.ghosts: Dict = {}
@@ -378,7 +378,7 @@ def _snapshot(tick, entities=None, ghosts=None, **kw):
 def test_report_renders_all_sections_and_thresholds_positions():
     before = _snapshot(
         0,
-        production={"input": {"iron-ore": 10}, "output": {"iron-plate": 10, "iron-gear-wheel": 0}},
+        production={"input": {"iron-plate": 10, "iron-gear-wheel": 0}, "output": {"iron-ore": 10}},
         inventory={"iron-plate": 5}, research={"current_research": "automation", "progress": 0.2, "queue_length": 1},
         entities={("stone-furnace", 1.0, 1.0): {}},
     )
@@ -386,7 +386,7 @@ def test_report_renders_all_sections_and_thresholds_positions():
     after_entities.update({("transport-belt", float(i), 0.0): {} for i in range(12)})
     after = _snapshot(
         3600,
-        production={"input": {"iron-ore": 60}, "output": {"iron-plate": 70, "iron-gear-wheel": 10}},
+        production={"input": {"iron-plate": 70, "iron-gear-wheel": 10}, "output": {"iron-ore": 60}},
         inventory={"iron-plate": 2, "iron-gear-wheel": 10},
         research={"current_research": "logistics", "progress": 0.1, "queue_length": 2},
         entities=after_entities, crafting_queue=[{"recipe": "transport-belt", "count": 150}], researched_count=4,
@@ -407,10 +407,13 @@ def test_report_renders_all_sections_and_thresholds_positions():
         next_inputs={"research_tier": 1, "researched_count": 4, "automated_rate_per_min": 50.0},
         energy_for=lambda r: 0.5, plan={"plan": "go", "goals": []},
     )
-    # production split: 60 plates produced, 10 gears hand-crafted → 10 gears not automated
+    # production: force statistics are machine-made already (hand-crafted
+    # products never enter them — measured 2.0.76, 2026-08-29); the hand
+    # series is separate and additive, nothing is subtracted.
     assert report.production["hand_crafted"] == {"iron-gear-wheel": 10}
-    assert report.production["automated"] == {"iron-plate": 60}
-    assert report.production["automated_rate_per_min"] == 60.0
+    assert report.production["automated"] == {"iron-plate": 60, "iron-gear-wheel": 10}
+    assert report.production["hand_crafted"] == {"iron-gear-wheel": 10}
+    assert report.production["automated_rate_per_min"] == 70.0
     # map: 12 belts placed, thresholded to 5 + 7 more
     assert report.map["placed"]["count"] == 12 and len(report.map["placed"]["shown"]) == 5 and report.map["placed"]["more"] == 7
     # status

@@ -197,8 +197,11 @@ function M._on_nth_tick_power_networks_sample()
     -- storage.system_state.phase) with zero inter-module coupling and no require-order
     -- fragility. During INITIAL_SNAPSHOTTING (or before system_state exists) we emit
     -- nothing — matching the status walk, and safe because charting is still in flight.
+    -- EMPTY (nothing charted at boot) is quiescent too; a world that charts
+    -- later must still get samples. Live-found 2026-08-29: gating on the
+    -- literal MAINTENANCE meant power_networks.jsonl was never written.
     local sys = storage.system_state
-    if not (sys and sys.phase == "MAINTENANCE") then
+    if not (sys and (sys.phase == "MAINTENANCE" or sys.phase == "EMPTY")) then
         return
     end
 

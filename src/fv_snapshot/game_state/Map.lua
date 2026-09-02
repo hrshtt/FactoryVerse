@@ -2259,4 +2259,13 @@ end
 
 M.admin_api.get_boot_report = M.get_boot_report
 
+--- Python may request the boot pass at runtime — remote calls may write
+--- storage, on_load may not. The case it exists for (found live 2026-08-29):
+--- a save whose storage says every chunk is snapshotted while the host-side
+--- snapshot directory is empty, so nothing would ever be rewritten and the
+--- loader would read an empty world as a healthy one (§15).
+M.admin_api.boot = function(reason)
+    return M.boot(reason or "remote_request")
+end
+
 return M

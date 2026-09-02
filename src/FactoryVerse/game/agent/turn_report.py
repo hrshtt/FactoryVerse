@@ -229,11 +229,15 @@ def assemble(
     seq_gaps: Sequence[Dict[str, Any]] = (),
 ) -> TurnReport:
     # Production — split automated vs hand-crafted.
-    produced = _delta(before.production.get("output", {}), after.production.get("output", {}))
-    consumed = _delta(before.production.get("input", {}), after.production.get("input", {}))
+    # input_counts is production, output_counts is consumption (LuaFlowStatistics;
+    # live-verified 2026-08-29).
+    produced = _delta(before.production.get("input", {}), after.production.get("input", {}))
+    consumed = _delta(before.production.get("output", {}), after.production.get("output", {}))
     hand = event_counts_by_item(events)
-    automated = {k: v - hand.get(k, 0) for k, v in produced.items()}
-    automated = {k: v for k, v in automated.items() if v > 0}
+    # Force statistics exclude hand-crafted products (measured 2.0.76,
+    # 2026-08-29); ``produced`` is machine-made already, ``hand`` is the
+    # separate event-backed series. Nothing is subtracted.
+    automated = {k: v for k, v in produced.items() if v > 0}
     turn_minutes = max(clock.total, 1) / 3600.0
     automated_rate = sum(automated.values()) / turn_minutes if turn_minutes > 0 else 0.0
 

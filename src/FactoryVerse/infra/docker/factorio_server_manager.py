@@ -388,6 +388,18 @@ class FactorioServerManager:
 
         if save:
             save_file = save if save.endswith(".zip") else f"{save}.zip"
+            # Boot from a copy. The engine autosaves over the file it was
+            # started from, so a named save (a fixture, a checkpoint) would
+            # silently stop being the world it names after one run — seen
+            # 2026-08-29 when iron-saturated.zip came back 520k ticks older
+            # with an agent in it. The copy is what runs; the original stays.
+            if not save_file.endswith(".run.zip"):
+                import shutil
+                src = saves_dir / save_file
+                run_file = save_file[:-4] + ".run.zip"
+                if src.exists():
+                    shutil.copyfile(src, saves_dir / run_file)
+                    save_file = run_file
             start_arg = f"--start-server /factorio/saves/{save_file}"
         else:
             start_arg = f"--start-server-load-scenario {scenario}"
