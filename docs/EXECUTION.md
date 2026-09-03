@@ -73,12 +73,79 @@ when the world was full; here, storage is full when the disk is empty.
   adjacency keys out of the serializer (`underground_neighbour`, `connected_poles`,
   inserter/miner `pickup_target`/`drop_target` — all still read by Python today),
   pole `wired_to()` / `can_wire_to()` as live reads, `place_line`.
-- **Phase 2 still owes**: the `action` stream's migration onto `stream.lua`; a
-  hash-and-delta scheme for `inference_input` before N is raised above 128; the
-  comprehension probes (TURN §8.6), which need a model.
+- **Phase 2 still owes**: **the one-program gate** (TURN §2.2, gate 3 — "the first
+  thing to build"; `orchestrator.py` still executes every tool call in an inference,
+  and `test_turn_record.py`'s nonce check covers only the single-call case, so it is
+  green over a case that cannot fail); the `action` stream's migration onto
+  `stream.lua`; a hash-and-delta scheme for `inference_input` before N is raised
+  above 128; the comprehension probes (TURN §8.6), which need a model.
 - **Phase 1 owes one live check**: a human client joining a running world (spectator
   controller, no character, nothing altered) — skipped until `FV_LIVE_HUMAN_CLIENT=1`
   with a client connected.
+- **Scorer plan written (2026-09-02)**: `docs/architecture/SCORER_MOD_PLAN.md` — a
+  fourth mod, `fv_scorer`, reading the engine directly. Designed, not scheduled; it
+  enters the order after Phase 4's floor is honest (its census check needs the
+  fixture). The specification-language direction discussed alongside it is recorded in
+  `GOAL_SPECIFICATIONS_DEFERRED_INDEFINITELY.md` and is not in scope.
+- **Entity scope plan written (2026-09-02)**: `docs/architecture/ENTITY_SCOPE_PLAN.md`
+  — scope as a property of the technology tree, one generated manifest, standings for
+  every prototype, one hash asserted from Lua, the map model and Python. Designed, not
+  scheduled. Its first two steps (the drop gets a voice; the manifest and its offline
+  checks) need no instance and are not behind the Phase 4 blocker; its later steps
+  touch the serializer Phase 4B touches and are sequenced with it. It is the
+  precondition for robots.
+- **Factoriopedia plan written (2026-09-03)**: `docs/architecture/FACTORIOPEDIA_PLAN.md`
+  — the agent-facing half: an invariant system prompt carrying complete examples for
+  the fourteen pre-science entities, a `factoriopedia` tool whose page depth is gated
+  on the force's live research state, and the report naming what a finished research
+  unlocked. Designed, not scheduled; its first step (registering every entity class
+  with the documentation registry) closes audit defect 10 and needs only the scope
+  manifest.
+- **Plan review (2026-09-03)**: every plan read against the tree by one agent each,
+  with a shared brief (thesis, motivation, agent-facing change, systems change, status,
+  dependencies, scope verdict, risks). Verdicts: the nine effective plans are mostly
+  spent; what is load-bearing for the first run and still open is the floor fix
+  (item 1 below), the one-program gate, `belt.contents`, the forced-gap task, and
+  ENTITY_SCOPE step A. SCORER, ENTITY_SCOPE B–F, FACTORIOPEDIA, TRANSPORT's pole
+  drag and fluid half, `place_line`, and the tier rename are load-bearing for the
+  research argument, not for the first run, and are sequenced after it.
+
+  **Defects the review surfaced, not yet fixed, none behind the blocker** (the
+  "honesty commit", item 2 below):
+  1. `EXECUTE_DSL_DESCRIPTION` (`environment/tool_definitions.py:37-39`) still tells
+     the model that `walking, mining, placement, entity_ops, placement_hints, events`
+     are loaded; all six left the namespace in Phase 3C. No check catches it.
+  2. `place()` constructs the typed object after the RCON call and outside any try
+     (`place_entity.py:203-211`); `reachable_view.py:142` and `duckdb/query.py:332,451`
+     swallow unknown entities. Five placeables the categorical reference advertises
+     (`radar`, `beacon`, `stone-wall`, `gate`, `land-mine`) have no class, so placing
+     one mutates the world, raises, and is invisible to every typed read afterwards.
+     ENTITY_SCOPE step A, minus its manifest dependency.
+  3. `crafting.enqueue` raises for missing ingredients where HUD §2.4 rule 3 and
+     `research.dequeue` return a game-rule failure as data.
+  4. `docs/system-prompt/factoryverse-system-prompt-v3-core.md` is a stale snapshot
+     from `fda10e2` still advertising `ghost_builder`, `build_plan`, `GhostPlan`.
+     Read by nothing; delete or regenerate.
+  5. `footprint_tiles.is_ghost` (already listed below) — decide it in the same pass.
+  6. `sync.py::_check_sequence` accepts any first sequence at attach; same defect class
+     as the blocker (a locally reconstructed baseline trusted over Lua). Loss there is
+     loud, so it is a one-line honesty fix, not a blocker.
+  7. `execute_dsl → execute_python` moves into this commit: the tool description is
+     being rewritten anyway, and the frozen-names note in `tool_definitions.py` must
+     be amended in writing when it happens (the trajectory reader accepts both names).
+
+  **Decisions pending, recorded so silence is not read as a decision:** SCORER
+  proposes Constitution §22 and §23 and cannot be argued from the existing clauses —
+  adopt or refuse by name before its step 2. FACTORIOPEDIA binds a ninth name against
+  the eight-name assertion — amend or re-home before its step C. TRANSPORT §9.1
+  (does rotating one underground end flip `belt_to_ground_type` on both with one
+  event) is a ten-minute probe that can invalidate Phase 4A's one schema change.
+
+  **Record corrections made 2026-09-03:** NOTIFICATIONS' status line (it said nothing
+  had run); the API §6 and GHOST §7 baseline gates marked closed with loss (surfaces
+  deleted before they ran); TRANSPORT §15 notes that surface and teaching shipped
+  together so §9.8 measures the pair; the phantom `SCORER_DEFERRED.md` removed from
+  AGENTS.md; the four plan docs and `SUPPORTED_ENTITIES.md` committed.
 - **Operational notes**: live suites share the compose project (`factorio_0`), so they
   run one at a time; `fv server start` returns before RCON accepts authentication —
   attach with a bounded retry (the pattern is in `tests/live/test_turn_contract.py`).
@@ -129,20 +196,30 @@ its check column.
    ingest — it must not be able to pass in three seconds again. Then run
    `test_transport_fixture.py` and certify the belt derivation against the four
    named components.
-2. **Phase 4B — the Lua half of transport.** `belt.contents` as a live read (the
+2. **The honesty commit.** The seven defects listed under *Plan review (2026-09-03)*
+   above, plus the two dead-by-data artifacts. One commit, no design questions, no
+   instance needed. It goes before Phase 4B because every item is in the first run's
+   path and none touches the serializer.
+3. **Phase 4B — the Lua half of transport.** `belt.contents` as a live read (the
    commented-out `get_contents()` with the comment claiming the method does not
    exist, thirty lines from a file that calls it); the remaining adjacency keys out
    of the serializer once their Python readers move to the derived reads; pole
    `wired_to()` / `can_wire_to()` as live reads, never derived (§1.2 — geometry
    over-connects on 12 of 44 poles); `place_line` on the item, behind the drag
    differential §9.3 asks for; fluid last, because it is unproven and the fixture
-   has no pipes.
-3. **Phase 5 — names.** The tier rename and `execute_dsl → execute_python`, as one
-   mechanical commit with deprecated aliases for a cycle.
-4. **Close what earlier phases owe**: the `action` stream onto `stream.lua`; the
+   has no pipes. *Sequencing note (2026-09-03):* `belt.contents` and the forced-gap
+   task are all the first run needs from this phase; poles, fluid and `place_line`
+   serve the research argument and can follow the run unless it shows tile-loop
+   placement is what fails.
+4. **Phase 5 — names.** The tier rename, as one mechanical commit with deprecated
+   aliases for a cycle. (`execute_dsl → execute_python` moved into item 2, since the
+   tool description is rewritten there and the run should not be taken under a name
+   that argues against the surface.) The tier rename buys the first run nothing and
+   can follow it.
+5. **Close what earlier phases owe**: the `action` stream onto `stream.lua`; the
    human-join live check; a hash-and-delta scheme for `inference_input` before N
    rises above 128.
-5. **Then the first eval run under the new contract** — the comprehension probes each
+6. **Then the first eval run under the new contract** — the comprehension probes each
    plan lists (they need a model, and they are cheap), then the belt baseline on a
    task with a forced ore→smelter gap (TRANSPORT §9.8), unprompted then prompted.
    External harness transports are rebuilt only after that run.

@@ -16,9 +16,13 @@ FactoryVerse is a research platform for LLM agents playing Factorio: three Lua m
   - `BELT_AFFORDANCE_DEFERRED_PLAN.md` — superseded by `TRANSPORT_CONNECTIVITY_PLAN.md`; kept for its teaching section
   - `TRANSPORT_CONNECTIVITY_PLAN.md` — belts, poles, pipes: derived structure, live simulation, no stored adjacency
   - `GHOST_SURFACE_DEFERRED.md` — ghosts as a map-view write surface
-  - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — notifications as a primitive (designed, not executed)
+  - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — notifications as a primitive (the `turn` stream half landed in Phase 2B; `action`/`entities`/`files` streams and the Lua census are unscheduled)
   - `SCENARIO_BOOT_CONTRACT_DEFERRED.md` — what a world boot is: scenario resolution, world settings, observer policy
   - `TIER_RENAME_PROPOSAL.md` — rename the environment tiers
+  - `SCORER_MOD_PLAN.md` — a fourth mod that judges from the engine: reward, diagnostics, integrity (designed 2026-09-02, not scheduled)
+  - `GOAL_SPECIFICATIONS_DEFERRED_INDEFINITELY.md` — goals as temporal-logic specs; a discussion record, deferred indefinitely and not in the scorer's scope
+  - `ENTITY_SCOPE_PLAN.md` — one owner of what an entity is: scope derived from the technology tree, one manifest, one hash asserted from Lua, the map model and Python (designed 2026-09-02, not scheduled; precondition for robots)
+  - `FACTORIOPEDIA_PLAN.md` — what the agent is told about the world and when: invariant prompt with the pre-science entities, a `factoriopedia` tool gated on live research, the unlock line in the report (designed 2026-09-03, not scheduled; depends on ENTITY_SCOPE)
 - **`docs/EXECUTION.md`** — where the refactor stands: phases, what landed (with its commit and check), what is next. Update it on every commit that moves a phase.
 - **The code and its checks.** Nothing else in this repo is an authority on whether something works. If you need to know, run the check. If there is no check, there is no claim.
 

@@ -545,6 +545,7 @@ before the surfaces that would stand on them.
 
 ## 15. Open
 
+- *Attribution note, 2026-09-03:* Phase 4A shipped the derived read and the §10 teaching in one commit, so the §9.8 baseline can no longer separate surface uplift from prompt uplift. The unprompted/prompted comparison still runs; what it measures is the pair. Say so when reporting it.
 - Whether the belt aggregate is needed **at all**. §9.8's baseline has not been run, and §10
   shows the neighbouring affordance answered "teaching, not surface".
 - `get_max_transport_line_index()` per entity type. The spec pins the ten

@@ -117,7 +117,7 @@ Contracts: author, capture, stamp, list — returning actuals (ghosts created, f
 
 ## 7. Before believing any of this worked
 
-- **A baseline on the current surface.** Does the model use the ghost workflow today, unprompted and then prompted? The orphaned-ghost pattern suggests engagement exists and produces litter. Measure before deleting, so the difference afterward is attributable. The belt, HUD and API plans all want this same run.
+- **A baseline on the current surface.** Does the model use the ghost workflow today, unprompted and then prompted? The orphaned-ghost pattern suggests engagement exists and produces litter. Measure before deleting, so the difference afterward is attributable. The belt, HUD and API plans all want this same run. *Closed with loss, 2026-09-03:* the executor was deleted in Phase 4A before this ran. The only pre-deletion evidence is the 2026-08-25 run's zero calls on a prompt that steered toward it. Do not reschedule.
 - **Comprehension probes, no acting.** Predict ghost semantics: which methods are blocked on a ghost, that no inventory is consumed at ghost-place, that a plan is not a reservation, what `place()` over an existing ghost does. Wrong predictions mean the teaching gap dominates, and surfaces should be taught before they are restructured.
 - **An executed check of the composed idiom** after removal — walk, place over ghost, label inheritance — plus coverage for `remove_ghost`, which has none today.
 
