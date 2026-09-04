@@ -236,21 +236,21 @@ Still in the serializer because Python reads them (go with Phase 4): `belt_data.
 In order. Each item starts when the one before it has no "pending" or "BLOCKED" in
 its check column.
 
-1. **Unblock the floor.** The mod cannot read the disk (Factorio gives mods
-   `write_file` and `remove_path` only), so the reconciliation is host-driven and the
-   mod must accept being told to distrust its bookkeeping. Design (2026-09-04): each
-   boot pass mints an epoch, kept in storage, **stamped into the boot report** and into
-   every init file's `chunk_meta` line; the loader rejects files from another epoch;
-   the Tier 4 reconcile becomes a pure decision over report-vs-disk (epoch, per-chunk
-   presence) that both `fv run` and the live test call. Certification is agreement
-   between witnesses that cannot collude — an engine census by name+position, the
-   disk read through the loader, the report as the claim under test — across three
-   boots: pristine save over an empty directory; the same save *carrying storage* over
-   an empty directory (the case that passed in three seconds; measured 2026-09-04 as
-   `on_load` only, no pass, report from the previous process); partial loss. Raw init
-   lines must equal unique keys. The fixture is `starter-base-test` (hash pinned, a
-   precondition on its `script.dat`, hash asserted unchanged after the run);
-   `iron-saturated` stays for `test_transport_fixture.py`'s four named components.
+1. **Unblock the floor — by removing the memory, not repairing it.**
+   `docs/architecture/SNAPSHOT_SESSION_PLAN.md` (2026-09-04): `fv_snapshot` keeps no
+   storage; a consumer opens a named session, every file and datagram carries the id,
+   charted chunks are a live engine read, and what was snapshotted is the consumer's
+   ledger. It supersedes the epoch-and-reconcile design from the same morning (the mod
+   cannot read the disk, so every design that keeps the memory only adds ways to distrust
+   it), `Map.boot` / `get_boot_report` (Phase 1B), and the Tier 4 disk guard (`0cd396e`).
+   Steps A–D are the floor; E (turn stream adopts the session id) and F (status dump and
+   power sample as options, per-tick UDP batching) can follow the first run. Certification
+   is the plan's step C: open, request every charted chunk, wait for idle, and compare the
+   session directory to an independent engine census by name+position on
+   `starter-base-test`; raw lines equal unique keys; every path carries the id. Step A's
+   `script.dat` invariant fails on that save today, which is the failing assertion this
+   work starts from. `iron-saturated` stays for `test_transport_fixture.py`'s four named
+   components, which certify on top of C.
 2. **The honesty commit.** The seven defects listed under *Plan review (2026-09-03)*
    above, plus the two dead-by-data artifacts. One commit, no design questions, no
    instance needed. It goes before Phase 4B because every item is in the first run's

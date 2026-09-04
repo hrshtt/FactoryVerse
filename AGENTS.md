@@ -15,6 +15,7 @@ FactoryVerse is a research platform for LLM agents playing Factorio: three Lua m
   - `HUD_PARTITION_DEFERRED_REFACTOR.md` — partially superseded 2026-08-29: craft/research stay in Python; join contract, mining rule and naming rule survive
   - `BELT_AFFORDANCE_DEFERRED_PLAN.md` — superseded by `TRANSPORT_CONNECTIVITY_PLAN.md`; kept for its teaching section
   - `TRANSPORT_CONNECTIVITY_PLAN.md` — belts, poles, pipes: derived structure, live simulation, no stored adjacency
+  - `SNAPSHOT_SESSION_PLAN.md` — the snapshot mod keeps no storage; a consumer opens a named session and owns the ledger of what was written (designed 2026-09-04, not scheduled; supersedes the boot-report repairs)
   - `GHOST_SURFACE_DEFERRED.md` — ghosts as a map-view write surface
   - `NOTIFICATIONS_PRIMITIVE_DEFERRED.md` — notifications as a primitive (the `turn` stream half landed in Phase 2B; `action`/`entities`/`files` streams and the Lua census are unscheduled)
   - `SCENARIO_BOOT_CONTRACT_DEFERRED.md` — what a world boot is: scenario resolution, world settings, observer policy
