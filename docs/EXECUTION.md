@@ -25,7 +25,7 @@ Decisions that shape the order (2026-08-29): hand crafting and research stay in 
 
 ---
 
-## What we are up to (2026-09-02)
+## What we are up to (2026-09-04)
 
 **Phase 4 is blocked on a lying floor. Read this before doing anything else.**
 
@@ -66,6 +66,51 @@ whose file is missing as needing a snapshot regardless of what storage says. Thi
 the same class as the defect Phase 1B fixed (`chunk_lookup` populated only by an
 event that never fires on a pre-charted world) one level up: there, storage was empty
 when the world was full; here, storage is full when the disk is empty.
+
+### 2026-09-04 — the blocker measured on a real base, and what the day found
+
+**A stronger fixture exists.** `starter-base-test` (the owner's client save, copied to
+`.fv-output/server_0/saves/`, md5 `0725198e…`): 15 251 entities of 32 names in 166 chunks,
+6 235 belt-family rows in 35 components (one of 3 741), 187 technologies, three electric
+networks, oil. Baseline artifacts — save, engine census by name+position, world facts,
+the verified snapshot directory, a facts sheet with the profile below — are in
+`.fv-output/baselines/starter-base-test/` (untracked). It replaces iron-saturated as the
+instrument for the floor work; iron-saturated stays as the transport oracle (§1.1).
+
+**The blocker reproduced on the first boot, and it is one layer deeper than recorded.**
+The save carries `fv_snapshot` storage from the client session. On the server the mod
+ran **`on_load` only** (container log: no `on_init`, no `on_configuration_changed`), so
+no boot pass ran at all — and `get_boot_report()` still answered `reason =
+on_configuration_changed, tick = 43600`, with the client's chunk and entity counts.
+**The boot report is a save-carried claim about a previous process**, and Python reads
+it as a statement about this one. The epoch the certification design asks for (below)
+has to stamp the report too, not only the files.
+
+**Snapshotting itself is honest once asked.** Forcing every chunk through
+`re_snapshot_chunks` wrote 1 048 chunks in 85 s; the loader's `map_entity` is set-equal
+to an independent engine census (15 251 both ways, 0 either-only), and per name the
+engine's `count_entities_filtered{name=…}`, the raw init lines and the table agree for
+all 32 names. The writer does not lie; only the decision to write does.
+
+**Profile (LuaProfiler from the scenario runtime; tick rate at speed 10):**
+- Built entity through the mod's handlers: **1.9 ms** (engine alone 0.02 ms); destroyed
+  1.5 ms. ~1.0 ms of it is the one `send_udp` per event (same cost at 100 B or 1 KB, any
+  port), ~0.3–0.5 ms serialization + JSON, 0.08 ms the file append. A 200-belt drag is a
+  0.4 s stall — this is the client freeze. Only `fv_snapshot` handles build events.
+- The quiescent phase costs more than snapshotting: ~6.7 ms/tick idle vs ~3 ms/tick
+  during the 1 048-chunk pass, because the status dump (13 937 records, `table_to_json`
+  235 ms of a ~340 ms single-tick hitch every 60 ticks) is suspended while snapshotting.
+- Boot walk over 2 743 chunks: 115 ms once. `SnapshotLoader.load_all` on this base:
+  111–166 s. Belt derivation over it: 0.3 s.
+Both per-event UDP and the one-tick status dump are floor work before an agent runs on
+a base this size; neither was visible at 404 entities.
+
+**Fixed the same day (chunk ownership).** Init files listed a multi-tile entity on a
+chunk edge in both chunks' files (463 of 15 714 lines; every surplus a 2x2-or-larger
+entity, none a 1x1) because the area query matches bounding-box overlap while the update
+path assigns by `position`. `chunk_owns_entity` now applies the position rule to tracked
+entities, ghosts and the tracked count. Worst-tick cost measured at +0.5 ms on a
+596-entity chunk; net negative over a run. See the row below.
 
 ### Also in flight
 
@@ -178,6 +223,7 @@ when the world was full; here, storage is full when the disk is empty.
 | 2026-08-29 | Live suites re-scoped to the eight-name surface: status/power/production through the readers, placement through `item.place()` and `entity_reference().can_place`, crafting through `enqueue` + `await_item`, research completion read off the turn stream file, ghost conversion as the composed idiom; two contracts driving the deleted executor removed | `52170d0` | The suites themselves — and they earned their keep by finding the four defects below |
 | 2026-08-29 | Four defects the live runs found: force production read inverted (`input_counts` is production — measured); the power sampler dead in the new `EMPTY` phase; the boot gate counting a non-combat character as an enemy; a server booting from a named save autosaving over it. Plus a fail-closed guard when mod storage and the host snapshot disk disagree | `0cd396e` | `tests/live/test_database_coherence.py` 13/13 and `test_freeplay_harness_domains.py` 8/8 after the fixes; the production semantics were settled by a probe, recorded in the commit |
 | 2026-08-29 | Phase 4A — `belt_to_ground_type` and `loader_type` promoted into `transport_belt`; `transport.line()` / `lines()` / `shares_line_with()` derived at read time, never stored; `belt.line()` as the per-entity mirror; `ghost_builder` withdrawn on progression grounds; belts and ghosts taught in the prompt | `5f97896` (deletion misfiled in `0cd396e`) | `tests/unit/test_transport.py` (11), including the neighbour-invalidation case stored adjacency cannot pass. **Live: BLOCKED** — see the blocker above |
+| 2026-09-04 | Chunk ownership: init files, ghost files and the tracked count keep only entities whose `position` falls in the chunk (the update path's rule), instead of everything whose bounding box overlaps it | — | `tests/unit/test_snapshot_lua_contracts.py::test_chunk_snapshot_keeps_only_entities_the_chunk_owns`. **Live (2026-09-04):** on `starter-base-test`, 15 251 init lines = 15 251 unique keys = the engine census (was 15 714 lines); boot report `entities.tracked` 15 251 (was 15 715) |
 
 Battery after Phase 4A: 494 passed, 1 skipped, 3 xfailed (strict).
 
@@ -190,12 +236,21 @@ Still in the serializer because Python reads them (go with Phase 4): `belt_data.
 In order. Each item starts when the one before it has no "pending" or "BLOCKED" in
 its check column.
 
-1. **Unblock the floor.** Make the snapshot boot pass verify its own output instead
-   of trusting its bookkeeping, re-establish a trustworthy `iron-saturated` fixture,
-   and make `test_snapshot_boot_contract.py` fail on a world it did not actually
-   ingest — it must not be able to pass in three seconds again. Then run
-   `test_transport_fixture.py` and certify the belt derivation against the four
-   named components.
+1. **Unblock the floor.** The mod cannot read the disk (Factorio gives mods
+   `write_file` and `remove_path` only), so the reconciliation is host-driven and the
+   mod must accept being told to distrust its bookkeeping. Design (2026-09-04): each
+   boot pass mints an epoch, kept in storage, **stamped into the boot report** and into
+   every init file's `chunk_meta` line; the loader rejects files from another epoch;
+   the Tier 4 reconcile becomes a pure decision over report-vs-disk (epoch, per-chunk
+   presence) that both `fv run` and the live test call. Certification is agreement
+   between witnesses that cannot collude — an engine census by name+position, the
+   disk read through the loader, the report as the claim under test — across three
+   boots: pristine save over an empty directory; the same save *carrying storage* over
+   an empty directory (the case that passed in three seconds; measured 2026-09-04 as
+   `on_load` only, no pass, report from the previous process); partial loss. Raw init
+   lines must equal unique keys. The fixture is `starter-base-test` (hash pinned, a
+   precondition on its `script.dat`, hash asserted unchanged after the run);
+   `iron-saturated` stays for `test_transport_fixture.py`'s four named components.
 2. **The honesty commit.** The seven defects listed under *Plan review (2026-09-03)*
    above, plus the two dead-by-data artifacts. One commit, no design questions, no
    instance needed. It goes before Phase 4B because every item is in the first run's

@@ -1206,6 +1206,18 @@ function M._build_disk_write_snapshot()
 end
 
 --- PHASE: FIND_ENTITIES - Gather all entities/resources/tiles for the chunk
+--- Does this chunk own the entity? Ownership is the chunk containing
+--- entity.position (utils.to_chunk_coordinates), never bounding-box overlap.
+--- One rule for init files, update files and the tracked count.
+--- @param chunk_x number
+--- @param chunk_y number
+--- @param entity LuaEntity (valid)
+--- @return boolean
+local function chunk_owns_entity(chunk_x, chunk_y, entity)
+    local owner = utils.to_chunk_coordinates(entity.position)
+    return owner.x == chunk_x and owner.y == chunk_y
+end
+
 --- This phase does the expensive find_entities_filtered calls
 --- We do all finds in one tick since splitting them would require complex state
 --- @param state SnapshotState
@@ -1263,12 +1275,20 @@ local function phase_find_entities(state, chunk_x, chunk_y)
             area = chunk_area,
             force = tracked_forces,
         }
-        -- Filter out ghosts and character entities (in Lua, not C++)
+        -- Filter out ghosts and character entities (in Lua, not C++), and
+        -- keep only the entities this chunk OWNS. An area query matches on
+        -- bounding-box overlap, so a 3x3 entity straddling a chunk edge is
+        -- found by both chunks and was written to both init files (463 of
+        -- 15714 lines on starter-base-test, 2026-09-04). Ownership is the
+        -- chunk containing entity.position — the rule the update path
+        -- already applies through utils.to_chunk_coordinates — so init and
+        -- updates agree on which file carries an entity.
         -- Use numeric for loop for hot path performance
         local all_entities_count = #all_entities
         for i = 1, all_entities_count do
             local entity = all_entities[i]
-            if entity and entity.valid and entity.type ~= "entity-ghost" and entity.type ~= "character" then
+            if entity and entity.valid and entity.type ~= "entity-ghost" and entity.type ~= "character"
+                and chunk_owns_entity(chunk_x, chunk_y, entity) then
                 tracked_entities[#tracked_entities + 1] = entity
             end
         end
@@ -1291,10 +1311,18 @@ local function phase_find_entities(state, chunk_x, chunk_y)
         game.print(string_format("[PERF]   Ghost count: %d", ghost_count))
     end
     if ghost_count > 0 then
-        ghosts = surface.find_entities_filtered {
+        local found_ghosts = surface.find_entities_filtered {
             area = chunk_area,
             type = "entity-ghost",
         }
+        -- Same ownership rule as tracked entities: a ghost of a large entity
+        -- overlaps two chunks and belongs to the one holding its position.
+        for i = 1, #found_ghosts do
+            local ghost = found_ghosts[i]
+            if ghost and ghost.valid and chunk_owns_entity(chunk_x, chunk_y, ghost) then
+                ghosts[#ghosts + 1] = ghost
+            end
+        end
     end
     
     -- Store gathered data in state
@@ -2050,10 +2078,22 @@ end
 function M.refresh_chunk_entity_flag(chunk_x, chunk_y)
     local surface = game.surfaces[1]
     local tracker = M.get_chunk_tracker()
-    local entity_count = surface.count_entities_filtered {
-        area = chunk_area_of(chunk_x, chunk_y),
-        force = forces.get_tracked_forces(),
-    }
+    -- Count what the chunk OWNS (see chunk_owns_entity), not what overlaps
+    -- it: the area count over-reported 15715 for 15251 real entities on
+    -- starter-base-test. Cheap count first so empty chunks pay one call.
+    local entity_count = 0
+    local area = chunk_area_of(chunk_x, chunk_y)
+    local tracked_forces = forces.get_tracked_forces()
+    if surface.count_entities_filtered { area = area, force = tracked_forces } > 0 then
+        local found = surface.find_entities_filtered { area = area, force = tracked_forces }
+        for i = 1, #found do
+            local entity = found[i]
+            if entity and entity.valid and entity.type ~= "character"
+                and chunk_owns_entity(chunk_x, chunk_y, entity) then
+                entity_count = entity_count + 1
+            end
+        end
+    end
     local chunk_entry = tracker:_get_chunk_entry(chunk_x, chunk_y)
     chunk_entry.has_tracked_entities = (entity_count > 0)
     chunk_entry.tracked_entity_count = entity_count

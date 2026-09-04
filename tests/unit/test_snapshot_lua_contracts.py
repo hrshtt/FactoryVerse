@@ -190,3 +190,24 @@ def test_dead_status_walk_is_gone():
     control = CONTROL.read_text()
     assert "Entities.dump_status_to_disk()" in control
     assert 'get_system_phase() ~= "INITIAL_SNAPSHOTTING"' in control
+
+
+def test_chunk_snapshot_keeps_only_entities_the_chunk_owns():
+    """An area query matches on bounding-box overlap, so a multi-tile entity on
+    a chunk edge is found by both chunks. Measured 2026-09-04 on
+    starter-base-test: 15714 init lines for 15251 entities, every surplus
+    line a 2x2-or-larger entity, none a 1x1. The update path already assigns
+    an entity to the chunk holding its position (utils.to_chunk_coordinates);
+    init files, ghost files and the tracked count must use the same rule, or
+    an entity's init and its later remove land in different files."""
+    m = _strip_lua_comments(MAP.read_text())
+    assert "local function chunk_owns_entity(chunk_x, chunk_y, entity)" in m
+    assert "utils.to_chunk_coordinates(entity.position)" in m
+    # tracked entities, ghosts, and the count each apply it
+    assert m.count("chunk_owns_entity(chunk_x, chunk_y, entity)") >= 2
+    assert "chunk_owns_entity(chunk_x, chunk_y, ghost)" in m
+    # the count is no longer the raw area count
+    flag = m[m.index("function M.refresh_chunk_entity_flag") :]
+    flag = flag[: flag.index("\nend")]
+    assert "chunk_owns_entity" in flag
+    assert "chunk_entry.tracked_entity_count = entity_count" in flag
