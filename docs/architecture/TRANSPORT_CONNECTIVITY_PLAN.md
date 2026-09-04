@@ -275,6 +275,16 @@ a cached `fluidbox_index` a latent lie.
 **Unproven.** The fixture has no pipes. Everything in this section is grounded in the spec
 and the prototype dump and in **no live measurement at all**. §9 lists what would settle it.
 
+*Fixture found 2026-09-04.* `starter-base-test` (the baseline in
+`.fv-output/baselines/starter-base-test/`, `md5 0725198e…`) carries what `iron-saturated`
+lacks: 120 `pipe`, 284 `pipe-to-ground`, 7 `storage-tank`, 7 `offshore-pump`, 38 `boiler`,
+76 `steam-engine`, 6 `pumpjack`, 5 `oil-refinery`, 11 `chemical-plant`, and the engine
+reports **13 fluid segments** (`fluidbox.get_fluid_segment_id`) over them. The oracle for
+this section's derivation is that engine read, taken live, the way §1.1's belt oracle was
+the owner's description: derive the segments from geometry, compare to the 13 the engine
+names, and the diagonal and fungibility cases in §7 either hold or they do not. Nothing in
+§7 is proven until that comparison has run. `iron-saturated` stays the belt oracle (§1.1).
+
 ---
 
 ## 8. The repairs

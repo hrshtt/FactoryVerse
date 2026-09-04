@@ -492,4 +492,22 @@ refusal to drop.
   name says otherwise. Rename or add; decide in B.
 - **Whether `charted` entities appear in the categorical reference at all.** Today's
   answer is no; the alternative is a one-line "present in the world, outside scope"
-  section so the agent is not surprised by a wreck. Cheap either way.
+  section so the agent is not surprised by a wreck. Cheap either way on a fresh start.
+  *Sharpened 2026-09-04 by the `starter-base-test` baseline* (15 251 entities, 32
+  names): 1 217 of them — `stone-wall` 1 188, `small-lamp` 17, `roboport` 12 — have no
+  class today, so every typed read drops them silently (the §1 row "an entity without
+  a class") while SQL and the engine both see them. On an inherited base that is 8 %
+  of everything standing in front of the agent, and the "present, outside scope"
+  section stops being optional: the reference must name what the agent cannot name.
+  Walls become `charted` under criterion 1, lamps under decision 4, roboports wait on
+  the manifest. Step A (the drop gets a voice) is where this lands.
+- **What `inspect` returns for the energy family** — `solar-panel`, `accumulator`,
+  `lab`. On `starter-base-test` they are 4 194 entities, 27 % of the base, and their
+  classes expose nothing beyond the base surface (position, footprint, live status).
+  The base-wide power read exists on `remote_view` (API §4.6); the per-entity singular
+  §11 asks for does not. A human gets an accumulator's charge, a panel's output and a
+  lab's science packs by hovering, so under decision 3 these are `inspect` fields:
+  `energy`, `charge` (accumulator, as a fraction of capacity), `output` (panel, current),
+  `science_packs` (lab, by name and count). Recommended, not decided; decide in B
+  when the family table is generated, so the energy family is not handled by one
+  projection and forgotten by the other.
